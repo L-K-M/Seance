@@ -1,0 +1,12 @@
+# Keep the Docker build context small and reproducible.
+.git/
+.dart_tool/
+**/.dart_tool/
+build/
+**/build/
+app/
+*.sqlite
+*.sqlite-*
+packages/seance_sync_server/data/
+.idea/
+.vscode/

@@ -22,3 +22,7 @@ dev_dependencies:
   lints: ^5.0.0
   test: ^1.25.0
   http: ^1.2.0
+  # Dev-only: exercises the real client (HttpSyncClient + SyncEngine) against a
+  # running server in the integration test. Not a runtime dependency.
+  seance_core:
+    path: ../seance_core

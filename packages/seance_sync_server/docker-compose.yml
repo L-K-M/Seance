@@ -1,0 +1,32 @@
+# Séance sync server. Build from the repo root:
+#   docker compose -f packages/seance_sync_server/docker-compose.yml up -d --build
+#
+# Put a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in front for
+# production. Flip SEANCE_OPEN_REGISTRATION=true only long enough to enrol your
+# own devices, then set it back to false and restart.
+services:
+  seance-sync:
+    build:
+      context: ../..
+      dockerfile: packages/seance_sync_server/Dockerfile
+    image: seance-sync:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      SEANCE_BIND: "0.0.0.0"
+      SEANCE_PORT: "8787"
+      SEANCE_DB_PATH: "/data/seance.sqlite"
+      SEANCE_OPEN_REGISTRATION: "false"
+      SEANCE_LOGIN_MAX_ATTEMPTS: "10"
+      SEANCE_LOGIN_WINDOW_SECONDS: "60"
+    volumes:
+      - seance-data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/seance-sync", "--help"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  seance-data:
