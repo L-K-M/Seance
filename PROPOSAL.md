@@ -1,16 +1,17 @@
-# Ghossht — Implementation Proposal
+# Séance — Implementation Proposal
 
 **Status:** Accepted (stack approved) · **Date:** 2026-07-07
 
-Ghossht is a relatively simple cross-platform SSH client for personal use: a two-pane desktop app (server list with online/offline indicators on the left, terminal sessions on the right), configurable servers with password or private-key auth, an optional self-hostable sync server, and built-in LLM assistance. This document proposes an architecture, explains the trade-offs (including an honest assessment of the libghostty idea), and lays out a milestone roadmap.
+Séance is a relatively simple cross-platform SSH client for personal use: a two-pane desktop app (server list with online/offline indicators on the left, terminal sessions on the right), configurable servers with password or private-key auth, an optional self-hostable sync server, and built-in LLM assistance. This document proposes an architecture, explains the trade-offs (including an honest assessment of the libghostty idea), and lays out a milestone roadmap.
 
 **Decision log**
 
 | Date | Decision |
 |---|---|
 | 2026-07-07 | Stack approved: Flutter/Dart as proposed (§4). |
-| 2026-07-07 | Ghossht is a personal, single-user tool. The LLM assistant is a **core, always-on feature** — no off switch, no per-host opt-in (§6). |
-| 2026-07-07 | Name: under discussion — candidates in §10. |
+| 2026-07-07 | Séance is a personal, single-user tool. The LLM assistant is a **core, always-on feature** — no off switch, no per-host opt-in (§6). |
+| 2026-07-07 | Project named **Séance** (was Ghossht) — you summon remote machines and talk to them. Unaccented `seance` for identifiers, packages, and binaries; sync server binary `seance-sync`. |
+| 2026-07-07 | The sidebar chat gets exactly two tools: **web search** and **paste-into-prompt** (which can never submit) — §6.3. |
 
 ---
 
@@ -40,7 +41,7 @@ The central technical decision is the embedded terminal, so the libghostty idea 
 - It does **not render**. No GPU renderer, no font shaping/rasterization, no widget. The promised "give us an OpenGL/Metal surface" renderer library from [Mitchell Hashimoto's announcement](https://mitchellh.com/writing/libghostty-is-coming) has not shipped; it is a roadmap item ([tracking discussion](https://github.com/ghostty-org/ghostty/discussions/9411)).
 - The C API (`include/ghostty/vt.h`) is official but has **no tagged release and no stability guarantee** — the header itself warns the API is "definitely going to change". The functionality is battle-tested (it *is* Ghostty's core, and Ghostty is at 1.3.1 as of 2026-03-13); only the API surface is unstable.
 - Full GPU-rendered embedding exists today only on Apple platforms via the GhosttyKit XCFramework — and that goes through an internal API (`ghostty.h` / `apprt/embedded.zig`) that Mitchell explicitly disavows as "not a good C API".
-- The ecosystem around it is genuinely lively ([awesome-libghostty](https://github.com/Uzaaft/awesome-libghostty)): shipping SSH clients on every platform Ghossht targets (Echo, VVTerm, Spectty, Geistty on iOS; Quay on macOS; Chuchu on Android), and bindings for Rust, Go, Dart/Flutter ([elias8/libghostty](https://github.com/elias8/libghostty) + `flterm` 0.0.4), Node/WASM ([coder/ghostty-web](https://github.com/coder/ghostty-web), xterm.js-API-compatible), .NET, Swift.
+- The ecosystem around it is genuinely lively ([awesome-libghostty](https://github.com/Uzaaft/awesome-libghostty)): shipping SSH clients on every platform Séance targets (Echo, VVTerm, Spectty, Geistty on iOS; Quay on macOS; Chuchu on Android), and bindings for Rust, Go, Dart/Flutter ([elias8/libghostty](https://github.com/elias8/libghostty) + `flterm` 0.0.4), Node/WASM ([coder/ghostty-web](https://github.com/coder/ghostty-web), xterm.js-API-compatible), .NET, Swift.
 
 **Conclusion:** building v1 *on* libghostty today buys risk, not saved work — you would still write your own renderer against an API that will break under you. The right move is to keep the terminal behind a thin internal interface and adopt libghostty **later**, once libghostty-vt tags a release (VVTerm, Echo and others prove the migration is realistic). The idea is honored at the right time instead of bet on at the wrong time.
 
@@ -88,7 +89,7 @@ Three full architectures were developed and scored independently through three l
 
 ```mermaid
 flowchart LR
-    subgraph app [Ghossht app - one Flutter process]
+    subgraph app [Seance app - one Flutter process]
         UI[Adaptive UI shell\ntwo panes / two screens]
         TE[TerminalEngine interface\nxterm.dart now, flterm later]
         SM[SessionManager\n1 SshSession per server]
@@ -99,7 +100,7 @@ flowchart LR
         LLM[LLM provider layer\nAnthropic + OpenAI-compatible]
     end
     KS[OS keystore\nmaster key only]
-    SRV[ghossht-sync server\nDocker, SQLite,\nE2E-encrypted blobs]
+    SRV[seance-sync server\nDocker, SQLite,\nE2E-encrypted blobs]
     HOSTS[SSH servers]
 
     UI --> TE
@@ -146,9 +147,9 @@ dartssh2 wired directly to the terminal: `channel.stream → engine.write`, `eng
 
 Details that are easy to get wrong and are therefore designed in from the start:
 
-- **Host-key verification (TOFU):** dartssh2 exposes only an `onVerifyHostKey` callback — no known_hosts handling. Ghossht implements its own pinned-key store in SQLite: first connect shows a dialog with key type + SHA-256 fingerprint (copyable); a changed key is a **hard, visually distinct "HOST KEY CHANGED" block** requiring an explicit re-pin flow — never a one-click dismiss (Remmina's history shows how this goes wrong). Pinned keys sync, so a second device does not silently re-TOFU. Export to OpenSSH `known_hosts` format supported.
+- **Host-key verification (TOFU):** dartssh2 exposes only an `onVerifyHostKey` callback — no known_hosts handling. Séance implements its own pinned-key store in SQLite: first connect shows a dialog with key type + SHA-256 fingerprint (copyable); a changed key is a **hard, visually distinct "HOST KEY CHANGED" block** requiring an explicit re-pin flow — never a one-click dismiss (Remmina's history shows how this goes wrong). Pinned keys sync, so a second device does not silently re-TOFU. Export to OpenSSH `known_hosts` format supported.
 - **keyboard-interactive prompts:** many corporate servers require 2FA/TOTP mid-auth. dartssh2's `onUserInfoRequest` gets a real modal prompt flow in v1 — this is a launch blocker for real-world use, not a nice-to-have.
-- **ssh-agent support in desktop v1** (`$SSH_AUTH_SOCK` on Unix, `\\.\pipe\openssh-ssh-agent` named pipe on Windows): this covers 1Password/Bitwarden agents, is exactly what the power users an SSH client attracts will demand, and — most importantly — means keys never enter Ghossht at all in the best case.
+- **ssh-agent support in desktop v1** (`$SSH_AUTH_SOCK` on Unix, `\\.\pipe\openssh-ssh-agent` named pipe on Windows): this covers 1Password/Bitwarden agents, is exactly what the power users an SSH client attracts will demand, and — most importantly — means keys never enter Séance at all in the best case.
 - **`~/.ssh/config` import:** a read-only import of `Host`/`HostName`/`Port`/`User`/`IdentityFile` blocks at first run. Days of work, and the single cheapest adoption lever for any new SSH client.
 - **Protocol security:** verify dartssh2 implements strict key exchange (the Terrapin/CVE-2023-48795 countermeasure) during M2; if not, upstream a fix or document the gap. Establish a CVE-watch habit for the SSH dependency — a pure-Dart crypto stack gets less audit scrutiny than OpenSSL-family code.
 - **Test matrix:** CI runs against a Docker matrix of sshd versions (old kex/ciphers included) so "works on my server" becomes "works on these documented server versions".
@@ -163,7 +164,7 @@ Details that are easy to get wrong and are therefore designed in from the start:
 
 Three layers, because no single mechanism covers all platforms:
 
-1. **Agent-first (best case):** keys stay in ssh-agent / 1Password / Bitwarden; Ghossht stores nothing.
+1. **Agent-first (best case):** keys stay in ssh-agent / 1Password / Bitwarden; Séance stores nothing.
 2. **OS keystore stores only a random 32-byte vault master key** via flutter_secure_storage (macOS/iOS Keychain, Windows Credential Manager — whose 2'560-byte blob cap forbids storing actual keys, Android Keystore-wrapped AES, Linux libsecret).
 3. **Encrypted vault** (XChaCha20-Poly1305, libsodium) inside the SQLite DB holds passwords and imported private keys. An optional master passphrase (Argon2id) is the fallback unlock for headless/keyring-less Linux — and doubles as the sync E2E key (§5).
 
@@ -207,12 +208,12 @@ Before any server exists: **encrypted vault export/import** — one file (Argon2
 
 ## 6. LLM integration (R5)
 
-**Posture: core, always-on assistant in a single-user personal tool.** Ghossht is built for one user on their own machines, so the multi-tenant privacy scaffolding that public terminal products need (per-host opt-in, off switches, feature-flag separability) is deliberately dropped — the assistant is a first-class part of the app, always available.
+**Posture: core, always-on assistant in a single-user personal tool.** Séance is built for one user on their own machines, so the multi-tenant privacy scaffolding that public terminal products need (per-host opt-in, off switches, feature-flag separability) is deliberately dropped — the assistant is a first-class part of the app, always available.
 
 What stays are the guardrails that protect the *user* from remote machines and from model mistakes — these are not backlash insurance, they are correctness:
 
 - **Review-before-run stays absolute.** Generated commands are inserted editable into the prompt line; Enter executes. This matches the original product idea ("a prompt that can be turned into a command that can be executed") and is the only defense that works against both model error and prompt injection.
-- **Scrollback is untrusted input.** A compromised or malicious remote server can embed instructions in command output (indirect prompt injection — OWASP's #1 AI risk in 2026, exploited in the wild). The chat therefore has no tools in v1, and any command it suggests goes through the same review gate.
+- **Scrollback is untrusted input.** A compromised or malicious remote server can embed instructions in command output (indirect prompt injection — OWASP's #1 AI risk in 2026, exploited in the wild). The chat therefore gets exactly two narrowly scoped tools (§6.3) — web search and paste-into-prompt — neither of which can execute anything, and any command it suggests goes through the same review gate.
 - **Secret redaction stays on by default** — it protects your own keys and tokens from leaving the machine toward a cloud provider, which matters regardless of audience size. It is one global toggle (not per-host ceremony), and running against local Ollama makes the question moot entirely.
 
 ### 6.1 Provider layer
@@ -234,7 +235,13 @@ Configured as named modes `{provider, base_url, model, api_key_ref}` (Wave Termi
 
 - The sidebar is always available next to the active session, and session context is included **by default**: the last command block (via OSC 133 shell-integration marks where available — precise extraction instead of raw line counts), widening to the last ~200 lines or a selection with one click. The **context chip** remains as an affordance showing *what* is being sent, not whether.
 - **Everything outbound passes the secret-redaction pass** (Warp-style regex set: cloud keys, tokens, JWTs, private-key blocks; user-extensible), and a **"what was sent" inspector** shows exactly what left the machine.
-- Code blocks in chat replies get an "insert into prompt" button that routes through the same review-before-run gate as Feature 1 (see posture above — the chat has no tools in v1).
+
+**Chat tools.** The chat gets exactly two tools:
+
+1. **`web_search`** — for cloud backends, use the provider's native server-side web-search tool (both the Anthropic and OpenAI APIs offer one — zero extra infrastructure, results cited in the reply). For local/OpenAI-compatible backends (Ollama etc.), a client-side search tool backed by a configurable provider — self-hosted **SearXNG** fits the same Docker ethos as the sync server; the Brave Search API is the hosted alternative. Client-side search queries pass the same redaction filter as session context, and every query is rendered visibly in the chat transcript — so if injected content in scrollback or a fetched page tries to exfiltrate data through a search query, it is both redacted and visible.
+2. **`paste_to_prompt`** — inserts a command into the terminal's input line but **can never submit it**. Three rules make "paste, don't run" actually true: (a) newlines/carriage returns are rejected — a pasted `\n` *is* an Enter, the classic paste-execution trap; (b) control characters are stripped (bracketed-paste-style sanitization); (c) the danger linter from Feature 1 runs on every paste. Executing remains a physical keypress by the user, always. Code blocks in chat replies get the same "insert into prompt" affordance.
+
+Deliberately **not** given to the chat: command execution, file access, SFTP — nothing that acts on a machine without a user keypress.
 
 ### 6.4 Costs (BYOK, indicative)
 
@@ -249,7 +256,7 @@ Prompt→command on a Haiku-tier model: ≈ CHF 0.70–1/month at ~30 commands/d
 - [ ] Agent-first auth; OS keystore holds only the vault master key; XChaCha20-Poly1305 vault; Argon2id passphrase fallback
 - [ ] Vault recovery path specified (passphrase nudge + export file); no silent total-loss path
 - [ ] Sync: client-side E2E, HKDF-separated verifier, versioned protocol, login rate limiting, external review of the crypto package before GA
-- [ ] LLM: BYOK, default-on secret redaction of all outbound context, no tools for the chat in v1, review-before-run gate on every generated command; scrollback treated as untrusted input
+- [ ] LLM: BYOK, default-on secret redaction of all outbound content (session context *and* search queries), chat limited to two tools — web search and non-executing paste (newline-rejecting, danger-linted) — review-before-run gate on every generated command; scrollback treated as untrusted input
 - [ ] Terminal as attack surface: enable libghostty-vt-style paste-safety validation (bracketed-paste hijacking), constrain OSC 52 clipboard writes and title spoofing from remote servers
 
 ---
@@ -265,7 +272,7 @@ v1 = **desktop + LLM assistant + sync**. The assistant is core (decision log) an
 | **M2 — Terminal end-to-end** (weeks 4–7) | Vendored xterm.dart behind `TerminalEngine`, password auth, one live session, resize, copy/paste, TOFU dialog + HOST KEY CHANGED block, keyboard-interactive prompts | vim/htop usable; pathological-output benchmark (`yes`, `cat` a large file) meets a stated latency budget |
 | **M3 — Core hardening** (weeks 7–11) | Private-key auth (incl. passphrase-protected files), ssh-agent, `~/.ssh/config` import, multi-session tabs, reconnect/backoff, ProbeService with tri-state indicator, per-device keypair generation + `ssh-copy-id` | All R1/R2 features complete on all three desktops |
 | **M4 — Packaging + CI** (weeks 11–14) | GitHub Actions: signed/notarized dmg, msi, AppImage + Flatpak; sshd test matrix in CI; first external testers | One-command release build for all three desktops |
-| **M5 — LLM assistant** (weeks 14–17) | Provider layer (Anthropic + OpenAI-compatible), prompt→command with danger linter + review gate, always-available sidebar chat with default session context, redaction + inspector | Daily-drivable assistant against a cloud key and local Ollama |
+| **M5 — LLM assistant** (weeks 14–17) | Provider layer (Anthropic + OpenAI-compatible), prompt→command with danger linter + review gate, always-available sidebar chat with default session context, web-search + paste-to-prompt tools, redaction + inspector | Daily-drivable assistant against a cloud key and local Ollama |
 | **M6 — Sync v0** (weeks 17–19) | Encrypted vault export/import file, mnemonic key UX — no server | Two devices exchange config via a git repo |
 | **M7 — Sync server** (weeks 19–23) | Dart single binary + SQLite + Docker image, 7 versioned endpoints, LWW client engine, pinned-host-key sync, rate-limited login | `docker run` → two desktops syncing E2E-encrypted records |
 | **M8 — v1.0 desktop** (weeks 23–26) | Polish, docs; Homebrew/winget/Flathub if wanted | v1 in daily use on all three desktops |
@@ -283,26 +290,21 @@ v1 = **desktop + LLM assistant + sync**. The assistant is core (decision log) an
 | Flutter desktop polish (IME, clipboard, text rendering on Windows/Linux) | Smoke tests on all three desktops from M2, not at packaging time; known issue class, budgeted as debugging time |
 | DIY security surfaces (TOFU store, vault, sync crypto) | Zero custom primitives — libsodium + OWASP Argon2id params + Bitwarden/Atuin designs copied exactly; shared crypto package with test vectors; external review before sync GA |
 | Mobile terminal input UX (the classic mobile-terminal failure mode) | Hard 1-week input prototype gate at the start of M9 before any store-release investment |
-| Prompt injection via scrollback | No tools for the chat in v1; review-before-run gate on every suggested command; redaction + bounded, visible context |
+| Prompt injection via scrollback (and now via fetched web content) | Paste tool cannot submit — newlines rejected, control chars stripped, danger linter on every paste; search queries redacted and visible in the transcript; no execution or file tools; review-before-run gate on every suggested command |
 | Solo-dev scope creep (5 platforms + server + LLM) | v1 gated on desktop + LLM + sync; sync ships file-based first so the server is cuttable; mobile is explicitly non-blocking; pre-authorized cut lines live in this document, not in a crunch-time decision |
 
-**Deliberately not built (v1):** SFTP browser, port-forwarding UI, ProxyJump editor (import only), tmux integration, Mosh, OIDC on the sync server, LLM tool use, terminal tabs-within-tabs/splits.
+**Deliberately not built (v1):** SFTP browser, port-forwarding UI, ProxyJump editor (import only), tmux integration, Mosh, OIDC on the sync server, LLM tools beyond §6.3's two (no execution, no file access), terminal tabs-within-tabs/splits.
 
 ---
 
 ## 10. Open questions
 
-1. **Naming:** "Ghossht" trades on Ghostty's brand while (correctly) not shipping on libghostty at launch — though the embedded `ssh` (gho-**ssh**-t) is genuinely clever and, as a personal tool, the proximity is harmless. Candidates, roughly in order of preference:
-   - **Séance** — you summon remote machines and talk to them; captures both the SSH sessions and the LLM chat in one metaphor. Keeps the ghost theme without borrowing Ghostty's name.
-   - **Ghossht** (keep) — ghost + embedded "ssh"; becomes fully apt again if/when M10 lands libghostty.
-   - **Fernweh** — German, "ache for distant places"; *fern* = remote. Poetic fit for a client whose whole job is reaching remote machines.
-   - **Wraith** — ghost theme, short, no Ghostty debt.
-   - **Spuk** — German for a haunting; four letters, punchy.
-   - **Hush** — the sound of "ssh…"; quiet and minimal.
-2. **R3 semantics:** confirm whether "Linux → two screens" meant literally Linux desktop or small/mobile screens; the implementation supports both via `layoutMode`, only the platform default changes.
-3. **Windows priority:** the research says Windows users are plentiful but Flutter desktop is weakest there — is Windows a v1 blocker or a fast-follow?
-4. **Sync server language:** Dart (one language, shared code) vs Go (conventional choice for tiny static binaries) — proposal says Dart; cheap to revisit before M6.
-5. **Mosh/persistent sessions:** Echo (a direct competitor) ships SSH+Mosh; users notice on flaky links and mobile. Post-v1 candidate worth tracking.
+1. **R3 semantics:** confirm whether "Linux → two screens" meant literally Linux desktop or small/mobile screens; the implementation supports both via `layoutMode`, only the platform default changes.
+2. **Windows priority:** the research says Windows users are plentiful but Flutter desktop is weakest there — is Windows a v1 blocker or a fast-follow?
+3. **Sync server language:** Dart (one language, shared code) vs Go (conventional choice for tiny static binaries) — proposal says Dart; cheap to revisit before M7.
+4. **Mosh/persistent sessions:** Echo (a direct competitor) ships SSH+Mosh; users notice on flaky links and mobile. Post-v1 candidate worth tracking.
+
+(Naming is decided — **Séance**, see the decision log. The GitHub repository is still named `Ghossht` until renamed in the repo settings.)
 
 ---
 
