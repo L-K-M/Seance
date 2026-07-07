@@ -1,8 +1,16 @@
 # Ghossht — Implementation Proposal
 
-**Status:** Draft for discussion · **Date:** 2026-07-07
+**Status:** Accepted (stack approved) · **Date:** 2026-07-07
 
-Ghossht is a relatively simple cross-platform SSH client: a two-pane desktop app (server list with online/offline indicators on the left, terminal sessions on the right), configurable servers with password or private-key auth, an optional self-hostable sync server, and optional LLM assistance. This document proposes an architecture, explains the trade-offs (including an honest assessment of the libghostty idea), and lays out a milestone roadmap.
+Ghossht is a relatively simple cross-platform SSH client for personal use: a two-pane desktop app (server list with online/offline indicators on the left, terminal sessions on the right), configurable servers with password or private-key auth, an optional self-hostable sync server, and built-in LLM assistance. This document proposes an architecture, explains the trade-offs (including an honest assessment of the libghostty idea), and lays out a milestone roadmap.
+
+**Decision log**
+
+| Date | Decision |
+|---|---|
+| 2026-07-07 | Stack approved: Flutter/Dart as proposed (§4). |
+| 2026-07-07 | Ghossht is a personal, single-user tool. The LLM assistant is a **core, always-on feature** — no off switch, no per-host opt-in (§6). |
+| 2026-07-07 | Name: under discussion — candidates in §10. |
 
 ---
 
@@ -14,7 +22,7 @@ Ghossht is a relatively simple cross-platform SSH client: a two-pane desktop app
 | R2 | Server configuration | Host, port, user; auth via password **or** private key. |
 | R3 | Two-screen navigation | The two panes become two screens with back/forward navigation (see note below). |
 | R4 | Sync (optional) | Self-hostable server, started with Docker; desktops and mobile sync server configs. |
-| R5 | LLM integration (optional) | Prompt → terminal command (reviewed before execution); sidebar chat with terminal-session context. |
+| R5 | LLM integration (core) | Prompt → terminal command (reviewed before execution); sidebar chat with terminal-session context. Always on — this is a single-user personal tool. |
 
 **Note on R3:** the original idea says "Linux: two-pane layout switches to two screens". This proposal implements it as one *adaptive layout*: wide window → two panes; narrow window → two screens with back/forward navigation. A per-platform default (`auto | twoPane | stacked`) lets Linux default to the stacked two-screen mode if that literal reading is intended — it is the same code path either way, and it is exactly what mobile needs later. This is a one-line configuration decision, not an architectural one.
 
@@ -199,7 +207,13 @@ Before any server exists: **encrypted vault export/import** — one file (Argon2
 
 ## 6. LLM integration (R5)
 
-**Posture: BYOK-only, off by default, physically separable.** The lesson from prior art is unambiguous — Warp's default-on "Active AI" caused a public backlash; iTerm2 ships AI as a separate plugin so the terminal has no code path to the network. Ghossht compiles the LLM layer behind a feature flag / separate module so the privacy claim is verifiable, and exposes a per-host setting: `off / prompt-only / scrollback-allowed`, default **off**.
+**Posture: core, always-on assistant in a single-user personal tool.** Ghossht is built for one user on their own machines, so the multi-tenant privacy scaffolding that public terminal products need (per-host opt-in, off switches, feature-flag separability) is deliberately dropped — the assistant is a first-class part of the app, always available.
+
+What stays are the guardrails that protect the *user* from remote machines and from model mistakes — these are not backlash insurance, they are correctness:
+
+- **Review-before-run stays absolute.** Generated commands are inserted editable into the prompt line; Enter executes. This matches the original product idea ("a prompt that can be turned into a command that can be executed") and is the only defense that works against both model error and prompt injection.
+- **Scrollback is untrusted input.** A compromised or malicious remote server can embed instructions in command output (indirect prompt injection — OWASP's #1 AI risk in 2026, exploited in the wild). The chat therefore has no tools in v1, and any command it suggests goes through the same review gate.
+- **Secret redaction stays on by default** — it protects your own keys and tokens from leaving the machine toward a cloud provider, which matters regardless of audience size. It is one global toggle (not per-host ceremony), and running against local Ollama makes the question moot entirely.
 
 ### 6.1 Provider layer
 
@@ -218,9 +232,9 @@ Configured as named modes `{provider, base_url, model, api_key_ref}` (Wave Termi
 
 ### 6.3 Feature 2 — sidebar chat with session context
 
-- Context is explicit and visible via a **context chip**: `none / last command block / last ~200 lines / selection`. "Last command block" uses OSC 133 shell-integration marks where available — precise extraction instead of raw line counts.
-- **Everything outbound passes a secret-redaction pass** (Warp-style regex set: cloud keys, tokens, JWTs, private-key blocks; user-extensible) and a **"what was sent" inspector** builds trust.
-- **Scrollback is untrusted input.** Indirect prompt injection is OWASP's #1 AI risk in 2026 and exploited in the wild — a malicious server can embed instructions in command output. Therefore: the chat has **no tools in v1**, and any command it suggests goes through the same review-before-run gate as Feature 1.
+- The sidebar is always available next to the active session, and session context is included **by default**: the last command block (via OSC 133 shell-integration marks where available — precise extraction instead of raw line counts), widening to the last ~200 lines or a selection with one click. The **context chip** remains as an affordance showing *what* is being sent, not whether.
+- **Everything outbound passes the secret-redaction pass** (Warp-style regex set: cloud keys, tokens, JWTs, private-key blocks; user-extensible), and a **"what was sent" inspector** shows exactly what left the machine.
+- Code blocks in chat replies get an "insert into prompt" button that routes through the same review-before-run gate as Feature 1 (see posture above — the chat has no tools in v1).
 
 ### 6.4 Costs (BYOK, indicative)
 
@@ -235,14 +249,14 @@ Prompt→command on a Haiku-tier model: ≈ CHF 0.70–1/month at ~30 commands/d
 - [ ] Agent-first auth; OS keystore holds only the vault master key; XChaCha20-Poly1305 vault; Argon2id passphrase fallback
 - [ ] Vault recovery path specified (passphrase nudge + export file); no silent total-loss path
 - [ ] Sync: client-side E2E, HKDF-separated verifier, versioned protocol, login rate limiting, external review of the crypto package before GA
-- [ ] LLM: off by default, BYOK, redaction on all outbound context, no tools for the chat, review-before-run gate, feature-flag separability
+- [ ] LLM: BYOK, default-on secret redaction of all outbound context, no tools for the chat in v1, review-before-run gate on every generated command; scrollback treated as untrusted input
 - [ ] Terminal as attack surface: enable libghostty-vt-style paste-safety validation (bracketed-paste hijacking), constrain OSC 52 clipboard writes and title spoofing from remote servers
 
 ---
 
 ## 8. Roadmap
 
-v1 = **desktop + sync**. LLM and mobile are post-v1 and can slip without blocking release.
+v1 = **desktop + LLM assistant + sync**. The assistant is core (decision log) and moves ahead of the sync server; the sync server remains cuttable from v1 because the file-based sync v0 covers multi-device until it ships. Mobile is post-v1.
 
 | Milestone | Scope | Exit criterion |
 |---|---|---|
@@ -251,10 +265,10 @@ v1 = **desktop + sync**. LLM and mobile are post-v1 and can slip without blockin
 | **M2 — Terminal end-to-end** (weeks 4–7) | Vendored xterm.dart behind `TerminalEngine`, password auth, one live session, resize, copy/paste, TOFU dialog + HOST KEY CHANGED block, keyboard-interactive prompts | vim/htop usable; pathological-output benchmark (`yes`, `cat` a large file) meets a stated latency budget |
 | **M3 — Core hardening** (weeks 7–11) | Private-key auth (incl. passphrase-protected files), ssh-agent, `~/.ssh/config` import, multi-session tabs, reconnect/backoff, ProbeService with tri-state indicator, per-device keypair generation + `ssh-copy-id` | All R1/R2 features complete on all three desktops |
 | **M4 — Packaging + CI** (weeks 11–14) | GitHub Actions: signed/notarized dmg, msi, AppImage + Flatpak; sshd test matrix in CI; first external testers | One-command release build for all three desktops |
-| **M5 — Sync v0** (weeks 14–16) | Encrypted vault export/import file, mnemonic key UX — no server | Two devices exchange config via a git repo |
-| **M6 — Sync server** (weeks 16–20) | Dart single binary + SQLite + Docker image, 7 versioned endpoints, LWW client engine, pinned-host-key sync, rate-limited login; self-hoster beta | `docker run` → two desktops syncing E2E-encrypted records |
-| **M7 — v1.0 desktop** (weeks 20–24) | Polish, docs, website; Homebrew/winget/Flathub | Public release |
-| **M8 — LLM** (post-v1, ~4 weeks) | Provider layer, prompt→command with danger linter, sidebar chat with context chips + redaction + inspector | Feature-flagged, off by default |
+| **M5 — LLM assistant** (weeks 14–17) | Provider layer (Anthropic + OpenAI-compatible), prompt→command with danger linter + review gate, always-available sidebar chat with default session context, redaction + inspector | Daily-drivable assistant against a cloud key and local Ollama |
+| **M6 — Sync v0** (weeks 17–19) | Encrypted vault export/import file, mnemonic key UX — no server | Two devices exchange config via a git repo |
+| **M7 — Sync server** (weeks 19–23) | Dart single binary + SQLite + Docker image, 7 versioned endpoints, LWW client engine, pinned-host-key sync, rate-limited login | `docker run` → two desktops syncing E2E-encrypted records |
+| **M8 — v1.0 desktop** (weeks 23–26) | Polish, docs; Homebrew/winget/Flathub if wanted | v1 in daily use on all three desktops |
 | **M9 — Mobile beta** (post-v1, ~6–8 weeks) | iOS/Android from the same codebase. Week 1 is a hard gate: soft-keyboard/IME/ctrl-esc input prototype. Reconnect-as-normal session model (designed in M3) carries the app-suspend lifecycle | TestFlight/Play beta |
 | **M10 — libghostty adoption** (opportunistic) | When libghostty-vt tags a release and flterm matures past 0.0.x: second `TerminalEngine` backend, validated by the conformance rig, shipped behind a setting | Grid-level conformance with the xterm.dart backend |
 
@@ -270,7 +284,7 @@ v1 = **desktop + sync**. LLM and mobile are post-v1 and can slip without blockin
 | DIY security surfaces (TOFU store, vault, sync crypto) | Zero custom primitives — libsodium + OWASP Argon2id params + Bitwarden/Atuin designs copied exactly; shared crypto package with test vectors; external review before sync GA |
 | Mobile terminal input UX (the classic mobile-terminal failure mode) | Hard 1-week input prototype gate at the start of M9 before any store-release investment |
 | Prompt injection via scrollback | No tools for the chat in v1; review-before-run gate on every suggested command; redaction + bounded, visible context |
-| Solo-dev scope creep (5 platforms + server + LLM) | v1 gated on desktop+sync only; sync ships file-based first so the server is cuttable; LLM and mobile are explicitly non-blocking; pre-authorized cut lines live in this document, not in a crunch-time decision |
+| Solo-dev scope creep (5 platforms + server + LLM) | v1 gated on desktop + LLM + sync; sync ships file-based first so the server is cuttable; mobile is explicitly non-blocking; pre-authorized cut lines live in this document, not in a crunch-time decision |
 
 **Deliberately not built (v1):** SFTP browser, port-forwarding UI, ProxyJump editor (import only), tmux integration, Mosh, OIDC on the sync server, LLM tool use, terminal tabs-within-tabs/splits.
 
@@ -278,7 +292,13 @@ v1 = **desktop + sync**. LLM and mobile are post-v1 and can slip without blockin
 
 ## 10. Open questions
 
-1. **Naming:** "Ghossht" trades on Ghostty's brand while (correctly) not shipping on libghostty at launch. Worth a deliberate decision before public release.
+1. **Naming:** "Ghossht" trades on Ghostty's brand while (correctly) not shipping on libghostty at launch — though the embedded `ssh` (gho-**ssh**-t) is genuinely clever and, as a personal tool, the proximity is harmless. Candidates, roughly in order of preference:
+   - **Séance** — you summon remote machines and talk to them; captures both the SSH sessions and the LLM chat in one metaphor. Keeps the ghost theme without borrowing Ghostty's name.
+   - **Ghossht** (keep) — ghost + embedded "ssh"; becomes fully apt again if/when M10 lands libghostty.
+   - **Fernweh** — German, "ache for distant places"; *fern* = remote. Poetic fit for a client whose whole job is reaching remote machines.
+   - **Wraith** — ghost theme, short, no Ghostty debt.
+   - **Spuk** — German for a haunting; four letters, punchy.
+   - **Hush** — the sound of "ssh…"; quiet and minimal.
 2. **R3 semantics:** confirm whether "Linux → two screens" meant literally Linux desktop or small/mobile screens; the implementation supports both via `layoutMode`, only the platform default changes.
 3. **Windows priority:** the research says Windows users are plentiful but Flutter desktop is weakest there — is Windows a v1 blocker or a fast-follow?
 4. **Sync server language:** Dart (one language, shared code) vs Go (conventional choice for tiny static binaries) — proposal says Dart; cheap to revisit before M6.
