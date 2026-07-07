@@ -1,0 +1,27 @@
+# Launcher icons for every platform, generated from the one vector-of-truth
+# master image (media-sources/seance-icon.png, 1254×1254). The generated icon
+# files are committed with the platform folders; re-run after changing the
+# master:
+#
+#   cd app/seance_app && dart run flutter_launcher_icons
+#
+# Linux has no generator here: the desktop icon comes from a .desktop file on
+# installed systems, which Séance doesn't ship yet.
+flutter_launcher_icons:
+  image_path: "../../media-sources/seance-icon.png"
+  android: true
+  # Adaptive icons (API 26+) crop the foreground to the safe zone; the dark
+  # backdrop matches the image's own background so the crop blends in. Legacy
+  # mipmaps for older launchers come from image_path.
+  adaptive_icon_background: "#17120e"
+  adaptive_icon_foreground: "../../media-sources/seance-icon.png"
+  ios: true
+  # iOS rejects app icons with an alpha channel.
+  remove_alpha_ios: true
+  macos:
+    generate: true
+    image_path: "../../media-sources/seance-icon.png"
+  windows:
+    generate: true
+    image_path: "../../media-sources/seance-icon.png"
+    icon_size: 256

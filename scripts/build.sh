@@ -7,9 +7,8 @@
 #   server — sync server as a native binary (dart compile exe) → build/seance-sync
 #   docker — sync-server image (packages/seance_sync_server/Dockerfile, build
 #            context = repo root) → seance-sync:local
-#   app    — Flutter desktop app for THIS host (linux/macos/windows); the
-#            platform folder is generated on first use (`flutter create`, the
-#            once-per-checkout step from README.md)
+#   app    — Flutter desktop app for THIS host (linux/macos/windows); platform
+#            folders are committed (missing ones are regenerated as a fallback)
 #   apk    — Android APK (needs flutter + an Android SDK)
 #
 # Usage:
@@ -18,6 +17,10 @@
 #                                    # infeasible target into an error, not a skip)
 #   scripts/build.sh --debug app     # debug-mode Flutter builds (server/docker
 #                                    # have no debug variant; flag ignored there)
+#
+# Every produced file (server binary, .app bundle, APK, …) is also copied into
+# dist/ at the repo root — one folder with the final artifacts — and on macOS
+# dist/ is opened in the Finder when anything landed there.
 #
 # Exit status is non-zero if any requested target fails to build. Targets that
 # simply can't build on this host (no dart/flutter/docker, no Android SDK) are
@@ -73,6 +76,19 @@ have() { command -v "$1" >/dev/null 2>&1; }
 declare -a RESULTS=()
 record() { RESULTS+=("$1"); }   # "server: built -> …" | "app: skipped (…)" | "apk: FAILED"
 
+# Collect a finished artifact into dist/ (file or directory). The staged copy
+# is what the summary points at — one folder with everything this run built.
+DIST="$ROOT/dist"
+STAGED=0
+stage() {
+  local src="$1" name="${2:-$(basename "$1")}"
+  mkdir -p "$DIST"
+  rm -rf "${DIST:?}/$name"
+  cp -R "$src" "$DIST/$name" || return 1
+  STAGED=$((STAGED + 1))
+  echo "-- staged dist/$name"
+}
+
 # Was a given target explicitly named on the command line?
 was_named() {
   [[ $EXPLICIT -eq 1 ]] || return 1
@@ -116,7 +132,8 @@ build_server() {
   mkdir -p build
   echo "-- dart compile exe → $exe"
   if dart compile exe packages/seance_sync_server/bin/seance_sync_server.dart -o "$exe"; then
-    record "server: built -> $exe"
+    stage "$exe"
+    record "server: built -> dist/$(basename "$exe")"
   else
     echo "!! server: dart compile exe failed" >&2
     record "server: FAILED (compile)"; return 1
@@ -141,8 +158,9 @@ build_docker() {
 }
 
 # ---------------------------------------------------------------------------
-# The Flutter app needs its platform folder, which is deliberately not
-# committed (README.md / AGENTS.md §3): generate it on first use.
+# The platform folders are committed (they carry the app name, icons, and
+# entitlements — AGENTS.md §3); regenerating here is only a fallback for a
+# deleted folder, and such a regenerated folder loses those customizations.
 ensure_platform() {
   local platform="$1"
   [[ -d "app/seance_app/$platform" ]] && return 0
@@ -164,7 +182,29 @@ build_app() {
   [[ "$PROFILE" == "debug" ]] && mode_flag="--debug"
   echo "-- flutter build $HOST ${mode_flag}"
   if ( cd app/seance_app && flutter pub get && flutter build "$HOST" $mode_flag ); then
-    record "app: built ($HOST, $PROFILE) -> app/seance_app/build/$HOST/"
+    # Stage the final product; the nested output path differs per platform
+    # (and per arch on linux), so glob for it.
+    local cfg="Release" out=""
+    [[ "$PROFILE" == "debug" ]] && cfg="Debug"
+    case "$HOST" in
+      macos)
+        out=$(ls -d app/seance_app/build/macos/Build/Products/"$cfg"/*.app 2>/dev/null | head -1)
+        [[ -n "$out" ]] && stage "$out"
+        ;;
+      linux)
+        out=$(ls -d app/seance_app/build/linux/*/"$PROFILE"/bundle 2>/dev/null | head -1)
+        [[ -n "$out" ]] && stage "$out" "seance-linux"
+        ;;
+      windows)
+        out=$(ls -d app/seance_app/build/windows/*/runner/"$cfg" 2>/dev/null | head -1)
+        [[ -n "$out" ]] && stage "$out" "seance-windows"
+        ;;
+    esac
+    if [[ -n "$out" ]]; then
+      record "app: built ($HOST, $PROFILE) -> dist/"
+    else
+      record "app: built ($HOST, $PROFILE) — product not found to stage"
+    fi
   else
     echo "!! app: flutter build $HOST failed" >&2
     record "app: FAILED (flutter build $HOST)"; return 1
@@ -201,7 +241,8 @@ build_apk() {
   if ( cd app/seance_app && flutter pub get && flutter build apk $mode_flag ); then
     local apk
     apk="$(ls app/seance_app/build/app/outputs/flutter-apk/*.apk 2>/dev/null | head -1)"
-    record "apk: built ($PROFILE)${apk:+ -> $apk}"
+    [[ -n "$apk" ]] && stage "$apk" "seance.apk"
+    record "apk: built ($PROFILE)${apk:+ -> dist/seance.apk}"
   else
     echo "!! apk: flutter build apk failed" >&2
     record "apk: FAILED (flutter build apk)"; return 1
@@ -222,5 +263,11 @@ done
 
 echo "Summary"
 for line in "${RESULTS[@]}"; do echo "  $line"; done
+
+# One folder with everything this run produced; reveal it on a Mac.
+if [[ "$STAGED" -gt 0 ]]; then
+  echo "  artifacts: $DIST"
+  if [[ "$(uname -s)" == "Darwin" ]]; then open "$DIST"; fi
+fi
 
 exit "$FAILED"

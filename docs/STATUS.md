@@ -51,9 +51,10 @@ _Last updated: 2026-07-07 — initial full implementation._
    (`$SSH_AUTH_SOCK` / `\\.\pipe\openssh-ssh-agent`) that signs via a custom
    `SSHKeyPair`, or resolve keys from the agent at the app layer and pass them as
    `privateKey` credentials. This is the power-user gap.
-2. **Run the app for real.** Generate platform folders, build for Linux/macOS,
-   drive a live SSH session, confirm resize + TOFU + assistant end-to-end. No
-   GUI/build toolchain was available in the build environment.
+2. **Run the app for real.** Build for Linux/macOS (platform folders are now
+   committed), drive a live SSH session, confirm resize + TOFU + assistant
+   end-to-end. First real runs exist on macOS and Android; a full end-to-end
+   pass is still open.
 3. **Honor the redaction toggle.** `AppSettings.redactionEnabled` is persisted
    but `ChatController` always redacts (safe default). Wire the setting through
    (e.g. a pass-through redactor when disabled).
@@ -85,6 +86,12 @@ tabs-within-tabs/splits, OIDC on the sync server, libghostty terminal backend
 - Release/build/deploy tooling is in place and aligned with the sibling repos:
   `scripts/release.sh` (pubspec-lockstep bump + `v*` tag →
   `.github/workflows/release.yml` publishes server binaries + the GHCR image),
-  `scripts/build.sh` (all local targets), `./update.sh` (compose redeploy).
+  `scripts/build.sh` (all local targets, staged into `dist/`), `./update.sh`
+  (compose redeploy).
+- Flutter platform folders are now committed, carrying the `Séance` app name,
+  launcher icons from `media-sources/seance-icon.png`, and the macOS
+  entitlements (incl. the keychain-access-groups fix for the -34018 startup
+  failure). The sync server serves the icon as `/favicon.ico` plus a tiny
+  landing page at `/`.
 - SQLite storage in the server needs `libsqlite3` at runtime; the Docker image
   installs `libsqlite3-0` and `bin/` sets a loader override for `.so.0`.

@@ -23,5 +23,8 @@ dependencies:
 
 dev_dependencies:
   flutter_lints: ^5.0.0
+  # Regenerates every platform's launcher icon from media-sources/seance-icon.png
+  # (config in flutter_launcher_icons.yaml): dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.0
   flutter_test:
     sdk: flutter

@@ -73,6 +73,24 @@ void main() {
       expect(status, 200);
     });
 
+    test('landing page and favicon are served for browsers', () async {
+      final handler = makeServer().handler;
+      final home = await handler(
+          Request('GET', Uri.parse('http://localhost/')));
+      expect(home.statusCode, 200);
+      expect(home.headers['content-type'], contains('text/html'));
+      expect(await home.readAsString(), contains('Séance sync server'));
+
+      final icon = await handler(
+          Request('GET', Uri.parse('http://localhost/favicon.ico')));
+      expect(icon.statusCode, 200);
+      expect(icon.headers['content-type'], 'image/png');
+      final bytes = await icon.read().expand((b) => b).toList();
+      // PNG magic bytes — the embedded base64 decoded to a real image.
+      expect(bytes.length, greaterThan(1000));
+      expect(bytes.sublist(0, 4), [0x89, 0x50, 0x4E, 0x47]);
+    });
+
     test('register returns a token and rejects duplicates', () async {
       final c = TestClient(makeServer().handler);
       final (s1, b1) = await c.send('POST', '/v1/register',

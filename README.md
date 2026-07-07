@@ -85,9 +85,9 @@ dart pub get
 dart analyze packages/seance_protocol packages/seance_core packages/seance_sync_server
 dart test    packages/seance_protocol packages/seance_core packages/seance_sync_server
 
-# Flutter app
+# Flutter app (platform folders are committed; icons regenerate via
+# `dart run flutter_launcher_icons` from media-sources/seance-icon.png)
 cd app/seance_app
-flutter create --platforms=linux,macos,windows,android,ios --project-name seance_app .  # once, adds platform folders
 flutter pub get && flutter analyze && flutter test
 flutter run -d linux    # or macos / windows / a device
 

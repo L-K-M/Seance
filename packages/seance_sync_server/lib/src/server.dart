@@ -7,6 +7,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
 import 'config.dart';
+import 'favicon.dart';
 import 'rate_limiter.dart';
 import 'storage.dart';
 
@@ -30,6 +31,12 @@ class SyncServer {
   Handler get handler {
     final router = Router()
       ..get('/healthz', (Request r) => Response.ok('ok'))
+      // A browser hitting the server sees what it is instead of a 404 (the
+      // API itself lives under /v1/); the favicon is embedded in the binary.
+      ..get('/', (Request r) => Response.ok(_landingPage,
+          headers: {'content-type': 'text/html; charset=utf-8'}))
+      ..get('/favicon.ico', (Request r) => Response.ok(faviconPng,
+          headers: {'content-type': 'image/png'}))
       ..post('/v1/register', _register)
       ..post('/v1/prelogin', _prelogin)
       ..post('/v1/login', _login)
@@ -221,6 +228,23 @@ class SyncServer {
         ApiError(code: code, message: message).toJson(),
         status: status,
       );
+
+  static const _landingPage = '''
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Séance sync server</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
+</head>
+<body style="font-family: system-ui, sans-serif; margin: 3em auto; max-width: 34em;">
+<h1>Séance sync server</h1>
+<p>A breach-tolerant blob store for the <strong>Séance</strong> SSH client:
+it holds only end-to-end encrypted records and can decrypt nothing.
+Configure this server's URL in the app's sync settings.</p>
+</body>
+</html>
+''';
 
   static bool _constantTimeEquals(String a, String b) {
     final ab = utf8.encode(a);

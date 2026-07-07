@@ -2,6 +2,9 @@
 .dart_tool/
 .packages
 build/
+
+# scripts/build.sh stages final artifacts here
+dist/
 .pub-cache/
 .pub/
 pubspec_overrides.yaml

@@ -9,5 +9,5 @@ Quick reminders:
 - No Dart/Flutter is pre-installed here — see AGENTS.md §1 to install them.
 - Analyze/test the pure-Dart packages with explicit paths, never bare at the
   repo root (it would try to build the Flutter app): `dart test packages/seance_protocol packages/seance_core packages/seance_sync_server`.
-- The app is `app/seance_app` (Flutter); generate platform folders with
-  `flutter create` before running.
+- The app is `app/seance_app` (Flutter); its platform folders are committed
+  (they carry the app name, icons, and macOS entitlements — see AGENTS.md §3).

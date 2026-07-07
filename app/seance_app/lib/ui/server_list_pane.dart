@@ -26,11 +26,9 @@ class ServerListPane extends StatelessWidget {
             onPressed: () => _importConfig(context, state),
           ),
           IconButton(
-            tooltip: 'Settings',
+            tooltip: 'Sync & settings',
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ),
+            onPressed: () => _openSettings(context),
           ),
         ],
       ),
@@ -62,6 +60,12 @@ class ServerListPane extends StatelessWidget {
         icon: const Icon(Icons.add),
         label: const Text('Add server'),
       ),
+    );
+  }
+
+  static void _openSettings(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const SettingsScreen()),
     );
   }
 
@@ -196,6 +200,15 @@ class _EmptyState extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 4),
             const Text('Add one, or import your ~/.ssh/config.'),
+            const SizedBox(height: 16),
+            // The tooltip-only gear above is invisible on touch; a fresh
+            // install (especially on a phone) needs a visible path to the
+            // sync-server setup.
+            OutlinedButton.icon(
+              onPressed: () => ServerListPane._openSettings(context),
+              icon: const Icon(Icons.settings_outlined),
+              label: const Text('Sync & settings'),
+            ),
           ],
         ),
       ),

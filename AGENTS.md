@@ -75,13 +75,23 @@ dart test    packages/seance_protocol packages/seance_core packages/seance_sync_
 ```bash
 export PATH=/opt/flutter/bin:$PATH
 cd app/seance_app
-# Platform folders (android/ios/linux/macos/windows) are NOT committed — generate once:
-flutter create --platforms=linux,macos,windows,android,ios --project-name seance_app .
 flutter pub get
 flutter analyze          # must be clean
 flutter test             # widget tests (TOFU dialog)
 flutter run -d linux     # needs GTK/clang/ninja for a Linux desktop build
 ```
+
+The platform folders (android/ios/linux/macos/windows) ARE committed — they
+carry real configuration: the display name (`Séance` — AndroidManifest label,
+macOS `PRODUCT_NAME`), the macOS entitlements (network client, user-selected
+files, and the `keychain-access-groups` entry flutter_secure_storage needs —
+without it the first Keychain read fails with -34018 and the app cannot
+start), and the launcher icons. Icons regenerate from
+`media-sources/seance-icon.png` via `dart run flutter_launcher_icons` (config
+in `app/seance_app/flutter_launcher_icons.yaml`); the server favicon is
+embedded in `packages/seance_sync_server/lib/src/favicon.dart` (regeneration
+recipe in its header). Bundle ids are `com.lkm.seance_app` (Android) /
+`com.lkm.seanceApp` (Apple).
 
 **Sync server as a native binary (works without Docker):**
 
