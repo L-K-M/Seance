@@ -14,16 +14,18 @@ void main() {
   runApp(const SeanceApp());
 }
 
-/// Exposes [AppState] to the widget tree. The instance itself never changes;
-/// widgets listen to it with [ListenableBuilder] for reactive rebuilds.
+/// Exposes [AppState] to the widget tree. The instance itself never changes
+/// once initialized; widgets listen to it with [ListenableBuilder] for
+/// reactive rebuilds. [state] is null only during bootstrap, before any
+/// widget that calls [of] exists.
 class AppScope extends InheritedWidget {
-  final AppState state;
+  final AppState? state;
   const AppScope({super.key, required this.state, required super.child});
 
   static AppState of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<AppScope>();
-    assert(scope != null, 'AppScope not found in context');
-    return scope!.state;
+    assert(scope?.state != null, 'AppScope not found (or not initialized yet)');
+    return scope!.state!;
   }
 
   @override
@@ -31,22 +33,43 @@ class AppScope extends InheritedWidget {
 }
 
 class SeanceApp extends StatelessWidget {
-  const SeanceApp({super.key});
+  const SeanceApp({super.key, @visibleForTesting this.initOverride});
+
+  /// Test seam: replaces [_BootstrapState._init], whose platform-channel
+  /// calls never complete in the widget-test environment.
+  final Future<AppState> Function()? initOverride;
 
   @override
-  Widget build(BuildContext context) => const _Bootstrap();
+  Widget build(BuildContext context) => _Bootstrap(initOverride: initOverride);
 }
 
 /// Initializes services asynchronously, then installs the app shell and wires
 /// the host-key / keyboard-interactive dialog hooks.
 class _Bootstrap extends StatefulWidget {
-  const _Bootstrap();
+  const _Bootstrap({this.initOverride});
+  final Future<AppState> Function()? initOverride;
   @override
   State<_Bootstrap> createState() => _BootstrapState();
 }
 
 class _BootstrapState extends State<_Bootstrap> {
-  late final Future<AppState> _future = _init();
+  AppState? _state;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  Future<void> _start() async {
+    try {
+      final state = await (widget.initOverride ?? _init)();
+      if (mounted) setState(() => _state = state);
+    } catch (e) {
+      if (mounted) setState(() => _error = e);
+    }
+  }
 
   Future<AppState> _init() async {
     final services = await AppServices.initialize();
@@ -70,44 +93,37 @@ class _BootstrapState extends State<_Bootstrap> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<AppState>(
-      future: _future,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return _shell(Scaffold(
-            body: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text('Failed to start Séance:\n${snapshot.error}'),
-              ),
-            ),
-          ));
-        }
-        if (!snapshot.hasData) {
-          return _shell(const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          ));
-        }
-        // AppScope must wrap the MaterialApp, not sit inside `home:`: pushed
-        // routes (Settings) build under the Navigator, so an AppScope below
-        // `home:` is invisible to them and AppScope.of blows up (a grey
-        // screen in release builds).
-        return AppScope(
-          state: snapshot.data!,
-          child: _shell(const AdaptiveShell()),
-        );
-      },
+    // ONE MaterialApp for every bootstrap phase — only `home:` changes as
+    // init progresses. Replacing the whole MaterialApp per phase would move
+    // the global navigatorKey between Navigators mid-frame, which corrupts
+    // the tree in release builds (the app freezes on the last-drawn frame).
+    //
+    // AppScope is injected via `builder`, which wraps the NAVIGATOR — so
+    // pushed routes (Settings) resolve AppScope.of too, which an AppScope
+    // inside `home:` would not provide.
+    final Widget home;
+    if (_error != null) {
+      home = Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text('Failed to start Séance:\n$_error'),
+          ),
+        ),
+      );
+    } else if (_state == null) {
+      home = const Scaffold(body: Center(child: CircularProgressIndicator()));
+    } else {
+      home = const AdaptiveShell();
+    }
+    return MaterialApp(
+      title: 'Séance',
+      navigatorKey: navigatorKey,
+      theme: SeanceTheme.light(),
+      darkTheme: SeanceTheme.dark(),
+      themeMode: ThemeMode.system,
+      builder: (context, child) => AppScope(state: _state, child: child!),
+      home: home,
     );
   }
-
-  /// The one MaterialApp used in every bootstrap phase, so the theme and
-  /// navigator wiring live in a single place.
-  Widget _shell(Widget home) => MaterialApp(
-        title: 'Séance',
-        navigatorKey: navigatorKey,
-        theme: SeanceTheme.light(),
-        darkTheme: SeanceTheme.dark(),
-        themeMode: ThemeMode.system,
-        home: home,
-      );
 }
