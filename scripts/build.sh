@@ -240,6 +240,14 @@ build_app() {
           if ditto "$out" "/Applications/Séance.app"; then
             INSTALLED="/Applications/Séance.app"
             record "app: installed -> /Applications/Séance.app"
+            # Replacing a bundle in place leaves LaunchServices with the OLD
+            # registration for the path (e.g. a renamed CFBundleExecutable);
+            # it then refuses to open the app with error -10810 even though
+            # the bundle runs fine. Force a re-registration on every install.
+            LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+            if [[ -x "$LSREG" ]]; then
+              "$LSREG" -f "$INSTALLED" >/dev/null 2>&1 || true
+            fi
             # Post-install sanity: surface the known "can't be opened" causes
             # here, instead of leaving Finder's generic refusal as the only
             # signal.
