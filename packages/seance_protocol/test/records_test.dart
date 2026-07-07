@@ -28,7 +28,7 @@ void main() {
     });
 
     test('HostKey fingerprint + known_hosts line', () {
-      final k = HostKey(
+      final k = HostKey.fromPublicKey(
         host: 'h.example.com',
         port: 22,
         type: 'ssh-ed25519',
@@ -38,13 +38,17 @@ void main() {
       expect(k.fingerprintSha256, startsWith('SHA256:'));
       expect(k.toKnownHostsLine(),
           'h.example.com ssh-ed25519 ${k.publicKeyBase64}');
+
+      // A fingerprint-only key (the shape the SSH library gives us at connect
+      // time) has a different fingerprint and no expandable known_hosts line.
       final k2 = HostKey(
           host: 'h.example.com',
           port: 22,
           type: 'ssh-ed25519',
-          publicKeyBase64: 'DIFFERENTKEY',
+          fingerprintSha256: 'SHA256:completelyDifferentFingerprint',
           pinnedAt: 2);
       expect(k.conflictsWith(k2), isTrue);
+      expect(k2.toKnownHostsLine(), isNull);
     });
   });
 

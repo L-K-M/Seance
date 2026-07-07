@@ -113,16 +113,38 @@ void main() {
       expect(RecoveryKey.decode(messy), equals(key));
     });
 
-    test('detects a single-character corruption', () {
-      final key = secureRandomBytes(32);
-      final code = RecoveryKey.encode(key);
-      final chars = code.replaceAll('-', '').split('');
-      // Corrupt the first symbol to a different valid symbol.
-      chars[0] = chars[0] == '7' ? '8' : '7';
-      expect(
-        () => RecoveryKey.decode(chars.join()),
-        throwsA(isA<FormatException>()),
-      );
+    test('rejects a corrupted checksum symbol (deterministic)', () {
+      // Fixed key so this never flakes on a checksum collision.
+      final key = List<int>.generate(32, (i) => (i * 7 + 3) % 256);
+      final code = RecoveryKey.encode(key).replaceAll('-', '');
+      final chars = code.split('');
+      // Flip the final (checksum) character: the body is unchanged, so the
+      // recomputed checksum can never match — always caught.
+      final last = chars.length - 1;
+      chars[last] = chars[last] == '7' ? '8' : '7';
+      expect(() => RecoveryKey.decode(chars.join()),
+          throwsA(isA<FormatException>()));
+    });
+
+    test('catches essentially all single body-character typos', () {
+      const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+      final key = List<int>.generate(32, (i) => (i * 7 + 3) % 256);
+      final code = RecoveryKey.encode(key).replaceAll('-', '');
+      var detected = 0;
+      var trials = 0;
+      // Substitute the first body symbol with every other symbol.
+      for (final c in alphabet.split('')) {
+        if (c == code[0]) continue;
+        trials++;
+        final corrupted = c + code.substring(1);
+        try {
+          RecoveryKey.decode(corrupted);
+        } on FormatException {
+          detected++;
+        }
+      }
+      // A 10-bit checksum misses ~1/1024, so all 31 substitutions are caught.
+      expect(detected, trials);
     });
   });
 }

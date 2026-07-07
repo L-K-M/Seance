@@ -16,13 +16,17 @@ import 'package:crypto/crypto.dart' as classic;
 class RecoveryKey {
   static const String _alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
+  /// Number of trailing checksum symbols. Two Crockford symbols give ~10 bits,
+  /// so a single mistyped character is missed only ~1 in 1024 — enough to catch
+  /// realistic transcription errors.
+  static const int _checksumLength = 2;
+
   /// Encode arbitrary bytes (typically the 32-byte master key) to a code.
   static String encode(List<int> bytes) {
     final data = Uint8List.fromList(bytes);
     final symbols = _toBase32(data);
-    final checksum = _checksumSymbol(data);
-    final all = symbols + checksum;
-    return _group(all);
+    final checksum = _checksum(data);
+    return _group(symbols + checksum);
   }
 
   /// Decode a recovery code back to bytes, tolerating spaces, dashes, and case.
@@ -36,13 +40,13 @@ class RecoveryKey {
         .replaceAll('O', '0')
         .replaceAll('I', '1')
         .replaceAll('L', '1');
-    if (cleaned.isEmpty) {
-      throw const FormatException('Empty recovery code');
+    if (cleaned.length <= _checksumLength) {
+      throw const FormatException('Recovery code too short');
     }
-    final body = cleaned.substring(0, cleaned.length - 1);
-    final checksum = cleaned.substring(cleaned.length - 1);
+    final body = cleaned.substring(0, cleaned.length - _checksumLength);
+    final checksum = cleaned.substring(cleaned.length - _checksumLength);
     final bytes = _fromBase32(body);
-    if (_checksumSymbol(bytes) != checksum) {
+    if (_checksum(bytes) != checksum) {
       throw const FormatException('Recovery code checksum failed');
     }
     return bytes;
@@ -85,9 +89,13 @@ class RecoveryKey {
     return Uint8List.fromList(out);
   }
 
-  static String _checksumSymbol(Uint8List data) {
+  static String _checksum(Uint8List data) {
     final digest = classic.sha256.convert(data).bytes;
-    return _alphabet[digest.first % 32];
+    final sb = StringBuffer();
+    for (var i = 0; i < _checksumLength; i++) {
+      sb.write(_alphabet[digest[i] % 32]);
+    }
+    return sb.toString();
   }
 
   static String _group(String s) {
