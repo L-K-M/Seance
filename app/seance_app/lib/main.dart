@@ -34,16 +34,7 @@ class SeanceApp extends StatelessWidget {
   const SeanceApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Séance',
-      navigatorKey: navigatorKey,
-      theme: SeanceTheme.light(),
-      darkTheme: SeanceTheme.dark(),
-      themeMode: ThemeMode.system,
-      home: const _Bootstrap(),
-    );
-  }
+  Widget build(BuildContext context) => const _Bootstrap();
 }
 
 /// Initializes services asynchronously, then installs the app shell and wires
@@ -83,26 +74,40 @@ class _BootstrapState extends State<_Bootstrap> {
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return Scaffold(
+          return _shell(Scaffold(
             body: Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Text('Failed to start Séance:\n${snapshot.error}'),
               ),
             ),
-          );
+          ));
         }
         if (!snapshot.hasData) {
-          return const Scaffold(
+          return _shell(const Scaffold(
             body: Center(child: CircularProgressIndicator()),
-          );
+          ));
         }
-        final state = snapshot.data!;
+        // AppScope must wrap the MaterialApp, not sit inside `home:`: pushed
+        // routes (Settings) build under the Navigator, so an AppScope below
+        // `home:` is invisible to them and AppScope.of blows up (a grey
+        // screen in release builds).
         return AppScope(
-          state: state,
-          child: const AdaptiveShell(),
+          state: snapshot.data!,
+          child: _shell(const AdaptiveShell()),
         );
       },
     );
   }
+
+  /// The one MaterialApp used in every bootstrap phase, so the theme and
+  /// navigator wiring live in a single place.
+  Widget _shell(Widget home) => MaterialApp(
+        title: 'Séance',
+        navigatorKey: navigatorKey,
+        theme: SeanceTheme.light(),
+        darkTheme: SeanceTheme.dark(),
+        themeMode: ThemeMode.system,
+        home: home,
+      );
 }

@@ -28,3 +28,8 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.0
   flutter_test:
     sdk: flutter
+
+flutter:
+  # Bundles the Material Icons font — without it every Icons.* glyph renders
+  # as the missing-glyph "?" box.
+  uses-material-design: true

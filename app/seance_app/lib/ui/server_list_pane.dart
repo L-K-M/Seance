@@ -199,7 +199,8 @@ class _EmptyState extends StatelessWidget {
             Text('No servers yet',
                 style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 4),
-            const Text('Add one, or import your ~/.ssh/config.'),
+            const Text('Add one, or import your ~/.ssh/config.',
+                textAlign: TextAlign.center),
             const SizedBox(height: 16),
             // The tooltip-only gear above is invisible on touch; a fresh
             // install (especially on a phone) needs a visible path to the
