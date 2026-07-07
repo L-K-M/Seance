@@ -12,6 +12,7 @@ Séance is a relatively simple cross-platform SSH client for personal use: a two
 | 2026-07-07 | Séance is a personal, single-user tool. The LLM assistant is a **core, always-on feature** — no off switch, no per-host opt-in (§6). |
 | 2026-07-07 | Project named **Séance** (was Ghossht) — you summon remote machines and talk to them. Unaccented `seance` for identifiers, packages, and binaries; sync server binary `seance-sync`. |
 | 2026-07-07 | The sidebar chat gets exactly two tools: **web search** and **paste-into-prompt** (which can never submit) — §6.3. |
+| 2026-07-07 | **Implemented.** The monorepo (`packages/` + `app/`) realizes this design; see the root [README](README.md). Two deliberate v1 deviations, documented there: the client crypto uses the pure-Dart `cryptography` package (XChaCha20-Poly1305 + Argon2id) instead of libsodium FFI, and the local store is JSON files rather than SQLite/drift (SQLite is used by the sync server). Both sit behind interfaces and can be swapped without touching callers. |
 
 ---
 

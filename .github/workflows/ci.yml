@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  dart:
+    name: Pure-Dart packages (analyze + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      # The SQLite storage test loads libsqlite3 at runtime.
+      - name: Install libsqlite3
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0
+      - name: Resolve workspace
+        run: dart pub get
+      - name: Analyze
+        run: >-
+          dart analyze
+          packages/seance_protocol
+          packages/seance_core
+          packages/seance_sync_server
+      - name: Test
+        run: >-
+          dart test
+          packages/seance_protocol
+          packages/seance_core
+          packages/seance_sync_server
+
+  flutter:
+    name: Flutter app (analyze + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Resolve app dependencies
+        working-directory: app/seance_app
+        run: flutter pub get
+      - name: Analyze
+        working-directory: app/seance_app
+        run: flutter analyze
+      - name: Test
+        working-directory: app/seance_app
+        run: flutter test
+
+  docker:
+    name: Sync server Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f packages/seance_sync_server/Dockerfile -t seance-sync:ci .
