@@ -90,8 +90,10 @@ tabs-within-tabs/splits, OIDC on the sync server, libghostty terminal backend
   (compose redeploy).
 - Flutter platform folders are now committed, carrying the `Séance` app name,
   launcher icons from `media-sources/seance-icon.png`, and the macOS
-  entitlements (incl. the keychain-access-groups fix for the -34018 startup
-  failure). The sync server serves the icon as `/favicon.ico` plus a tiny
-  landing page at `/`.
+  entitlements. The -34018 keystore startup failure is fixed by using the
+  legacy login keychain (`usesDataProtectionKeychain: false`) — not by a
+  keychain entitlement, which would stop ad-hoc-signed builds from launching.
+  The sync server serves the icon as `/favicon.ico` plus a tiny landing page
+  at `/`.
 - SQLite storage in the server needs `libsqlite3` at runtime; the Docker image
   installs `libsqlite3-0` and `bin/` sets a loader override for `.so.0`.

@@ -14,7 +14,17 @@ class MasterKeyManager {
   static const _keyName = 'seance.vault.masterKey.v1';
 
   MasterKeyManager([FlutterSecureStorage? storage])
-      : _storage = storage ?? const FlutterSecureStorage();
+      : _storage = storage ??
+            const FlutterSecureStorage(
+              // macOS: use the legacy login keychain, not the iOS-style
+              // data-protection keychain. The latter requires a
+              // keychain-access-groups entitlement — a *restricted*
+              // entitlement that macOS only honors for team-signed builds, so
+              // an ad-hoc "sign to run locally" app either throws -34018 at
+              // the first read (entitlement absent) or refuses to launch at
+              // all (entitlement present but unvalidated).
+              mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+            );
 
   Future<bool> hasKeystoreKey() async =>
       (await _storage.read(key: _keyName)) != null;

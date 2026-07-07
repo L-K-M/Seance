@@ -86,10 +86,11 @@ carry real configuration: the display name (`Séance` — AndroidManifest label;
 macOS `CFBundleName`/`CFBundleDisplayName`, while `PRODUCT_NAME` stays ASCII
 `Seance` because codesign fails on accented file names — scripts/build.sh
 renames the signed bundle to `Séance.app` when staging/installing), the macOS
-entitlements (network client, user-selected files, and the
-`keychain-access-groups` entry flutter_secure_storage needs — without it the
-first Keychain read fails with -34018 and the app cannot start), and the
-launcher icons. Icons regenerate from
+entitlements (network client + user-selected files; deliberately NO
+`keychain-access-groups` — that restricted entitlement blocks ad-hoc-signed
+builds from launching, so the keystore uses the legacy login keychain via
+`MacOsOptions(usesDataProtectionKeychain: false)` instead, which also avoids
+the -34018 error of the data-protection keychain), and the launcher icons. Icons regenerate from
 `media-sources/seance-icon.png` via `dart run flutter_launcher_icons` (config
 in `app/seance_app/flutter_launcher_icons.yaml`); the server favicon is
 embedded in `packages/seance_sync_server/lib/src/favicon.dart` (regeneration
