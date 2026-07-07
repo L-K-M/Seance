@@ -24,6 +24,9 @@
 # reported as skipped, and only fail the run when you named them explicitly.
 set -uo pipefail
 
+# Absolute path to this script — usage() must find it after the cd below, even
+# when invoked via a relative path from a subdirectory.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
@@ -33,7 +36,7 @@ EXPLICIT=0
 
 usage() {
   # Print the leading comment block (the file header), minus the shebang.
-  awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "${BASH_SOURCE[0]}"
+  awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$SELF"
   exit "${1:-0}"
 }
 

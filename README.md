@@ -76,7 +76,8 @@ native sync-server binary, the Docker image, the Flutter desktop app, and the
 Android APK) and prints one summary; the individual commands:
 
 ```bash
-# Everything at once (skips targets whose toolchain is missing)
+# Everything this host can build (missing toolchains are skipped; explicitly
+# named targets are mandatory and fail instead)
 scripts/build.sh                # or: scripts/build.sh server docker
 
 # Pure-Dart packages (crypto, SSH/TOFU, sync, LLM, server)

@@ -19,6 +19,13 @@ COMPOSE_FILE=packages/seance_sync_server/docker-compose.yml
 
 branch="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 
+# The rebuild uses the checked-out tree, so an explicitly named branch must
+# actually be checked out — syncing it alone would redeploy the old branch.
+if [[ "$branch" != "$(git rev-parse --abbrev-ref HEAD)" ]]; then
+    echo "==> Switching to '$branch'…"
+    git checkout "$branch"
+fi
+
 echo "==> Syncing '$branch' from the remote…"
 if command -v gh >/dev/null 2>&1; then
     if ! gh repo sync --branch "$branch"; then

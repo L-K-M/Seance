@@ -305,7 +305,8 @@ v1 = **desktop + LLM assistant + sync**. The assistant is core (decision log) an
 3. **Sync server language:** Dart (one language, shared code) vs Go (conventional choice for tiny static binaries) — proposal says Dart; cheap to revisit before M7.
 4. **Mosh/persistent sessions:** Echo (a direct competitor) ships SSH+Mosh; users notice on flaky links and mobile. Post-v1 candidate worth tracking.
 
-(Naming is decided — **Séance**, see the decision log. The GitHub repository is still named `Ghossht` until renamed in the repo settings.)
+(Naming is decided — **Séance**, see the decision log. The GitHub repository
+has been renamed accordingly: `L-K-M/Seance`.)
 
 ---
 

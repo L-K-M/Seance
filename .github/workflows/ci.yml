@@ -9,9 +9,11 @@ on:
 permissions:
   contents: read
 
-# Cancel an in-progress run when a *PR branch* is pushed again — but never cancel a
-# push to main, or that commit is left with a permanently "cancelled" status (masking
-# breakage and putting holes in CI-status bisection).
+# Cancel an in-progress run when a *PR branch* is pushed again — but never cancel an
+# in-progress run on main, or that commit is left with a permanently "cancelled"
+# status (masking breakage and putting holes in CI-status bisection). GitHub can
+# still supersede a *queued* main run with a newer queued one — only the running
+# run is protected.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
