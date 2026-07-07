@@ -240,6 +240,21 @@ build_app() {
           if ditto "$out" "/Applications/Séance.app"; then
             INSTALLED="/Applications/Séance.app"
             record "app: installed -> /Applications/Séance.app"
+            # Post-install sanity: surface the known "can't be opened" causes
+            # here, instead of leaving Finder's generic refusal as the only
+            # signal.
+            if ! codesign --verify --deep --strict "$INSTALLED" 2>/dev/null; then
+              echo "!! app: $INSTALLED fails codesign verification — it will not launch." >&2
+              record "app: WARNING — installed app fails codesign verify"
+            fi
+            if codesign -d --entitlements - "$INSTALLED" 2>/dev/null \
+                | grep -q keychain-access-groups; then
+              echo "!! app: the installed build still carries the restricted" >&2
+              echo "   keychain-access-groups entitlement, which blocks ad-hoc-signed" >&2
+              echo "   launches — the checkout or build is stale. Fix with:" >&2
+              echo "     git pull && (cd app/seance_app && flutter clean) && scripts/build.sh --install" >&2
+              record "app: WARNING — stale build with keychain-access-groups"
+            fi
           else
             record "app: install FAILED (ditto)"; return 1
           fi
