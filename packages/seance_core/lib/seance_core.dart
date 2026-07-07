@@ -21,6 +21,7 @@ export 'src/store/stores.dart';
 
 export 'src/sync/local_record_store.dart';
 export 'src/sync/sync_engine.dart';
+export 'src/sync/sync_coordinator.dart';
 export 'src/sync/http_sync_client.dart';
 
 export 'src/llm/provider.dart';
