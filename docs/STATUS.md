@@ -80,7 +80,11 @@ tabs-within-tabs/splits, OIDC on the sync server, libghostty terminal backend
 (swap behind `TerminalEngine` when it tags a stable release).
 
 ## Housekeeping
-- The GitHub repository is still named **`Ghossht`**; rename to `seance` in repo
-  settings (only the owner can do this; it changes the clone URL).
+- ~~The GitHub repository is still named `Ghossht`~~ — renamed; the remote is
+  `L-K-M/Seance` now.
+- Release/build/deploy tooling is in place and aligned with the sibling repos:
+  `scripts/release.sh` (pubspec-lockstep bump + `v*` tag →
+  `.github/workflows/release.yml` publishes server binaries + the GHCR image),
+  `scripts/build.sh` (all local targets), `./update.sh` (compose redeploy).
 - SQLite storage in the server needs `libsqlite3` at runtime; the Docker image
   installs `libsqlite3-0` and `bin/` sets a loader override for `.so.0`.

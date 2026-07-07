@@ -24,6 +24,10 @@ Flip `SEANCE_OPEN_REGISTRATION=true` only long enough to enrol your devices,
 then set it back to `false` and restart. Put a TLS-terminating reverse proxy
 (Caddy, nginx, Traefik) in front — the server speaks plain HTTP by design.
 
+To update a running deployment (pull the latest code, rebuild the image,
+recreate the container in one step), run `./update.sh` from the repository
+root.
+
 ## Run without Docker
 
 ```bash

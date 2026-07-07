@@ -1,0 +1,124 @@
+name: Release
+
+# Tag a version (scripts/release.sh X.Y.Z --push) to test, build, and publish
+# the deployable part of Séance: sync-server binaries for each desktop platform
+# and a Docker image on GHCR. The Flutter app is not published here — it's a
+# personal build (scripts/build.sh; the platform folders aren't committed).
+
+on:
+  push:
+    tags: ['v*']        # e.g. v0.2.0
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write       # create the GitHub Release
+  packages: write       # push the image to GHCR
+
+jobs:
+  # Gate the release on the pure-Dart suite — it covers everything this
+  # workflow ships (protocol, core, server). A tag on a broken commit must not
+  # publish a release. (The Flutter app has its own CI job on main/PRs and no
+  # artifact here, so it doesn't gate.)
+  test:
+    name: Test (release gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      # The SQLite storage test loads libsqlite3 at runtime.
+      - name: Install libsqlite3
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0
+      - name: Resolve workspace
+        run: dart pub get
+      - name: Analyze
+        run: >-
+          dart analyze
+          packages/seance_protocol
+          packages/seance_core
+          packages/seance_sync_server
+      - name: Test
+        run: >-
+          dart test
+          packages/seance_protocol
+          packages/seance_core
+          packages/seance_sync_server
+
+  # Sync-server binary per desktop platform (`dart compile exe` is host-native;
+  # there is no cross-compilation). Linux/macOS need libsqlite3 at runtime.
+  native:
+    name: Server binary (${{ matrix.platform }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: macos-latest
+            platform: macos-arm64
+          - os: windows-latest
+            platform: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Resolve workspace
+        run: dart pub get
+      - name: Compile
+        shell: bash
+        run: |
+          mkdir -p dist
+          exe=seance-sync
+          if [ "${{ runner.os }}" = "Windows" ]; then exe=seance-sync.exe; fi
+          dart compile exe packages/seance_sync_server/bin/seance_sync_server.dart -o "dist/$exe"
+      - name: Package
+        shell: bash
+        run: tar -czf seance-sync-${{ matrix.platform }}.tar.gz -C dist .
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: seance-sync-${{ matrix.platform }}.tar.gz
+
+  # Container image to GitHub Container Registry. Deployments build from source
+  # (./update.sh / docker compose --build); this image is the release artifact
+  # for everyone else.
+  docker:
+    name: Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          # Build context is the repo root so the pub workspace resolves
+          # (same contract as the local `docker build -f … .`).
+          context: .
+          file: packages/seance_sync_server/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -5,10 +5,22 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: the jobs only need to read the repo.
+permissions:
+  contents: read
+
+# Cancel an in-progress run when a *PR branch* is pushed again — but never cancel a
+# push to main, or that commit is left with a permanently "cancelled" status (masking
+# breakage and putting holes in CI-status bisection).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dart:
     name: Pure-Dart packages (analyze + test)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -35,6 +47,7 @@ jobs:
   flutter:
     name: Flutter app (analyze + test)
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # first run downloads the Flutter toolchain
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -53,6 +66,7 @@ jobs:
   docker:
     name: Sync server Docker image
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build image

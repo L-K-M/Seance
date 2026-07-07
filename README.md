@@ -5,6 +5,8 @@ server list + terminal on the desktop, adaptive two-screen navigation on narrow
 screens, an optional self-hostable sync server, and a built-in LLM assistant.
 *You summon remote machines and talk to them.*
 
+**Latest release:** v<!-- version -->0.1.0<!-- /version --> · [Download](https://github.com/L-K-M/Seance/releases/latest)
+
 This repository implements the design in **[PROPOSAL.md](PROPOSAL.md)** (read
 that for the full rationale, alternatives considered, and roadmap).
 
@@ -69,9 +71,14 @@ release (proposal §2, M10).
 ## Build & test
 
 Requires the Dart SDK (3.12+) for the pure-Dart packages and the Flutter SDK
-for the app.
+for the app. `scripts/build.sh` builds every target this host can build (the
+native sync-server binary, the Docker image, the Flutter desktop app, and the
+Android APK) and prints one summary; the individual commands:
 
 ```bash
+# Everything at once (skips targets whose toolchain is missing)
+scripts/build.sh                # or: scripts/build.sh server docker
+
 # Pure-Dart packages (crypto, SSH/TOFU, sync, LLM, server)
 dart pub get
 dart analyze packages/seance_protocol packages/seance_core packages/seance_sync_server
@@ -86,6 +93,24 @@ flutter run -d linux    # or macos / windows / a device
 # Sync server
 docker compose -f packages/seance_sync_server/docker-compose.yml up -d --build
 ```
+
+## Releasing & deploying
+
+`scripts/release.sh` (a stub over the shared
+[release-tool](https://github.com/L-K-M/release-tool) engine) bumps the
+`version:` in all four pubspecs in lockstep, keeps the app lockfile and the
+version line at the top of this README in step, commits, and tags `v<version>`
+— pushing that tag triggers `.github/workflows/release.yml`, which tests, then
+publishes the sync-server binaries and the
+`ghcr.io/l-k-m/seance` Docker image as the GitHub Release.
+
+```bash
+scripts/release.sh 0.2.0          # bump + commit, tag v0.2.0
+scripts/release.sh 0.2.0 --push   # …also push branch + tag (CI then publishes)
+```
+
+On a server that runs the sync server via Docker Compose, `./update.sh` pulls
+the latest code and rebuilds + recreates the stack in one step.
 
 ## Verification
 
@@ -118,5 +143,4 @@ See [PROPOSAL.md §7](PROPOSAL.md) for the full checklist and open questions.
 
 ## Name
 
-Séance — you summon remote machines and talk to them. (The GitHub repository is
-still named `Ghossht` until renamed in its settings.)
+Séance — you summon remote machines and talk to them.

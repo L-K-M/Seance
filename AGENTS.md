@@ -99,6 +99,20 @@ docker build -f packages/seance_sync_server/Dockerfile -t seance-sync .
 CI runs all of the above (`.github/workflows/ci.yml`): dart analyze+test,
 flutter analyze+test, and the Docker build.
 
+**Helper scripts** (family conventions shared with the sibling repos):
+
+- `scripts/build.sh` — builds every target this host can build (`server`,
+  `docker`, `app`, `apk`); skips targets whose toolchain is missing, fails only
+  on targets you name explicitly. `--help` prints the contract.
+- `scripts/release.sh X.Y.Z [--push]` — stub over the shared
+  [release-tool](https://github.com/L-K-M/release-tool) engine (`lkm-release`):
+  bumps all four pubspecs in lockstep (+ app lockfile + README version line),
+  commits, tags `v<version>`; the pushed tag triggers
+  `.github/workflows/release.yml` (tests gate; publishes sync-server binaries
+  and the GHCR Docker image). Runs on macOS (BSD sed), like the engine.
+- `./update.sh` — on a deployment host: pull the latest code, then
+  `docker compose up -d --build` the sync server.
+
 ---
 
 ## 4. How things were verified (so you can re-verify)
