@@ -1,0 +1,27 @@
+# Dart / Pub
+.dart_tool/
+.packages
+build/
+.pub-cache/
+.pub/
+pubspec_overrides.yaml
+
+# Flutter
+app/seance_app/.flutter-plugins
+app/seance_app/.flutter-plugins-dependencies
+app/seance_app/.dart_tool/
+app/seance_app/build/
+app/seance_app/ios/Pods/
+app/seance_app/android/.gradle/
+app/seance_app/**/GeneratedPluginRegistrant.*
+
+# Server runtime data
+packages/seance_sync_server/data/
+*.sqlite
+*.sqlite-journal
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store

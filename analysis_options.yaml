@@ -1,0 +1,13 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+  errors:
+    # Keep the build honest without being pedantic about doc formatting.
+    todo: ignore
+
+linter:
+  rules:
+    - prefer_final_locals
+    - unawaited_futures
