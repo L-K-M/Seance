@@ -4,8 +4,13 @@
 // future. If not, the values below would default to using the project name when this becomes a
 // 'flutter create' template.
 
-// The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = Séance
+// The application's name. Deliberately ASCII: codesign chokes on accented
+// characters in the product/executable file names ("code object is not signed
+// at all" on the app's own executable). The user-visible name IS "Séance" —
+// via CFBundleName/CFBundleDisplayName in Info.plist — and scripts/build.sh
+// stages/installs the signed bundle under the file name "Séance.app"
+// (renaming a signed .app is safe: the wrapper name isn't part of the seal).
+PRODUCT_NAME = Seance
 
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.lkm.seanceApp

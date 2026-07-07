@@ -79,6 +79,8 @@ Android APK) and prints one summary; the individual commands:
 # Everything this host can build (missing toolchains are skipped; explicitly
 # named targets are mandatory and fail instead)
 scripts/build.sh                # or: scripts/build.sh server docker
+scripts/build.sh --install     # build + install the app for this host
+                               # (macOS: /Applications/Séance.app) and reveal it
 
 # Pure-Dart packages (crypto, SSH/TOFU, sync, LLM, server)
 dart pub get

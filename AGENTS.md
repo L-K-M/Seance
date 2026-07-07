@@ -82,11 +82,14 @@ flutter run -d linux     # needs GTK/clang/ninja for a Linux desktop build
 ```
 
 The platform folders (android/ios/linux/macos/windows) ARE committed — they
-carry real configuration: the display name (`Séance` — AndroidManifest label,
-macOS `PRODUCT_NAME`), the macOS entitlements (network client, user-selected
-files, and the `keychain-access-groups` entry flutter_secure_storage needs —
-without it the first Keychain read fails with -34018 and the app cannot
-start), and the launcher icons. Icons regenerate from
+carry real configuration: the display name (`Séance` — AndroidManifest label;
+macOS `CFBundleName`/`CFBundleDisplayName`, while `PRODUCT_NAME` stays ASCII
+`Seance` because codesign fails on accented file names — scripts/build.sh
+renames the signed bundle to `Séance.app` when staging/installing), the macOS
+entitlements (network client, user-selected files, and the
+`keychain-access-groups` entry flutter_secure_storage needs — without it the
+first Keychain read fails with -34018 and the app cannot start), and the
+launcher icons. Icons regenerate from
 `media-sources/seance-icon.png` via `dart run flutter_launcher_icons` (config
 in `app/seance_app/flutter_launcher_icons.yaml`); the server favicon is
 embedded in `packages/seance_sync_server/lib/src/favicon.dart` (regeneration
@@ -113,7 +116,10 @@ flutter analyze+test, and the Docker build.
 
 - `scripts/build.sh` — builds every target this host can build (`server`,
   `docker`, `app`, `apk`); skips targets whose toolchain is missing, fails only
-  on targets you name explicitly. `--help` prints the contract.
+  on targets you name explicitly. Artifacts are staged into `dist/`;
+  `--install` builds the host's app and installs it (macOS:
+  `/Applications/Séance.app`; Linux: `~/.local/opt/seance`), then reveals the
+  installed copy. `--help` prints the contract.
 - `scripts/release.sh X.Y.Z [--push]` — stub over the shared
   [release-tool](https://github.com/L-K-M/release-tool) engine (`lkm-release`):
   bumps all four pubspecs in lockstep (+ app lockfile + README version line),

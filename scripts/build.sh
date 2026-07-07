@@ -17,6 +17,10 @@
 #                                    # infeasible target into an error, not a skip)
 #   scripts/build.sh --debug app     # debug-mode Flutter builds (server/docker
 #                                    # have no debug variant; flag ignored there)
+#   scripts/build.sh --install       # build the app for THIS host and install
+#                                    # it (macOS: /Applications/Séance.app;
+#                                    # Linux: ~/.local/opt/seance), then reveal
+#                                    # the installed copy
 #
 # Every produced file (server binary, .app bundle, APK, …) is also copied into
 # dist/ at the repo root — one folder with the final artifacts — and on macOS
@@ -34,6 +38,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
 PROFILE="release"
+INSTALL=false
 declare -a REQUESTED=()
 EXPLICIT=0
 
@@ -47,11 +52,25 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage 0 ;;
     --debug) PROFILE="debug"; shift ;;
+    --install) INSTALL=true; shift ;;
     server|docker|app|apk) REQUESTED+=("$1"); EXPLICIT=1; shift ;;
     all) REQUESTED=(server docker app apk); EXPLICIT=1; shift ;;
     *) echo "unknown argument: $1" >&2; usage 1 ;;
   esac
 done
+
+# --install is about the host platform's app: with no explicit targets it
+# builds just that (not the whole matrix), and with explicit targets it makes
+# sure `app` is among them.
+if $INSTALL; then
+  if [[ ${#REQUESTED[@]} -eq 0 ]]; then
+    REQUESTED=(app); EXPLICIT=1
+  else
+    found=0
+    for t in "${REQUESTED[@]}"; do [[ "$t" == "app" ]] && found=1; done
+    [[ $found -eq 0 ]] && REQUESTED+=(app)
+  fi
+fi
 
 # Default to all targets; feasibility is decided per-target below.
 if [[ ${#REQUESTED[@]} -eq 0 ]]; then
@@ -189,7 +208,10 @@ build_app() {
     case "$HOST" in
       macos)
         out=$(ls -d app/seance_app/build/macos/Build/Products/"$cfg"/*.app 2>/dev/null | head -1)
-        [[ -n "$out" ]] && stage "$out"
+        # Xcode signs the ASCII "Seance.app" (codesign rejects accented file
+        # names); the user-facing copy is renamed — safe, the wrapper name
+        # isn't part of the signature seal.
+        [[ -n "$out" ]] && stage "$out" "Séance.app"
         ;;
       linux)
         out=$(ls -d app/seance_app/build/linux/*/"$PROFILE"/bundle 2>/dev/null | head -1)
@@ -204,6 +226,39 @@ build_app() {
       record "app: built ($HOST, $PROFILE) -> dist/"
     else
       record "app: built ($HOST, $PROFILE) — product not found to stage"
+    fi
+    if $INSTALL; then
+      if [[ -z "$out" ]]; then
+        echo "!! app: nothing to install (product not found)" >&2
+        record "app: install FAILED (product not found)"; return 1
+      fi
+      case "$HOST" in
+        macos)
+          echo "-- installing /Applications/Séance.app"
+          rm -rf "/Applications/Séance.app"
+          # ditto preserves the signature, resource forks, and permissions.
+          if ditto "$out" "/Applications/Séance.app"; then
+            INSTALLED="/Applications/Séance.app"
+            record "app: installed -> /Applications/Séance.app"
+          else
+            record "app: install FAILED (ditto)"; return 1
+          fi
+          ;;
+        linux)
+          echo "-- installing $HOME/.local/opt/seance"
+          rm -rf "$HOME/.local/opt/seance" && mkdir -p "$HOME/.local/opt"
+          if cp -R "$out" "$HOME/.local/opt/seance"; then
+            INSTALLED="$HOME/.local/opt/seance"
+            record "app: installed -> ~/.local/opt/seance (binary: seance_app)"
+          else
+            record "app: install FAILED (copy)"; return 1
+          fi
+          ;;
+        *)
+          echo "!! app: --install is not supported on $HOST" >&2
+          record "app: install FAILED (unsupported on $HOST)"; return 1
+          ;;
+      esac
     fi
   else
     echo "!! app: flutter build $HOST failed" >&2
@@ -251,6 +306,7 @@ build_apk() {
 
 # ---------------------------------------------------------------------------
 FAILED=0
+INSTALLED=""
 for target in "${REQUESTED[@]}"; do
   case "$target" in
     server) build_server || FAILED=1 ;;
@@ -264,8 +320,17 @@ done
 echo "Summary"
 for line in "${RESULTS[@]}"; do echo "  $line"; done
 
-# One folder with everything this run produced; reveal it on a Mac.
-if [[ "$STAGED" -gt 0 ]]; then
+# Reveal the result: the installed copy when --install ran, else the dist/
+# folder with everything this run produced (macOS only — elsewhere the paths
+# in the summary are the deliverable).
+if [[ -n "$INSTALLED" ]]; then
+  echo "  installed: $INSTALLED"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    open -R "$INSTALLED"          # Finder, with the app selected
+  elif have xdg-open; then
+    xdg-open "$INSTALLED" >/dev/null 2>&1 || true
+  fi
+elif [[ "$STAGED" -gt 0 ]]; then
   echo "  artifacts: $DIST"
   if [[ "$(uname -s)" == "Darwin" ]]; then open "$DIST"; fi
 fi

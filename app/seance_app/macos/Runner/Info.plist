@@ -12,8 +12,12 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<!-- Literal (not $(PRODUCT_NAME)): PRODUCT_NAME must stay ASCII for
+	     codesign, but everything the user sees says Séance. -->
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Séance</string>
+	<key>CFBundleDisplayName</key>
+	<string>Séance</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
