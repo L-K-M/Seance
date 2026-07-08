@@ -36,6 +36,8 @@ class SnippetsPane extends StatelessWidget {
               ),
             ),
             const Divider(height: 1),
+            if (state.commandSuggestions.isNotEmpty)
+              _Suggestions(state: state),
             Expanded(
               child: state.snippets.isEmpty
                   ? const _SnippetsEmpty()
@@ -125,6 +127,65 @@ class SnippetsPane extends StatelessWidget {
       ),
     );
     if (ok == true) await state.deleteSnippet(snippet.id);
+  }
+}
+
+/// Frequently-run commands (from the local, opt-in history) that aren't
+/// snippets yet. Save one to turn it into a real, syncable snippet, or dismiss
+/// it to stop it being suggested.
+class _Suggestions extends StatelessWidget {
+  final AppState state;
+  const _Suggestions({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      color: scheme.surfaceContainerLow,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+            child: Row(
+              children: [
+                Icon(Icons.lightbulb_outline, size: 16, color: scheme.primary),
+                const SizedBox(width: 6),
+                Text('Suggested from your history',
+                    style: Theme.of(context).textTheme.labelMedium),
+              ],
+            ),
+          ),
+          for (final cmd in state.commandSuggestions)
+            ListTile(
+              dense: true,
+              title: Text(cmd,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      const TextStyle(fontFamily: 'monospace', fontSize: 13)),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Save as snippet',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.add, size: 20),
+                    onPressed: () => state.addSuggestionAsSnippet(cmd),
+                  ),
+                  IconButton(
+                    tooltip: 'Dismiss',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => state.dismissSuggestion(cmd),
+                  ),
+                ],
+              ),
+            ),
+          const Divider(height: 1),
+        ],
+      ),
+    );
   }
 }
 

@@ -40,6 +40,7 @@ class _ServerEditorState extends State<_ServerEditor> {
 
   late AuthMethod _auth;
   bool _referenceKeyFile = true;
+  late bool _syncSecret;
   bool _busy = false;
 
   @override
@@ -53,6 +54,9 @@ class _ServerEditorState extends State<_ServerEditor> {
     _auth = e?.authMethod ?? AuthMethod.agent;
     _keyPath.text = e?.identityFilePath ?? '';
     _referenceKeyFile = e?.identityFilePath != null;
+    // New credentials default to syncable (a no-op until the global "sync saved
+    // passwords & keys" is on); existing servers keep their stored choice.
+    _syncSecret = e?.syncSecret ?? true;
   }
 
   @override
@@ -166,6 +170,7 @@ class _ServerEditorState extends State<_ServerEditor> {
             obscureText: true,
             decoration: const InputDecoration(labelText: 'Password'),
           ),
+          _syncSecretToggle(),
         ];
       case AuthMethod.privateKey:
         return [
@@ -198,9 +203,24 @@ class _ServerEditorState extends State<_ServerEditor> {
             decoration: const InputDecoration(
                 labelText: 'Key passphrase (optional)'),
           ),
+          // Only the stored key (not the referenced-file case) is a secret that
+          // could sync.
+          if (!_referenceKeyFile) _syncSecretToggle(),
         ];
     }
   }
+
+  /// Per-server opt-in for including this credential in sync. Gated globally by
+  /// the "Sync saved passwords & keys" setting, so it's a no-op until that's on.
+  Widget _syncSecretToggle() => SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Allow this credential to sync'),
+        subtitle: const Text(
+            'End-to-end encrypted. Also needs sync set up with '
+            '"Sync saved passwords & keys" enabled.'),
+        value: _syncSecret,
+        onChanged: (v) => setState(() => _syncSecret = v),
+      );
 
   static String? _required(String? v) =>
       (v == null || v.trim().isEmpty) ? 'Required' : null;
@@ -241,6 +261,7 @@ class _ServerEditorState extends State<_ServerEditor> {
       identityFilePath: (_auth == AuthMethod.privateKey && _referenceKeyFile)
           ? _keyPath.text.trim()
           : null,
+      syncSecret: _syncSecret,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     );

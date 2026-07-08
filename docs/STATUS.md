@@ -3,7 +3,7 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-07-08 — tiled assistant sidebar, server-list-as-tabs, SSH auth diagnostics._
+_Last updated: 2026-07-08 — automatic sync, opt-in credential sync, mobile key row, command suggestions._
 
 ## Done (implemented + verified)
 
@@ -12,7 +12,7 @@ _Last updated: 2026-07-08 — tiled assistant sidebar, server-list-as-tabs, SSH 
 | `seance_protocol` | Complete. Models (incl. Snippet with `{{placeholder}}` parsing/fill), E2E crypto, records (serverConfig/hostKey/secret/snippet), LWW, sync DTOs. |
 | `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores. |
 | `seance_sync_server` | Complete. 7 endpoints, in-memory + SQLite storage, rate limiting, Dockerfile + compose. |
-| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the tab list (one terminal per server, status dot: green/grey/red + connecting spinner; resizable tiled panes, no terminal title bar in wide mode); right-hand utility panel with Assistant + Snippets tabs (snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends); inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. Default desktop window 1800×1600. Platform folders committed. |
+| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the tab list (one terminal per server, status dot: green/grey/red + connecting spinner; resizable tiled panes, no terminal title bar in wide mode); right-hand utility panel with Assistant + Snippets tabs (snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends); inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. **Automatic sync** runs at startup, after any server/snippet add/edit/delete (debounced), and every 5 min, with a live header/settings status; the "Sync now" button remains. **Credential sync** is opt-in (global toggle × per-server "allow this credential to sync"; E2E-encrypted). On **touch platforms** the terminal shows an on-screen key row (Esc/Tab/Ctrl [sticky]/^C/arrows/Home/End/PgUp/PgDn/`|` `/` `-` `~` + hide-keyboard) and reflows above the soft keyboard. **Command suggestions** (opt-in, local only) surface frequently-run commands in the Snippets tab to save as snippets. Default desktop window 1800×1600. Platform folders committed. |
 | CI | `.github/workflows/ci.yml`: dart analyze+test, flutter analyze+test, docker build. |
 
 ## Test inventory (what proves what)
@@ -80,6 +80,15 @@ _Last updated: 2026-07-08 — tiled assistant sidebar, server-list-as-tabs, SSH 
    only client-side SearXNG/Brave. Add the native path for cloud providers.
 8. **Terminal PTY initial size** defaults to 80×24 until the first layout fires
    `onResize`.
+9. **Command suggestions are keystroke-based.** Capture reconstructs the
+   command line from outbound keystrokes, so it can't tell a shell command from
+   text typed at a no-echo prompt (a password). That's why the feature is
+   opt-in and the stats stay local — only a snippet the user explicitly saves
+   syncs. A precise version needs OSC 133 command-block marks (see item 6).
+10. **Mobile keyboard reflow** relies on `resizeToAvoidBottomInset` +
+    `adjustResize`; the on-screen key row now reserves space above the keyboard.
+    A soft keyboard with a floating/overlay mode may still cover the last row —
+    revisit if it recurs on specific devices.
 
 ### Deliberately deferred (per proposal)
 SFTP browser, port-forwarding UI, ProxyJump execution (import only), Mosh,

@@ -31,4 +31,46 @@ void main() {
     e.injectInput(ctrlU);
     expect(e.pendingInput, '');
   });
+
+  test('onCommand fires with the completed line on Enter, not on interrupt', () {
+    final commands = <String>[];
+    final e = XtermTerminalEngine(onCommand: commands.add);
+
+    e.injectInput('echo hi');
+    e.injectInput('\r');
+    expect(commands, ['echo hi']);
+
+    // A line abandoned with Ctrl-C is not reported as a command.
+    e.injectInput('secret');
+    e.sendKey([0x03]); // Ctrl-C
+    expect(e.pendingInput, '');
+    expect(commands, ['echo hi']);
+  });
+
+  test('sendKey forwards raw bytes to the session input', () async {
+    final e = XtermTerminalEngine();
+    final got = <int>[];
+    final sub = e.userInput.listen(got.addAll);
+    e.sendKey([0x1b, 0x5b, 0x41]); // up arrow
+    await Future<void>.delayed(Duration.zero);
+    expect(got, [0x1b, 0x5b, 0x41]);
+    await sub.cancel();
+  });
+
+  test('an armed Ctrl converts the next typed char to its control code', () async {
+    final e = XtermTerminalEngine();
+    final got = <int>[];
+    final sub = e.userInput.listen(got.addAll);
+
+    e.toggleCtrl();
+    expect(e.ctrlArmed.value, isTrue);
+
+    // Simulate the soft keyboard producing 'c'.
+    e.terminal.onOutput!('c');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(got, [0x03]); // Ctrl-C
+    expect(e.ctrlArmed.value, isFalse); // one-shot: disarms after one key
+    await sub.cancel();
+  });
 }

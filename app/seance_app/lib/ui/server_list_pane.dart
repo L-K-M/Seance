@@ -22,6 +22,11 @@ class ServerListPane extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Séance'),
         actions: [
+          ListenableBuilder(
+            listenable: state,
+            builder: (context, _) =>
+                _SyncIndicator(state: state, onTap: () => _openSettings(context)),
+          ),
           if (state.llmConfigured)
             IconButton(
               tooltip: 'Generate a command (⌘K)',
@@ -140,6 +145,37 @@ class ServerListPane extends StatelessWidget {
         );
       }
     }
+  }
+}
+
+/// A compact header affordance that shows background-sync activity: a spinner
+/// while a round runs, an error badge if the last one failed. Hidden when idle
+/// and healthy (the gear icon already leads to sync). Tapping opens settings.
+class _SyncIndicator extends StatelessWidget {
+  final AppState state;
+  final VoidCallback onTap;
+  const _SyncIndicator({required this.state, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    if (state.syncing) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 14),
+        child: Center(
+          child: SizedBox(
+              width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+        ),
+      );
+    }
+    if (state.lastSyncError != null) {
+      return IconButton(
+        tooltip: 'Last sync failed — open settings',
+        icon: Icon(Icons.cloud_off_outlined,
+            color: Theme.of(context).colorScheme.error),
+        onPressed: onTap,
+      );
+    }
+    return const SizedBox.shrink();
   }
 }
 

@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
@@ -7,6 +9,11 @@ import '../app_state.dart';
 import '../main.dart';
 import 'command_generator.dart';
 import 'sidebar_panel.dart';
+import 'terminal_keyboard_bar.dart';
+
+/// Touch platforms get the on-screen key row (Tab/Ctrl/arrows) and need the
+/// terminal to reflow above the soft keyboard; desktops use a hardware keyboard.
+final bool _isTouchPlatform = Platform.isAndroid || Platform.isIOS;
 
 /// Right pane / second screen: the active server's terminal. The server list is
 /// the tab list, so there is no tab strip here.
@@ -36,12 +43,22 @@ class TerminalPane extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
+        final active = state.activeSession;
+        final showKeyRow =
+            _isTouchPlatform && active != null && active.isConnected;
         return Scaffold(
+          // Reflow the terminal (and the key row) above the soft keyboard.
+          resizeToAvoidBottomInset: true,
           endDrawer: showAssistantAffordance
               ? const Drawer(width: 380, child: SidebarPanel())
               : null,
           appBar: showAppBar ? _appBar(context, state) : null,
-          body: _body(state),
+          body: Column(
+            children: [
+              Expanded(child: _body(state)),
+              if (showKeyRow) TerminalKeyboardBar(engine: active.engine),
+            ],
+          ),
         );
       },
     );

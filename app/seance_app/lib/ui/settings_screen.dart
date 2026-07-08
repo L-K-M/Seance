@@ -24,6 +24,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   late LlmProviderKind _kind;
   late bool _redaction;
+  late bool _autoSync;
+  late bool _syncSecrets;
+  late bool _commandSuggestions;
   bool _saving = false;
   String? _syncStatus;
 
@@ -50,6 +53,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _model.text = s.llmModel;
     _searxng.text = s.searxngUrl ?? '';
     _redaction = s.redactionEnabled;
+    _autoSync = s.autoSync;
+    _syncSecrets = s.syncSecrets;
+    _commandSuggestions = s.commandSuggestions;
     _syncUrl.text = s.syncBaseUrl ?? '';
     _syncUser.text = s.syncUsername ?? '';
   }
@@ -191,11 +197,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: const Text('Save assistant settings'),
           ),
           const Divider(height: 40),
+          _section('Snippets'),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Suggest frequently-used commands'),
+            subtitle: const Text(
+                'Tracks commands you run (on this device only) and offers the '
+                'ones you repeat as snippets. Off by default — capture is '
+                "keystroke-based and can't distinguish a command from a "
+                'password typed at a prompt.'),
+            isThreeLine: true,
+            value: _commandSuggestions,
+            onChanged: (v) {
+              setState(() => _commandSuggestions = v);
+              _persistCommandSuggestions(state);
+            },
+          ),
+          const Divider(height: 40),
           _section('Sync (optional)'),
           const Text(
             'Sync server configs across devices via your self-hosted server. '
             'The passphrase derives the end-to-end key — set it up before '
             'storing secrets you want synced.',
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Sync automatically'),
+            subtitle: const Text(
+                'On startup, after you add/edit/remove a server, and every few '
+                'minutes.'),
+            value: _autoSync,
+            onChanged: (v) {
+              setState(() => _autoSync = v);
+              _persistSyncPrefs(state);
+            },
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Sync saved passwords & keys'),
+            subtitle: const Text(
+                'End-to-end encrypted. Only servers where you enable '
+                '"Allow this credential to sync" are included.'),
+            isThreeLine: true,
+            value: _syncSecrets,
+            onChanged: (v) {
+              setState(() => _syncSecrets = v);
+              _persistSyncPrefs(state);
+            },
           ),
           const SizedBox(height: 8),
           TextField(
@@ -238,6 +287,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: const EdgeInsets.only(top: 12),
               child: Text(_syncStatus!),
             ),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: ListenableBuilder(
+              listenable: state,
+              builder: (context, _) => _SyncStatusLine(state: state),
+            ),
+          ),
         ],
       ),
     );
@@ -307,6 +363,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// Persist the sync preference toggles and (re)start the auto-sync timer.
+  Future<void> _persistSyncPrefs(AppState state) async {
+    final s = state.services.settings;
+    s.autoSync = _autoSync;
+    s.syncSecrets = _syncSecrets;
+    await state.services.saveSettings();
+    state.ensureAutoSyncTimer();
+  }
+
+  /// Persist the command-suggestions toggle and refresh the current list.
+  Future<void> _persistCommandSuggestions(AppState state) async {
+    state.services.settings.commandSuggestions = _commandSuggestions;
+    await state.services.saveSettings();
+    state.refreshSuggestions();
+  }
+
   Future<void> _sync(AppState state, {required bool register}) async {
     setState(() {
       _saving = true;
@@ -326,11 +398,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           passphrase: _syncPass.text,
         );
       }
-      setState(() => _syncStatus = 'Connected. Use "Sync now" to synchronize.');
+      // Enrolment done: start auto-sync and pull immediately.
+      state.ensureAutoSyncTimer();
+      setState(() => _syncStatus = 'Connected. Synchronizing…');
+      if (state.services.settings.autoSync) {
+        await state.syncNow();
+      }
+      if (mounted) setState(() => _syncStatus = 'Connected and synced.');
     } catch (e) {
       setState(() => _syncStatus = 'Failed: $e');
     } finally {
-      setState(() => _saving = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -348,5 +426,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       setState(() => _saving = false);
     }
+  }
+}
+
+/// A live, one-line reflection of the app-wide sync state (also updated by
+/// automatic background syncs, not just the buttons above).
+class _SyncStatusLine extends StatelessWidget {
+  final AppState state;
+  const _SyncStatusLine({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = Theme.of(context).textTheme.bodySmall;
+    if (state.syncing) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+              width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+          const SizedBox(width: 8),
+          Text('Syncing…', style: style),
+        ],
+      );
+    }
+    if (state.lastSyncError != null) {
+      return Text('Last sync failed: ${state.lastSyncError}',
+          style: style?.copyWith(color: scheme.error));
+    }
+    if (state.lastSyncAt != null) {
+      return Text('Last synced ${_ago(state.lastSyncAt!)}.', style: style);
+    }
+    return const SizedBox.shrink();
+  }
+
+  static String _ago(DateTime t) {
+    final d = DateTime.now().difference(t);
+    if (d.inSeconds < 60) return 'just now';
+    if (d.inMinutes < 60) return '${d.inMinutes} min ago';
+    if (d.inHours < 24) return '${d.inHours} h ago';
+    return '${d.inDays} d ago';
   }
 }

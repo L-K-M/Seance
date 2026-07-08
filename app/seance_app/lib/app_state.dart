@@ -71,6 +71,30 @@ class AppState extends ChangeNotifier {
 
   StreamSubscription<Map<String, ProbeStatus>>? _probeSub;
 
+  // --- Sync status / automatic sync ---
+
+  /// True while a sync round is running (drives the header sync indicator).
+  bool syncing = false;
+
+  /// When the last sync round completed successfully, and the last error (if
+  /// the most recent attempt failed). Surfaced in the sync UI.
+  DateTime? lastSyncAt;
+  String? lastSyncError;
+
+  bool _syncQueued = false;
+  Timer? _autoSyncTimer;
+  Timer? _syncDebounce;
+  static const Duration _autoSyncInterval = Duration(minutes: 5);
+  static const Duration _syncDebounceDelay = Duration(seconds: 2);
+
+  // --- Command suggestions (opt-in) ---
+
+  /// Frequently-run commands worth saving as snippets, most-used first. Empty
+  /// unless the feature is enabled in settings. Local only.
+  List<String> commandSuggestions = [];
+  final SecretRedactor _redactor = SecretRedactor();
+  Timer? _statsSaveDebounce;
+
   /// UI-supplied interaction hooks (wired by the root widget so dialogs can be
   /// shown). Default to a safe "deny" if the UI hasn't set them yet.
   HostKeyPrompter? hostKeyPrompter;
@@ -102,12 +126,18 @@ class AppState extends ChangeNotifier {
     await _seedDefaultSnippets();
     snippets = await services.snippetStore.listSnippets();
     await refreshLlmConfigured();
+    _recomputeSuggestions();
     _probeSub = services.probe.statuses.listen((s) {
       statuses = s;
       notifyListeners();
     });
     services.probe.start(servers);
     notifyListeners();
+    // Sync at startup (pull others' changes) and keep a periodic timer going.
+    ensureAutoSyncTimer();
+    if (services.settings.autoSync && services.isSyncConfigured) {
+      unawaited(_autoSync());
+    }
   }
 
   /// Recompute whether the assistant is usable: a key-based provider needs a
@@ -144,6 +174,7 @@ class AppState extends ChangeNotifier {
     servers = await services.configStore.listServers();
     services.probe.updateServers(servers);
     notifyListeners();
+    _scheduleAutoSync();
   }
 
   Future<void> deleteServer(String id) async {
@@ -157,6 +188,7 @@ class AppState extends ChangeNotifier {
     services.probe.updateServers(servers);
     if (activeServerId == id) activeServerId = null;
     notifyListeners();
+    _scheduleAutoSync();
   }
 
   /// Import hosts from an OpenSSH config file's text.
@@ -170,6 +202,7 @@ class AppState extends ChangeNotifier {
     servers = await services.configStore.listServers();
     services.probe.updateServers(servers);
     notifyListeners();
+    _scheduleAutoSync();
     return hosts.length;
   }
 
@@ -191,7 +224,7 @@ class AppState extends ChangeNotifier {
   /// (Re)establish the SSH session for [config], replacing any prior engine.
   Future<void> _connect(ServerConfig config) async {
     final log = SshConnectionLog(onUpdate: notifyListeners);
-    final engine = XtermTerminalEngine();
+    final engine = XtermTerminalEngine(onCommand: _recordCommand);
     final tab = TerminalSession(
       serverId: config.id,
       config: config,
@@ -262,23 +295,157 @@ class AppState extends ChangeNotifier {
     await services.snippetStore.putSnippet(snippet);
     snippets = await services.snippetStore.listSnippets();
     notifyListeners();
+    _scheduleAutoSync();
   }
 
   Future<void> deleteSnippet(String id) async {
     await services.snippetStore.deleteSnippet(id);
     snippets = await services.snippetStore.listSnippets();
     notifyListeners();
+    _scheduleAutoSync();
   }
 
-  /// Run one sync round, then refresh the server and snippet lists from the
-  /// (possibly updated) stores. Returns the outcome for the UI to report.
+  /// Run one sync round manually (the "Sync now" button). Surfaces errors to
+  /// the caller and updates the shared sync status.
   Future<SyncOutcome> syncNow() async {
+    syncing = true;
+    notifyListeners();
+    try {
+      final outcome = await _runSyncAndRefresh();
+      lastSyncError = null;
+      lastSyncAt = DateTime.now();
+      return outcome;
+    } catch (e) {
+      lastSyncError = _shortError(e);
+      rethrow;
+    } finally {
+      syncing = false;
+      notifyListeners();
+    }
+  }
+
+  /// One sync round + refresh of the domain lists from the (possibly updated)
+  /// stores. Shared by manual and automatic sync.
+  Future<SyncOutcome> _runSyncAndRefresh() async {
     final outcome = await services.runSync();
     servers = await services.configStore.listServers();
     snippets = await services.snippetStore.listSnippets();
     services.probe.updateServers(servers);
-    notifyListeners();
+    _recomputeSuggestions();
     return outcome;
+  }
+
+  /// Start (or restart) the periodic auto-sync timer. Safe to call repeatedly —
+  /// e.g. after enrolling in sync or toggling the setting.
+  void ensureAutoSyncTimer() {
+    _autoSyncTimer?.cancel();
+    _autoSyncTimer = null;
+    if (services.settings.autoSync && services.isSyncConfigured) {
+      _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => _autoSync());
+    }
+  }
+
+  /// Queue a debounced background sync after a local edit, so rapid successive
+  /// edits coalesce into one round.
+  void _scheduleAutoSync() {
+    if (!services.settings.autoSync || !services.isSyncConfigured) return;
+    _syncDebounce?.cancel();
+    _syncDebounce = Timer(_syncDebounceDelay, _autoSync);
+  }
+
+  /// Best-effort background sync. Errors are captured into [lastSyncError]
+  /// rather than thrown. If a round is already running, one more is queued so a
+  /// mid-sync edit is never lost.
+  Future<void> _autoSync() async {
+    if (!services.isSyncConfigured) return;
+    if (syncing) {
+      _syncQueued = true;
+      return;
+    }
+    syncing = true;
+    notifyListeners();
+    try {
+      do {
+        _syncQueued = false;
+        await _runSyncAndRefresh();
+        lastSyncError = null;
+        lastSyncAt = DateTime.now();
+      } while (_syncQueued);
+    } catch (e) {
+      lastSyncError = _shortError(e);
+    } finally {
+      syncing = false;
+      notifyListeners();
+    }
+  }
+
+  static String _shortError(Object e) {
+    final s = e.toString();
+    return s.length > 200 ? '${s.substring(0, 200)}…' : s;
+  }
+
+  // --- Command suggestions ---
+
+  /// Fold a submitted command into the local frequency stats and refresh the
+  /// suggestions if they changed. No-op unless the feature is enabled.
+  void _recordCommand(String command) {
+    if (!services.settings.commandSuggestions) return;
+    if (!services.commandStats.record(command)) return;
+    _scheduleStatsSave();
+    _recomputeSuggestions();
+  }
+
+  void _scheduleStatsSave() {
+    _statsSaveDebounce?.cancel();
+    _statsSaveDebounce =
+        Timer(const Duration(seconds: 3), services.saveCommandStats);
+  }
+
+  /// Recompute [commandSuggestions] from the local stats: frequently-run
+  /// commands that aren't already snippets and don't look like they contain a
+  /// secret (belt-and-suspenders — capture is opt-in and local).
+  void _recomputeSuggestions() {
+    List<String> next = const [];
+    if (services.settings.commandSuggestions) {
+      final bodies = {for (final s in snippets) s.body.trim()};
+      next = services.commandStats
+          .suggestions(isExisting: (c) => bodies.contains(c.trim()), limit: 12)
+          .where((c) => !_redactor.wouldRedact(c))
+          .take(6)
+          .toList();
+    }
+    if (!listEquals(next, commandSuggestions)) {
+      commandSuggestions = next;
+      notifyListeners();
+    }
+  }
+
+  /// Re-evaluate suggestions after a settings change (e.g. the feature toggle).
+  void refreshSuggestions() => _recomputeSuggestions();
+
+  /// Promote a suggested command to a real (syncable) snippet.
+  Future<void> addSuggestionAsSnippet(String command) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await saveSnippet(Snippet(
+      id: uuidV4(),
+      title: _snippetTitle(command),
+      body: command,
+      createdAt: now,
+      updatedAt: now,
+    ));
+    _recomputeSuggestions(); // it's now an existing snippet, so it drops off
+  }
+
+  /// Permanently hide a suggestion.
+  Future<void> dismissSuggestion(String command) async {
+    services.commandStats.dismiss(command);
+    await services.saveCommandStats();
+    _recomputeSuggestions();
+  }
+
+  static String _snippetTitle(String command) {
+    final firstLine = command.split('\n').first.trim();
+    return firstLine.length <= 40 ? firstLine : '${firstLine.substring(0, 39)}…';
   }
 
   void focusServer(String serverId) {
@@ -314,6 +481,9 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _probeSub?.cancel();
+    _autoSyncTimer?.cancel();
+    _syncDebounce?.cancel();
+    _statsSaveDebounce?.cancel();
     services.probe.dispose();
     for (final t in sessions.values) {
       t.session?.close();

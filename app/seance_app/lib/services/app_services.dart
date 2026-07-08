@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:seance_core/seance_core.dart';
 
 import 'app_settings.dart';
+import 'command_stats.dart';
 import 'file_stores.dart';
 import 'secure_master_key.dart';
 
@@ -20,6 +21,8 @@ class AppServices {
   final ProbeService probe;
   final MasterKeyManager masterKeys;
   final SettingsStore settingsStore;
+  final CommandStatsStore commandStatsStore;
+  final CommandStats commandStats;
   List<int> vaultKey;
   AppSettings settings;
 
@@ -32,6 +35,8 @@ class AppServices {
     required this.probe,
     required this.masterKeys,
     required this.settingsStore,
+    required this.commandStatsStore,
+    required this.commandStats,
     required this.vaultKey,
     required this.settings,
   });
@@ -48,6 +53,7 @@ class AppServices {
     final vaultStore = FileVaultStore(File(p('vault.json')));
     final hostKeyStore = FileHostKeyStore(File(p('known_hosts.json')));
     final settingsStore = SettingsStore(File(p('settings.json')));
+    final commandStatsStore = CommandStatsStore(File(p('command_stats.json')));
     final settings = await settingsStore.load();
     if (settings.deviceId.isEmpty) {
       settings.deviceId = uuidV4();
@@ -63,12 +69,22 @@ class AppServices {
       probe: ProbeService(),
       masterKeys: masterKeys,
       settingsStore: settingsStore,
+      commandStatsStore: commandStatsStore,
+      commandStats: await commandStatsStore.load(),
       vaultKey: vaultKey,
       settings: settings,
     );
   }
 
   Future<void> saveSettings() => settingsStore.save(settings);
+
+  Future<void> saveCommandStats() => commandStatsStore.save(commandStats);
+
+  /// Whether sync enrolment has happened on this device (a server URL is set).
+  /// The bearer token check in [runSync] is the authoritative gate; this is the
+  /// cheap synchronous check the auto-sync scheduler uses.
+  bool get isSyncConfigured =>
+      settings.syncBaseUrl != null && settings.syncBaseUrl!.isNotEmpty;
 
   /// Re-key the vault to [newKey], re-encrypting secrets referenced by current
   /// configs so nothing is lost. Used by sync enrolment to adopt the shared,
@@ -146,6 +162,8 @@ class AppServices {
       codec: RecordCodec(vaultKey),
       local: InMemoryLocalRecordStore(),
       deviceId: settings.deviceId,
+      syncSecrets: settings.syncSecrets,
+      secretVault: settings.syncSecrets ? vault : null,
     );
     return coordinator.run(client);
   }

@@ -23,6 +23,20 @@ class AppSettings {
   String? syncBaseUrl;
   String? syncUsername;
 
+  /// Sync stored passwords / private keys too (opt-in — they're end-to-end
+  /// encrypted, but syncing them widens their blast radius). Only servers whose
+  /// own [ServerConfig.syncSecret] flag is set are included.
+  bool syncSecrets;
+
+  /// Whether sync runs automatically (on startup, after edits, and on a timer).
+  /// On by default once sync is set up; the manual "Sync now" button always works.
+  bool autoSync;
+
+  /// Track submitted commands locally to suggest frequently-run ones as
+  /// snippets. Off by default: capture is keystroke-based and can't tell a
+  /// shell command from text typed at a no-echo prompt, so the user opts in.
+  bool commandSuggestions;
+
   /// Stable per-device id used in synced records' conflict resolution.
   String deviceId;
 
@@ -40,6 +54,9 @@ class AppSettings {
     this.redactionEnabled = true,
     this.syncBaseUrl,
     this.syncUsername,
+    this.syncSecrets = false,
+    this.autoSync = true,
+    this.commandSuggestions = false,
     this.deviceId = '',
     this.snippetsSeeded = false,
   });
@@ -54,6 +71,9 @@ class AppSettings {
         'redactionEnabled': redactionEnabled,
         if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
         if (syncUsername != null) 'syncUsername': syncUsername,
+        'syncSecrets': syncSecrets,
+        'autoSync': autoSync,
+        'commandSuggestions': commandSuggestions,
         'deviceId': deviceId,
         'snippetsSeeded': snippetsSeeded,
       };
@@ -70,6 +90,9 @@ class AppSettings {
         redactionEnabled: json['redactionEnabled'] as bool? ?? true,
         syncBaseUrl: json['syncBaseUrl'] as String?,
         syncUsername: json['syncUsername'] as String?,
+        syncSecrets: json['syncSecrets'] as bool? ?? false,
+        autoSync: json['autoSync'] as bool? ?? true,
+        commandSuggestions: json['commandSuggestions'] as bool? ?? false,
         deviceId: json['deviceId'] as String? ?? '',
         snippetsSeeded: json['snippetsSeeded'] as bool? ?? false,
       );
