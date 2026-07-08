@@ -5,6 +5,10 @@ class MainFlutterWindow: NSWindow {
   private var menuChannel: FlutterMethodChannel?
 
   override func awakeFromNib() {
+    // Séance is single-window; disabling automatic window tabbing stops AppKit
+    // from injecting a View menu full of tab commands ("Show Tab Bar", etc.).
+    NSWindow.allowsAutomaticWindowTabbing = false
+
     let flutterViewController = FlutterViewController()
     self.contentViewController = flutterViewController
     // Default desktop window size.
