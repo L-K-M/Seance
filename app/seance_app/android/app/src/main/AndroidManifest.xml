@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for the sync client and LLM/network calls. Flutter only adds
+         INTERNET to the debug/profile manifests, so release builds need it
+         declared here explicitly. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="Séance"
         android:name="${applicationName}"

@@ -213,18 +213,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(labelText: 'Vault passphrase'),
           ),
           const SizedBox(height: 8),
-          Row(
+          // Wrap (not Row) so the buttons flow onto multiple lines on narrow
+          // phone screens instead of overflowing off the edge.
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
               OutlinedButton(
                 onPressed: _saving ? null : () => _sync(state, register: true),
                 child: const Text('Register'),
               ),
-              const SizedBox(width: 8),
               OutlinedButton(
                 onPressed: _saving ? null : () => _sync(state, register: false),
                 child: const Text('Log in on this device'),
               ),
-              const Spacer(),
               FilledButton.tonal(
                 onPressed: _saving ? null : () => _syncNow(state),
                 child: const Text('Sync now'),
