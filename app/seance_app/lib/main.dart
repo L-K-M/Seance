@@ -4,6 +4,7 @@ import 'app_state.dart';
 import 'services/app_services.dart';
 import 'theme.dart';
 import 'ui/adaptive_shell.dart';
+import 'ui/app_menus.dart';
 import 'ui/host_key_dialog.dart';
 import 'ui/keyboard_interactive_dialog.dart';
 
@@ -114,7 +115,7 @@ class _BootstrapState extends State<_Bootstrap> {
     } else if (_state == null) {
       home = const Scaffold(body: Center(child: CircularProgressIndicator()));
     } else {
-      home = const AdaptiveShell();
+      home = const AppMenus(child: AdaptiveShell());
     }
     return MaterialApp(
       title: 'Séance',

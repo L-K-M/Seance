@@ -4,9 +4,10 @@ import 'package:seance_core/seance_core.dart';
 import '../app_state.dart';
 
 /// The inline command generator: a focused "describe a task → get one command"
-/// tool, distinct from the chat sidebar. It generates a single command, shows
-/// its explanation and danger, and places it in the active terminal's input
-/// line for review — it never runs anything.
+/// tool, distinct from the chat sidebar. It generates a single command and
+/// places it in the active terminal's input line for review — it never runs
+/// anything. Enter generates, inserts, and closes; the explanation and any
+/// danger are surfaced in a snackbar so the streamlined flow still warns you.
 Future<void> showCommandGenerator(BuildContext context, AppState state) {
   final active = state.activeSession;
   if (active == null || !active.isConnected) {
@@ -32,11 +33,21 @@ class _CommandGeneratorDialog extends StatefulWidget {
 }
 
 class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
-  final _input = TextEditingController();
+  late final TextEditingController _input;
   bool _includeContext = true;
   bool _busy = false;
   String? _error;
-  CommandSuggestion? _result;
+
+  @override
+  void initState() {
+    super.initState();
+    // Prefill with whatever the user has already typed at the prompt but not
+    // yet run, so the generator refines it instead of starting blank.
+    final pending = widget.session.engine.pendingInput.trim();
+    _input = TextEditingController(text: pending);
+    _input.selection =
+        TextSelection(baseOffset: 0, extentOffset: _input.text.length);
+  }
 
   @override
   void dispose() {
@@ -47,10 +58,10 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
   Future<void> _generate() async {
     final request = _input.text.trim();
     if (request.isEmpty || _busy) return;
+    final messenger = ScaffoldMessenger.of(context);
     setState(() {
       _busy = true;
       _error = null;
-      _result = null;
     });
     try {
       final provider = await widget.state.services.buildLlmProvider();
@@ -66,7 +77,18 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
       }
       final suggestion =
           await provider.generateCommand(prompt: redactor.redact(prompt));
-      setState(() => _result = suggestion);
+
+      if (suggestion.command.isEmpty) {
+        // The model declined — stay open and explain why.
+        setState(() => _error = suggestion.explanation.isNotEmpty
+            ? suggestion.explanation
+            : 'The model did not return a command.');
+        return;
+      }
+
+      widget.session.engine.injectInput(suggestion.command);
+      if (mounted) Navigator.of(context).pop();
+      messenger.showSnackBar(_insertedSnack(suggestion));
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -74,12 +96,20 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
     }
   }
 
-  void _insert() {
-    final cmd = _result?.command;
-    if (cmd != null && cmd.isNotEmpty) {
-      widget.session.engine.injectInput(cmd);
-    }
-    Navigator.of(context).pop();
+  SnackBar _insertedSnack(CommandSuggestion s) {
+    final danger = s.effectiveDanger;
+    final label = switch (danger) {
+      DangerSeverity.critical => '⚠ critical — review before running',
+      DangerSeverity.warning => '⚠ review before running',
+      null => s.explanation.isNotEmpty ? s.explanation : 'Inserted into prompt',
+    };
+    return SnackBar(
+      duration: Duration(seconds: danger == null ? 4 : 8),
+      backgroundColor: danger == DangerSeverity.critical
+          ? const Color(0xFF8E1519)
+          : null,
+      content: Text('Inserted: ${s.command}\n$label'),
+    );
   }
 
   @override
@@ -87,7 +117,7 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
     return Dialog(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
-        child: SingleChildScrollView(
+        child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -108,8 +138,8 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
               TextField(
                 controller: _input,
                 autofocus: true,
-                minLines: 1,
-                maxLines: 3,
+                maxLines: 1,
+                textInputAction: TextInputAction.go,
                 decoration: const InputDecoration(
                   labelText: 'Describe what you want to do',
                   hintText: 'e.g. find the 10 largest files under /var',
@@ -117,20 +147,17 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
                 ),
                 onSubmitted: (_) => _generate(),
               ),
-              const SizedBox(height: 8),
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
                 dense: true,
                 controlAffinity: ListTileControlAffinity.leading,
                 value: _includeContext,
-                onChanged: (v) =>
-                    setState(() => _includeContext = v ?? true),
+                onChanged: (v) => setState(() => _includeContext = v ?? true),
                 title: const Text('Use recent terminal output as context'),
               ),
-              if (_result != null) _resultCard(context, _result!),
               if (_error != null)
                 Padding(
-                  padding: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.only(top: 4),
                   child: Text('Failed: $_error',
                       style: TextStyle(
                           color: Theme.of(context).colorScheme.error)),
@@ -142,7 +169,7 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
                   TextButton(
                     onPressed:
                         _busy ? null : () => Navigator.of(context).pop(),
-                    child: const Text('Close'),
+                    child: const Text('Cancel'),
                   ),
                   const SizedBox(width: 8),
                   FilledButton.icon(
@@ -152,84 +179,14 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
                             width: 16,
                             height: 16,
                             child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.auto_awesome),
-                    label: Text(_result == null ? 'Generate' : 'Regenerate'),
+                        : const Icon(Icons.keyboard_return),
+                    label: const Text('Generate & insert'),
                   ),
-                  if (_result != null &&
-                      _result!.command.isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    FilledButton.icon(
-                      onPressed: _insert,
-                      icon: const Icon(Icons.keyboard_return),
-                      label: const Text('Insert into prompt'),
-                    ),
-                  ],
                 ],
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _resultCard(BuildContext context, CommandSuggestion s) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      margin: const EdgeInsets.only(top: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (s.command.isEmpty)
-            const Text('No command — the model declined this request.')
-          else
-            SelectableText(
-              s.command,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-            ),
-          if (s.explanation.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(s.explanation,
-                style: Theme.of(context).textTheme.bodySmall),
-          ],
-          if (s.effectiveDanger != null) ...[
-            const SizedBox(height: 8),
-            _DangerBadge(severity: s.effectiveDanger!),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _DangerBadge extends StatelessWidget {
-  final DangerSeverity severity;
-  const _DangerBadge({required this.severity});
-
-  @override
-  Widget build(BuildContext context) {
-    final (color, label) = switch (severity) {
-      DangerSeverity.critical => (const Color(0xFFF85149), 'Critical — destructive'),
-      DangerSeverity.warning => (const Color(0xFFD29922), 'Warning — review carefully'),
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.18),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.warning_amber_rounded, size: 16, color: color),
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600)),
-        ],
       ),
     );
   }

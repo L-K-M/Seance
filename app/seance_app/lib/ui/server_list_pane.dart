@@ -4,10 +4,10 @@ import 'package:seance_core/seance_core.dart';
 import '../app_state.dart';
 import '../main.dart';
 import '../theme.dart';
+import 'app_menus.dart';
 import 'command_generator.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_editor.dart';
-import 'settings_screen.dart';
 
 /// Left pane / first screen: the configured servers with a reachability dot.
 /// Tapping one opens a terminal (via [onOpen]).
@@ -77,11 +77,7 @@ class ServerListPane extends StatelessWidget {
     );
   }
 
-  static void _openSettings(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    );
-  }
+  static void _openSettings(BuildContext context) => openSettings();
 
   Future<void> _editServer(
       BuildContext context, AppState state, ServerConfig? server) async {
