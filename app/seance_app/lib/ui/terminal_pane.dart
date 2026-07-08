@@ -10,16 +10,23 @@ import 'chat_sidebar.dart';
 /// Right pane / second screen: the active server's terminal. The server list is
 /// the tab list, so there is no tab strip here.
 ///
-/// When the assistant is not shown as a tiled sidebar (narrow or medium
-/// widths), [showAssistantAffordance] puts it behind an end-drawer button.
+/// Every open session stays mounted in an [IndexedStack] so switching servers
+/// is instant — the previously-rendered terminal is shown immediately instead
+/// of being rebuilt (which flashed a blank pane for a few seconds).
+///
+/// In the wide layout the server name and disconnect controls live in the
+/// sidebar, so the app bar is dropped ([showAppBar] false). The narrow layout
+/// keeps a slim bar for back-navigation and the assistant drawer.
 class TerminalPane extends StatelessWidget {
   final VoidCallback? onBack;
   final bool showAssistantAffordance;
+  final bool showAppBar;
 
   const TerminalPane({
     super.key,
     this.onBack,
     this.showAssistantAffordance = false,
+    this.showAppBar = true,
   });
 
   @override
@@ -28,72 +35,126 @@ class TerminalPane extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
-        final active = state.activeSession;
         return Scaffold(
           endDrawer: showAssistantAffordance
               ? const Drawer(width: 380, child: ChatSidebar())
               : null,
-          appBar: AppBar(
-            leading: onBack != null
-                ? IconButton(
-                    icon: const Icon(Icons.arrow_back), onPressed: onBack)
-                : null,
-            title: Text(active?.config.label ?? 'Terminal'),
-            actions: [
-              if (active != null &&
-                  (active.status == TerminalStatus.connected ||
-                      active.status == TerminalStatus.error ||
-                      active.status == TerminalStatus.disconnected))
-                IconButton(
-                  tooltip: active.status == TerminalStatus.connected
-                      ? 'Disconnect'
-                      : 'Reconnect',
-                  icon: Icon(active.status == TerminalStatus.connected
-                      ? Icons.link_off
-                      : Icons.refresh),
-                  onPressed: active.status == TerminalStatus.connected
-                      ? () => state.disconnect(active.serverId)
-                      : () => state.reconnect(active.serverId),
-                ),
-              if (showAssistantAffordance)
-                Builder(
-                  builder: (context) => IconButton(
-                    tooltip: 'Assistant',
-                    icon: const Icon(Icons.auto_awesome_outlined),
-                    onPressed: () => Scaffold.of(context).openEndDrawer(),
-                  ),
-                ),
-            ],
-          ),
-          body: active == null
-              ? const _NoSession()
-              : _TerminalBody(tab: active, state: state),
+          appBar: showAppBar ? _appBar(context, state) : null,
+          body: _body(state),
         );
       },
     );
   }
+
+  PreferredSizeWidget _appBar(BuildContext context, AppState state) {
+    final active = state.activeSession;
+    final status = active?.status;
+    return AppBar(
+      leading: onBack != null
+          ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: onBack)
+          : null,
+      title: Text(active?.config.label ?? 'Terminal'),
+      actions: [
+        if (status == TerminalStatus.connected)
+          IconButton(
+            tooltip: 'Disconnect',
+            icon: const Icon(Icons.link_off),
+            onPressed: () => state.disconnect(active!.serverId),
+          ),
+        if (status == TerminalStatus.error ||
+            status == TerminalStatus.disconnected)
+          IconButton(
+            tooltip: 'Reconnect',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => state.reconnect(active!.serverId),
+          ),
+        if (showAssistantAffordance)
+          Builder(
+            builder: (context) => IconButton(
+              tooltip: 'Assistant',
+              icon: const Icon(Icons.auto_awesome_outlined),
+              onPressed: () => Scaffold.of(context).openEndDrawer(),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _body(AppState state) {
+    final entries = state.sessions.values.toList();
+    if (entries.isEmpty) return const _NoSession();
+    final index =
+        entries.indexWhere((t) => t.serverId == state.activeServerId);
+    if (index < 0) return const _NoSession();
+    return IndexedStack(
+      index: index,
+      sizing: StackFit.expand,
+      children: [
+        for (var i = 0; i < entries.length; i++)
+          _SessionView(
+            key: ValueKey(entries[i].serverId),
+            tab: entries[i],
+            state: state,
+            isActive: i == index,
+          ),
+      ],
+    );
+  }
 }
 
-class _TerminalBody extends StatelessWidget {
+/// One session's content: the live terminal, or a connecting / error /
+/// disconnected placeholder. Kept alive across switches by the [IndexedStack].
+class _SessionView extends StatefulWidget {
   final TerminalSession tab;
   final AppState state;
-  const _TerminalBody({required this.tab, required this.state});
+  final bool isActive;
+  const _SessionView({
+    super.key,
+    required this.tab,
+    required this.state,
+    required this.isActive,
+  });
+
+  @override
+  State<_SessionView> createState() => _SessionViewState();
+}
+
+class _SessionViewState extends State<_SessionView> {
+  final FocusNode _focus = FocusNode();
+
+  @override
+  void didUpdateWidget(_SessionView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Focus the terminal when this session becomes the active one.
+    if (widget.isActive && !oldWidget.isActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focus.requestFocus();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final tab = widget.tab;
     if (tab.connecting) {
       return const Center(child: CircularProgressIndicator());
     }
     if (tab.error != null) {
-      return _ConnectionError(tab: tab, state: state);
+      return _ConnectionError(tab: tab, state: widget.state);
     }
     if (!tab.isConnected) {
-      // Session dropped (remote exit / network). Offer a reconnect.
-      return _Disconnected(tab: tab, state: state);
+      return _Disconnected(tab: tab, state: widget.state);
     }
     return TerminalView(
       tab.engine.terminal,
-      autofocus: true,
+      focusNode: _focus,
+      autofocus: widget.isActive,
       padding: const EdgeInsets.all(6),
     );
   }

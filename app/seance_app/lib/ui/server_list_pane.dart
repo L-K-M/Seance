@@ -4,6 +4,7 @@ import 'package:seance_core/seance_core.dart';
 import '../app_state.dart';
 import '../main.dart';
 import '../theme.dart';
+import 'middle_ellipsis_text.dart';
 import 'server_editor.dart';
 import 'settings_screen.dart';
 
@@ -54,6 +55,8 @@ class ServerListPane extends StatelessWidget {
                 onTap: () => onOpen(server),
                 onEdit: () => _editServer(context, state, server),
                 onDelete: () => _deleteServer(context, state, server),
+                onDisconnect: () => state.disconnect(server.id),
+                onReconnect: () => state.reconnect(server.id),
               );
             },
           );
@@ -145,6 +148,8 @@ class _ServerTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onDisconnect;
+  final VoidCallback onReconnect;
 
   const _ServerTile({
     required this.server,
@@ -154,25 +159,47 @@ class _ServerTile extends StatelessWidget {
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
+    required this.onDisconnect,
+    required this.onReconnect,
   });
 
   @override
   Widget build(BuildContext context) {
+    final connected = connection == TerminalStatus.connected;
+    final hasSession = connection != TerminalStatus.disconnected;
     return ListTile(
       selected: selected,
       leading: _ConnectionDot(status: connection),
-      title: Text(server.label),
-      subtitle: Text('${server.username}@${server.host}:${server.port}'),
+      title: MiddleEllipsisText(server.label),
+      subtitle: Text('${server.username}@${server.host}:${server.port}',
+          maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: onTap,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           _ReachabilityDot(status: reachability),
           PopupMenuButton<String>(
-            onSelected: (v) => v == 'edit' ? onEdit() : onDelete(),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'edit', child: Text('Edit')),
-              PopupMenuItem(value: 'delete', child: Text('Delete')),
+            onSelected: (v) {
+              switch (v) {
+                case 'edit':
+                  onEdit();
+                case 'delete':
+                  onDelete();
+                case 'disconnect':
+                  onDisconnect();
+                case 'reconnect':
+                  onReconnect();
+              }
+            },
+            itemBuilder: (_) => [
+              if (connected)
+                const PopupMenuItem(
+                    value: 'disconnect', child: Text('Disconnect')),
+              if (hasSession && !connected)
+                const PopupMenuItem(
+                    value: 'reconnect', child: Text('Reconnect')),
+              const PopupMenuItem(value: 'edit', child: Text('Edit')),
+              const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),
         ],

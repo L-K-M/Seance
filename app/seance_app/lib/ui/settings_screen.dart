@@ -207,8 +207,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await state.services.masterKeys.putApiKey(ref, _apiKey.text);
     }
     await state.services.saveSettings();
-    // The assistant sidebar appears once a provider is usable.
-    await state.refreshLlmConfigured();
+    // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
+    await state.reloadLlmProvider();
     if (mounted) {
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)

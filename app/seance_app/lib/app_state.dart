@@ -63,6 +63,10 @@ class AppState extends ChangeNotifier {
   /// the LLM sidebar is shown). Refreshed at load and after settings change.
   bool llmConfigured = false;
 
+  /// Bumped whenever the LLM provider settings change (key, model, base URL),
+  /// so the chat sidebar rebuilds its provider instead of reusing a stale one.
+  int llmConfigVersion = 0;
+
   StreamSubscription<Map<String, ProbeStatus>>? _probeSub;
 
   /// UI-supplied interaction hooks (wired by the root widget so dialogs can be
@@ -120,6 +124,14 @@ class AppState extends ChangeNotifier {
       llmConfigured = configured;
       notifyListeners();
     }
+  }
+
+  /// Called after the LLM provider settings change: invalidate any cached chat
+  /// provider (so a new API key takes effect) and refresh sidebar visibility.
+  Future<void> reloadLlmProvider() async {
+    llmConfigVersion++;
+    await refreshLlmConfigured();
+    notifyListeners();
   }
 
   Future<void> saveServer(ServerConfig config, {Secret? secret}) async {

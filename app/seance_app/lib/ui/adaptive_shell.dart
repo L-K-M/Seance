@@ -7,17 +7,14 @@ import 'chat_sidebar.dart';
 import 'server_list_pane.dart';
 import 'terminal_pane.dart';
 
-/// The adaptive layout. Above [breakpoint] the server list and terminal sit
-/// side by side; below it they become two screens the user moves between.
-///
-/// When the assistant is configured and there is room ([assistantBreakpoint]),
-/// it is shown as a third, tiled pane on the right — never overlapping the
-/// terminal. On narrower windows it stays reachable behind an end-drawer.
+/// The adaptive layout. Above [breakpoint] the server list, terminal, and
+/// (when the assistant is configured) the assistant sit side by side as tiled,
+/// horizontally-resizable panes. Below it they become screens the user moves
+/// between, with the assistant behind an end-drawer.
 class AdaptiveShell extends StatefulWidget {
   const AdaptiveShell({super.key});
 
   static const double breakpoint = 720;
-  static const double assistantBreakpoint = 1080;
 
   @override
   State<AdaptiveShell> createState() => _AdaptiveShellState();
@@ -27,6 +24,13 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
   // Narrow mode only: whether we're currently on the terminal screen.
   bool _viewingTerminal = false;
 
+  // Tiled-pane widths (drag handles adjust these).
+  double _listWidth = 300;
+  double _assistantWidth = 340;
+
+  static const double _listMin = 200, _listMax = 480;
+  static const double _assistantMin = 260, _assistantMax = 680;
+
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
@@ -35,52 +39,49 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
       builder: (context, _) {
         return LayoutBuilder(
           builder: (context, constraints) {
-            final width = constraints.maxWidth;
-            final wide = width >= AdaptiveShell.breakpoint;
-            final tileAssistant = state.llmConfigured &&
-                width >= AdaptiveShell.assistantBreakpoint;
-            // When the assistant isn't tiled but is configured, reach it via
-            // the terminal's end-drawer.
-            final assistantDrawer = state.llmConfigured && !tileAssistant;
-            return wide
-                ? _buildWide(state, tileAssistant, assistantDrawer)
-                : _buildNarrow(state, assistantDrawer);
+            final wide = constraints.maxWidth >= AdaptiveShell.breakpoint;
+            return wide ? _buildWide(state) : _buildNarrow(state);
           },
         );
       },
     );
   }
 
-  Widget _buildWide(
-      AppState state, bool tileAssistant, bool assistantDrawer) {
+  Widget _buildWide(AppState state) {
     return Scaffold(
       body: Row(
         children: [
           SizedBox(
-            width: 320,
+            width: _listWidth,
             child: ServerListPane(onOpen: (s) => _open(state, s)),
           ),
-          const VerticalDivider(width: 1),
-          Expanded(
-            child: TerminalPane(showAssistantAffordance: assistantDrawer),
+          _ResizeHandle(
+            onDelta: (dx) => setState(
+                () => _listWidth = (_listWidth + dx).clamp(_listMin, _listMax)),
           ),
-          if (tileAssistant) ...[
-            const VerticalDivider(width: 1),
-            const SizedBox(width: 360, child: ChatSidebar()),
+          const Expanded(
+            child: TerminalPane(showAppBar: false),
+          ),
+          if (state.llmConfigured) ...[
+            _ResizeHandle(
+              onDelta: (dx) => setState(() => _assistantWidth =
+                  (_assistantWidth - dx).clamp(_assistantMin, _assistantMax)),
+            ),
+            SizedBox(width: _assistantWidth, child: const ChatSidebar()),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildNarrow(AppState state, bool assistantDrawer) {
+  Widget _buildNarrow(AppState state) {
     final showTerminal = _viewingTerminal && state.activeServerId != null;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
       child: showTerminal
           ? TerminalPane(
               key: const ValueKey('terminal'),
-              showAssistantAffordance: assistantDrawer,
+              showAssistantAffordance: state.llmConfigured,
               onBack: () => setState(() => _viewingTerminal = false),
             )
           : ServerListPane(
@@ -93,5 +94,32 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
   Future<void> _open(AppState state, ServerConfig server) async {
     if (mounted) setState(() => _viewingTerminal = true);
     await state.openTerminal(server);
+  }
+}
+
+/// A thin, draggable vertical divider that reports horizontal drag deltas so a
+/// neighbouring pane can be resized. Shows a resize cursor on desktop.
+class _ResizeHandle extends StatelessWidget {
+  final ValueChanged<double> onDelta;
+  const _ResizeHandle({required this.onDelta});
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragUpdate: (d) => onDelta(d.delta.dx),
+        child: SizedBox(
+          width: 10,
+          child: Center(
+            child: Container(
+              width: 1,
+              color: Theme.of(context).dividerColor,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

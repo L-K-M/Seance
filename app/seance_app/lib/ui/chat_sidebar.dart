@@ -28,6 +28,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
   final _scroll = ScrollController();
   final List<_ChatMessage> _messages = [];
   ChatController? _chat;
+  int? _chatVersion; // the llmConfigVersion _chat was built with
   bool _includeContext = true;
   bool _sending = false;
   String? _error;
@@ -41,7 +42,11 @@ class _ChatSidebarState extends State<ChatSidebar> {
 
   Future<ChatController> _ensureController(AppState state) async {
     final existing = _chat;
-    if (existing != null) return existing;
+    // Rebuild if the provider settings changed since we last built (new key,
+    // model, or base URL) — otherwise edits in Settings wouldn't take effect.
+    if (existing != null && _chatVersion == state.llmConfigVersion) {
+      return existing;
+    }
     final provider = await state.services.buildLlmProvider();
     final search = await state.services.buildSearchProvider();
     final controller = ChatController(
@@ -53,6 +58,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
       },
     );
     _chat = controller;
+    _chatVersion = state.llmConfigVersion;
     return controller;
   }
 
@@ -169,7 +175,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
                   minLines: 1,
                   maxLines: 4,
                   decoration: const InputDecoration(
-                    hintText: 'Ask, or describe a command…',
+                    hintText: 'Describe a task, or ask a question…',
                     border: OutlineInputBorder(),
                     isDense: true,
                   ),
@@ -257,12 +263,15 @@ class _ChatEmpty extends StatelessWidget {
           children: [
             const Icon(Icons.auto_awesome_outlined, size: 36),
             const SizedBox(height: 12),
-            Text('Ask about this session',
-                style: Theme.of(context).textTheme.titleSmall),
+            Text('Describe what you want to do',
+                style: Theme.of(context).textTheme.titleSmall,
+                textAlign: TextAlign.center),
             const SizedBox(height: 6),
             Text(
-              'It can search the web and place commands in your prompt — '
-              'you always review and run them yourself.',
+              'Type a task in plain language — e.g. "find the 10 largest files '
+              'under /var" — and I\'ll draft the command and place it in your '
+              'terminal for you to review and run. I can also search the web. '
+              'I never run anything myself.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall,
             ),
