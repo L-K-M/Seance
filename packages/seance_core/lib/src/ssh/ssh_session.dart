@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:meta/meta.dart';
 import 'package:seance_protocol/seance_protocol.dart';
 
 import '../hostkey/tofu.dart';
@@ -246,7 +247,7 @@ class SshSessionManager {
       final session = SshSession._(client, shell, engine).._wire();
       return session;
     } catch (e) {
-      final summary = _summarizeFailure(e, target, credentials, log);
+      final summary = _summarizeFailure(e, config, target, credentials, log);
       note('');
       note(summary);
       client.close();
@@ -260,9 +261,17 @@ class SshSessionManager {
         AuthMethod.agent => 'ssh-agent',
       };
 
+  /// Test seam for [_summarizeFailure], which is otherwise reachable only via a
+  /// live handshake.
+  @visibleForTesting
+  static String summarizeFailureForTest(Object e, ServerConfig config,
+          SshCredentials credentials, SshConnectionLog log) =>
+      _summarizeFailure(e, config,
+          '${config.username}@${config.host}:${config.port}', credentials, log);
+
   /// Turn dartssh2's terse errors into an actionable one-liner, mining the
   /// captured trace for the server's accepted-methods list when auth failed.
-  static String _summarizeFailure(Object e, String target,
+  static String _summarizeFailure(Object e, ServerConfig config, String target,
       SshCredentials credentials, SshConnectionLog? log) {
     if (e is SSHAuthFailError) {
       final accepted = _acceptedMethodsFromLog(log);
@@ -274,6 +283,15 @@ class SshSessionManager {
         if (!accepted.contains(_sshMethodName(credentials.method))) {
           buffer.write(
               ' Switch this server to a method the host allows.');
+        } else if (credentials.method != AuthMethod.privateKey &&
+            config.username == 'root') {
+          // The host advertises password but rejected it for root: on stock
+          // Debian/Ubuntu this is PermitRootLogin prohibit-password, which
+          // blocks password login for root even with the correct password.
+          buffer.write(' The host advertises password auth but rejected it for '
+              'root — many servers set PermitRootLogin prohibit-password, which '
+              'blocks password login for root. Use a key, or log in as a '
+              'non-root user and escalate.');
         } else {
           buffer.write(' Check the credential (wrong password or key).');
         }

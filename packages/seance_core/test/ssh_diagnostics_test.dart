@@ -1,3 +1,4 @@
+import 'package:dartssh2/dartssh2.dart' show SSHAuthFailError;
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
 
@@ -54,6 +55,54 @@ void main() {
       expect(log.toString(), contains('Auth method: password'));
 
       await engine.dispose();
+    });
+
+    SshConnectionLog logWith(List<String> accepted) => SshConnectionLog()
+      ..add('  <- sock: SSH_Message_Userauth_Failure('
+          'methodsLeft: [${accepted.join(', ')}], partialSuccess: false)');
+
+    ServerConfig config(String user) => ServerConfig(
+          id: 's',
+          label: 's',
+          host: 'h.example.com',
+          port: 22,
+          username: user,
+          createdAt: 0,
+          updatedAt: 0,
+        );
+
+    test('auth summary flags root password rejection (prohibit-password)', () {
+      final msg = SshSessionManager.summarizeFailureForTest(
+        SSHAuthFailError('All authentication methods failed'),
+        config('root'),
+        const SshCredentials.password('pw'),
+        logWith(['publickey', 'password']),
+      );
+      expect(msg, contains('The server accepts: publickey, password'));
+      expect(msg, contains('prohibit-password'));
+    });
+
+    test('auth summary tells you to switch method when password is not offered',
+        () {
+      final msg = SshSessionManager.summarizeFailureForTest(
+        SSHAuthFailError('All authentication methods failed'),
+        config('me'),
+        const SshCredentials.password('pw'),
+        logWith(['publickey']),
+      );
+      expect(msg, contains('The server accepts: publickey'));
+      expect(msg, contains('Switch this server to a method the host allows'));
+    });
+
+    test('auth summary says check-the-credential for a non-root password reject',
+        () {
+      final msg = SshSessionManager.summarizeFailureForTest(
+        SSHAuthFailError('All authentication methods failed'),
+        config('deploy'),
+        const SshCredentials.password('pw'),
+        logWith(['publickey', 'password']),
+      );
+      expect(msg, contains('Check the credential'));
     });
 
     test('agent auth is rejected before any network activity', () async {
