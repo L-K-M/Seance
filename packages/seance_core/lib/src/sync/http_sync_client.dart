@@ -16,8 +16,19 @@ class HttpSyncClient implements SyncApi {
   /// persist and restore it across launches.
   String? token;
 
-  HttpSyncClient({required this.baseUrl, http.Client? client})
-      : _client = client ?? http.Client();
+  HttpSyncClient({required String baseUrl, http.Client? client})
+      : baseUrl = _normalizeBaseUrl(baseUrl),
+        _client = client ?? http.Client();
+
+  /// Paths are appended verbatim, so a pasted "https://host/" would produce
+  /// "https://host//v1/..." and 404.
+  static String _normalizeBaseUrl(String url) {
+    var normalized = url.trim();
+    while (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized;
+  }
 
   Map<String, String> get _authHeaders => {
         'content-type': 'application/json',
