@@ -158,7 +158,9 @@ class AppServices {
       case AuthMethod.privateKey:
         // "Reference, don't store": read the key from disk at connect time.
         if (config.identityFilePath != null) {
-          final pem = await File(config.identityFilePath!).readAsString();
+          // Dart's File does not expand `~`, but the editor hint invites it.
+          final pem =
+              await File(_expandHome(config.identityFilePath!)).readAsString();
           final storedPass = config.secretRef == null
               ? null
               : (await vault.getSecret(config.secretRef!))?.keyPassphrase;
@@ -170,6 +172,17 @@ class AppServices {
         return SshCredentials.privateKey(secret?.value ?? '',
             keyPassphrase: secret?.keyPassphrase);
     }
+  }
+
+  /// Expand a leading `~` to the user's home directory (Dart's [File] treats it
+  /// as a literal path segment, so an identity path like `~/.ssh/id_ed25519`
+  /// would otherwise never be found).
+  static String _expandHome(String path) {
+    if (path != '~' && !path.startsWith('~/')) return path;
+    final home =
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    if (home == null || home.isEmpty) return path;
+    return path == '~' ? home : '$home/${path.substring(2)}';
   }
 
   /// Build the configured LLM provider, resolving its API key from the keystore.

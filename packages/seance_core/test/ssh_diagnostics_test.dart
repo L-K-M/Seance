@@ -94,6 +94,24 @@ void main() {
       expect(msg, contains('Switch this server to a method the host allows'));
     });
 
+    test('auth summary names the rejected key and points at authorized_keys',
+        () {
+      final log = SshConnectionLog()
+        ..add('Offering key: ssh-ed25519 SHA256:AbCdEf123')
+        ..add('  <- sock: SSH_Message_Userauth_Failure('
+            'methodsLeft: [publickey, password], partialSuccess: false)');
+      final msg = SshSessionManager.summarizeFailureForTest(
+        SSHAuthFailError('All authentication methods failed'),
+        config('root'),
+        const SshCredentials.privateKey('pem'),
+        log,
+      );
+      expect(msg, contains('SHA256:AbCdEf123'));
+      expect(msg, contains('authorized_keys'));
+      // A rejected key must not be misreported as prohibit-password.
+      expect(msg, isNot(contains('prohibit-password')));
+    });
+
     test('auth summary says check-the-credential for a non-root password reject',
         () {
       final msg = SshSessionManager.summarizeFailureForTest(

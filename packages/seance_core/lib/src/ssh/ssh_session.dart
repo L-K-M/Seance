@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:meta/meta.dart';
 import 'package:seance_protocol/seance_protocol.dart';
@@ -214,10 +215,33 @@ class SshSessionManager {
     }
     note('TCP connection established; starting SSH handshake.');
 
-    final identities = credentials.method == AuthMethod.privateKey
-        ? SSHKeyPair.fromPem(
-            credentials.privateKeyPem ?? '', credentials.keyPassphrase)
-        : null;
+    List<SSHKeyPair>? identities;
+    if (credentials.method == AuthMethod.privateKey) {
+      try {
+        identities = SSHKeyPair.fromPem(
+            credentials.privateKeyPem ?? '', credentials.keyPassphrase);
+      } catch (e) {
+        note('Could not load the private key: $e');
+        final hint = credentials.keyPassphrase == null
+            ? ' (is it passphrase-protected? add the passphrase to this server)'
+            : ' (wrong key passphrase?)';
+        throw SshConnectException(
+          'Could not load the private key for $target — $e$hint',
+          e,
+          log ?? SshConnectionLog(),
+        );
+      }
+      if (identities.isEmpty) {
+        note('The configured identity contained no usable key.');
+      }
+      // Record which key we present so the user can compare it against the
+      // server's authorized_keys (a rejected key is almost always "not the one
+      // the host trusts").
+      for (final kp in identities) {
+        note('Offering key: ${kp.name} '
+            '${_fingerprint(kp.toPublicKey().encode())}');
+      }
+    }
 
     final client = SSHClient(
       socket,
@@ -283,8 +307,17 @@ class SshSessionManager {
         if (!accepted.contains(_sshMethodName(credentials.method))) {
           buffer.write(
               ' Switch this server to a method the host allows.');
-        } else if (credentials.method != AuthMethod.privateKey &&
-            config.username == 'root') {
+        } else if (credentials.method == AuthMethod.privateKey) {
+          // The key was presented (publickey is accepted) but the server said
+          // no: almost always the key isn't in the target user's
+          // authorized_keys, or a different key than expected was configured.
+          final key = _offeredKeyFromLog(log);
+          buffer.write(' The key Séance offered'
+              '${key != null ? ' ($key)' : ''} was rejected. Add its public '
+              "half to ${config.username}@${config.host}'s "
+              '~/.ssh/authorized_keys, or configure the key that host already '
+              'trusts.');
+        } else if (config.username == 'root') {
           // The host advertises password but rejected it for root: on stock
           // Debian/Ubuntu this is PermitRootLogin prohibit-password, which
           // blocks password login for root even with the correct password.
@@ -312,6 +345,23 @@ class SshSessionManager {
         AuthMethod.privateKey => 'publickey',
         AuthMethod.agent => 'publickey',
       };
+
+  /// The OpenSSH-style SHA256 fingerprint of a public-key blob (matches
+  /// `ssh-keygen -lf`), so a user can eyeball it against `authorized_keys`.
+  static String _fingerprint(List<int> keyBlob) =>
+      'SHA256:${base64.encode(sha256.convert(keyBlob).bytes).replaceAll('=', '')}';
+
+  /// Recover the "Offering key: …" line we logged, so the failure summary can
+  /// name the exact key the server rejected.
+  static String? _offeredKeyFromLog(SshConnectionLog? log) {
+    if (log == null) return null;
+    const marker = 'Offering key: ';
+    for (final line in log.lines.reversed) {
+      final i = line.indexOf(marker);
+      if (i >= 0) return line.substring(i + marker.length).trim();
+    }
+    return null;
+  }
 
   /// Scan the trace for the last `methodsLeft: [ … ]` the server sent.
   static List<String>? _acceptedMethodsFromLog(SshConnectionLog? log) {
