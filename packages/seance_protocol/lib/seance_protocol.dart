@@ -15,6 +15,7 @@ export 'src/crypto/recovery_key.dart';
 export 'src/models/server_config.dart';
 export 'src/models/secret.dart';
 export 'src/models/host_key.dart';
+export 'src/models/snippet.dart';
 
 export 'src/records/record.dart';
 export 'src/records/record_codec.dart';

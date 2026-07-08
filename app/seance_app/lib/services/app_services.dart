@@ -12,6 +12,7 @@ import 'secure_master_key.dart';
 /// and the OS keystore. Created once at startup.
 class AppServices {
   final ConfigStore configStore;
+  final SnippetStore snippetStore;
   // Mutable so sync enrolment can re-key the vault to the shared passphrase key.
   SecretVault vault;
   final HostKeyStore hostKeyStore;
@@ -24,6 +25,7 @@ class AppServices {
 
   AppServices._({
     required this.configStore,
+    required this.snippetStore,
     required this.vault,
     required this.hostKeyStore,
     required this.tofu,
@@ -42,6 +44,7 @@ class AppServices {
     final vaultKey = await masterKeys.loadOrCreateFromKeystore();
 
     final configStore = FileConfigStore(File(p('servers.json')));
+    final snippetStore = FileSnippetStore(File(p('snippets.json')));
     final vaultStore = FileVaultStore(File(p('vault.json')));
     final hostKeyStore = FileHostKeyStore(File(p('known_hosts.json')));
     final settingsStore = SettingsStore(File(p('settings.json')));
@@ -53,6 +56,7 @@ class AppServices {
 
     return AppServices._(
       configStore: configStore,
+      snippetStore: snippetStore,
       vault: SecretVault(vaultStore, vaultKey),
       hostKeyStore: hostKeyStore,
       tofu: TofuVerifier(hostKeyStore),
@@ -138,6 +142,7 @@ class AppServices {
     final coordinator = SyncCoordinator(
       configStore: configStore,
       hostKeyStore: hostKeyStore,
+      snippetStore: snippetStore,
       codec: RecordCodec(vaultKey),
       local: InMemoryLocalRecordStore(),
       deviceId: settings.deviceId,

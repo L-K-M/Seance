@@ -4,7 +4,7 @@ import 'dart:typed_data';
 /// The category of a synced record. The kind travels *inside* the encrypted
 /// payload, not in the envelope, so the server cannot even tell a server-config
 /// from a stored secret.
-enum RecordKind { serverConfig, hostKey, secret }
+enum RecordKind { serverConfig, hostKey, secret, snippet }
 
 RecordKind recordKindFromName(String name) =>
     RecordKind.values.firstWhere((k) => k.name == name,

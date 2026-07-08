@@ -3,8 +3,8 @@ import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../main.dart';
-import 'chat_sidebar.dart';
 import 'server_list_pane.dart';
+import 'sidebar_panel.dart';
 import 'terminal_pane.dart';
 
 /// The adaptive layout. Above [breakpoint] the server list, terminal, and
@@ -62,13 +62,13 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
           const Expanded(
             child: TerminalPane(showAppBar: false),
           ),
-          if (state.llmConfigured) ...[
-            _ResizeHandle(
-              onDelta: (dx) => setState(() => _assistantWidth =
-                  (_assistantWidth - dx).clamp(_assistantMin, _assistantMax)),
-            ),
-            SizedBox(width: _assistantWidth, child: const ChatSidebar()),
-          ],
+          // The utility panel (Assistant + Snippets) is always available;
+          // Snippets works without an LLM configured.
+          _ResizeHandle(
+            onDelta: (dx) => setState(() => _assistantWidth =
+                (_assistantWidth - dx).clamp(_assistantMin, _assistantMax)),
+          ),
+          SizedBox(width: _assistantWidth, child: const SidebarPanel()),
         ],
       ),
     );
@@ -81,7 +81,7 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
       child: showTerminal
           ? TerminalPane(
               key: const ValueKey('terminal'),
-              showAssistantAffordance: state.llmConfigured,
+              showAssistantAffordance: true,
               onBack: () => setState(() => _viewingTerminal = false),
             )
           : ServerListPane(

@@ -61,6 +61,61 @@ class FileConfigStore implements ConfigStore {
   }
 }
 
+/// Simple JSON-file [SnippetStore]. Non-secret; synced like server configs.
+class FileSnippetStore implements SnippetStore {
+  final File file;
+  final Map<String, Snippet> _cache = {};
+  bool _loaded = false;
+
+  FileSnippetStore(this.file);
+
+  Future<void> _load() async {
+    if (_loaded) return;
+    if (await file.exists()) {
+      final list = jsonDecode(await file.readAsString()) as List;
+      for (final j in list) {
+        final s = Snippet.fromJson((j as Map).cast<String, dynamic>());
+        _cache[s.id] = s;
+      }
+    }
+    _loaded = true;
+  }
+
+  Future<void> _flush() async {
+    await file.parent.create(recursive: true);
+    await file.writeAsString(
+        jsonEncode(_cache.values.map((s) => s.toJson()).toList()));
+  }
+
+  @override
+  Future<List<Snippet>> listSnippets() async {
+    await _load();
+    final list = _cache.values.toList()
+      ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    return list;
+  }
+
+  @override
+  Future<Snippet?> getSnippet(String id) async {
+    await _load();
+    return _cache[id];
+  }
+
+  @override
+  Future<void> putSnippet(Snippet snippet) async {
+    await _load();
+    _cache[snippet.id] = snippet;
+    await _flush();
+  }
+
+  @override
+  Future<void> deleteSnippet(String id) async {
+    await _load();
+    _cache.remove(id);
+    await _flush();
+  }
+}
+
 /// JSON-file [VaultStore] holding only opaque, already-encrypted blobs
 /// (base64). [SecretVault] seals/opens; this just persists bytes.
 class FileVaultStore implements VaultStore {

@@ -5,8 +5,8 @@ import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
 import '../main.dart';
-import 'chat_sidebar.dart';
 import 'command_generator.dart';
+import 'sidebar_panel.dart';
 
 /// Right pane / second screen: the active server's terminal. The server list is
 /// the tab list, so there is no tab strip here.
@@ -38,7 +38,7 @@ class TerminalPane extends StatelessWidget {
       builder: (context, _) {
         return Scaffold(
           endDrawer: showAssistantAffordance
-              ? const Drawer(width: 380, child: ChatSidebar())
+              ? const Drawer(width: 380, child: SidebarPanel())
               : null,
           appBar: showAppBar ? _appBar(context, state) : null,
           body: _body(state),
@@ -78,7 +78,7 @@ class TerminalPane extends StatelessWidget {
         if (showAssistantAffordance)
           Builder(
             builder: (context) => IconButton(
-              tooltip: 'Assistant',
+              tooltip: 'Assistant & snippets',
               icon: const Icon(Icons.auto_awesome_outlined),
               onPressed: () => Scaffold.of(context).openEndDrawer(),
             ),

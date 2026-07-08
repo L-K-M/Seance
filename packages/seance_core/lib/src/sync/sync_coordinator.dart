@@ -21,6 +21,9 @@ class SyncCoordinator {
   final LocalRecordStore local;
   final String deviceId;
 
+  /// Optional snippet store. When present, snippets sync like server configs.
+  final SnippetStore? snippetStore;
+
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be
   /// provided so secrets can be sealed into records.
   final bool syncSecrets;
@@ -32,6 +35,7 @@ class SyncCoordinator {
     required this.codec,
     required this.local,
     required this.deviceId,
+    this.snippetStore,
     this.syncSecrets = false,
     this.secretVault,
   });
@@ -68,6 +72,18 @@ class SyncCoordinator {
         data: hk.toJson(),
       )));
     }
+    final snippets = snippetStore;
+    if (snippets != null) {
+      for (final s in await snippets.listSnippets()) {
+        await local.putLocal(await codec.encrypt(DecryptedRecord(
+          id: 'snippet:${s.id}',
+          kind: RecordKind.snippet,
+          updatedAt: s.updatedAt,
+          deviceId: deviceId,
+          data: s.toJson(),
+        )));
+      }
+    }
   }
 
   /// Write every record in the local store back into the domain stores,
@@ -89,6 +105,17 @@ class SyncCoordinator {
         case RecordKind.secret:
           if (syncSecrets && !dec.deleted && secretVault != null) {
             await secretVault!.putSecret(Secret.fromJson(dec.data));
+          }
+        case RecordKind.snippet:
+          final store = snippetStore;
+          if (store != null) {
+            if (dec.deleted) {
+              await store.deleteSnippet(
+                  dec.data['id'] as String? ??
+                      dec.id.replaceFirst('snippet:', ''));
+            } else {
+              await store.putSnippet(Snippet.fromJson(dec.data));
+            }
           }
       }
     }

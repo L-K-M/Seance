@@ -12,6 +12,14 @@ abstract class ConfigStore {
   Future<void> deleteServer(String id);
 }
 
+/// Persists reusable command snippets (non-secret). Synced across devices.
+abstract class SnippetStore {
+  Future<List<Snippet>> listSnippets();
+  Future<Snippet?> getSnippet(String id);
+  Future<void> putSnippet(Snippet snippet);
+  Future<void> deleteSnippet(String id);
+}
+
 /// Persists opaque, already-encrypted secret blobs keyed by secret id. It never
 /// sees plaintext — [SecretVault] seals before storing and opens after reading.
 abstract class VaultStore {
@@ -63,6 +71,27 @@ class InMemoryConfigStore implements ConfigStore {
 
   @override
   Future<void> deleteServer(String id) async => _servers.remove(id);
+}
+
+class InMemorySnippetStore implements SnippetStore {
+  final Map<String, Snippet> _snippets = {};
+
+  @override
+  Future<List<Snippet>> listSnippets() async {
+    final list = _snippets.values.toList()
+      ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    return list;
+  }
+
+  @override
+  Future<Snippet?> getSnippet(String id) async => _snippets[id];
+
+  @override
+  Future<void> putSnippet(Snippet snippet) async =>
+      _snippets[snippet.id] = snippet;
+
+  @override
+  Future<void> deleteSnippet(String id) async => _snippets.remove(id);
 }
 
 class InMemoryVaultStore implements VaultStore {

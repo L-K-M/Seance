@@ -1,0 +1,294 @@
+import 'package:flutter/material.dart';
+import 'package:seance_core/seance_core.dart';
+
+import '../app_state.dart';
+import '../main.dart';
+
+/// The Snippets tab: reusable command templates, synced across devices. Tapping
+/// one inserts it into the active terminal's prompt; if it has `{{placeholder}}`
+/// tokens the user is asked to fill them in first. Never runs anything.
+class SnippetsPane extends StatelessWidget {
+  const SnippetsPane({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = AppScope.of(context);
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) {
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.bookmarks_outlined, size: 20),
+                  const SizedBox(width: 8),
+                  Text('Snippets',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: 'New snippet',
+                    icon: const Icon(Icons.add),
+                    onPressed: () => _edit(context, state, null),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: state.snippets.isEmpty
+                  ? const _SnippetsEmpty()
+                  : ListView.separated(
+                      itemCount: state.snippets.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, i) {
+                        final s = state.snippets[i];
+                        final count = s.placeholders.length;
+                        return ListTile(
+                          title: Text(s.title,
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text(
+                            count > 0
+                                ? '$count placeholder${count == 1 ? '' : 's'} · ${_preview(s.body)}'
+                                : _preview(s.body),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontFamily: 'monospace'),
+                          ),
+                          onTap: () => _insert(context, state, s),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (v) => v == 'edit'
+                                ? _edit(context, state, s)
+                                : _delete(context, state, s),
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(value: 'edit', child: Text('Edit')),
+                              PopupMenuItem(
+                                  value: 'delete', child: Text('Delete')),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  static String _preview(String body) =>
+      body.replaceAll('\n', ' ').trim();
+
+  Future<void> _insert(
+      BuildContext context, AppState state, Snippet snippet) async {
+    final session = state.activeSession;
+    final messenger = ScaffoldMessenger.of(context);
+    if (session == null || !session.isConnected) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Open a connected session first.')),
+      );
+      return;
+    }
+    var text = snippet.body;
+    final names = snippet.placeholders;
+    if (names.isNotEmpty) {
+      final values = await showPlaceholderDialog(context, snippet.title, names);
+      if (values == null) return; // cancelled
+      text = snippet.fill(values);
+    }
+    session.engine.injectInput(text);
+    messenger.showSnackBar(
+      SnackBar(content: Text('Inserted "${snippet.title}" into the prompt')),
+    );
+  }
+
+  Future<void> _edit(
+      BuildContext context, AppState state, Snippet? existing) async {
+    await showSnippetEditor(context, state, existing);
+  }
+
+  Future<void> _delete(
+      BuildContext context, AppState state, Snippet snippet) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Delete "${snippet.title}"?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok == true) await state.deleteSnippet(snippet.id);
+  }
+}
+
+class _SnippetsEmpty extends StatelessWidget {
+  const _SnippetsEmpty();
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.bookmarks_outlined, size: 36),
+            const SizedBox(height: 12),
+            Text('No snippets yet',
+                style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 6),
+            Text(
+              'Save commands you reuse. Add {{placeholders}} and you\'ll be '
+              'asked to fill them in each time you insert one. Snippets sync '
+              'across your devices.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Add or edit a snippet.
+Future<void> showSnippetEditor(
+    BuildContext context, AppState state, Snippet? existing) {
+  return showDialog<void>(
+    context: context,
+    builder: (_) => _SnippetEditor(state: state, existing: existing),
+  );
+}
+
+class _SnippetEditor extends StatefulWidget {
+  final AppState state;
+  final Snippet? existing;
+  const _SnippetEditor({required this.state, this.existing});
+
+  @override
+  State<_SnippetEditor> createState() => _SnippetEditorState();
+}
+
+class _SnippetEditorState extends State<_SnippetEditor> {
+  late final TextEditingController _title =
+      TextEditingController(text: widget.existing?.title ?? '');
+  late final TextEditingController _body =
+      TextEditingController(text: widget.existing?.body ?? '');
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _body.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final title = _title.text.trim();
+    final body = _body.text;
+    if (title.isEmpty || body.trim().isEmpty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final existing = widget.existing;
+    final snippet = existing == null
+        ? Snippet(
+            id: uuidV4(),
+            title: title,
+            body: body,
+            createdAt: now,
+            updatedAt: now)
+        : existing.copyWith(title: title, body: body, updatedAt: now);
+    await widget.state.saveSnippet(snippet);
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.existing == null ? 'New snippet' : 'Edit snippet'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _title,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Title'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _body,
+              minLines: 3,
+              maxLines: 10,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+              decoration: const InputDecoration(
+                labelText: 'Command',
+                hintText: r'e.g. tail -f {{logfile}} | grep {{pattern}}',
+                helperText: r'Use {{name}} for values to fill in on insert',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel')),
+        FilledButton(onPressed: _save, child: const Text('Save')),
+      ],
+    );
+  }
+}
+
+/// Ask the user to fill in [names]; returns name→value, or null if cancelled.
+Future<Map<String, String>?> showPlaceholderDialog(
+    BuildContext context, String title, List<String> names) {
+  final controllers = {for (final n in names) n: TextEditingController()};
+  return showDialog<Map<String, String>>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: Text(title),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < names.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: TextField(
+                    controller: controllers[names[i]],
+                    autofocus: i == 0,
+                    decoration: InputDecoration(
+                      labelText: names[i],
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+              context, {for (final e in controllers.entries) e.key: e.value.text}),
+          child: const Text('Insert'),
+        ),
+      ],
+    ),
+  );
+}

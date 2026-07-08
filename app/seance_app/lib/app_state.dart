@@ -51,6 +51,7 @@ class AppState extends ChangeNotifier {
   late final SshSessionManager _sessionManager;
 
   List<ServerConfig> servers = [];
+  List<Snippet> snippets = [];
   Map<String, ProbeStatus> statuses = {};
 
   /// Open terminal sessions keyed by server id — one per server.
@@ -97,6 +98,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> load() async {
     servers = await services.configStore.listServers();
+    snippets = await services.snippetStore.listSnippets();
     await refreshLlmConfigured();
     _probeSub = services.probe.statuses.listen((s) {
       statuses = s;
@@ -242,11 +244,25 @@ class AppState extends ChangeNotifier {
     return sessions[serverId]?.config;
   }
 
-  /// Run one sync round, then refresh the server list from the (possibly
-  /// updated) store. Returns the outcome for the UI to report.
+  /// Save (create or update) a snippet, then refresh the list.
+  Future<void> saveSnippet(Snippet snippet) async {
+    await services.snippetStore.putSnippet(snippet);
+    snippets = await services.snippetStore.listSnippets();
+    notifyListeners();
+  }
+
+  Future<void> deleteSnippet(String id) async {
+    await services.snippetStore.deleteSnippet(id);
+    snippets = await services.snippetStore.listSnippets();
+    notifyListeners();
+  }
+
+  /// Run one sync round, then refresh the server and snippet lists from the
+  /// (possibly updated) stores. Returns the outcome for the UI to report.
   Future<SyncOutcome> syncNow() async {
     final outcome = await services.runSync();
     servers = await services.configStore.listServers();
+    snippets = await services.snippetStore.listSnippets();
     services.probe.updateServers(servers);
     notifyListeners();
     return outcome;

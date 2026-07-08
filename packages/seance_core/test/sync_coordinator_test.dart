@@ -115,4 +115,34 @@ void main() {
 
     expect((await cfgA.getServer('s1'))!.label, 'name-v2');
   });
+
+  test('snippets sync between two devices', () async {
+    final srv = FakeServer();
+    final codec = RecordCodec(secureRandomBytes(32));
+
+    final snipA = InMemorySnippetStore();
+    await snipA.putSnippet(Snippet(
+        id: 'x1',
+        title: 'Tail log',
+        body: 'tail -f {{file}}',
+        createdAt: 1,
+        updatedAt: 10));
+    SyncCoordinator coord(SnippetStore store, String dev) => SyncCoordinator(
+          configStore: InMemoryConfigStore(),
+          hostKeyStore: InMemoryHostKeyStore(),
+          snippetStore: store,
+          codec: codec,
+          local: InMemoryLocalRecordStore(),
+          deviceId: dev,
+        );
+
+    final snipB = InMemorySnippetStore();
+    await coord(snipA, 'A').run(srv);
+    await coord(snipB, 'B').run(srv);
+
+    final onB = await snipB.listSnippets();
+    expect(onB.single.title, 'Tail log');
+    expect(onB.single.body, 'tail -f {{file}}');
+    expect(onB.single.placeholders, ['file']);
+  });
 }

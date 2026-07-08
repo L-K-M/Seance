@@ -9,10 +9,10 @@ _Last updated: 2026-07-08 — tiled assistant sidebar, server-list-as-tabs, SSH 
 
 | Area | State |
 |---|---|
-| `seance_protocol` | Complete. Models, E2E crypto, records, LWW, sync DTOs. |
+| `seance_protocol` | Complete. Models (incl. Snippet with `{{placeholder}}` parsing/fill), E2E crypto, records (serverConfig/hostKey/secret/snippet), LWW, sync DTOs. |
 | `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores. |
 | `seance_sync_server` | Complete. 7 endpoints, in-memory + SQLite storage, rate limiting, Dockerfile + compose. |
-| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the tab list (one terminal per server, status dot: green/grey/red + connecting spinner; resizable tiled panes, no terminal title bar in wide mode); assistant tiled sidebar when configured (⌘/Ctrl+↵ sends); inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. Default desktop window 1800×1600. Platform folders committed. |
+| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the tab list (one terminal per server, status dot: green/grey/red + connecting spinner; resizable tiled panes, no terminal title bar in wide mode); right-hand utility panel with Assistant + Snippets tabs (snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends); inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. Default desktop window 1800×1600. Platform folders committed. |
 | CI | `.github/workflows/ci.yml`: dart analyze+test, flutter analyze+test, docker build. |
 
 ## Test inventory (what proves what)
