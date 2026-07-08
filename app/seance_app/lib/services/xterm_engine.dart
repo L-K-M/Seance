@@ -133,8 +133,13 @@ class XtermTerminalEngine implements TerminalEngine {
 
   @override
   void resize(TerminalSize size) {
+    // Only record the size — the xterm widget owns the on-screen terminal size
+    // (autoResize) and calls terminal.resize itself, which is what fires
+    // terminal.onResize. Since our onResize handler routes back here (to forward
+    // the size to the remote PTY), calling terminal.resize again would re-fire
+    // onResize and recurse until the stack overflows. So this is bookkeeping
+    // only, mirroring HeadlessTerminalEngine.
     _size = size;
-    terminal.resize(size.cols, size.rows);
   }
 
   /// Rendered scrollback text (no escape codes) for LLM context — the last

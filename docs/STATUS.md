@@ -78,17 +78,22 @@ _Last updated: 2026-07-08 — automatic sync, opt-in credential sync, mobile key
    but the sidebar uses non-streaming `chat()`; switch for nicer UX.
 7. **Provider-native web search** (Anthropic/OpenAI server-side tool) is unused;
    only client-side SearXNG/Brave. Add the native path for cloud providers.
-8. **Terminal PTY initial size** defaults to 80×24 until the first layout fires
-   `onResize`.
+8. **Terminal PTY initial size** is 80×24 for the moment between connect and the
+   first widget layout, then the xterm `autoResize` fits the grid to the pane and
+   forwards it to the remote PTY. (This resize path used to recurse infinitely —
+   `terminal.onResize` → `session.resize` → `engine.resize` → `terminal.resize`
+   → … — which left the grid stuck at 80 cols; `XtermTerminalEngine.resize` now
+   only records the size. Regression: `test/terminal_resize_test.dart`.)
 9. **Command suggestions are keystroke-based.** Capture reconstructs the
    command line from outbound keystrokes, so it can't tell a shell command from
    text typed at a no-echo prompt (a password). That's why the feature is
    opt-in and the stats stay local — only a snippet the user explicitly saves
    syncs. A precise version needs OSC 133 command-block marks (see item 6).
 10. **Mobile keyboard reflow** relies on `resizeToAvoidBottomInset` +
-    `adjustResize`; the on-screen key row now reserves space above the keyboard.
-    A soft keyboard with a floating/overlay mode may still cover the last row —
-    revisit if it recurs on specific devices.
+    `adjustResize`; the on-screen key row reserves space above the keyboard, and
+    with the resize loop fixed the terminal now re-fits its rows/cols as the
+    keyboard and key row change the available space. A soft keyboard with a
+    floating/overlay mode may still cover the last row — revisit if it recurs.
 
 ### Deliberately deferred (per proposal)
 SFTP browser, port-forwarding UI, ProxyJump execution (import only), Mosh,
