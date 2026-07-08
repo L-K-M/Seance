@@ -6,6 +6,7 @@ import 'package:xterm/xterm.dart';
 import '../app_state.dart';
 import '../main.dart';
 import 'chat_sidebar.dart';
+import 'command_generator.dart';
 
 /// Right pane / second screen: the active server's terminal. The server list is
 /// the tab list, so there is no tab strip here.
@@ -55,6 +56,12 @@ class TerminalPane extends StatelessWidget {
           : null,
       title: Text(active?.config.label ?? 'Terminal'),
       actions: [
+        if (state.llmConfigured && status == TerminalStatus.connected)
+          IconButton(
+            tooltip: 'Generate command',
+            icon: const Icon(Icons.auto_fix_high),
+            onPressed: () => showCommandGenerator(context, state),
+          ),
         if (status == TerminalStatus.connected)
           IconButton(
             tooltip: 'Disconnect',
@@ -155,8 +162,25 @@ class _SessionViewState extends State<_SessionView> {
       tab.engine.terminal,
       focusNode: _focus,
       autofocus: widget.isActive,
+      onKeyEvent: _handleKeyEvent,
       padding: const EdgeInsets.all(6),
     );
+  }
+
+  /// Intercept the command-generator shortcut before the terminal consumes the
+  /// keystroke. Uses Cmd+K (macOS) or Ctrl+Shift+K elsewhere — plain Ctrl+K is
+  /// left alone because that's readline's "kill to end of line".
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    final keys = HardwareKeyboard.instance;
+    final isGenerator = event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.keyK &&
+        (keys.isMetaPressed ||
+            (keys.isControlPressed && keys.isShiftPressed));
+    if (isGenerator && widget.state.llmConfigured) {
+      showCommandGenerator(context, widget.state);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 }
 

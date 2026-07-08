@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
@@ -170,16 +171,26 @@ class _ChatSidebarState extends State<ChatSidebar> {
           Row(
             children: [
               Expanded(
-                child: TextField(
-                  controller: _input,
-                  minLines: 1,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                    hintText: 'Describe a task, or ask a question…',
-                    border: OutlineInputBorder(),
-                    isDense: true,
+                // Enter inserts a newline (multiline); Cmd/Ctrl+Return sends.
+                child: CallbackShortcuts(
+                  bindings: {
+                    const SingleActivator(LogicalKeyboardKey.enter, meta: true):
+                        () => _send(state),
+                    const SingleActivator(LogicalKeyboardKey.enter,
+                        control: true): () => _send(state),
+                  },
+                  child: TextField(
+                    controller: _input,
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      hintText: 'Describe a task, or ask a question…',
+                      helperText: '⌘/Ctrl + ↵ to send',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    onSubmitted: (_) => _send(state),
                   ),
-                  onSubmitted: (_) => _send(state),
                 ),
               ),
               const SizedBox(width: 8),

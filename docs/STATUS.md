@@ -12,7 +12,7 @@ _Last updated: 2026-07-08 — tiled assistant sidebar, server-list-as-tabs, SSH 
 | `seance_protocol` | Complete. Models, E2E crypto, records, LWW, sync DTOs. |
 | `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores. |
 | `seance_sync_server` | Complete. 7 endpoints, in-memory + SQLite storage, rate limiting, Dockerfile + compose. |
-| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the tab list (one terminal per server, status dot: green/grey/red + connecting spinner); assistant shows as a tiled sidebar when configured (end-drawer on narrow/medium widths); failed connections show a summary + expandable connection log. Platform folders committed. |
+| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the tab list (one terminal per server, status dot: green/grey/red + connecting spinner; resizable tiled panes, no terminal title bar in wide mode); assistant tiled sidebar when configured (⌘/Ctrl+↵ sends); inline command generator (⌘K / Ctrl+Shift+K) turns NL into a reviewed command; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. Platform folders committed. |
 | CI | `.github/workflows/ci.yml`: dart analyze+test, flutter analyze+test, docker build. |
 
 ## Test inventory (what proves what)

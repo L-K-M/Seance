@@ -4,6 +4,7 @@ import 'package:seance_core/seance_core.dart';
 import '../app_state.dart';
 import '../main.dart';
 import '../theme.dart';
+import 'command_generator.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_editor.dart';
 import 'settings_screen.dart';
@@ -21,6 +22,12 @@ class ServerListPane extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Séance'),
         actions: [
+          if (state.llmConfigured)
+            IconButton(
+              tooltip: 'Generate a command (⌘K)',
+              icon: const Icon(Icons.auto_fix_high),
+              onPressed: () => showCommandGenerator(context, state),
+            ),
           IconButton(
             tooltip: 'Import ~/.ssh/config',
             icon: const Icon(Icons.download_outlined),

@@ -103,6 +103,22 @@ class OpenAiCompatibleProvider implements LlmProvider {
   }
 
   @override
+  Future<List<String>> listModels() async {
+    final res =
+        await _client.get(Uri.parse('$baseUrl/models'), headers: _headers);
+    if (res.statusCode >= 400) {
+      throw http.ClientException(
+          'OpenAI-compatible API error HTTP ${res.statusCode}: ${res.body}');
+    }
+    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    final data = (json['data'] as List?) ?? const [];
+    return data
+        .map((m) => (m as Map<String, dynamic>)['id'] as String?)
+        .whereType<String>()
+        .toList();
+  }
+
+  @override
   Future<CommandSuggestion> generateCommand({
     required String prompt,
     HostContext context = HostContext.unknown,

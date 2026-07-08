@@ -29,6 +29,9 @@ class FakeProvider implements LlmProvider {
   }
 
   @override
+  Future<List<String>> listModels() async => const [];
+
+  @override
   Future<CommandSuggestion> generateCommand(
           {required String prompt, HostContext context = HostContext.unknown}) =>
       throw UnimplementedError();
@@ -115,6 +118,29 @@ void main() {
       expect(() => prov.chat(messages: [const LlmMessage.user('hi')]),
           throwsA(isA<http.ClientException>()));
     });
+
+    test('listModels GETs /v1/models with the api key', () async {
+      Uri? seen;
+      String? key;
+      final client = MockClient((req) async {
+        seen = req.url;
+        key = req.headers['x-api-key'];
+        return http.Response(
+          jsonEncode({
+            'data': [
+              {'id': 'claude-opus-4-8', 'display_name': 'Opus'},
+              {'id': 'claude-haiku-4-5-20251001'},
+            ]
+          }),
+          200,
+        );
+      });
+      final prov = AnthropicProvider(apiKey: 'k', client: client);
+      final models = await prov.listModels();
+      expect(seen, Uri.parse('https://api.anthropic.com/v1/models'));
+      expect(key, 'k');
+      expect(models, ['claude-opus-4-8', 'claude-haiku-4-5-20251001']);
+    });
   });
 
   group('OpenAiCompatibleProvider', () {
@@ -174,6 +200,27 @@ void main() {
       final s = await prov.generateCommand(prompt: 'list files');
       expect(s.command, 'ls');
       expect(s.effectiveDanger, isNull);
+    });
+
+    test('listModels GETs /models and returns the ids', () async {
+      Uri? seen;
+      final client = MockClient((req) async {
+        seen = req.url;
+        return http.Response(
+          jsonEncode({
+            'data': [
+              {'id': 'llama3.1'},
+              {'id': 'qwen2.5'},
+            ]
+          }),
+          200,
+        );
+      });
+      final prov = OpenAiCompatibleProvider(
+          baseUrl: 'http://localhost:11434/v1', client: client);
+      final models = await prov.listModels();
+      expect(seen, Uri.parse('http://localhost:11434/v1/models'));
+      expect(models, ['llama3.1', 'qwen2.5']);
     });
   });
 

@@ -101,6 +101,19 @@ class AnthropicProvider implements LlmProvider {
   }
 
   @override
+  Future<List<String>> listModels() async {
+    final res =
+        await _client.get(Uri.parse('$baseUrl/v1/models'), headers: _headers);
+    _throwIfError(res);
+    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    final data = (json['data'] as List?) ?? const [];
+    return data
+        .map((m) => (m as Map<String, dynamic>)['id'] as String?)
+        .whereType<String>()
+        .toList();
+  }
+
+  @override
   Future<CommandSuggestion> generateCommand({
     required String prompt,
     HostContext context = HostContext.unknown,

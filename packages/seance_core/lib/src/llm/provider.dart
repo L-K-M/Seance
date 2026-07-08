@@ -130,6 +130,10 @@ class LlmProviderConfig {
 abstract class LlmProvider {
   String get model;
 
+  /// List the model ids the endpoint offers, for the settings picker. Returns
+  /// an empty list if the endpoint doesn't support discovery.
+  Future<List<String>> listModels();
+
   /// One-shot: turn a natural-language prompt into a reviewed command.
   Future<CommandSuggestion> generateCommand({
     required String prompt,

@@ -27,6 +27,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _saving = false;
   String? _syncStatus;
 
+  // Model discovery.
+  List<String> _models = [];
+  bool _loadingModels = false;
+  String? _modelsError;
+
   @override
   void initState() {
     super.initState();
@@ -101,10 +106,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _baseUrl,
             decoration: const InputDecoration(labelText: 'Base URL'),
           ),
-          TextField(
-            controller: _model,
-            decoration: const InputDecoration(labelText: 'Model'),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _model,
+                  decoration: const InputDecoration(
+                    labelText: 'Model',
+                    helperText: 'Pick from the list, or type any model id',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: _loadingModels
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : OutlinedButton.icon(
+                        onPressed: () => _fetchModels(state),
+                        icon: const Icon(Icons.playlist_add_check, size: 18),
+                        label: const Text('Suggest'),
+                      ),
+              ),
+            ],
           ),
+          if (_models.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: DropdownButtonFormField<String>(
+                isExpanded: true,
+                initialValue: _models.contains(_model.text) ? _model.text : null,
+                decoration:
+                    const InputDecoration(labelText: 'Available models'),
+                items: [
+                  for (final m in _models)
+                    DropdownMenuItem(
+                        value: m,
+                        child: Text(m, overflow: TextOverflow.ellipsis)),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() => _model.text = v);
+                },
+              ),
+            ),
+          if (_modelsError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(_modelsError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            ),
           TextField(
             controller: _apiKey,
             obscureText: true,
@@ -191,6 +245,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.only(bottom: 8),
         child: Text(title, style: Theme.of(context).textTheme.titleMedium),
       );
+
+  /// Ask the configured endpoint which models it offers. Uses the key typed in
+  /// the form if present, otherwise the stored one; keyless local endpoints
+  /// (Ollama) need none. The manual field remains the fallback if this fails or
+  /// the list omits the model the user wants.
+  Future<void> _fetchModels(AppState state) async {
+    setState(() {
+      _loadingModels = true;
+      _modelsError = null;
+    });
+    try {
+      final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
+      final key = _apiKey.text.isNotEmpty
+          ? _apiKey.text
+          : (await state.services.masterKeys.getApiKey(ref) ?? '');
+      final baseUrl = _baseUrl.text.trim();
+      final LlmProvider provider = _kind == LlmProviderKind.anthropic
+          ? AnthropicProvider(
+              apiKey: key, baseUrl: baseUrl, model: _model.text.trim())
+          : OpenAiCompatibleProvider(
+              baseUrl: baseUrl, apiKey: key, model: _model.text.trim());
+      final models = await provider.listModels();
+      models.sort();
+      setState(() {
+        _models = models;
+        if (models.isEmpty) {
+          _modelsError = 'The endpoint returned no models.';
+        }
+      });
+    } catch (e) {
+      setState(() => _modelsError = 'Could not fetch models: $e');
+    } finally {
+      if (mounted) setState(() => _loadingModels = false);
+    }
+  }
 
   Future<void> _save(AppState state) async {
     setState(() => _saving = true);
