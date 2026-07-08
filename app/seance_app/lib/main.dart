@@ -1,4 +1,7 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'app_state.dart';
 import 'services/app_services.dart';
@@ -89,7 +92,23 @@ class _BootstrapState extends State<_Bootstrap> {
     };
 
     await state.load();
+    _installMacMenu(state);
     return state;
+  }
+
+  /// Wire the native macOS menu items (MainFlutterWindow.swift) to app actions.
+  void _installMacMenu(AppState state) {
+    if (!Platform.isMacOS) return;
+    const channel = MethodChannel('seance/menu');
+    channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'openSettings':
+          openSettings();
+        case 'generateCommand':
+          openCommandGenerator(state);
+      }
+      return null;
+    });
   }
 
   @override

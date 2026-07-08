@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../app_state.dart';
 import '../main.dart';
+import 'command_generator.dart';
 import 'settings_screen.dart';
 
 bool _settingsRouteOpen = false;
@@ -19,70 +21,38 @@ void openSettings() {
       .whenComplete(() => _settingsRouteOpen = false);
 }
 
-/// Wraps the app with the native macOS menu bar (Settings lives under the app
-/// menu, ⌘,) plus a cross-platform ⌘/Ctrl+, shortcut for Linux/Windows. The
-/// menu bar is a no-op on platforms without a system menu.
+/// Open the command generator for the active session. Used by the macOS menu
+/// item and ⌘K; nudges the user to Settings if the assistant isn't set up.
+void openCommandGenerator(AppState state) {
+  final ctx = navigatorKey.currentContext;
+  if (ctx == null) return;
+  if (!state.llmConfigured) {
+    ScaffoldMessenger.of(ctx).showSnackBar(
+      const SnackBar(content: Text('Configure the assistant in Settings first.')),
+    );
+    return;
+  }
+  showCommandGenerator(ctx, state);
+}
+
+/// Cross-platform keyboard shortcuts for the menu commands. On macOS the native
+/// menu (wired in MainFlutterWindow.swift) owns ⌘, and ⌘K; this covers
+/// Linux/Windows, where there is no system menu bar. The native menu and these
+/// shortcuts share [openSettings]'s dedupe guard.
 class AppMenus extends StatelessWidget {
   final Widget child;
   const AppMenus({super.key, required this.child});
 
   @override
   Widget build(BuildContext context) {
-    return PlatformMenuBar(
-      menus: [
-        PlatformMenu(
-          label: 'Séance',
-          menus: [
-            const PlatformMenuItemGroup(
-              members: [
-                PlatformProvidedMenuItem(
-                    type: PlatformProvidedMenuItemType.about),
-              ],
-            ),
-            PlatformMenuItemGroup(
-              members: [
-                PlatformMenuItem(
-                  label: 'Settings…',
-                  shortcut: const SingleActivator(LogicalKeyboardKey.comma,
-                      meta: true),
-                  onSelected: openSettings,
-                ),
-              ],
-            ),
-            const PlatformMenuItemGroup(
-              members: [
-                PlatformProvidedMenuItem(
-                    type: PlatformProvidedMenuItemType.servicesSubmenu),
-              ],
-            ),
-            const PlatformMenuItemGroup(
-              members: [
-                PlatformProvidedMenuItem(
-                    type: PlatformProvidedMenuItemType.hide),
-                PlatformProvidedMenuItem(
-                    type: PlatformProvidedMenuItemType.hideOtherApplications),
-                PlatformProvidedMenuItem(
-                    type: PlatformProvidedMenuItemType.showAllApplications),
-              ],
-            ),
-            const PlatformMenuItemGroup(
-              members: [
-                PlatformProvidedMenuItem(
-                    type: PlatformProvidedMenuItemType.quit),
-              ],
-            ),
-          ],
-        ),
-      ],
-      child: CallbackShortcuts(
-        bindings: {
-          const SingleActivator(LogicalKeyboardKey.comma, meta: true):
-              openSettings,
-          const SingleActivator(LogicalKeyboardKey.comma, control: true):
-              openSettings,
-        },
-        child: child,
-      ),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.comma, meta: true):
+            openSettings,
+        const SingleActivator(LogicalKeyboardKey.comma, control: true):
+            openSettings,
+      },
+      child: child,
     );
   }
 }
