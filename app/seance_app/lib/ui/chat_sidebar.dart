@@ -49,7 +49,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
       searchProvider: search,
       onPaste: (command) {
         // Place the (newline-free) command into the active session's prompt.
-        state.activeTab?.engine.injectInput(command);
+        state.activeSession?.engine.injectInput(command);
       },
     );
     _chat = controller;
@@ -70,7 +70,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
     try {
       final controller = await _ensureController(state);
       final context = _includeContext
-          ? state.activeTab?.engine.recentText(maxLines: 200)
+          ? state.activeSession?.engine.recentText(maxLines: 200)
           : null;
       final result = await controller.send(text, terminalContext: context);
       setState(() {

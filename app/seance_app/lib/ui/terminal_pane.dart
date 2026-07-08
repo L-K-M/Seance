@@ -1,15 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:seance_core/seance_core.dart';
 import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
 import '../main.dart';
 import 'chat_sidebar.dart';
 
-/// Right pane / second screen: the open terminal sessions as tabs, plus the
-/// always-available assistant in an end drawer.
+/// Right pane / second screen: the active server's terminal. The server list is
+/// the tab list, so there is no tab strip here.
+///
+/// When the assistant is not shown as a tiled sidebar (narrow or medium
+/// widths), [showAssistantAffordance] puts it behind an end-drawer button.
 class TerminalPane extends StatelessWidget {
   final VoidCallback? onBack;
-  const TerminalPane({super.key, this.onBack});
+  final bool showAssistantAffordance;
+
+  const TerminalPane({
+    super.key,
+    this.onBack,
+    this.showAssistantAffordance = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -17,9 +28,11 @@ class TerminalPane extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
-        final active = state.activeTab;
+        final active = state.activeSession;
         return Scaffold(
-          endDrawer: const Drawer(width: 380, child: ChatSidebar()),
+          endDrawer: showAssistantAffordance
+              ? const Drawer(width: 380, child: ChatSidebar())
+              : null,
           appBar: AppBar(
             leading: onBack != null
                 ? IconButton(
@@ -27,69 +40,44 @@ class TerminalPane extends StatelessWidget {
                 : null,
             title: Text(active?.config.label ?? 'Terminal'),
             actions: [
-              Builder(
-                builder: (context) => IconButton(
-                  tooltip: 'Assistant',
-                  icon: const Icon(Icons.auto_awesome_outlined),
-                  onPressed: active == null
-                      ? null
-                      : () => Scaffold.of(context).openEndDrawer(),
+              if (active != null &&
+                  (active.status == TerminalStatus.connected ||
+                      active.status == TerminalStatus.error ||
+                      active.status == TerminalStatus.disconnected))
+                IconButton(
+                  tooltip: active.status == TerminalStatus.connected
+                      ? 'Disconnect'
+                      : 'Reconnect',
+                  icon: Icon(active.status == TerminalStatus.connected
+                      ? Icons.link_off
+                      : Icons.refresh),
+                  onPressed: active.status == TerminalStatus.connected
+                      ? () => state.disconnect(active.serverId)
+                      : () => state.reconnect(active.serverId),
                 ),
-              ),
+              if (showAssistantAffordance)
+                Builder(
+                  builder: (context) => IconButton(
+                    tooltip: 'Assistant',
+                    icon: const Icon(Icons.auto_awesome_outlined),
+                    onPressed: () => Scaffold.of(context).openEndDrawer(),
+                  ),
+                ),
             ],
-            bottom: state.tabs.isEmpty
-                ? null
-                : _TabStrip(state: state, preferredSize: const Size.fromHeight(40)),
           ),
           body: active == null
               ? const _NoSession()
-              : _TerminalBody(tab: active),
+              : _TerminalBody(tab: active, state: state),
         );
       },
     );
   }
 }
 
-class _TabStrip extends StatelessWidget implements PreferredSizeWidget {
-  final AppState state;
-  @override
-  final Size preferredSize;
-  const _TabStrip({required this.state, required this.preferredSize});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: preferredSize.height,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        children: [
-          for (final tab in state.tabs)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-              child: InputChip(
-                selected: tab.id == state.activeTabId,
-                label: Text(tab.config.label),
-                avatar: Icon(
-                  tab.isConnected
-                      ? Icons.circle
-                      : (tab.connecting
-                          ? Icons.more_horiz
-                          : Icons.error_outline),
-                  size: 12,
-                ),
-                onPressed: () => state.focusTab(tab.id),
-                onDeleted: () => state.closeTab(tab.id),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 class _TerminalBody extends StatelessWidget {
-  final TerminalTab tab;
-  const _TerminalBody({required this.tab});
+  final TerminalSession tab;
+  final AppState state;
+  const _TerminalBody({required this.tab, required this.state});
 
   @override
   Widget build(BuildContext context) {
@@ -97,8 +85,33 @@ class _TerminalBody extends StatelessWidget {
       return const Center(child: CircularProgressIndicator());
     }
     if (tab.error != null) {
-      return Center(
-        child: Padding(
+      return _ConnectionError(tab: tab, state: state);
+    }
+    if (!tab.isConnected) {
+      // Session dropped (remote exit / network). Offer a reconnect.
+      return _Disconnected(tab: tab, state: state);
+    }
+    return TerminalView(
+      tab.engine.terminal,
+      autofocus: true,
+      padding: const EdgeInsets.all(6),
+    );
+  }
+}
+
+/// Shown when a connection attempt failed. Surfaces the one-line summary and an
+/// expandable connection log so the user can see exactly what happened.
+class _ConnectionError extends StatelessWidget {
+  final TerminalSession tab;
+  final AppState state;
+  const _ConnectionError({required this.tab, required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -109,15 +122,103 @@ class _TerminalBody extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
               Text(tab.error!, textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () => state.reconnect(tab.serverId),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+              ),
+              const SizedBox(height: 12),
+              _ConnectionLogView(log: tab.log),
             ],
           ),
         ),
-      );
-    }
-    return TerminalView(
-      tab.engine.terminal,
-      autofocus: true,
-      padding: const EdgeInsets.all(6),
+      ),
+    );
+  }
+}
+
+class _Disconnected extends StatelessWidget {
+  final TerminalSession tab;
+  final AppState state;
+  const _Disconnected({required this.tab, required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.power_off_outlined, size: 40),
+            const SizedBox(height: 12),
+            Text('Disconnected',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            const Text('The session ended.', textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () => state.reconnect(tab.serverId),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Reconnect'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A collapsible view of the raw connection transcript, with a copy button.
+class _ConnectionLogView extends StatelessWidget {
+  final SshConnectionLog log;
+  const _ConnectionLogView({required this.log});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = log.toString();
+    final scheme = Theme.of(context).colorScheme;
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        title: const Text('Connection log'),
+        childrenPadding: EdgeInsets.zero,
+        children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: text.isEmpty
+                  ? null
+                  : () {
+                      Clipboard.setData(ClipboardData(text: text));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Log copied')),
+                      );
+                    },
+              icon: const Icon(Icons.copy, size: 16),
+              label: const Text('Copy'),
+            ),
+          ),
+          Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(maxHeight: 260),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                text.isEmpty ? '(no log captured)' : text,
+                style: const TextStyle(
+                    fontFamily: 'monospace', fontSize: 12, height: 1.4),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

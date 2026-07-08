@@ -3,7 +3,7 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-07-07 — initial full implementation._
+_Last updated: 2026-07-08 — tiled assistant sidebar, server-list-as-tabs, SSH auth diagnostics._
 
 ## Done (implemented + verified)
 
@@ -12,7 +12,7 @@ _Last updated: 2026-07-07 — initial full implementation._
 | `seance_protocol` | Complete. Models, E2E crypto, records, LWW, sync DTOs. |
 | `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores. |
 | `seance_sync_server` | Complete. 7 endpoints, in-memory + SQLite storage, rate limiting, Dockerfile + compose. |
-| `seance_app` | Complete at the library level; `flutter analyze` clean, widget tests pass. Platform folders generated on demand (not committed). |
+| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the tab list (one terminal per server, status dot: green/grey/red + connecting spinner); assistant shows as a tiled sidebar when configured (end-drawer on narrow/medium widths); failed connections show a summary + expandable connection log. Platform folders committed. |
 | CI | `.github/workflows/ci.yml`: dart analyze+test, flutter analyze+test, docker build. |
 
 ## Test inventory (what proves what)
@@ -42,6 +42,12 @@ _Last updated: 2026-07-07 — initial full implementation._
   two devices converge over HTTP; bad-login rejection.
 - `app/seance_app/test/host_key_dialog_test.dart` — TOFU dialog first-use +
   hard changed-key block.
+- `app/seance_app/test/bootstrap_test.dart` — startup phases stay in one
+  MaterialApp; pushed routes resolve `AppScope`.
+- `seance_core/test/ssh_diagnostics_test.dart` — connection-log capture and the
+  readable `SshConnectException` summary; agent-auth rejected pre-network.
+- `seance_core/test/http_sync_client_test.dart` — sync base-URL normalization
+  (trailing slash / whitespace tolerated).
 
 ## Open items (roughly prioritized)
 

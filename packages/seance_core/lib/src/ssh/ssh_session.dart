@@ -42,6 +42,42 @@ typedef HostKeyPrompter = Future<bool> Function(HostKeyDecision decision);
 typedef KeyboardInteractiveResponder = Future<List<String>> Function(
     List<String> prompts, String name, String instruction);
 
+/// A running transcript of one connection attempt: the human-readable steps we
+/// log plus dartssh2's own debug/trace output. The UI shows this so a failed
+/// connection explains *what happened* — which auth methods were tried and
+/// which the server actually accepts — instead of a bare
+/// `SSHAuthFailError(All authentication methods failed)`.
+class SshConnectionLog {
+  final List<String> lines = [];
+
+  /// Called after every [add] so a live view can repaint.
+  final void Function()? onUpdate;
+
+  SshConnectionLog({this.onUpdate});
+
+  void add(String line) {
+    lines.add(line);
+    onUpdate?.call();
+  }
+
+  @override
+  String toString() => lines.join('\n');
+}
+
+/// Thrown when a connection attempt fails. [message] is a one-line,
+/// user-facing summary; [log] carries the full transcript for a details view;
+/// [cause] is the original error.
+class SshConnectException implements Exception {
+  final String message;
+  final Object cause;
+  final SshConnectionLog log;
+
+  SshConnectException(this.message, this.cause, this.log);
+
+  @override
+  String toString() => message;
+}
+
 /// A live SSH shell session wired to a [TerminalEngine].
 class SshSession {
   final SSHClient client;
@@ -49,6 +85,10 @@ class SshSession {
   final TerminalEngine engine;
   final List<StreamSubscription<dynamic>> _subs = [];
   bool _closed = false;
+
+  /// Fired once when the remote shell ends (server-side exit, dropped
+  /// connection). Lets the app flip the session's status dot to "disconnected".
+  void Function()? onClosed;
 
   SshSession._(this.client, this.shell, this.engine);
 
@@ -60,6 +100,13 @@ class SshSession {
     _subs.add(engine.userInput.listen((data) {
       if (!_closed) shell.write(Uint8List.fromList(data));
     }));
+    // The remote side closing the channel (logout, kill, network drop) should
+    // mark the session disconnected in the UI.
+    shell.done.then((_) {
+      if (!_closed) onClosed?.call();
+    }).catchError((_) {
+      if (!_closed) onClosed?.call();
+    });
   }
 
   void resize(TerminalSize size) {
@@ -135,7 +182,10 @@ class SshSessionManager {
     required SshCredentials credentials,
     required TerminalEngine engine,
     Duration timeout = const Duration(seconds: 15),
+    SshConnectionLog? log,
   }) async {
+    void note(String m) => log?.add(m);
+
     if (credentials.method == AuthMethod.agent) {
       // dartssh2 has no local ssh-agent auth path; the app must resolve agent
       // keys via a platform bridge and pass them as privateKey credentials.
@@ -146,7 +196,22 @@ class SshSessionManager {
       );
     }
 
-    final socket = await _connect(config.host, config.port, timeout);
+    final target = '${config.username}@${config.host}:${config.port}';
+    note('Connecting to $target …');
+    note('Auth method: ${_methodLabel(credentials.method)}');
+
+    SSHSocket socket;
+    try {
+      socket = await _connect(config.host, config.port, timeout);
+    } catch (e) {
+      note('Could not open a TCP connection: $e');
+      throw SshConnectException(
+        'Could not reach ${config.host}:${config.port} — $e',
+        e,
+        log ?? SshConnectionLog(),
+      );
+    }
+    note('TCP connection established; starting SSH handshake.');
 
     final identities = credentials.method == AuthMethod.privateKey
         ? SSHKeyPair.fromPem(
@@ -166,13 +231,85 @@ class SshSessionManager {
       onPasswordRequest:
           credentials.method == AuthMethod.password ? () => credentials.password : null,
       onUserInfoRequest: _wrapKeyboardInteractive(),
+      // dartssh2's own tracing. Trace lines carry the decisive detail — e.g.
+      // `SSH_Message_Userauth_Failure(methodsLeft: [publickey], ...)` tells us
+      // exactly which methods the server will accept.
+      printDebug: log == null ? null : (m) => log.add('· ${m ?? ''}'),
+      printTrace: log == null ? null : (m) => log.add('  ${m ?? ''}'),
     );
 
-    final shell = await client.shell(
-      pty: SSHPtyConfig(width: engine.size.cols, height: engine.size.rows),
-    );
-    final session = SshSession._(client, shell, engine).._wire();
-    return session;
+    try {
+      final shell = await client.shell(
+        pty: SSHPtyConfig(width: engine.size.cols, height: engine.size.rows),
+      );
+      note('Authenticated. Shell session opened.');
+      final session = SshSession._(client, shell, engine).._wire();
+      return session;
+    } catch (e) {
+      final summary = _summarizeFailure(e, target, credentials, log);
+      note('');
+      note(summary);
+      client.close();
+      throw SshConnectException(summary, e, log ?? SshConnectionLog());
+    }
+  }
+
+  static String _methodLabel(AuthMethod method) => switch (method) {
+        AuthMethod.password => 'password',
+        AuthMethod.privateKey => 'public key',
+        AuthMethod.agent => 'ssh-agent',
+      };
+
+  /// Turn dartssh2's terse errors into an actionable one-liner, mining the
+  /// captured trace for the server's accepted-methods list when auth failed.
+  static String _summarizeFailure(Object e, String target,
+      SshCredentials credentials, SshConnectionLog? log) {
+    if (e is SSHAuthFailError) {
+      final accepted = _acceptedMethodsFromLog(log);
+      final tried = _methodLabel(credentials.method);
+      final buffer = StringBuffer(
+          'Authentication failed for $target (tried $tried).');
+      if (accepted != null && accepted.isNotEmpty) {
+        buffer.write(' The server accepts: ${accepted.join(', ')}.');
+        if (!accepted.contains(_sshMethodName(credentials.method))) {
+          buffer.write(
+              ' Switch this server to a method the host allows.');
+        } else {
+          buffer.write(' Check the credential (wrong password or key).');
+        }
+      } else {
+        buffer.write(' Check the username, password, or key.');
+      }
+      return buffer.toString();
+    }
+    if (e is SSHError) {
+      return 'SSH error connecting to $target: $e';
+    }
+    return 'Failed to connect to $target: $e';
+  }
+
+  /// dartssh2's SSH-protocol name for our credential's method.
+  static String _sshMethodName(AuthMethod method) => switch (method) {
+        AuthMethod.password => 'password',
+        AuthMethod.privateKey => 'publickey',
+        AuthMethod.agent => 'publickey',
+      };
+
+  /// Scan the trace for the last `methodsLeft: [ … ]` the server sent.
+  static List<String>? _acceptedMethodsFromLog(SshConnectionLog? log) {
+    if (log == null) return null;
+    final re = RegExp(r'methodsLeft: \[([^\]]*)\]');
+    String? last;
+    for (final line in log.lines) {
+      final m = re.firstMatch(line);
+      if (m != null) last = m.group(1);
+    }
+    if (last == null) return null;
+    return last
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
   }
 
   SSHUserInfoRequestHandler? _wrapKeyboardInteractive() {

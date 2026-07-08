@@ -43,10 +43,14 @@ class ServerListPane extends StatelessWidget {
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final server = state.servers[i];
-              final status = state.statuses[server.id] ?? ProbeStatus.unknown;
+              final reachability =
+                  state.statuses[server.id] ?? ProbeStatus.unknown;
+              final session = state.sessionForServer(server.id);
               return _ServerTile(
                 server: server,
-                status: status,
+                connection: session?.status ?? TerminalStatus.disconnected,
+                reachability: reachability,
+                selected: server.id == state.activeServerId,
                 onTap: () => onOpen(server),
                 onEdit: () => _editServer(context, state, server),
                 onDelete: () => _deleteServer(context, state, server),
@@ -135,14 +139,18 @@ class ServerListPane extends StatelessWidget {
 
 class _ServerTile extends StatelessWidget {
   final ServerConfig server;
-  final ProbeStatus status;
+  final TerminalStatus connection;
+  final ProbeStatus reachability;
+  final bool selected;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
   const _ServerTile({
     required this.server,
-    required this.status,
+    required this.connection,
+    required this.reachability,
+    required this.selected,
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
@@ -151,35 +159,76 @@ class _ServerTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: _StatusDot(status: status),
+      selected: selected,
+      leading: _ConnectionDot(status: connection),
       title: Text(server.label),
       subtitle: Text('${server.username}@${server.host}:${server.port}'),
       onTap: onTap,
-      trailing: PopupMenuButton<String>(
-        onSelected: (v) => v == 'edit' ? onEdit() : onDelete(),
-        itemBuilder: (_) => const [
-          PopupMenuItem(value: 'edit', child: Text('Edit')),
-          PopupMenuItem(value: 'delete', child: Text('Delete')),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ReachabilityDot(status: reachability),
+          PopupMenuButton<String>(
+            onSelected: (v) => v == 'edit' ? onEdit() : onDelete(),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'edit', child: Text('Edit')),
+              PopupMenuItem(value: 'delete', child: Text('Delete')),
+            ],
+          ),
         ],
       ),
     );
   }
 }
 
-class _StatusDot extends StatelessWidget {
-  final ProbeStatus status;
-  const _StatusDot({required this.status});
+/// The prominent leading dot: the state of this server's terminal session.
+class _ConnectionDot extends StatelessWidget {
+  final TerminalStatus status;
+  const _ConnectionDot({required this.status});
 
   @override
   Widget build(BuildContext context) {
+    if (status == TerminalStatus.connecting) {
+      return const Tooltip(
+        message: 'connecting',
+        child: SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
     final (color, label) = switch (status) {
-      ProbeStatus.online => (StatusColors.online(context), 'online'),
-      ProbeStatus.offline => (StatusColors.offline(context), 'offline'),
-      ProbeStatus.unknown => (StatusColors.unknown(context), 'unknown'),
+      TerminalStatus.connected => (StatusColors.online(context), 'connected'),
+      TerminalStatus.error => (StatusColors.offline(context), 'connection error'),
+      TerminalStatus.disconnected =>
+        (StatusColors.unknown(context), 'disconnected'),
+      TerminalStatus.connecting =>
+        (StatusColors.unknown(context), 'connecting'),
     };
     return Tooltip(
       message: label,
       child: Icon(Icons.circle, size: 12, color: color),
+    );
+  }
+}
+
+/// A subtle secondary dot: whether the host is reachable on the network (the
+/// background probe), independent of whether we have a session open.
+class _ReachabilityDot extends StatelessWidget {
+  final ProbeStatus status;
+  const _ReachabilityDot({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final (color, label) = switch (status) {
+      ProbeStatus.online => (StatusColors.online(context), 'reachable'),
+      ProbeStatus.offline => (StatusColors.offline(context), 'unreachable'),
+      ProbeStatus.unknown => (StatusColors.unknown(context), 'reachability unknown'),
+    };
+    return Tooltip(
+      message: 'Host $label',
+      child: Icon(Icons.circle_outlined, size: 10, color: color),
     );
   }
 }

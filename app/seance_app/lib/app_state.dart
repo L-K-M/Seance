@@ -6,37 +6,62 @@ import 'package:seance_core/seance_core.dart';
 import 'services/app_services.dart';
 import 'services/xterm_engine.dart';
 
-/// One open terminal session in the right pane.
-class TerminalTab {
-  final String id;
+/// Connection state of a server's terminal, mirrored by the status dot in the
+/// server list (green / grey / red, with a spinner while connecting).
+enum TerminalStatus { connecting, connected, disconnected, error }
+
+/// One terminal session, bound one-to-one to a server. The server list is the
+/// tab list: each server has at most one [TerminalSession].
+class TerminalSession {
+  final String serverId;
   final ServerConfig config;
-  final XtermTerminalEngine engine;
+  XtermTerminalEngine engine;
   SshSession? session;
   bool connecting;
   String? error;
 
-  TerminalTab({
-    required this.id,
+  /// Live transcript of the current/last connection attempt, shown in the
+  /// "connection log" details when a connection fails.
+  SshConnectionLog log;
+
+  TerminalSession({
+    required this.serverId,
     required this.config,
     required this.engine,
+    required this.log,
     this.connecting = true,
     this.error,
   });
 
   bool get isConnected => session != null && !session!.isClosed;
+
+  TerminalStatus get status {
+    if (connecting) return TerminalStatus.connecting;
+    if (error != null) return TerminalStatus.error;
+    if (isConnected) return TerminalStatus.connected;
+    return TerminalStatus.disconnected;
+  }
 }
 
-/// Top-level app state: the server list, live reachability, and open terminal
-/// tabs. The UI is a thin `ListenableBuilder` over this.
+/// Top-level app state: the server list, live reachability, and the open
+/// terminal sessions (one per server). The UI is a thin `ListenableBuilder`
+/// over this.
 class AppState extends ChangeNotifier {
   final AppServices services;
   late final SshSessionManager _sessionManager;
 
   List<ServerConfig> servers = [];
   Map<String, ProbeStatus> statuses = {};
-  final List<TerminalTab> tabs = [];
-  String? activeTabId;
-  String? selectedServerId;
+
+  /// Open terminal sessions keyed by server id — one per server.
+  final Map<String, TerminalSession> sessions = {};
+
+  /// The server whose terminal is shown in the right pane.
+  String? activeServerId;
+
+  /// Whether the assistant is configured enough to be usable (drives whether
+  /// the LLM sidebar is shown). Refreshed at load and after settings change.
+  bool llmConfigured = false;
 
   StreamSubscription<Map<String, ProbeStatus>>? _probeSub;
 
@@ -61,22 +86,40 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  TerminalTab? get activeTab {
-    if (activeTabId == null) return null;
-    for (final t in tabs) {
-      if (t.id == activeTabId) return t;
-    }
-    return null;
-  }
+  TerminalSession? get activeSession =>
+      activeServerId == null ? null : sessions[activeServerId];
+
+  TerminalSession? sessionForServer(String serverId) => sessions[serverId];
 
   Future<void> load() async {
     servers = await services.configStore.listServers();
+    await refreshLlmConfigured();
     _probeSub = services.probe.statuses.listen((s) {
       statuses = s;
       notifyListeners();
     });
     services.probe.start(servers);
     notifyListeners();
+  }
+
+  /// Recompute whether the assistant is usable: a key-based provider needs a
+  /// stored API key; a local OpenAI-compatible endpoint (Ollama, LM Studio)
+  /// works keyless as long as a base URL is set.
+  Future<void> refreshLlmConfigured() async {
+    final s = services.settings;
+    final storedKey = s.llmApiKeyRef.isEmpty
+        ? null
+        : await services.masterKeys.getApiKey(s.llmApiKeyRef);
+    final hasKey = storedKey != null && storedKey.isNotEmpty;
+    final configured = switch (s.llmKind) {
+      LlmProviderKind.anthropic => hasKey,
+      LlmProviderKind.openaiCompatible =>
+        hasKey || s.llmBaseUrl.trim().isNotEmpty,
+    };
+    if (configured != llmConfigured) {
+      llmConfigured = configured;
+      notifyListeners();
+    }
   }
 
   Future<void> saveServer(ServerConfig config, {Secret? secret}) async {
@@ -88,6 +131,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> deleteServer(String id) async {
+    await closeSession(id);
     final server = await services.configStore.getServer(id);
     if (server?.secretRef != null) {
       await services.vault.deleteSecret(server!.secretRef!);
@@ -95,7 +139,7 @@ class AppState extends ChangeNotifier {
     await services.configStore.deleteServer(id);
     servers = await services.configStore.listServers();
     services.probe.updateServers(servers);
-    if (selectedServerId == id) selectedServerId = null;
+    if (activeServerId == id) activeServerId = null;
     notifyListeners();
   }
 
@@ -113,12 +157,34 @@ class AppState extends ChangeNotifier {
     return hosts.length;
   }
 
-  /// Open (or focus) a terminal for [config].
-  Future<TerminalTab> openTerminal(ServerConfig config) async {
+  /// Open [config]'s terminal. If it is already connected (or connecting), just
+  /// focus it; if it is disconnected or errored, reconnect. Always makes it the
+  /// active session.
+  Future<void> openTerminal(ServerConfig config) async {
+    final existing = sessions[config.id];
+    activeServerId = config.id;
+    if (existing != null &&
+        (existing.status == TerminalStatus.connected ||
+            existing.status == TerminalStatus.connecting)) {
+      notifyListeners();
+      return;
+    }
+    await _connect(config);
+  }
+
+  /// (Re)establish the SSH session for [config], replacing any prior engine.
+  Future<void> _connect(ServerConfig config) async {
+    final log = SshConnectionLog(onUpdate: notifyListeners);
     final engine = XtermTerminalEngine();
-    final tab = TerminalTab(id: uuidV4(), config: config, engine: engine);
-    tabs.add(tab);
-    activeTabId = tab.id;
+    final tab = TerminalSession(
+      serverId: config.id,
+      config: config,
+      engine: engine,
+      log: log,
+    );
+    // Drop any previous session for this server before replacing it.
+    await sessions[config.id]?.session?.close();
+    sessions[config.id] = tab;
     notifyListeners();
 
     try {
@@ -127,19 +193,41 @@ class AppState extends ChangeNotifier {
         config: config,
         credentials: credentials,
         engine: engine,
+        log: log,
       );
       tab.session = session;
       tab.connecting = false;
+      session.onClosed = () {
+        // Remote side ended: flip to disconnected if this is still the tab.
+        if (sessions[config.id] == tab) {
+          tab.connecting = false;
+          notifyListeners();
+        }
+      };
       // The widget drives resize; forward it to the SSH PTY.
       engine.terminal.onResize = (w, h, pw, ph) {
         if (!session.isClosed) session.resize(TerminalSize(w, h));
       };
     } catch (e) {
       tab.connecting = false;
-      tab.error = e.toString();
+      tab.error = e is SshConnectException ? e.message : e.toString();
     }
     notifyListeners();
-    return tab;
+  }
+
+  /// Retry the connection for a server whose session failed or dropped.
+  Future<void> reconnect(String serverId) async {
+    final config = _configFor(serverId);
+    if (config == null) return;
+    activeServerId = serverId;
+    await _connect(config);
+  }
+
+  ServerConfig? _configFor(String serverId) {
+    for (final s in servers) {
+      if (s.id == serverId) return s;
+    }
+    return sessions[serverId]?.config;
   }
 
   /// Run one sync round, then refresh the server list from the (possibly
@@ -152,21 +240,32 @@ class AppState extends ChangeNotifier {
     return outcome;
   }
 
-  void focusTab(String id) {
-    activeTabId = id;
+  void focusServer(String serverId) {
+    activeServerId = serverId;
     notifyListeners();
   }
 
-  Future<void> closeTab(String id) async {
-    TerminalTab? tab;
-    for (final t in tabs) {
-      if (t.id == id) tab = t;
-    }
+  /// Close a server's SSH session but keep viewing it: the tab stays, its dot
+  /// goes grey (disconnected), and the pane offers a reconnect.
+  Future<void> disconnect(String serverId) async {
+    final tab = sessions[serverId];
     if (tab == null) return;
     await tab.session?.close();
-    tabs.remove(tab);
-    if (activeTabId == id) {
-      activeTabId = tabs.isNotEmpty ? tabs.last.id : null;
+    tab.session = null;
+    tab.connecting = false;
+    tab.error = null;
+    notifyListeners();
+  }
+
+  /// Close a server's session (if any) and drop it from the open set. Used when
+  /// the server itself is deleted.
+  Future<void> closeSession(String serverId) async {
+    final tab = sessions.remove(serverId);
+    if (tab == null) return;
+    await tab.session?.close();
+    if (activeServerId == serverId) {
+      activeServerId =
+          sessions.isNotEmpty ? sessions.keys.last : null;
     }
     notifyListeners();
   }
@@ -175,7 +274,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     _probeSub?.cancel();
     services.probe.dispose();
-    for (final t in tabs) {
+    for (final t in sessions.values) {
       t.session?.close();
     }
     super.dispose();
