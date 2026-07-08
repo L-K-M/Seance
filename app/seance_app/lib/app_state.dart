@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
 
 import 'services/app_services.dart';
+import 'services/default_snippets.dart';
 import 'services/xterm_engine.dart';
 
 /// Connection state of a server's terminal, mirrored by the status dot in the
@@ -98,6 +99,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> load() async {
     servers = await services.configStore.listServers();
+    await _seedDefaultSnippets();
     snippets = await services.snippetStore.listSnippets();
     await refreshLlmConfigured();
     _probeSub = services.probe.statuses.listen((s) {
@@ -242,6 +244,17 @@ class AppState extends ChangeNotifier {
       if (s.id == serverId) return s;
     }
     return sessions[serverId]?.config;
+  }
+
+  /// Seed the built-in snippets on first launch only (guarded by a persisted
+  /// flag so clearing them out doesn't bring them back).
+  Future<void> _seedDefaultSnippets() async {
+    if (services.settings.snippetsSeeded) return;
+    for (final snippet in defaultSnippets()) {
+      await services.snippetStore.putSnippet(snippet);
+    }
+    services.settings.snippetsSeeded = true;
+    await services.saveSettings();
   }
 
   /// Save (create or update) a snippet, then refresh the list.

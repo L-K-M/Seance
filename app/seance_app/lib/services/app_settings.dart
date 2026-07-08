@@ -26,6 +26,10 @@ class AppSettings {
   /// Stable per-device id used in synced records' conflict resolution.
   String deviceId;
 
+  /// Whether the built-in default snippets have been seeded (one-time, so
+  /// deleting them all doesn't bring them back).
+  bool snippetsSeeded;
+
   AppSettings({
     this.llmKind = LlmProviderKind.anthropic,
     this.llmBaseUrl = 'https://api.anthropic.com',
@@ -37,6 +41,7 @@ class AppSettings {
     this.syncBaseUrl,
     this.syncUsername,
     this.deviceId = '',
+    this.snippetsSeeded = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -50,6 +55,7 @@ class AppSettings {
         if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
         if (syncUsername != null) 'syncUsername': syncUsername,
         'deviceId': deviceId,
+        'snippetsSeeded': snippetsSeeded,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -65,6 +71,7 @@ class AppSettings {
         syncBaseUrl: json['syncBaseUrl'] as String?,
         syncUsername: json['syncUsername'] as String?,
         deviceId: json['deviceId'] as String? ?? '',
+        snippetsSeeded: json['snippetsSeeded'] as bool? ?? false,
       );
 }
 
