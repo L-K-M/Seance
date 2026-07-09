@@ -147,4 +147,35 @@ void main() {
       expect(detected, trials);
     });
   });
+
+  group('Argon2Params strength & validation', () {
+    test('the default meets the minimum; fast() does not', () {
+      expect(const Argon2Params().meetsMinimum(Argon2Params.minimum), isTrue);
+      expect(
+          const Argon2Params.fast().meetsMinimum(Argon2Params.minimum), isFalse);
+    });
+
+    test('a server-weakened memory factor fails the minimum (downgrade guard)',
+        () {
+      const weak = Argon2Params(memory: 512, iterations: 2, hashLength: 32);
+      expect(weak.meetsMinimum(Argon2Params.minimum), isFalse);
+    });
+
+    test('fromJson round-trips valid parameters', () {
+      final p = Argon2Params.fromJson(const Argon2Params().toJson());
+      expect(p.memory, 19456);
+      expect(p.iterations, 2);
+    });
+
+    test('fromJson rejects out-of-range parameters', () {
+      Map<String, dynamic> base() =>
+          {'memory': 19456, 'iterations': 2, 'parallelism': 1, 'hashLength': 32};
+      expect(() => Argon2Params.fromJson(base()..['memory'] = 0),
+          throwsFormatException);
+      expect(() => Argon2Params.fromJson(base()..['iterations'] = 0),
+          throwsFormatException);
+      expect(() => Argon2Params.fromJson(base()..['memory'] = 1 << 40),
+          throwsFormatException);
+    });
+  });
 }
