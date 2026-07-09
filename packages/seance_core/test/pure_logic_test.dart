@@ -175,6 +175,15 @@ Host bastion db
         r.redact('ghp_0123456789abcdef0123456789abcdef0123'),
         contains('«redacted»'),
       );
+      expect(
+        r.redact('OPENAI_API_KEY=sk-proj-abc_def-0123456789abcdefXYZ'),
+        isNot(contains('sk-proj-abc_def-0123456789abcdefXYZ')),
+      );
+      expect(
+        r.redact('github_pat_0123456789abcdef_0123456789abcdef'),
+        contains('«redacted»'),
+      );
+      expect(r.redact('glpat-0123456789abcdefXYZ12'), contains('«redacted»'));
       final jwt = 'eyJhbGciOiJI.eyJzdWIiOiIxMjM0NTY3ODkw.SflKxwRJSMeKKF2QT4';
       expect(r.redact('token $jwt'), isNot(contains(jwt)));
     });

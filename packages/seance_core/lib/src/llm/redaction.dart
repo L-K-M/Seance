@@ -9,16 +9,20 @@ class SecretRedactor {
   final List<RegExp> _patterns;
 
   SecretRedactor({List<RegExp> extraPatterns = const []})
-      : _patterns = [..._builtin, ...extraPatterns];
+    : _patterns = [..._builtin, ...extraPatterns];
 
   static final List<RegExp> _builtin = [
     // Whole private-key blocks (PEM / OpenSSH).
     RegExp(
-        r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----'),
+      r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----',
+    ),
     // Provider API keys / tokens.
     RegExp(r'\bsk-ant-[A-Za-z0-9_\-]{20,}'), // Anthropic
+    RegExp(r'\bsk-proj-[A-Za-z0-9_\-]{20,}'), // OpenAI project keys
     RegExp(r'\bsk-[A-Za-z0-9]{20,}'), // OpenAI-style
     RegExp(r'\bgh[pousr]_[A-Za-z0-9]{20,}'), // GitHub tokens
+    RegExp(r'\bgithub_pat_[A-Za-z0-9_]{20,}'), // GitHub fine-grained PATs
+    RegExp(r'\bglpat-[A-Za-z0-9_\-]{20,}'), // GitLab tokens
     RegExp(r'\bxox[baprs]-[A-Za-z0-9\-]{10,}'), // Slack tokens
     RegExp(r'\bAKIA[0-9A-Z]{16}\b'), // AWS access key id
     RegExp(r'\bAIza[0-9A-Za-z_\-]{35}\b'), // Google API key
@@ -28,8 +32,9 @@ class SecretRedactor {
     // (rather than \b) lets `DB_PASSWORD=...` match, since `_` is a word char.
     RegExp(r'\bbearer\s+[A-Za-z0-9._\-]{16,}', caseSensitive: false),
     RegExp(
-        r'''(?<![A-Za-z0-9])(password|passwd|secret|api[_-]?key|token)\s*[=:]\s*['"]?[^\s'"]{6,}''',
-        caseSensitive: false),
+      r'''(?<![A-Za-z0-9])(password|passwd|secret|api[_-]?key|token)\s*[=:]\s*['"]?[^\s'"]{6,}''',
+      caseSensitive: false,
+    ),
   ];
 
   /// Returns [text] with any matched secret spans replaced by a mask.
