@@ -95,6 +95,13 @@ _Last updated: 2026-07-08 — automatic sync, opt-in credential sync, mobile key
     keyboard and key row change the available space. A soft keyboard with a
     floating/overlay mode may still cover the last row — revisit if it recurs.
 
+11. **Terminal copy/paste.** Right-click gives Copy / Paste / Select all;
+    drag or double-click selects; Ctrl+Shift+C/V work on Linux/Windows. On
+    macOS the native Edit menu (MainMenu.xib) claims ⌘C/⌘V/⌘A at the OS level,
+    so those don't reach the terminal — the right-click menu is the path there.
+    Wiring the native Edit menu to the active terminal is the follow-up (needs
+    a macOS build to verify).
+
 ### Deliberately deferred (per proposal)
 SFTP browser, port-forwarding UI, ProxyJump execution (import only), Mosh,
 tabs-within-tabs/splits, OIDC on the sync server, libghostty terminal backend

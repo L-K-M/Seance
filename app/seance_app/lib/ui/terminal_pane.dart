@@ -145,6 +145,8 @@ class _SessionView extends StatefulWidget {
 
 class _SessionViewState extends State<_SessionView> {
   final FocusNode _focus = FocusNode();
+  // Our own controller so the copy/paste menu can read (and set) the selection.
+  final TerminalController _terminalController = TerminalController();
 
   @override
   void didUpdateWidget(_SessionView oldWidget) {
@@ -160,6 +162,7 @@ class _SessionViewState extends State<_SessionView> {
   @override
   void dispose() {
     _focus.dispose();
+    _terminalController.dispose();
     super.dispose();
   }
 
@@ -177,27 +180,111 @@ class _SessionViewState extends State<_SessionView> {
     }
     return TerminalView(
       tab.engine.terminal,
+      controller: _terminalController,
       focusNode: _focus,
       autofocus: widget.isActive,
       onKeyEvent: _handleKeyEvent,
+      onSecondaryTapDown: (details, _) =>
+          _showContextMenu(context, details.globalPosition),
       padding: const EdgeInsets.all(6),
     );
   }
 
-  /// Intercept the command-generator shortcut before the terminal consumes the
-  /// keystroke. Uses Cmd+K (macOS) or Ctrl+Shift+K elsewhere — plain Ctrl+K is
-  /// left alone because that's readline's "kill to end of line".
+  /// Intercept a few shortcuts before the terminal consumes the keystroke: the
+  /// command generator, and copy/paste. Copy/paste use ⌘C/⌘V on macOS and
+  /// Ctrl+Shift+C/V elsewhere (leaving Ctrl+C as the shell interrupt). Plain
+  /// Ctrl+K is left alone because that's readline's "kill to end of line".
+  ///
+  /// Note: on macOS the native Edit menu claims ⌘C/⌘V/⌘A at the OS level, so
+  /// those never reach here — the right-click menu is the reliable path there.
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final keys = HardwareKeyboard.instance;
-    final isGenerator = event is KeyDownEvent &&
-        event.logicalKey == LogicalKeyboardKey.keyK &&
+
+    if (event.logicalKey == LogicalKeyboardKey.keyK &&
         (keys.isMetaPressed ||
-            (keys.isControlPressed && keys.isShiftPressed));
-    if (isGenerator && widget.state.llmConfigured) {
+            (keys.isControlPressed && keys.isShiftPressed)) &&
+        widget.state.llmConfigured) {
       showCommandGenerator(context, widget.state);
       return KeyEventResult.handled;
     }
+
+    final clip = Platform.isMacOS
+        ? keys.isMetaPressed
+        : (keys.isControlPressed && keys.isShiftPressed);
+    if (clip && event.logicalKey == LogicalKeyboardKey.keyC) {
+      return _copySelection()
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored;
+    }
+    if (clip && event.logicalKey == LogicalKeyboardKey.keyV) {
+      _paste();
+      return KeyEventResult.handled;
+    }
     return KeyEventResult.ignored;
+  }
+
+  /// Copy the current selection to the clipboard. Returns false when nothing is
+  /// selected, so the keypress can fall through.
+  bool _copySelection() {
+    final selection = _terminalController.selection;
+    if (selection == null) return false;
+    final text = widget.tab.engine.terminal.buffer.getText(selection);
+    if (text.isEmpty) return false;
+    Clipboard.setData(ClipboardData(text: text));
+    return true;
+  }
+
+  /// Paste clipboard text into the shell. Uses the terminal's own paste (which
+  /// honours bracketed-paste mode, so a pasted newline doesn't auto-run under a
+  /// shell that supports it).
+  Future<void> _paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text != null && text.isNotEmpty) {
+      widget.tab.engine.terminal.paste(text);
+    }
+  }
+
+  /// Select the whole terminal buffer (scrollback included).
+  void _selectAll() {
+    final terminal = widget.tab.engine.terminal;
+    final buffer = terminal.buffer;
+    _terminalController.setSelection(
+      buffer.createAnchor(0, buffer.height - terminal.viewHeight),
+      buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
+    );
+  }
+
+  /// Right-click menu: Copy (when there's a selection), Paste, Select all.
+  Future<void> _showContextMenu(
+      BuildContext context, Offset globalPosition) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final hasSelection = _terminalController.selection != null;
+    final choice = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        overlay.size.width - globalPosition.dx,
+        overlay.size.height - globalPosition.dy,
+      ),
+      items: [
+        PopupMenuItem(
+            value: 'copy', enabled: hasSelection, child: const Text('Copy')),
+        const PopupMenuItem(value: 'paste', child: Text('Paste')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'selectAll', child: Text('Select all')),
+      ],
+    );
+    switch (choice) {
+      case 'copy':
+        _copySelection();
+      case 'paste':
+        await _paste();
+      case 'selectAll':
+        _selectAll();
+    }
   }
 }
 
