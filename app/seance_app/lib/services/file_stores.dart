@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:seance_core/seance_core.dart';
 
+import 'atomic_file.dart';
+
 /// Simple JSON-file [ConfigStore]. For a single-user personal tool this is
 /// plenty; the proposal's SQLite/drift backend is a drop-in future swap behind
 /// the same interface. Secret material never lands here — only references.
@@ -17,19 +19,24 @@ class FileConfigStore implements ConfigStore {
   Future<void> _load() async {
     if (_loaded) return;
     if (await file.exists()) {
-      final list = jsonDecode(await file.readAsString()) as List;
-      for (final j in list) {
-        final cfg = ServerConfig.fromJson((j as Map).cast<String, dynamic>());
-        _cache[cfg.id] = cfg;
+      try {
+        final list = jsonDecode(await file.readAsString()) as List;
+        for (final j in list) {
+          final cfg = ServerConfig.fromJson((j as Map).cast<String, dynamic>());
+          _cache[cfg.id] = cfg;
+        }
+      } catch (_) {
+        // A corrupt file must not wedge startup: move it aside and start empty.
+        _cache.clear();
+        await quarantineCorruptFile(file);
       }
     }
     _loaded = true;
   }
 
   Future<void> _flush() async {
-    await file.parent.create(recursive: true);
-    await file.writeAsString(
-        jsonEncode(_cache.values.map((c) => c.toJson()).toList()));
+    await writeStringAtomically(
+        file, jsonEncode(_cache.values.map((c) => c.toJson()).toList()));
   }
 
   @override
@@ -72,19 +79,23 @@ class FileSnippetStore implements SnippetStore {
   Future<void> _load() async {
     if (_loaded) return;
     if (await file.exists()) {
-      final list = jsonDecode(await file.readAsString()) as List;
-      for (final j in list) {
-        final s = Snippet.fromJson((j as Map).cast<String, dynamic>());
-        _cache[s.id] = s;
+      try {
+        final list = jsonDecode(await file.readAsString()) as List;
+        for (final j in list) {
+          final s = Snippet.fromJson((j as Map).cast<String, dynamic>());
+          _cache[s.id] = s;
+        }
+      } catch (_) {
+        _cache.clear();
+        await quarantineCorruptFile(file);
       }
     }
     _loaded = true;
   }
 
   Future<void> _flush() async {
-    await file.parent.create(recursive: true);
-    await file.writeAsString(
-        jsonEncode(_cache.values.map((s) => s.toJson()).toList()));
+    await writeStringAtomically(
+        file, jsonEncode(_cache.values.map((s) => s.toJson()).toList()));
   }
 
   @override
@@ -128,15 +139,19 @@ class FileVaultStore implements VaultStore {
   Future<void> _load() async {
     if (_loaded) return;
     if (await file.exists()) {
-      final map = jsonDecode(await file.readAsString()) as Map;
-      map.forEach((k, v) => _blobs[k as String] = v as String);
+      try {
+        final map = jsonDecode(await file.readAsString()) as Map;
+        map.forEach((k, v) => _blobs[k as String] = v as String);
+      } catch (_) {
+        _blobs.clear();
+        await quarantineCorruptFile(file);
+      }
     }
     _loaded = true;
   }
 
   Future<void> _flush() async {
-    await file.parent.create(recursive: true);
-    await file.writeAsString(jsonEncode(_blobs));
+    await writeStringAtomically(file, jsonEncode(_blobs));
   }
 
   @override
@@ -172,19 +187,23 @@ class FileHostKeyStore implements HostKeyStore {
   Future<void> _load() async {
     if (_loaded) return;
     if (await file.exists()) {
-      final list = jsonDecode(await file.readAsString()) as List;
-      for (final j in list) {
-        final k = HostKey.fromJson((j as Map).cast<String, dynamic>());
-        _keys[k.locator] = k;
+      try {
+        final list = jsonDecode(await file.readAsString()) as List;
+        for (final j in list) {
+          final k = HostKey.fromJson((j as Map).cast<String, dynamic>());
+          _keys[k.locator] = k;
+        }
+      } catch (_) {
+        _keys.clear();
+        await quarantineCorruptFile(file);
       }
     }
     _loaded = true;
   }
 
   Future<void> _flush() async {
-    await file.parent.create(recursive: true);
-    await file.writeAsString(
-        jsonEncode(_keys.values.map((k) => k.toJson()).toList()));
+    await writeStringAtomically(
+        file, jsonEncode(_keys.values.map((k) => k.toJson()).toList()));
   }
 
   @override

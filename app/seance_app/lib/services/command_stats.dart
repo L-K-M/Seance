@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'atomic_file.dart';
+
 /// Local, on-device frequency count of the commands the user runs, used to
 /// suggest often-repeated commands as snippets. This never syncs and never
 /// leaves the machine — only a snippet the user explicitly saves does. See
@@ -93,7 +95,6 @@ class CommandStatsStore {
   }
 
   Future<void> save(CommandStats stats) async {
-    await file.parent.create(recursive: true);
-    await file.writeAsString(jsonEncode(stats.toJson()));
+    await writeStringAtomically(file, jsonEncode(stats.toJson()));
   }
 }

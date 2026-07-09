@@ -133,6 +133,16 @@ class AppServices {
   }) async {
     final client = HttpSyncClient(baseUrl: baseUrl);
     final pre = await client.prelogin(username);
+    // Refuse a KDF downgrade: the Argon2 parameters come from the server, so a
+    // malicious/compromised one could return weak factors to make the vault key
+    // cheap to brute-force. Never derive with anything weaker than the minimum.
+    if (!pre.argonParams.meetsMinimum(Argon2Params.minimum)) {
+      throw StateError(
+        'The sync server returned weaker password-hashing parameters than '
+        'Séance accepts — refusing to derive your key (possible downgrade '
+        'attack).',
+      );
+    }
     final keys = await VaultCrypto.deriveKeys(
       passphrase: passphrase,
       salt: base64.decode(pre.argonSalt),
