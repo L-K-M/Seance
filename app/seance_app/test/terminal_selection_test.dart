@@ -6,9 +6,9 @@ void main() {
   // Guards the terminal copy path: the right-click "Select all" sets a
   // selection on our controller, and Copy reads it back via
   // buffer.getText(selection). If the xterm API for either drifts, this breaks.
-  testWidgets('select-all yields a selection that reads back as text',
+  testWidgets('select-all includes scrollback, not just the visible screen',
       (tester) async {
-    final terminal = Terminal(maxLines: 200);
+    final terminal = Terminal(maxLines: 500);
     final controller = TerminalController();
     addTearDown(controller.dispose);
 
@@ -19,21 +19,32 @@ void main() {
     );
     await tester.pump();
 
-    terminal.write('hello world\r\nsecond line\r\n');
+    // Write far more lines than fit on screen, so early lines scroll off.
+    for (var i = 0; i < 100; i++) {
+      terminal.write('line $i\r\n');
+    }
     await tester.pump();
 
-    // Mirror _SessionViewState._selectAll.
     final buffer = terminal.buffer;
+    // Sanity: there really is scrollback (more lines than the visible page).
+    expect(buffer.height, greaterThan(terminal.viewHeight));
+
+    // Mirror terminalSelectAll: anchor at row 0 so scrollback is included.
+    controller.setSelection(
+      buffer.createAnchor(0, 0),
+      buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
+    );
+    final text = terminal.buffer.getText(controller.selection);
+    expect(text, contains('line 0')); // earliest line, scrolled off screen
+    expect(text, contains('line 99')); // latest line
+
+    // The old behavior (start at the top of the visible page) would have
+    // dropped the scrolled-off lines.
     controller.setSelection(
       buffer.createAnchor(0, buffer.height - terminal.viewHeight),
       buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
     );
-
-    final selection = controller.selection;
-    expect(selection, isNotNull);
-    final text = terminal.buffer.getText(selection);
-    expect(text, contains('hello world'));
-    expect(text, contains('second line'));
+    expect(terminal.buffer.getText(controller.selection), isNot(contains('line 0')));
   });
 
   // Guards the double-click path: we reach the render object through a
