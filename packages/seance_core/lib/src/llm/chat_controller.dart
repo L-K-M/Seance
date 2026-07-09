@@ -21,6 +21,8 @@ paste_to_prompt over telling the user to type a command.
 const String _toolIterationLimitReply =
     'The assistant reached the tool-use limit without producing a final text '
     'answer. No additional tool actions were run.';
+const String _emptyReply =
+    'The assistant did not produce a response. Please try again.';
 
 /// The two — and only two — tools the chat may call.
 class ChatTools {
@@ -92,7 +94,12 @@ class ChatController {
   /// Optional client-side search backend (for providers without native search).
   final SearchProvider? searchProvider;
 
-  /// Guards against a tool loop running away.
+  /// Maximum number of provider turns whose tool calls may be dispatched.
+  ///
+  /// This counts dispatched tool rounds, not total provider calls. Reaching the
+  /// limit causes one final provider call with tools disabled, so a fully used
+  /// limit can make `maxToolIterations + 1` provider calls. Zero disables tools
+  /// and makes only that final provider call.
   final int maxToolIterations;
 
   final List<LlmMessage> _history = [];
@@ -150,9 +157,13 @@ class ChatController {
       }
 
       if (!toolsEnabled) {
-        final reply = hasText ? turn.text : _toolIterationLimitReply;
+        final reply = hasText
+            ? turn.text
+            : turn.toolCalls.isNotEmpty
+                ? _toolIterationLimitReply
+                : _emptyReply;
         if (!hasText) {
-          _history.add(const LlmMessage.assistant(_toolIterationLimitReply));
+          _history.add(LlmMessage.assistant(reply));
         }
         return ChatResult(
           reply: reply,
@@ -163,8 +174,12 @@ class ChatController {
       }
 
       if (turn.toolCalls.isEmpty) {
+        final reply = hasText ? turn.text : _emptyReply;
+        if (!hasText) {
+          _history.add(const LlmMessage.assistant(_emptyReply));
+        }
         return ChatResult(
-          reply: turn.text,
+          reply: reply,
           searchQueries: searches,
           stagedCommands: staged,
           sent: sent,
@@ -173,7 +188,9 @@ class ChatController {
 
       if (!hasText) {
         final names = turn.toolCalls.map((call) => call.name).join(', ');
-        _history.add(LlmMessage.assistant('Requested tools: $names'));
+        _history.add(
+          LlmMessage.assistant('[_internal: requested tools: $names]'),
+        );
       }
 
       // Dispatch each tool call and feed results back for the next iteration.

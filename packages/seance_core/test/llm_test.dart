@@ -427,6 +427,36 @@ void main() {
       expect(provider.receivedTools.last, isEmpty);
     });
 
+    test('zero tool iterations disables tools on the only provider call',
+        () async {
+      final provider = FakeProvider([
+        const ChatTurn(text: 'Tools were not needed.'),
+      ]);
+      final chat = ChatController(
+        provider: provider,
+        onPaste: (_) {},
+        maxToolIterations: 0,
+      );
+
+      final result = await chat.send('answer without tools');
+
+      expect(provider.received, hasLength(1));
+      expect(provider.receivedTools.single, isEmpty);
+      expect(result.reply, 'Tools were not needed.');
+    });
+
+    test('returns a nonblank fallback for an empty provider turn', () async {
+      final provider = FakeProvider([
+        const ChatTurn(text: ''),
+      ]);
+      final chat = ChatController(provider: provider, onPaste: (_) {});
+
+      final result = await chat.send('hello');
+
+      expect(result.reply, isNotEmpty);
+      expect(result.reply, contains('did not produce a response'));
+    });
+
     test('keeps modeled roles alternating after a pure tool call', () async {
       final provider = FakeProvider([
         const ChatTurn(
@@ -455,6 +485,10 @@ void main() {
         LlmRole.assistant,
         LlmRole.user,
       ]);
+      expect(
+        provider.received[1][2].content,
+        startsWith('[_internal: requested tools:'),
+      );
     });
 
     test('rejects a negative tool iteration limit', () {
