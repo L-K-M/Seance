@@ -43,6 +43,66 @@ class FakeServer implements SyncApi {
   }
 }
 
+class PushRaceApi implements SyncApi {
+  final FakeServer server;
+  final EncryptedRecord concurrentRecord;
+  final bool concurrentFirst;
+  bool _injected = false;
+
+  PushRaceApi(
+    this.server,
+    this.concurrentRecord, {
+    this.concurrentFirst = false,
+  });
+
+  @override
+  Future<PullResponse> pull({required int since}) => server.pull(since: since);
+
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) async {
+    if (_injected) return server.push(records);
+
+    _injected = true;
+    if (concurrentFirst) {
+      await server.push([concurrentRecord]);
+      return server.push(records);
+    }
+
+    final response = await server.push(records);
+    final concurrentResponse = await server.push([concurrentRecord]);
+    return PushResponse(
+      results: response.results,
+      latestSeq: concurrentResponse.latestSeq,
+    );
+  }
+}
+
+class PullRaceApi implements SyncApi {
+  final EncryptedRecord initiallyUnseen;
+  final List<int> requestedSince = [];
+  bool _returnedRacedSnapshot = false;
+
+  PullRaceApi(this.initiallyUnseen);
+
+  @override
+  Future<PullResponse> pull({required int since}) async {
+    requestedSince.add(since);
+    if (!_returnedRacedSnapshot) {
+      _returnedRacedSnapshot = true;
+      return PullResponse(records: const [], latestSeq: initiallyUnseen.seq!);
+    }
+
+    final records = initiallyUnseen.seq! > since
+        ? [initiallyUnseen]
+        : const <EncryptedRecord>[];
+    return PullResponse(records: records, latestSeq: initiallyUnseen.seq!);
+  }
+
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) =>
+      throw UnsupportedError('PullRaceApi does not accept pushes');
+}
+
 EncryptedRecord rec(String id, int updatedAt, String device,
         {bool deleted = false, int tag = 0}) =>
     EncryptedRecord(
@@ -70,6 +130,80 @@ void main() {
       final onServer = await server.pull(since: 0);
       expect(onServer.records.map((r) => r.id).toSet(), {'a', 'b'});
     });
+
+    test('push latest sequence cannot skip another device record', () async {
+      final store = InMemoryLocalRecordStore();
+      await store.putLocal(rec('local', 10, 'A'));
+      final api = PushRaceApi(FakeServer(), rec('concurrent', 11, 'B'));
+      final engine = SyncEngine(store);
+
+      await engine.sync(api);
+
+      expect(await store.highWaterSeq(), 0);
+
+      await engine.sync(api);
+
+      expect(await store.getRecord('concurrent'), isNotNull);
+      expect(await store.highWaterSeq(), 2);
+    });
+
+    test('rejected push pulls and adopts the other device winner', () async {
+      final store = InMemoryLocalRecordStore();
+      await store.putLocal(rec('shared', 10, 'A', tag: 1));
+      final api = PushRaceApi(
+        FakeServer(),
+        rec('shared', 11, 'B', tag: 2),
+        concurrentFirst: true,
+      );
+
+      final outcome = await SyncEngine(store).sync(api);
+
+      final adopted = await store.getRecord('shared');
+      expect(outcome.pulled, 1);
+      expect(outcome.pushed, 0);
+      expect(adopted!.deviceId, 'B');
+      expect(adopted.blob, equals(Uint8List.fromList([2])));
+      expect(await store.dirtyRecords(), isEmpty);
+      expect(await store.highWaterSeq(), 1);
+    });
+
+    test('rejected equal-metadata payload adopts the sequenced blob', () async {
+      final store = InMemoryLocalRecordStore();
+      await store.putLocal(rec('shared', 10, 'A', tag: 1));
+      final api = PushRaceApi(
+        FakeServer(),
+        rec('shared', 10, 'A', tag: 2),
+        concurrentFirst: true,
+      );
+
+      await SyncEngine(store).sync(api);
+
+      final adopted = await store.getRecord('shared');
+      expect(adopted!.seq, 1);
+      expect(adopted.blob, equals(Uint8List.fromList([2])));
+      expect(await store.dirtyRecords(), isEmpty);
+    });
+
+    test(
+      'pull latest sequence cannot skip an unseen snapshot record',
+      () async {
+        final store = InMemoryLocalRecordStore();
+        // Sequence 1 was superseded by the current seq-2 version before the
+        // second snapshot, as happens with the server's upsert storage.
+        final api = PullRaceApi(rec('remote', 10, 'B').withSeq(2));
+        final engine = SyncEngine(store);
+
+        await engine.sync(api);
+
+        expect(await store.highWaterSeq(), 0);
+
+        await engine.sync(api);
+
+        expect(api.requestedSince, [0, 0, 2]);
+        expect(await store.getRecord('remote'), isNotNull);
+        expect(await store.highWaterSeq(), 2);
+      },
+    );
 
     test('two devices converge on the same records', () async {
       final server = FakeServer();
