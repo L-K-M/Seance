@@ -32,10 +32,12 @@ class XtermTerminalEngine implements TerminalEngine {
   /// as its control code (e.g. `c` → 0x03). Consumed after one keystroke.
   final ValueNotifier<bool> ctrlArmed = ValueNotifier<bool>(false);
 
-  XtermTerminalEngine(
-      {int maxLines = 10000, TerminalSize? initialSize, this.onCommand})
-      : terminal = Terminal(maxLines: maxLines),
-        _size = initialSize ?? const TerminalSize(80, 24) {
+  XtermTerminalEngine({
+    int maxLines = 10000,
+    TerminalSize? initialSize,
+    this.onCommand,
+  }) : terminal = Terminal(maxLines: maxLines),
+       _size = initialSize ?? const TerminalSize(80, 24) {
     // Keystrokes / paste / device replies produced by the terminal go to SSH.
     terminal.onOutput = (data) {
       final out = _applyCtrl(data);
@@ -81,8 +83,7 @@ class XtermTerminalEngine implements TerminalEngine {
         _submitPending();
       } else if (r == 0x7f || r == 0x08) {
         if (_pendingInput.isNotEmpty) {
-          _pendingInput =
-              _pendingInput.substring(0, _pendingInput.length - 1);
+          _pendingInput = _pendingInput.substring(0, _pendingInput.length - 1);
         }
       } else if (r == 0x15 || r == 0x03) {
         _pendingInput = ''; // Ctrl-U (kill line) / Ctrl-C (interrupt)
@@ -107,12 +108,27 @@ class XtermTerminalEngine implements TerminalEngine {
     _input.add(Uint8List.fromList(utf8.encode(text)));
   }
 
-  /// Send raw [bytes] to the session — used by the on-screen key row for keys
-  /// the soft keyboard lacks (Tab, arrows, Esc, Ctrl-C, …). Unlike
+  /// Send raw [bytes] to the session — used by the on-screen key row for fixed
+  /// byte inputs such as Tab, Esc, and Ctrl-C. Unlike
   /// [injectInput] this is allowed to carry control bytes such as Enter.
   void sendKey(List<int> bytes) {
     _trackPending(utf8.decode(bytes, allowMalformed: true));
     _input.add(Uint8List.fromList(bytes));
+  }
+
+  /// Send a logical terminal [key] through xterm's key encoder. This must be
+  /// used for cursor keys because their escape sequence depends on DECCKM.
+  void sendTerminalKey(TerminalKey key) {
+    // xterm 4.0's keytab handler reads appKeypadMode for its AppCuKeys rules,
+    // even though DECCKM is tracked separately as cursorKeysMode. Mirror that
+    // state only while encoding so keyInput emits the correct CSI/SS3 sequence.
+    final appKeypadMode = terminal.appKeypadMode;
+    terminal.setAppKeypadMode(terminal.cursorKeysMode);
+    try {
+      terminal.keyInput(key);
+    } finally {
+      terminal.setAppKeypadMode(appKeypadMode);
+    }
   }
 
   /// Toggle the one-shot Ctrl modifier (armed by the key row's Ctrl button).
