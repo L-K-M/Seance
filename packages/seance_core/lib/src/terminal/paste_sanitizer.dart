@@ -30,7 +30,7 @@ class PasteSanitizer {
   /// than throwing — used when the user explicitly asks to paste only the first
   /// command of a suggested block.
   static String sanitizeFirstLine(String input) {
-    final firstLine = input.split(RegExp(r'\r?\n')).first;
+    final firstLine = input.split(RegExp(r'\r\n|\r|\n')).first;
     return _stripControlChars(firstLine);
   }
 

@@ -16,13 +16,15 @@ workspace resolves):
 
 ```bash
 docker build -f packages/seance_sync_server/Dockerfile -t seance-sync .
-docker run -p 8787:8787 -v seance-data:/data \
+docker run -p 127.0.0.1:8787:8787 -v seance-data:/data \
   -e SEANCE_OPEN_REGISTRATION=true seance-sync
 ```
 
 Flip `SEANCE_OPEN_REGISTRATION=true` only long enough to enrol your devices,
 then set it back to `false` and restart. Put a TLS-terminating reverse proxy
 (Caddy, nginx, Traefik) in front — the server speaks plain HTTP by design.
+The compose file and `docker run` example bind the host port to loopback only;
+publish it more broadly only behind TLS or on a trusted private network.
 
 To update a running deployment (pull the latest code, rebuild the image,
 recreate the container in one step), run `./update.sh` from the repository
