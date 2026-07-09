@@ -5,7 +5,10 @@
 /// Each key retains at most [maxAttempts] timestamps. The requested key is
 /// pruned on every call, while all keys are swept every 64 calls so stale
 /// one-off keys are eventually removed without scanning the map per request.
-/// A hit at exactly `now - window` is expired.
+/// That periodic sweep is O(total tracked buckets), amortizing stale-key
+/// cleanup across requests. Unexpired state has no fixed cap and remains
+/// bounded by unique-key traffic during the active window. A hit at exactly
+/// `now - window` is expired.
 class RateLimiter {
   static const _sweepInterval = 64;
 
@@ -39,7 +42,8 @@ class RateLimiter {
     final now = _now();
     final cutoff = now.subtract(window);
     _callsUntilSweep--;
-    if (_callsUntilSweep == 0) {
+    final sweptAll = _callsUntilSweep == 0;
+    if (sweptAll) {
       _hits.removeWhere((_, hits) {
         _removeExpired(hits, cutoff);
         return hits.isEmpty;
@@ -49,7 +53,7 @@ class RateLimiter {
 
     var hits = _hits[key];
     if (hits != null) {
-      _removeExpired(hits, cutoff);
+      if (!sweptAll) _removeExpired(hits, cutoff);
       if (hits.isEmpty) {
         _hits.remove(key);
         hits = null;
