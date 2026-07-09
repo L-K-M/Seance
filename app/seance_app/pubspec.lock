@@ -502,14 +502,14 @@ packages:
       path: "../../packages/seance_core"
       relative: true
     source: path
-    version: "0.1.0"
+    version: "0.2.0"
   seance_protocol:
     dependency: transitive
     description:
       path: "../../packages/seance_protocol"
       relative: true
     source: path
-    version: "0.1.0"
+    version: "0.2.0"
   sky_engine:
     dependency: transitive
     description: flutter

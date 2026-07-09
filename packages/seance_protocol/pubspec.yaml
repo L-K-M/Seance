@@ -3,7 +3,7 @@ description: >-
   Shared record model, end-to-end encryption, and sync protocol DTOs for
   Séance. Used verbatim by both the client (seance_core) and the sync server
   (seance_sync_server) so the two can never drift.
-version: 0.1.0
+version: 0.2.0
 publish_to: none
 resolution: workspace
 
