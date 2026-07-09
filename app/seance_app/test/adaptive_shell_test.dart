@@ -3,6 +3,25 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/ui/adaptive_shell.dart';
 
 void main() {
+  test('breakpoint and allocation minimums stay aligned', () {
+    expect(
+      AdaptiveShell.breakpoint,
+      AdaptiveShell.minimumListWidth +
+          AdaptiveShell.minimumTerminalWidth +
+          AdaptiveShell.minimumUtilityWidth +
+          AdaptiveShell.resizeHandleWidth * 2,
+    );
+
+    final widths = allocateAdaptivePaneWidths(
+      availableWidth: AdaptiveShell.breakpoint,
+      requestedListWidth: 0,
+      requestedUtilityWidth: 0,
+    )!;
+    expect(widths.list, AdaptiveShell.minimumListWidth);
+    expect(widths.terminal, AdaptiveShell.minimumTerminalWidth);
+    expect(widths.utility, AdaptiveShell.minimumUtilityWidth);
+  });
+
   test('allocation preserves the terminal after oversized pane requests', () {
     final widths = allocateAdaptivePaneWidths(
       availableWidth: 960,
@@ -195,7 +214,6 @@ void main() {
     // Deliver two updates without a frame between them. Both must contribute.
     await gesture.moveBy(const Offset(-20, 0));
     await gesture.moveBy(const Offset(-20, 0));
-    await gesture.up();
     await tester.pump();
     final listAfter = tester
         .getSize(find.byKey(AdaptivePaneLayout.listPaneKey))
@@ -208,6 +226,44 @@ void main() {
     expect(
       tester.getSize(find.byKey(AdaptivePaneLayout.utilityPaneKey)).width,
       closeTo(utilityBefore, 0.01),
+    );
+    await gesture.up();
+    await tester.pump();
+  });
+
+  testWidgets('sibling max preference returns after drag and regrow', (
+    tester,
+  ) async {
+    addTearDown(tester.view.reset);
+    await setWidth(tester, 1800);
+
+    await tester.drag(
+      find.byKey(AdaptivePaneLayout.utilityResizeHandleKey),
+      const Offset(-1000, 0),
+    );
+    await tester.pump();
+    expect(
+      tester.getSize(find.byKey(AdaptivePaneLayout.utilityPaneKey)).width,
+      AdaptiveShell.maximumUtilityWidth,
+    );
+
+    tester.view.physicalSize = const Size(1180, 800);
+    await tester.pump();
+    expect(
+      tester.getSize(find.byKey(AdaptivePaneLayout.utilityPaneKey)).width,
+      lessThan(AdaptiveShell.maximumUtilityWidth),
+    );
+    await tester.drag(
+      find.byKey(AdaptivePaneLayout.listResizeHandleKey),
+      const Offset(-40, 0),
+    );
+    await tester.pump();
+
+    tester.view.physicalSize = const Size(1800, 800);
+    await tester.pump();
+    expect(
+      tester.getSize(find.byKey(AdaptivePaneLayout.utilityPaneKey)).width,
+      AdaptiveShell.maximumUtilityWidth,
     );
   });
 }

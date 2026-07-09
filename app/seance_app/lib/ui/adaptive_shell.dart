@@ -14,7 +14,6 @@ import 'terminal_pane.dart';
 class AdaptiveShell extends StatefulWidget {
   const AdaptiveShell({super.key});
 
-  static const double breakpoint = 960;
   static const double minimumTerminalWidth = 480;
   static const double minimumListWidth = 200;
   static const double defaultListWidth = 300;
@@ -23,6 +22,11 @@ class AdaptiveShell extends StatefulWidget {
   static const double defaultUtilityWidth = 340;
   static const double maximumUtilityWidth = 680;
   static const double resizeHandleWidth = 10;
+  static const double breakpoint =
+      minimumListWidth +
+      minimumTerminalWidth +
+      minimumUtilityWidth +
+      resizeHandleWidth * 2;
 
   @override
   State<AdaptiveShell> createState() => _AdaptiveShellState();
@@ -120,16 +124,25 @@ AdaptivePaneWidths? allocateAdaptivePaneWidths({
   final utilityExtra = requestedUtility - AdaptiveShell.minimumUtilityWidth;
   final requestedExtra = listExtra + utilityExtra;
 
-  late final double list;
-  late final double utility;
+  late final double rawList;
+  late final double rawUtility;
   if (requestedExtra <= availableExtra) {
-    list = requestedList;
-    utility = requestedUtility;
+    rawList = requestedList;
+    rawUtility = requestedUtility;
   } else {
     final scale = availableExtra / requestedExtra;
-    list = AdaptiveShell.minimumListWidth + listExtra * scale;
-    utility = AdaptiveShell.minimumUtilityWidth + utilityExtra * scale;
+    rawList = AdaptiveShell.minimumListWidth + listExtra * scale;
+    rawUtility = AdaptiveShell.minimumUtilityWidth + utilityExtra * scale;
   }
+  final list = rawList
+      .clamp(AdaptiveShell.minimumListWidth, AdaptiveShell.maximumListWidth)
+      .toDouble();
+  final utility = rawUtility
+      .clamp(
+        AdaptiveShell.minimumUtilityWidth,
+        AdaptiveShell.maximumUtilityWidth,
+      )
+      .toDouble();
 
   return AdaptivePaneWidths(
     list: list,
@@ -171,6 +184,8 @@ class AdaptivePaneLayout extends StatefulWidget {
 class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   double _requestedListWidth = AdaptiveShell.defaultListWidth;
   double _requestedUtilityWidth = AdaptiveShell.defaultUtilityWidth;
+  double? _temporaryListWidth;
+  double? _temporaryUtilityWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -178,8 +193,9 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
       builder: (context, constraints) {
         final widths = allocateAdaptivePaneWidths(
           availableWidth: constraints.maxWidth,
-          requestedListWidth: _requestedListWidth,
-          requestedUtilityWidth: _requestedUtilityWidth,
+          requestedListWidth: _temporaryListWidth ?? _requestedListWidth,
+          requestedUtilityWidth:
+              _temporaryUtilityWidth ?? _requestedUtilityWidth,
         );
         if (widths == null) {
           return KeyedSubtree(
@@ -249,7 +265,7 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
             .toDouble();
     setState(() {
       _requestedListWidth = widths.list;
-      _requestedUtilityWidth = widths.utility;
+      _temporaryUtilityWidth = widths.utility;
     });
   }
 
@@ -276,7 +292,7 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
             )
             .toDouble();
     setState(() {
-      _requestedListWidth = widths.list;
+      _temporaryListWidth = widths.list;
       _requestedUtilityWidth = widths.utility;
     });
   }
@@ -293,11 +309,17 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   }
 
   void _endListResize() {
-    _listDragStart = null;
+    setState(() {
+      _listDragStart = null;
+      _temporaryUtilityWidth = null;
+    });
   }
 
   void _endUtilityResize() {
-    _utilityDragStart = null;
+    setState(() {
+      _utilityDragStart = null;
+      _temporaryListWidth = null;
+    });
   }
 }
 
