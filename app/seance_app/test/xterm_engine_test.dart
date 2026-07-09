@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/services/xterm_engine.dart';
 
@@ -73,4 +76,46 @@ void main() {
     expect(e.ctrlArmed.value, isFalse); // one-shot: disarms after one key
     await sub.cancel();
   });
+
+  test(
+    'feed preserves UTF-8 characters split at every byte boundary',
+    () async {
+      for (final character in ['¢', '€', '😀']) {
+        final bytes = utf8.encode(character);
+        for (var split = 1; split < bytes.length; split++) {
+          final e = XtermTerminalEngine();
+
+          e.feed(Uint8List.fromList(bytes.sublist(0, split)));
+          expect(
+            e.recentText(),
+            isEmpty,
+            reason: '$character emitted before split $split completed',
+          );
+
+          e.feed(Uint8List.fromList(bytes.sublist(split)));
+          expect(
+            e.recentText(),
+            character,
+            reason: '$character failed at byte boundary $split',
+          );
+          await e.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'feed replaces malformed bytes and flushes an incomplete character',
+    () async {
+      final e = XtermTerminalEngine();
+
+      e.feed(Uint8List.fromList([0x61, 0xff, 0x62]));
+      expect(e.recentText(), 'a\uFFFDb');
+
+      e.feed(Uint8List.fromList([0xe2, 0x82]));
+      expect(e.recentText(), 'a\uFFFDb');
+      await e.dispose();
+      expect(e.recentText(), 'a\uFFFDb\uFFFD');
+    },
+  );
 }
