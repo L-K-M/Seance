@@ -35,6 +35,41 @@ void openCommandGenerator(AppState state) {
   showCommandGenerator(ctx, state);
 }
 
+/// Copy the active terminal's selection to the clipboard. Returns false when
+/// nothing is selected (so a keypress can fall through). Shared by the terminal
+/// right-click menu, the keyboard shortcut, and the native macOS Edit ▸ Copy.
+bool terminalCopy(TerminalSession tab) {
+  final controller = tab.controller;
+  if (controller == null) return false;
+  final selection = controller.selection;
+  if (selection == null) return false;
+  final text = tab.engine.terminal.buffer.getText(selection);
+  if (text.isEmpty) return false;
+  Clipboard.setData(ClipboardData(text: text));
+  return true;
+}
+
+/// Paste clipboard text into the active terminal (honours bracketed-paste mode).
+Future<void> terminalPaste(TerminalSession tab) async {
+  final data = await Clipboard.getData(Clipboard.kTextPlain);
+  final text = data?.text;
+  if (text != null && text.isNotEmpty) {
+    tab.engine.terminal.paste(text);
+  }
+}
+
+/// Select the active terminal's whole buffer (scrollback included).
+void terminalSelectAll(TerminalSession tab) {
+  final controller = tab.controller;
+  if (controller == null) return;
+  final terminal = tab.engine.terminal;
+  final buffer = terminal.buffer;
+  controller.setSelection(
+    buffer.createAnchor(0, buffer.height - terminal.viewHeight),
+    buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
+  );
+}
+
 /// Cross-platform keyboard shortcuts for the menu commands. On macOS the native
 /// menu (wired in MainFlutterWindow.swift) owns ⌘, and ⌘K; this covers
 /// Linux/Windows, where there is no system menu bar. The native menu and these

@@ -106,6 +106,17 @@ class _BootstrapState extends State<_Bootstrap> {
           openSettings();
         case 'generateCommand':
           openCommandGenerator(state);
+        // Native Edit menu, forwarded only when a terminal is focused.
+        case 'editCopy':
+          if (state.activeSession != null) terminalCopy(state.activeSession!);
+        case 'editPaste':
+          if (state.activeSession != null) {
+            await terminalPaste(state.activeSession!);
+          }
+        case 'editSelectAll':
+          if (state.activeSession != null) {
+            terminalSelectAll(state.activeSession!);
+          }
       }
       return null;
     });

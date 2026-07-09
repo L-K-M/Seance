@@ -97,10 +97,13 @@ _Last updated: 2026-07-08 — automatic sync, opt-in credential sync, mobile key
 
 11. **Terminal copy/paste.** Right-click gives Copy / Paste / Select all;
     drag or double-click selects; Ctrl+Shift+C/V work on Linux/Windows. On
-    macOS the native Edit menu (MainMenu.xib) claims ⌘C/⌘V/⌘A at the OS level,
-    so those don't reach the terminal — the right-click menu is the path there.
-    Wiring the native Edit menu to the active terminal is the follow-up (needs
-    a macOS build to verify).
+    macOS the native Edit menu (Copy/Paste/Select All, ⌘C/⌘V/⌘A) is now
+    retargeted (`MainFlutterWindow.swift`) to route to the active terminal when
+    a terminal is focused, and to fall back to the native path (text fields)
+    otherwise; focus is pushed from Dart over the `seance/menu` channel, and the
+    session's `TerminalController` is exposed on `TerminalSession` so the global
+    handler can read the selection. **Needs a macOS build to verify** (no Swift
+    toolchain in the Linux dev container).
 
 ### Deliberately deferred (per proposal)
 SFTP browser, port-forwarding UI, ProxyJump execution (import only), Mosh,

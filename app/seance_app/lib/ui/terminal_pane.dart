@@ -7,6 +7,7 @@ import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import 'app_menus.dart';
 import 'command_generator.dart';
 import 'sidebar_panel.dart';
 import 'terminal_keyboard_bar.dart';
@@ -149,6 +150,16 @@ class _SessionViewState extends State<_SessionView> {
   final TerminalController _terminalController = TerminalController();
 
   @override
+  void initState() {
+    super.initState();
+    // Expose the controller on the session so the native macOS Edit menu can
+    // copy from the active terminal, and report focus so it only routes ⌘C/⌘V
+    // to the terminal when a terminal (not a text field) is focused.
+    widget.tab.controller = _terminalController;
+    _focus.addListener(_reportTerminalFocus);
+  }
+
+  @override
   void didUpdateWidget(_SessionView oldWidget) {
     super.didUpdateWidget(oldWidget);
     // Focus the terminal when this session becomes the active one.
@@ -161,9 +172,22 @@ class _SessionViewState extends State<_SessionView> {
 
   @override
   void dispose() {
+    _focus.removeListener(_reportTerminalFocus);
+    if (identical(widget.tab.controller, _terminalController)) {
+      widget.tab.controller = null;
+    }
     _focus.dispose();
     _terminalController.dispose();
     super.dispose();
+  }
+
+  /// Tell the macOS shell whether a terminal is focused, so the native Edit
+  /// menu routes ⌘C/⌘V/⌘A to the terminal rather than a focused text field.
+  void _reportTerminalFocus() {
+    if (Platform.isMacOS) {
+      const MethodChannel('seance/menu')
+          .invokeMethod('setTerminalFocused', _focus.hasFocus);
+    }
   }
 
   @override
@@ -213,47 +237,15 @@ class _SessionViewState extends State<_SessionView> {
         ? keys.isMetaPressed
         : (keys.isControlPressed && keys.isShiftPressed);
     if (clip && event.logicalKey == LogicalKeyboardKey.keyC) {
-      return _copySelection()
+      return terminalCopy(widget.tab)
           ? KeyEventResult.handled
           : KeyEventResult.ignored;
     }
     if (clip && event.logicalKey == LogicalKeyboardKey.keyV) {
-      _paste();
+      terminalPaste(widget.tab);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
-  }
-
-  /// Copy the current selection to the clipboard. Returns false when nothing is
-  /// selected, so the keypress can fall through.
-  bool _copySelection() {
-    final selection = _terminalController.selection;
-    if (selection == null) return false;
-    final text = widget.tab.engine.terminal.buffer.getText(selection);
-    if (text.isEmpty) return false;
-    Clipboard.setData(ClipboardData(text: text));
-    return true;
-  }
-
-  /// Paste clipboard text into the shell. Uses the terminal's own paste (which
-  /// honours bracketed-paste mode, so a pasted newline doesn't auto-run under a
-  /// shell that supports it).
-  Future<void> _paste() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text;
-    if (text != null && text.isNotEmpty) {
-      widget.tab.engine.terminal.paste(text);
-    }
-  }
-
-  /// Select the whole terminal buffer (scrollback included).
-  void _selectAll() {
-    final terminal = widget.tab.engine.terminal;
-    final buffer = terminal.buffer;
-    _terminalController.setSelection(
-      buffer.createAnchor(0, buffer.height - terminal.viewHeight),
-      buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
-    );
   }
 
   /// Right-click menu: Copy (when there's a selection), Paste, Select all.
@@ -279,11 +271,11 @@ class _SessionViewState extends State<_SessionView> {
     );
     switch (choice) {
       case 'copy':
-        _copySelection();
+        terminalCopy(widget.tab);
       case 'paste':
-        await _paste();
+        await terminalPaste(widget.tab);
       case 'selectAll':
-        _selectAll();
+        terminalSelectAll(widget.tab);
     }
   }
 }

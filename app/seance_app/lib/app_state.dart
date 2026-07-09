@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
+import 'package:xterm/xterm.dart' show TerminalController;
 
 import 'services/app_services.dart';
 import 'services/default_snippets.dart';
@@ -24,6 +25,11 @@ class TerminalSession {
   /// Live transcript of the current/last connection attempt, shown in the
   /// "connection log" details when a connection fails.
   SshConnectionLog log;
+
+  /// The xterm selection controller for this session's terminal. Set by the
+  /// live [_SessionView] widget while it's mounted (and cleared on dispose), so
+  /// the native macOS Edit menu can copy from the active session.
+  TerminalController? controller;
 
   TerminalSession({
     required this.serverId,
