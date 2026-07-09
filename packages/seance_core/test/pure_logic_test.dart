@@ -57,14 +57,14 @@ Host bastion db
 
     test('converts to a ServerConfig with reference-not-store key auth', () {
       final h = SshConfigImporter.parse(
-              'Host x\n HostName h\n IdentityFile ~/.ssh/id\n')
-          .single;
+        'Host x\n HostName h\n IdentityFile ~/.ssh/id\n',
+      ).single;
       final cfg = h.toServerConfig(id: 'id1', now: 5);
       expect(cfg.authMethod, AuthMethod.privateKey);
       expect(cfg.identityFilePath, '~/.ssh/id');
-      final agentCfg = SshConfigImporter.parse('Host y\n HostName h\n')
-          .single
-          .toServerConfig(id: 'id2', now: 5);
+      final agentCfg = SshConfigImporter.parse(
+        'Host y\n HostName h\n',
+      ).single.toServerConfig(id: 'id2', now: 5);
       expect(agentCfg.authMethod, AuthMethod.agent);
     });
   });
@@ -73,11 +73,12 @@ Host bastion db
     // The SSH library hands us a SHA-256 fingerprint at connect time, so keys
     // are identified by fingerprint here.
     HostKey key(String fp) => HostKey(
-        host: 'h',
-        port: 22,
-        type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:$fp',
-        pinnedAt: 0);
+      host: 'h',
+      port: 22,
+      type: 'ssh-ed25519',
+      fingerprintSha256: 'SHA256:$fp',
+      pinnedAt: 0,
+    );
 
     test('first use, then trusted, then changed', () async {
       final v = TofuVerifier(_MemHostKeyStore());
@@ -107,16 +108,26 @@ Host bastion db
     test('flags critical destructive commands', () {
       expect(DangerLinter.worst('rm -rf /'), DangerSeverity.critical);
       expect(DangerLinter.worst('sudo rm -rf ~/'), DangerSeverity.critical);
-      expect(DangerLinter.worst('dd if=/dev/zero of=/dev/sda'),
-          DangerSeverity.critical);
-      expect(DangerLinter.worst('mkfs.ext4 /dev/sdb1'), DangerSeverity.critical);
+      expect(
+        DangerLinter.worst('dd if=/dev/zero of=/dev/sda'),
+        DangerSeverity.critical,
+      );
+      expect(
+        DangerLinter.worst('mkfs.ext4 /dev/sdb1'),
+        DangerSeverity.critical,
+      );
       expect(DangerLinter.worst(':(){ :|:& };:'), DangerSeverity.critical);
     });
 
     test('warns on risky-but-common patterns', () {
-      expect(DangerLinter.worst('curl https://x.sh | sudo bash'),
-          DangerSeverity.warning);
-      expect(DangerLinter.worst('chmod -R 777 /var/www'), DangerSeverity.warning);
+      expect(
+        DangerLinter.worst('curl https://x.sh | sudo bash'),
+        DangerSeverity.warning,
+      );
+      expect(
+        DangerLinter.worst('chmod -R 777 /var/www'),
+        DangerSeverity.warning,
+      );
       expect(DangerLinter.worst('sudo reboot'), DangerSeverity.warning);
     });
 
@@ -129,10 +140,14 @@ Host bastion db
 
   group('PasteSanitizer', () {
     test('rejects multi-line paste (a newline would execute)', () {
-      expect(() => PasteSanitizer.sanitize('echo hi\nrm -rf /'),
-          throwsA(isA<UnsafePasteException>()));
-      expect(() => PasteSanitizer.sanitize('echo hi\n'),
-          throwsA(isA<UnsafePasteException>()));
+      expect(
+        () => PasteSanitizer.sanitize('echo hi\nrm -rf /'),
+        throwsA(isA<UnsafePasteException>()),
+      );
+      expect(
+        () => PasteSanitizer.sanitize('echo hi\n'),
+        throwsA(isA<UnsafePasteException>()),
+      );
     });
 
     test('strips control characters but keeps tabs and text', () {
@@ -148,12 +163,24 @@ Host bastion db
     final r = SecretRedactor();
 
     test('masks API keys, tokens, and JWTs', () {
-      expect(r.redact('export KEY=sk-ant-abcdefghij0123456789XYZ'),
-          isNot(contains('sk-ant-abcdefghij0123456789XYZ')));
-      expect(r.redact('ghp_0123456789abcdef0123456789abcdef0123'),
-          contains('«redacted»'));
-      final jwt =
-          'eyJhbGciOiJI.eyJzdWIiOiIxMjM0NTY3ODkw.SflKxwRJSMeKKF2QT4';
+      expect(
+        r.redact('export KEY=sk-ant-abcdefghij0123456789XYZ'),
+        isNot(contains('sk-ant-abcdefghij0123456789XYZ')),
+      );
+      expect(
+        r.redact('ghp_0123456789abcdef0123456789abcdef0123'),
+        contains('«redacted»'),
+      );
+      expect(
+        r.redact('OPENAI_API_KEY=sk-proj-abc_def-0123456789abcdefXYZ'),
+        isNot(contains('sk-proj-abc_def-0123456789abcdefXYZ')),
+      );
+      expect(
+        r.redact('github_pat_0123456789abcdef_0123456789abcdef'),
+        contains('«redacted»'),
+      );
+      expect(r.redact('glpat-0123456789abcdefXYZ12'), contains('«redacted»'));
+      final jwt = 'eyJhbGciOiJI.eyJzdWIiOiIxMjM0NTY3ODkw.SflKxwRJSMeKKF2QT4';
       expect(r.redact('token $jwt'), isNot(contains(jwt)));
     });
 
