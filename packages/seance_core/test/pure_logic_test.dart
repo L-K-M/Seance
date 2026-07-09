@@ -62,10 +62,12 @@ Host bastion db
       final cfg = h.toServerConfig(id: 'id1', now: 5);
       expect(cfg.authMethod, AuthMethod.privateKey);
       expect(cfg.identityFilePath, '~/.ssh/id');
-      final agentCfg = SshConfigImporter.parse(
+      // A keyless host defaults to password, not the (unsupported) ssh-agent,
+      // so an imported host can actually be connected to after adding a secret.
+      final keylessCfg = SshConfigImporter.parse(
         'Host y\n HostName h\n',
       ).single.toServerConfig(id: 'id2', now: 5);
-      expect(agentCfg.authMethod, AuthMethod.agent);
+      expect(keylessCfg.authMethod, AuthMethod.password);
     });
   });
 
