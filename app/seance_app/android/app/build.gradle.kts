@@ -25,11 +25,26 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        // Séance is a personal, sideloaded app (no Play Store), so its release
+        // signature intentionally carries debug-grade trust — but it must be
+        // STABLE: Android only installs an update over an existing app when
+        // the signatures match, and the default debug keystore is generated
+        // per machine (and per CI run), which would force an uninstall (and
+        // wipe local data) on every upgrade. The keystore is committed and its
+        // password is public by design; it secures nothing and exists only to
+        // give every build, local or CI, the same identity.
+        create("release") {
+            storeFile = file("ci-release.jks")
+            storePassword = "seance-release"
+            keyAlias = "seance"
+            keyPassword = "seance-release"
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

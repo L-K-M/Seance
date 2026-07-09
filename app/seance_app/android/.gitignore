@@ -12,3 +12,9 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+# …except Séance's committed release keystore. It is deliberately public: the
+# app is sideloaded (no Play Store), so the key carries debug-grade trust by
+# design — committing it is what gives every build (local or CI) the SAME
+# signing identity, so a downloaded release APK upgrades an installed one
+# instead of demanding an uninstall (which would wipe the app's local data).
+!app/ci-release.jks

@@ -92,10 +92,12 @@ jobs:
 
   # Android APK for the Flutter app. The platform folders are committed (they
   # carry the app name, icons, and bundle id — AGENTS.md §3) and the release
-  # build is debug-signed by design (personal tool, no Play Store), so this
-  # needs no signing secrets — just the Flutter + Android toolchain, and the
-  # Android SDK ships on ubuntu-latest. Version comes from the app pubspec
-  # (kept in lockstep with the tag by scripts/release.sh).
+  # build signs with the keystore committed at android/app/ci-release.jks —
+  # deliberately public, debug-grade trust (personal tool, no Play Store), but
+  # STABLE, so each release's APK upgrades the installed app in place instead
+  # of demanding an uninstall. No signing secrets needed — just the Flutter +
+  # Android toolchain, and the Android SDK ships on ubuntu-latest. Version
+  # comes from the app pubspec (lockstep with the tag via scripts/release.sh).
   android:
     name: Android APK
     needs: test
