@@ -20,8 +20,12 @@ class _ChatMessage {
   final String text;
   final List<String> staged; // commands placed in the prompt
   final List<String> searches;
-  _ChatMessage(this.fromUser, this.text,
-      {this.staged = const [], this.searches = const []});
+  _ChatMessage(
+    this.fromUser,
+    this.text, {
+    this.staged = const [],
+    this.searches = const [],
+  });
 }
 
 class _ChatSidebarState extends State<ChatSidebar> {
@@ -30,6 +34,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
   final List<_ChatMessage> _messages = [];
   ChatController? _chat;
   int? _chatVersion; // the llmConfigVersion _chat was built with
+  TerminalSession? _pasteTarget;
   bool _includeContext = true;
   bool _sending = false;
   String? _error;
@@ -54,8 +59,15 @@ class _ChatSidebarState extends State<ChatSidebar> {
       provider: provider,
       searchProvider: search,
       onPaste: (command) {
-        // Place the (newline-free) command into the active session's prompt.
-        state.activeSession?.engine.injectInput(command);
+        // Place the (newline-free) command into the session that originated the
+        // current chat turn, not whichever tab happens to be active later.
+        final session = _pasteTarget;
+        if (session == null ||
+            state.sessions[session.serverId] != session ||
+            !session.isConnected) {
+          return;
+        }
+        session.engine.injectInput(command);
       },
     );
     _chat = controller;
@@ -75,18 +87,27 @@ class _ChatSidebarState extends State<ChatSidebar> {
     _scrollToEnd();
 
     try {
+      final targetSession = state.activeSession;
+      _pasteTarget = targetSession;
       final controller = await _ensureController(state);
       final context = _includeContext
-          ? state.activeSession?.engine.recentText(maxLines: 200)
+          ? targetSession?.engine.recentText(maxLines: 200)
           : null;
       final result = await controller.send(text, terminalContext: context);
       setState(() {
-        _messages.add(_ChatMessage(false, result.reply,
-            staged: result.stagedCommands, searches: result.searchQueries));
+        _messages.add(
+          _ChatMessage(
+            false,
+            result.reply,
+            staged: result.stagedCommands,
+            searches: result.searchQueries,
+          ),
+        );
       });
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
+      _pasteTarget = null;
       setState(() => _sending = false);
       _scrollToEnd();
     }
@@ -95,9 +116,11 @@ class _ChatSidebarState extends State<ChatSidebar> {
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOut);
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
       }
     });
   }
@@ -117,15 +140,16 @@ class _ChatSidebarState extends State<ChatSidebar> {
                     controller: _scroll,
                     padding: const EdgeInsets.all(12),
                     itemCount: _messages.length,
-                    itemBuilder: (context, i) =>
-                        _bubble(context, _messages[i]),
+                    itemBuilder: (context, i) => _bubble(context, _messages[i]),
                   ),
           ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text(_error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              child: Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           _composer(context, state),
         ],
@@ -174,10 +198,16 @@ class _ChatSidebarState extends State<ChatSidebar> {
                 // Enter inserts a newline (multiline); Cmd/Ctrl+Return sends.
                 child: CallbackShortcuts(
                   bindings: {
-                    const SingleActivator(LogicalKeyboardKey.enter, meta: true):
-                        () => _send(state),
-                    const SingleActivator(LogicalKeyboardKey.enter,
-                        control: true): () => _send(state),
+                    const SingleActivator(
+                      LogicalKeyboardKey.enter,
+                      meta: true,
+                    ): () =>
+                        _send(state),
+                    const SingleActivator(
+                      LogicalKeyboardKey.enter,
+                      control: true,
+                    ): () =>
+                        _send(state),
                   },
                   child: TextField(
                     controller: _input,
@@ -200,7 +230,8 @@ class _ChatSidebarState extends State<ChatSidebar> {
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2))
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
                     : const Icon(Icons.send),
               ),
             ],
@@ -219,7 +250,9 @@ class _ChatSidebarState extends State<ChatSidebar> {
         padding: const EdgeInsets.all(10),
         constraints: const BoxConstraints(maxWidth: 300),
         decoration: BoxDecoration(
-          color: m.fromUser ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+          color: m.fromUser
+              ? scheme.primaryContainer
+              : scheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(10),
         ),
         child: Column(
@@ -229,13 +262,18 @@ class _ChatSidebarState extends State<ChatSidebar> {
             for (final q in m.searches)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
-                child: Row(children: [
-                  const Icon(Icons.search, size: 14),
-                  const SizedBox(width: 4),
-                  Flexible(
-                      child: Text('searched: $q',
-                          style: Theme.of(context).textTheme.labelSmall)),
-                ]),
+                child: Row(
+                  children: [
+                    const Icon(Icons.search, size: 14),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        'searched: $q',
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             for (final cmd in m.staged)
               Container(
@@ -245,15 +283,21 @@ class _ChatSidebarState extends State<ChatSidebar> {
                   color: scheme.surface,
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: Row(children: [
-                  const Icon(Icons.keyboard_return, size: 14),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text('placed in prompt: $cmd',
+                child: Row(
+                  children: [
+                    const Icon(Icons.keyboard_return, size: 14),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'placed in prompt: $cmd',
                         style: const TextStyle(
-                            fontFamily: 'monospace', fontSize: 12)),
-                  ),
-                ]),
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
           ],
         ),
@@ -274,9 +318,11 @@ class _ChatEmpty extends StatelessWidget {
           children: [
             const Icon(Icons.auto_awesome_outlined, size: 36),
             const SizedBox(height: 12),
-            Text('Describe what you want to do',
-                style: Theme.of(context).textTheme.titleSmall,
-                textAlign: TextAlign.center),
+            Text(
+              'Describe what you want to do',
+              style: Theme.of(context).textTheme.titleSmall,
+              textAlign: TextAlign.center,
+            ),
             const SizedBox(height: 6),
             Text(
               'Type a task in plain language — e.g. "find the 10 largest files '
