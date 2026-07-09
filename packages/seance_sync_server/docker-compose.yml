@@ -12,7 +12,9 @@ services:
     image: seance-sync:latest
     restart: unless-stopped
     ports:
-      - "8787:8787"
+      # Plain HTTP is intended to sit behind a local TLS reverse proxy. Bind the
+      # host port to loopback so compose does not expose it on every interface.
+      - "127.0.0.1:8787:8787"
     environment:
       SEANCE_BIND: "0.0.0.0"
       SEANCE_PORT: "8787"
