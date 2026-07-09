@@ -8,8 +8,22 @@ import 'top_toast.dart';
 /// The Snippets tab: reusable command templates, synced across devices. Tapping
 /// one inserts it into the active terminal's prompt; if it has `{{placeholder}}`
 /// tokens the user is asked to fill them in first. Never runs anything.
-class SnippetsPane extends StatelessWidget {
+class SnippetsPane extends StatefulWidget {
   const SnippetsPane({super.key});
+
+  @override
+  State<SnippetsPane> createState() => _SnippetsPaneState();
+}
+
+class _SnippetsPaneState extends State<SnippetsPane> {
+  final _search = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -17,6 +31,17 @@ class SnippetsPane extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
+        final all = state.snippets;
+        final q = _query.trim().toLowerCase();
+        final filtered = q.isEmpty
+            ? all
+            : all
+                  .where(
+                    (s) =>
+                        s.title.toLowerCase().contains(q) ||
+                        s.body.toLowerCase().contains(q),
+                  )
+                  .toList();
         return Column(
           children: [
             Padding(
@@ -39,15 +64,41 @@ class SnippetsPane extends StatelessWidget {
               ),
             ),
             const Divider(height: 1),
+            // A filter box, once there are enough snippets to warrant scrolling.
+            if (all.length > 4)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                child: TextField(
+                  controller: _search,
+                  onChanged: (v) => setState(() => _query = v),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    hintText: 'Filter snippets…',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () => setState(() {
+                              _search.clear();
+                              _query = '';
+                            }),
+                          ),
+                  ),
+                ),
+              ),
             if (state.commandSuggestions.isNotEmpty) _Suggestions(state: state),
             Expanded(
-              child: state.snippets.isEmpty
+              child: all.isEmpty
                   ? const _SnippetsEmpty()
+                  : filtered.isEmpty
+                  ? const _NoMatches()
                   : ListView.separated(
-                      itemCount: state.snippets.length,
+                      itemCount: filtered.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
                       itemBuilder: (context, i) {
-                        final s = state.snippets[i];
+                        final s = filtered[i];
                         final count = s.placeholders.length;
                         return ListTile(
                           title: Text(
@@ -250,6 +301,24 @@ class _SnippetsEmpty extends StatelessWidget {
   }
 }
 
+/// Shown when a filter matches no snippets.
+class _NoMatches extends StatelessWidget {
+  const _NoMatches();
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          'No snippets match your filter.',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
+    );
+  }
+}
+
 /// Add or edit a snippet.
 Future<void> showSnippetEditor(
   BuildContext context,
@@ -354,46 +423,52 @@ Future<Map<String, String>?> showPlaceholderDialog(
   BuildContext context,
   String title,
   List<String> names,
-) {
+) async {
   final controllers = {for (final n in names) n: TextEditingController()};
-  return showDialog<Map<String, String>>(
-    context: context,
-    builder: (_) => AlertDialog(
-      title: Text(title),
-      content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var i = 0; i < names.length; i++)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: TextField(
-                    controller: controllers[names[i]],
-                    autofocus: i == 0,
-                    decoration: InputDecoration(
-                      labelText: names[i],
-                      border: const OutlineInputBorder(),
+  try {
+    return await showDialog<Map<String, String>>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < names.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: TextField(
+                      controller: controllers[names[i]],
+                      autofocus: i == 0,
+                      decoration: InputDecoration(
+                        labelText: names[i],
+                        border: const OutlineInputBorder(),
+                      ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, {
+              for (final e in controllers.entries) e.key: e.value.text,
+            }),
+            child: const Text('Insert'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, {
-            for (final e in controllers.entries) e.key: e.value.text,
-          }),
-          child: const Text('Insert'),
-        ),
-      ],
-    ),
-  );
+    );
+  } finally {
+    for (final c in controllers.values) {
+      c.dispose();
+    }
+  }
 }
