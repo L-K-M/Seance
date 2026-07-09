@@ -1,6 +1,11 @@
-/// A fixed-window rate limiter, used to blunt online guessing against the login
-/// endpoint. Keyed by whatever the caller chooses (username, client IP, or
-/// both). The clock is injectable so it can be tested deterministically.
+/// A sliding-window rate limiter, used to blunt online guessing against the
+/// login endpoint. Keyed by whatever the caller chooses (username, client IP,
+/// or both). The clock is injectable so it can be tested deterministically.
+///
+/// Each key retains at most [maxAttempts] timestamps. The requested key is
+/// pruned on every call, while all keys are swept every 64 calls so stale
+/// one-off keys are eventually removed without scanning the map per request.
+/// A hit at exactly `now - window` is expired.
 class RateLimiter {
   static const _sweepInterval = 64;
 
@@ -8,7 +13,7 @@ class RateLimiter {
   final Duration window;
   final DateTime Function() _now;
 
-  final Map<String, _Bucket> _buckets = {};
+  final Map<String, List<DateTime>> _hits = {};
   int _callsUntilSweep = _sweepInterval;
 
   RateLimiter({
@@ -32,36 +37,37 @@ class RateLimiter {
   /// false if the caller should be throttled.
   bool allow(String key) {
     final now = _now();
+    final cutoff = now.subtract(window);
     _callsUntilSweep--;
     if (_callsUntilSweep == 0) {
-      _buckets.removeWhere((_, bucket) => _isExpired(bucket, now));
+      _hits.removeWhere((_, hits) {
+        _removeExpired(hits, cutoff);
+        return hits.isEmpty;
+      });
       _callsUntilSweep = _sweepInterval;
     }
 
-    var bucket = _buckets[key];
-    if (bucket != null && _isExpired(bucket, now)) {
-      _buckets.remove(key);
-      bucket = null;
+    var hits = _hits[key];
+    if (hits != null) {
+      _removeExpired(hits, cutoff);
+      if (hits.isEmpty) {
+        _hits.remove(key);
+        hits = null;
+      }
     }
-    if (bucket != null) {
-      if (bucket.attempts >= maxAttempts) return false;
-      bucket.attempts++;
-      return true;
+    if (hits == null) {
+      hits = [];
+      _hits[key] = hits;
     }
 
-    _buckets[key] = _Bucket(now);
+    if (hits.length >= maxAttempts) return false;
+    hits.add(now);
     return true;
   }
 
-  void reset(String key) => _buckets.remove(key);
+  void reset(String key) => _hits.remove(key);
 
-  bool _isExpired(_Bucket bucket, DateTime now) =>
-      !now.isBefore(bucket.startedAt.add(window));
-}
-
-class _Bucket {
-  final DateTime startedAt;
-  int attempts = 1;
-
-  _Bucket(this.startedAt);
+  void _removeExpired(List<DateTime> hits, DateTime cutoff) {
+    hits.removeWhere((hit) => !hit.isAfter(cutoff));
+  }
 }

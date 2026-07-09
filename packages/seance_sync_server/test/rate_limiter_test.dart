@@ -70,7 +70,7 @@ void main() {
       }
     });
 
-    test('uses a fixed window starting with the first attempt', () {
+    test('uses a sliding window with an inclusive expiry cutoff', () {
       final limiter = RateLimiter(
         maxAttempts: 2,
         window: const Duration(minutes: 1),
@@ -78,11 +78,12 @@ void main() {
       );
 
       expect(limiter.allow('alice'), isTrue);
-      now = now.add(const Duration(seconds: 50));
+      now = now.add(const Duration(seconds: 59));
       expect(limiter.allow('alice'), isTrue);
+      expect(limiter.allow('alice'), isFalse);
 
-      now = now.add(const Duration(seconds: 10));
-      expect(limiter.allow('alice'), isTrue);
+      // At t=60 the t=0 hit expires, but the t=59 hit still counts.
+      now = now.add(const Duration(seconds: 1));
       expect(limiter.allow('alice'), isTrue);
       expect(limiter.allow('alice'), isFalse);
     });
