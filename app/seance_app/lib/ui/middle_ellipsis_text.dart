@@ -24,6 +24,7 @@ class MiddleEllipsisText extends StatelessWidget {
       style: effectiveStyle,
       maxLines: 1,
       softWrap: false,
+      overflow: TextOverflow.clip,
       semanticsLabel: text,
     );
 

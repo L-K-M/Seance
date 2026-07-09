@@ -120,12 +120,19 @@ void main() {
     }
   });
 
-  testWidgets('handles widths tighter than the ellipsis', (tester) async {
+  testWidgets('clips at widths tighter than the ellipsis', (tester) async {
     const text = 'server-👨‍👩‍👧‍👦-name';
+    final renderedText = find.descendant(
+      of: find.byType(MiddleEllipsisText),
+      matching: find.byType(Text),
+    );
     for (final width in [0.0, 1.0, 4.0]) {
       await tester.pumpWidget(_host(width, text));
       expect(_shown(tester), '…');
       _expectWholeGraphemes(text, _shown(tester));
+      expect(tester.widget<Text>(renderedText).overflow, TextOverflow.clip);
+      expect(tester.takeException(), isNull);
     }
+    expect(renderedText, paints..clipRect());
   });
 }
