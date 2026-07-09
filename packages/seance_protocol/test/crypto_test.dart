@@ -112,6 +112,8 @@ void main() {
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
         0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
       ];
+      // Keep grouping in the literal so the vector locks the display format as
+      // well as the Base32 body and checksum.
       const code = '000G-40R4-0M30-E209-185G-R38E-1W81-'
           '24GK-2GAH-C5RR-34D1-P70X-3RFG-3D';
 

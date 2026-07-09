@@ -16,8 +16,14 @@ import 'package:crypto/crypto.dart' as classic;
 class RecoveryKey {
   static const String _alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   static const int _keyLength = 32;
+
+  // A 32-byte key fills 51 Base32 symbols and one bit of the 52nd; the
+  // 52nd symbol's remaining four bits must be zero in the canonical form.
   static const int _bodyLength = 52;
-  static const int _maxInputLength = 1024;
+
+  // The grouped form is 67 characters, leaving ample room for extra separators
+  // while bounding work before normalization creates intermediate strings.
+  static const int _maxInputLength = 256;
 
   /// Number of trailing checksum symbols. Two Crockford symbols give ~10 bits,
   /// so a single mistyped character is missed only ~1 in 1024 — enough to catch
@@ -55,13 +61,21 @@ class RecoveryKey {
         .replaceAll('L', '1');
     if (cleaned.length != _bodyLength + _checksumLength) {
       throw const FormatException(
-        'Recovery code must contain exactly 54 symbols',
+        'Recovery code must contain exactly 54 Base32 symbols after removing '
+        'spaces and dashes',
       );
     }
     final body = cleaned.substring(0, _bodyLength);
     final checksum = cleaned.substring(_bodyLength);
     final bytes = _fromBase32(body);
-    if (bytes.length != _keyLength || _toBase32(bytes) != body) {
+
+    // The fixed body length currently implies 32 decoded bytes. Keep this
+    // defense in depth in case the encoding or length constants change.
+    if (bytes.length != _keyLength) {
+      throw const FormatException('Recovery code has an invalid key length');
+    }
+    // Re-encoding also proves the four unused bits in symbol 52 were zero.
+    if (_toBase32(bytes) != body) {
       throw const FormatException('Recovery code is not canonical');
     }
     if (_checksum(bytes) != checksum) {
