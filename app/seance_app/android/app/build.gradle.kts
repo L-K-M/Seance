@@ -26,14 +26,17 @@ android {
     }
 
     signingConfigs {
-        // Séance is a personal, sideloaded app (no Play Store), so its release
-        // signature intentionally carries debug-grade trust — but it must be
-        // STABLE: Android only installs an update over an existing app when
-        // the signatures match, and the default debug keystore is generated
-        // per machine (and per CI run), which would force an uninstall (and
-        // wipe local data) on every upgrade. The keystore is committed and its
-        // password is public by design; it secures nothing and exists only to
-        // give every build, local or CI, the same identity.
+        // Séance is a personal, sideloaded app (no Play Store), and its
+        // release keystore is committed — password public by design. What
+        // that buys: a STABLE identity, so every build (local or CI) can
+        // upgrade an existing install in place; the default debug keystore is
+        // per-machine/per-CI-run, which forced an uninstall (wiping local
+        // data) on every update. What it deliberately gives up: publisher
+        // authenticity — anyone can build an APK this key signs, and Android
+        // would install it OVER an existing install if the user sideloads it.
+        // The trust anchor is therefore the download source (this repo's
+        // releases), not the signature. Use a private key instead if that
+        // ever stops being acceptable.
         create("release") {
             storeFile = file("ci-release.jks")
             storePassword = "seance-release"
