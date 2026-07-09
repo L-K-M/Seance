@@ -43,8 +43,28 @@ void main() {
       'Confirm the vault passphrase before registering.',
     );
     expect(
+      validate(confirmation: '  \t'),
+      'Confirm the vault passphrase before registering.',
+    );
+    expect(
       validate(confirmation: 'different'),
       'Vault passphrases do not match.',
+    );
+    expect(
+      validate(confirmation: '$passphrase '),
+      'Vault passphrases do not match.',
+      reason: 'nonblank confirmation must still match exactly',
+    );
+  });
+
+  test('rejects server URLs containing embedded credentials', () {
+    expect(
+      validate(baseUrl: 'https://alice:secret@sync.example.com'),
+      'Server URL must not include embedded credentials.',
+    );
+    expect(
+      validate(baseUrl: 'http://alice@localhost:8787'),
+      'Server URL must not include embedded credentials.',
     );
   });
 
@@ -59,7 +79,8 @@ void main() {
     );
   });
 
-  test('HTTP localhost is accepted for self-hosted development', () {
+  test('HTTP remains accepted for development and self-hosted servers', () {
     expect(validate(baseUrl: 'http://localhost:8787'), isNull);
+    expect(validate(baseUrl: 'http://sync.example.com'), isNull);
   });
 }

@@ -11,15 +11,20 @@ String? validateSyncEnrollment({
 }) {
   final uri = Uri.tryParse(baseUrl.trim());
   final scheme = uri?.scheme.toLowerCase();
+  // HTTP remains valid for localhost, development, and existing self-hosted
+  // deployments; stricter transport policy is a separate migration.
   if (uri == null ||
       (scheme != 'http' && scheme != 'https') ||
       uri.host.isEmpty) {
     return 'Enter a valid HTTP or HTTPS server URL.';
   }
+  if (uri.userInfo.isNotEmpty) {
+    return 'Server URL must not include embedded credentials.';
+  }
   if (username.trim().isEmpty) return 'Enter a username.';
   if (passphrase.trim().isEmpty) return 'Enter a vault passphrase.';
   if (mode == SyncEnrollmentMode.register) {
-    if (confirmationPassphrase.isEmpty) {
+    if (confirmationPassphrase.trim().isEmpty) {
       return 'Confirm the vault passphrase before registering.';
     }
     if (confirmationPassphrase != passphrase) {
