@@ -3,6 +3,7 @@ import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import 'top_toast.dart';
 
 /// The Snippets tab: reusable command templates, synced across devices. Tapping
 /// one inserts it into the active terminal's prompt; if it has `{{placeholder}}`
@@ -86,6 +87,7 @@ class SnippetsPane extends StatelessWidget {
       BuildContext context, AppState state, Snippet snippet) async {
     final session = state.activeSession;
     final messenger = ScaffoldMessenger.of(context);
+    final overlay = Overlay.of(context, rootOverlay: true);
     if (session == null || !session.isConnected) {
       messenger.showSnackBar(
         const SnackBar(content: Text('Open a connected session first.')),
@@ -100,8 +102,11 @@ class SnippetsPane extends StatelessWidget {
       text = snippet.fill(values);
     }
     session.engine.injectInput(text);
-    messenger.showSnackBar(
-      SnackBar(content: Text('Inserted "${snippet.title}" into the prompt')),
+    // Top toast so it doesn't cover the prompt the snippet was inserted into.
+    showTopToast(
+      overlay,
+      message: 'Inserted "${snippet.title}" into the prompt',
+      duration: const Duration(seconds: 3),
     );
   }
 

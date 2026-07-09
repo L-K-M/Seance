@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
+import 'top_toast.dart';
 
 /// The inline command generator: a focused "describe a task → get one command"
 /// tool, distinct from the chat sidebar. It generates a single command and
@@ -58,7 +59,10 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
   Future<void> _generate() async {
     final request = _input.text.trim();
     if (request.isEmpty || _busy) return;
-    final messenger = ScaffoldMessenger.of(context);
+    // Capture the root overlay now: it outlives this dialog, so the "inserted"
+    // toast can show at the top after the dialog closes (a SnackBar would cover
+    // the prompt the command was just inserted into).
+    final overlay = Overlay.of(context, rootOverlay: true);
     setState(() {
       _busy = true;
       _error = null;
@@ -88,7 +92,7 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
 
       widget.session.engine.injectInput(suggestion.command);
       if (mounted) Navigator.of(context).pop();
-      messenger.showSnackBar(_insertedSnack(suggestion));
+      _showInsertedToast(overlay, suggestion);
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -96,19 +100,21 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
     }
   }
 
-  SnackBar _insertedSnack(CommandSuggestion s) {
+  /// Notify — at the TOP, so it doesn't cover the prompt the command was just
+  /// inserted into — that the command is in the prompt, with any danger note.
+  void _showInsertedToast(OverlayState overlay, CommandSuggestion s) {
     final danger = s.effectiveDanger;
     final label = switch (danger) {
       DangerSeverity.critical => '⚠ critical — review before running',
       DangerSeverity.warning => '⚠ review before running',
       null => s.explanation.isNotEmpty ? s.explanation : 'Inserted into prompt',
     };
-    return SnackBar(
+    showTopToast(
+      overlay,
+      message: 'Inserted: ${s.command}\n$label',
+      background:
+          danger == DangerSeverity.critical ? const Color(0xFF8E1519) : null,
       duration: Duration(seconds: danger == null ? 4 : 8),
-      backgroundColor: danger == DangerSeverity.critical
-          ? const Color(0xFF8E1519)
-          : null,
-      content: Text('Inserted: ${s.command}\n$label'),
     );
   }
 
