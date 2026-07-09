@@ -50,11 +50,10 @@ class TerminalActions extends StatelessWidget {
         ),
         SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
           onInvoke: (intent) {
+            // [seance fork] Select-all means the whole buffer including
+            // scrollback; upstream selected only the visible page.
             controller.setSelection(
-              terminal.buffer.createAnchor(
-                0,
-                terminal.buffer.height - terminal.viewHeight,
-              ),
+              terminal.buffer.createAnchor(0, 0),
               terminal.buffer.createAnchor(
                 terminal.viewWidth,
                 terminal.buffer.height - 1,

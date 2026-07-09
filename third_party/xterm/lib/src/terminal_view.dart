@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/line.dart';
 
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/terminal.dart';
@@ -159,6 +160,11 @@ class TerminalViewState extends State<TerminalView> {
 
   String? _composingText;
 
+  /// [seance fork] The cell of the last plain primary click, kept as a
+  /// content-glued buffer anchor so a later shift-click can select the range
+  /// between the two points (even across scrolling or trimming in between).
+  CellAnchor? _lastTapAnchor;
+
   late TerminalController _controller;
 
   late ScrollController _scrollController;
@@ -213,6 +219,7 @@ class TerminalViewState extends State<TerminalView> {
       _scrollController.dispose();
     }
     _shortcutManager.dispose();
+    _lastTapAnchor?.dispose();
     super.dispose();
   }
 
@@ -244,7 +251,11 @@ class TerminalViewState extends State<TerminalView> {
     child = TerminalScrollGestureHandler(
       terminal: widget.terminal,
       simulateScroll: widget.simulateScroll,
-      getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
+      // [seance fork] The scroll handler records *global* pointer positions;
+      // getCellOffset expects local ones. Upstream passed them through
+      // unconverted, mis-aiming alt-buffer wheel reports.
+      getCellOffset: (offset) =>
+          renderTerminal.getCellOffset(renderTerminal.globalToLocal(offset)),
       getLineHeight: () => renderTerminal.lineHeight,
       child: child,
     );
@@ -345,7 +356,25 @@ class TerminalViewState extends State<TerminalView> {
     widget.onTapUp?.call(details, offset);
   }
 
-  void _onTapDown(_) {
+  void _onTapDown(TapDownDetails details, int tapCount) {
+    // [seance fork] Shift-click extends instead of clearing: from the live
+    // selection's base if one exists, else from the last plain click.
+    if (HardwareKeyboard.instance.isShiftPressed &&
+        _tryExtendSelection(details)) {
+      return;
+    }
+
+    // [seance fork] Only a plain single tap clears the selection. Upstream
+    // cleared on *every* tap-down, which killed the word/line selection a
+    // double/triple-click was about to make (the third tap of a triple always
+    // read as a fresh first tap to its hand-rolled tracker).
+    if (tapCount > 1) {
+      return;
+    }
+
+    _lastTapAnchor?.dispose();
+    _lastTapAnchor = renderTerminal.createAnchorAt(details.localPosition);
+
     if (_controller.selection != null) {
       _controller.clearSelection();
     } else {
@@ -355,6 +384,25 @@ class TerminalViewState extends State<TerminalView> {
         _focusNode.requestFocus();
       }
     }
+  }
+
+  /// [seance fork] Shift-click selection extension. Returns false when there
+  /// is nothing to extend from (no live selection and no recorded click).
+  bool _tryExtendSelection(TapDownDetails details) {
+    if (_controller.extendSelectionTo(
+      renderTerminal.createAnchorAt(details.localPosition),
+    )) {
+      return true;
+    }
+    final last = _lastTapAnchor;
+    if (last != null && last.attached) {
+      _controller.setSelection(
+        widget.terminal.buffer.createAnchorFromOffset(last.offset),
+        renderTerminal.createAnchorAt(details.localPosition),
+      );
+      return true;
+    }
+    return false;
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {
@@ -431,7 +479,11 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   void _onKeyboardShow() {
-    if (_focusNode.hasFocus) {
+    // [seance fork] Only re-pin when the user was already at the bottom.
+    // Upstream jumped unconditionally, so tapping a scrolled-up terminal on
+    // touch (which summons the keyboard) yanked the viewport to the bottom
+    // mid-selection — the long-press then selected the wrong text.
+    if (_focusNode.hasFocus && renderTerminal.stickToBottom) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToBottom();
       });
@@ -446,6 +498,18 @@ class TerminalViewState extends State<TerminalView> {
     final position = _scrollableKey.currentState?.position;
     if (position != null) {
       position.jumpTo(position.maxScrollExtent);
+    }
+  }
+
+  /// [seance fork] Scrolls the scrollback by [pixels], clamped to the scroll
+  /// extents. Drives the drag-selection edge autoscroll.
+  void autoScrollBy(double pixels) {
+    final position = _scrollableKey.currentState?.position;
+    if (position == null) return;
+    final target = (position.pixels + pixels)
+        .clamp(position.minScrollExtent, position.maxScrollExtent);
+    if (target != position.pixels) {
+      position.jumpTo(target);
     }
   }
 }

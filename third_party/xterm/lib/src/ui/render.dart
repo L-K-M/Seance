@@ -4,7 +4,9 @@ import 'dart:ui';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
+import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -153,6 +155,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   var _stickToBottom = true;
 
+  /// [seance fork] Whether the viewport is pinned to the bottom of the
+  /// scrollback. Exposed so the view can avoid yanking a scrolled-up viewport
+  /// back down (e.g. when the soft keyboard appears mid-selection).
+  bool get stickToBottom => _stickToBottom;
+
+  /// [seance fork] Trim tracking for scroll anchoring: the lines object and
+  /// its absolute start index as of the previous layout pass.
+  Object? _lastLines;
+  int _lastAbsoluteStartIndex = 0;
+
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
     markNeedsLayout();
@@ -210,11 +222,35 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     _updateViewportSize();
 
+    _correctForTrimmedLines();
+
     _updateScrollOffset();
 
     if (_stickToBottom) {
       _offset.correctBy(_maxScrollExtent - _scrollOffset);
     }
+  }
+
+  /// [seance fork] While scrolled up (not stick-to-bottom), a full scrollback
+  /// trims its oldest line for every new one — decrementing every retained
+  /// line's index while the pixel offset stays put, so content used to crawl
+  /// up under a stationary viewport (and under an in-progress selection).
+  /// Shift the offset by the trimmed amount to keep the viewport glued to
+  /// content. Tracking is per lines-object so a main/alt buffer swap never
+  /// produces a bogus correction.
+  void _correctForTrimmedLines() {
+    final lines = _terminal.buffer.lines;
+    final start = lines.absoluteStartIndex;
+    if (identical(lines, _lastLines)) {
+      final trimmed = start - _lastAbsoluteStartIndex;
+      if (trimmed > 0 && !_stickToBottom) {
+        final delta = trimmed * _painter.cellSize.height;
+        final target = max(_scrollOffset - delta, 0.0);
+        _offset.correctBy(target - _scrollOffset);
+      }
+    }
+    _lastLines = lines;
+    _lastAbsoluteStartIndex = start;
   }
 
   /// Total height of the terminal in pixels. Includes scrollback buffer.
@@ -288,7 +324,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       );
     } else {
       var toPosition = getCellOffset(to);
-      if (toPosition.x >= fromPosition.x) {
+      // [seance fork] End-inclusive bump for forward drags. Upstream compared
+      // x alone (ignoring y), so an up-and-left drag got a spurious +1.
+      if (!toPosition.isBefore(fromPosition)) {
         toPosition = CellOffset(toPosition.x + 1, toPosition.y);
       }
       _controller.setSelection(
@@ -298,6 +336,78 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     }
   }
 
+  /// [seance fork] Extends a character selection from [start] — an anchor
+  /// captured once at drag start, so it stays glued to its text through
+  /// scrolling and scrollback trimming — to the cell at pixel [to]. Upstream
+  /// re-converted the start PIXEL on every drag update, which made the
+  /// selection start slide through content whenever the viewport moved
+  /// mid-drag (streaming output, wheel scroll, stick-to-bottom re-pin).
+  void selectCharactersTo(CellAnchor start, Offset to) {
+    if (!start.attached) return;
+    final fromPosition = start.offset;
+    var toPosition = getCellOffset(to);
+    if (!toPosition.isBefore(fromPosition)) {
+      toPosition = CellOffset(toPosition.x + 1, toPosition.y);
+    }
+    _controller.setSelection(
+      _terminal.buffer.createAnchorFromOffset(fromPosition),
+      _terminal.buffer.createAnchorFromOffset(toPosition),
+    );
+  }
+
+  /// [seance fork] Extends a word selection whose initial word is pinned by
+  /// [wordBegin]/[wordEnd] (anchors captured at gesture start) to include the
+  /// word under pixel [to]. Same anchoring rationale as [selectCharactersTo].
+  void selectWordTo(CellAnchor wordBegin, CellAnchor wordEnd, Offset to) {
+    if (!wordBegin.attached || !wordEnd.attached) return;
+    final toBoundary = _terminal.buffer.getWordBoundary(getCellOffset(to));
+    if (toBoundary == null) return;
+    final range =
+        BufferRangeLine(wordBegin.offset, wordEnd.offset).merge(toBoundary);
+    _controller.setSelection(
+      _terminal.buffer.createAnchorFromOffset(range.begin),
+      _terminal.buffer.createAnchorFromOffset(range.end),
+      mode: SelectionMode.line,
+    );
+  }
+
+  /// [seance fork] Selects the full logical line at pixel [from], following
+  /// soft-wrap continuations in both directions — the triple-click gesture.
+  void selectLine(Offset from) {
+    final lines = _terminal.buffer.lines;
+    final offset = getCellOffset(from);
+    var first = offset.y;
+    while (first > 0 && lines[first].isWrapped) {
+      first--;
+    }
+    var last = offset.y;
+    while (last + 1 < lines.length && lines[last + 1].isWrapped) {
+      last++;
+    }
+    _controller.setSelection(
+      _terminal.buffer.createAnchor(0, first),
+      _terminal.buffer.createAnchor(_terminal.viewWidth, last),
+      mode: SelectionMode.line,
+    );
+  }
+
+  /// [seance fork] Creates a buffer anchor for the cell at pixel [offset].
+  /// The caller owns the anchor and must dispose it.
+  CellAnchor createAnchorAt(Offset offset) {
+    return _terminal.buffer.createAnchorFromOffset(getCellOffset(offset));
+  }
+
+  /// [seance fork] Creates owned anchors pinning the word at pixel [offset],
+  /// or null when there is no word there. The caller must dispose them.
+  (CellAnchor, CellAnchor)? createWordAnchorsAt(Offset offset) {
+    final boundary = _terminal.buffer.getWordBoundary(getCellOffset(offset));
+    if (boundary == null) return null;
+    return (
+      _terminal.buffer.createAnchorFromOffset(boundary.begin),
+      _terminal.buffer.createAnchorFromOffset(boundary.end),
+    );
+  }
+
   /// Send a mouse event at [offset] with [button] being currently in [buttonState].
   bool mouseEvent(
     TerminalMouseButton button,
@@ -305,7 +415,19 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     Offset offset,
   ) {
     final position = getCellOffset(offset);
-    return _terminal.mouseInput(button, buttonState, position);
+    // [seance fork] Mouse reports are viewport-relative (row 0 = top of the
+    // visible screen), but getCellOffset yields buffer-absolute rows —
+    // upstream reported rows off by the scrollback length. Convert, and let
+    // clicks landing in the scrollback above the viewport fall through to
+    // local handling instead of reporting nonsense to the remote app.
+    final viewportTop = _terminal.buffer.height - _terminal.viewHeight;
+    final row = position.y - viewportTop;
+    if (row < 0) return false;
+    return _terminal.mouseInput(
+      button,
+      buttonState,
+      CellOffset(position.x, row),
+    );
   }
 
   void _notifyEditableRect() {

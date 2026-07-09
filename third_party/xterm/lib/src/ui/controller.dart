@@ -90,6 +90,28 @@ class TerminalController with ChangeNotifier {
     notifyListeners();
   }
 
+  /// [seance fork] Moves only the selection extent to [extent], keeping the
+  /// current base — the primitive behind shift-click extension. Takes
+  /// ownership of [extent]. Returns false (and disposes [extent]) when there
+  /// is no live base to extend from.
+  bool extendSelectionTo(CellAnchor extent, {SelectionMode? mode}) {
+    final base = _selectionBase;
+    if (base == null || !base.attached) {
+      extent.dispose();
+      return false;
+    }
+
+    _selectionExtent?.dispose();
+    _selectionExtent = extent;
+
+    if (mode != null) {
+      _selectionMode = mode;
+    }
+
+    notifyListeners();
+    return true;
+  }
+
   /// Clears the current selection.
   void clearSelection() {
     _selectionBase?.dispose();

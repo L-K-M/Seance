@@ -349,6 +349,20 @@ class BufferLine with IndexedItem {
     return anchor;
   }
 
+  /// [seance fork] When this line is trimmed off a full scrollback, hand its
+  /// anchors to the new oldest line, clamped to its start. A selection whose
+  /// base sits in a trimmed line then degrades to "from the top of the
+  /// remaining scrollback" instead of silently vanishing (which used to break
+  /// select-all — anchored at row 0, the first line to trim — the moment
+  /// output streamed).
+  @override
+  void migrateOnEvict(covariant BufferLine? successor) {
+    if (successor == null) return;
+    for (final anchor in _anchors.toList()) {
+      anchor.reparent(successor, 0);
+    }
+  }
+
   void dispose() {
     for (final anchor in _anchors) {
       anchor.dispose();

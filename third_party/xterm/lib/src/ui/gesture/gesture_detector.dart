@@ -3,6 +3,14 @@ import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 
+/// [seance fork] Signature for tap-down callbacks that carry the position of
+/// the tap in a chained multi-click sequence (1 = single, 2 = double,
+/// 3 = triple; a fourth click starts a new sequence at 1).
+typedef GestureCountedTapDownCallback = void Function(
+  TapDownDetails details,
+  int tapCount,
+);
+
 class TerminalGestureDetector extends StatefulWidget {
   const TerminalGestureDetector({
     super.key,
@@ -19,7 +27,10 @@ class TerminalGestureDetector extends StatefulWidget {
     this.onLongPressUp,
     this.onDragStart,
     this.onDragUpdate,
+    this.onDragEnd,
+    this.onDragCancel,
     this.onDoubleTapDown,
+    this.onTripleTapDown,
   });
 
   final Widget? child;
@@ -28,13 +39,19 @@ class TerminalGestureDetector extends StatefulWidget {
 
   final GestureTapUpCallback? onSingleTapUp;
 
-  final GestureTapDownCallback? onTapDown;
+  /// [seance fork] Now carries the tap count so the view can decide whether
+  /// this tap-down should clear the selection (single) or is the prelude to a
+  /// word/line selection (double/triple).
+  final GestureCountedTapDownCallback? onTapDown;
 
   final GestureTapDownCallback? onSecondaryTapDown;
 
   final GestureTapUpCallback? onSecondaryTapUp;
 
   final GestureTapDownCallback? onDoubleTapDown;
+
+  /// [seance fork] Third chained tap — triple-click.
+  final GestureTapDownCallback? onTripleTapDown;
 
   final GestureTapDownCallback? onTertiaryTapDown;
 
@@ -50,49 +67,71 @@ class TerminalGestureDetector extends StatefulWidget {
 
   final GestureDragUpdateCallback? onDragUpdate;
 
+  /// [seance fork] Upstream never wired drag end/cancel, so nothing could
+  /// clean up per-drag state (selection anchors, autoscroll tickers).
+  final GestureDragEndCallback? onDragEnd;
+
+  final GestureDragCancelCallback? onDragCancel;
+
   @override
   State<TerminalGestureDetector> createState() =>
       _TerminalGestureDetectorState();
 }
 
 class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
-  Timer? _doubleTapTimer;
+  /// [seance fork] Multi-click state machine. Upstream hand-rolled a
+  /// double-tap tracker that armed its timer only from a *single* tap-up, so
+  /// the third click of a triple-click always looked like a fresh first tap
+  /// (and slow doubles in the 300–400ms gap did too). This machine chains
+  /// counts 1→2→3 with the standard [kDoubleTapTimeout] window anchored at
+  /// every tap-up and [kDoubleTapSlop] positional tolerance.
+  Timer? _tapSequenceTimer;
+
+  /// [seance fork] Chain window between a tap-up and the next tap-down.
+  /// Deliberately wider than Flutter's [kDoubleTapTimeout] (300ms): OS
+  /// double-click timeouts run ~500ms, and the 300ms window made unhurried
+  /// double-clicks read as two singles.
+  static const _multiClickWindow = Duration(milliseconds: 400);
 
   Offset? _lastTapOffset;
 
-  // True if a second tap down of a double tap is detected. Used to discard
-  // subsequent tap up / tap hold of the same tap.
-  bool _isDoubleTap = false;
+  int _tapCount = 0;
 
-  // The down handler is force-run on success of a single tap and optimistically
-  // run before a long press success.
   void _handleTapDown(TapDownDetails details) {
-    widget.onTapDown?.call(details);
+    if (_tapSequenceTimer != null &&
+        _isWithinDoubleTapTolerance(details.globalPosition) &&
+        _tapCount < 3) {
+      _tapCount += 1;
+    } else {
+      _tapCount = 1;
+    }
+    _tapSequenceTimer?.cancel();
+    _tapSequenceTimer = null;
+    _lastTapOffset = details.globalPosition;
 
-    if (_doubleTapTimer != null &&
-        _isWithinDoubleTapTolerance(details.globalPosition)) {
-      // If there was already a previous tap, the second down hold/tap is a
-      // double tap down.
+    widget.onTapDown?.call(details, _tapCount);
+
+    if (_tapCount == 2) {
       widget.onDoubleTapDown?.call(details);
-
-      _doubleTapTimer!.cancel();
-      _doubleTapTimeout();
-      _isDoubleTap = true;
+    } else if (_tapCount == 3) {
+      widget.onTripleTapDown?.call(details);
     }
   }
 
   void _handleTapUp(TapUpDetails details) {
-    if (!_isDoubleTap) {
+    if (_tapCount == 1) {
       widget.onSingleTapUp?.call(details);
-      _lastTapOffset = details.globalPosition;
-      _doubleTapTimer = Timer(kDoubleTapTimeout, _doubleTapTimeout);
     }
-    _isDoubleTap = false;
+    // Re-arm the window from every tap-up so the next click can continue the
+    // sequence (up₁→down₂ for doubles, up₂→down₃ for triples).
+    _tapSequenceTimer?.cancel();
+    _tapSequenceTimer = Timer(_multiClickWindow, _tapSequenceTimeout);
   }
 
-  void _doubleTapTimeout() {
-    _doubleTapTimer = null;
+  void _tapSequenceTimeout() {
+    _tapSequenceTimer = null;
     _lastTapOffset = null;
+    _tapCount = 0;
   }
 
   bool _isWithinDoubleTapTolerance(Offset secondTapOffset) {
@@ -102,6 +141,12 @@ class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
 
     final Offset difference = secondTapOffset - _lastTapOffset!;
     return difference.distance <= kDoubleTapSlop;
+  }
+
+  @override
+  void dispose() {
+    _tapSequenceTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -149,7 +194,9 @@ class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
         instance
           ..dragStartBehavior = DragStartBehavior.down
           ..onStart = widget.onDragStart
-          ..onUpdate = widget.onDragUpdate;
+          ..onUpdate = widget.onDragUpdate
+          ..onEnd = widget.onDragEnd
+          ..onCancel = widget.onDragCancel;
       },
     );
 

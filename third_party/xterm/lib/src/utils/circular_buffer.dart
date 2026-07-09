@@ -128,9 +128,22 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
     }
   }
 
+  /// [seance fork] The absolute index of the first element currently in the
+  /// list — in other words, how many elements have been trimmed off the front
+  /// over the list's lifetime. Lets a viewport correct its scroll offset when
+  /// content is trimmed out from under it.
+  int get absoluteStartIndex => _absoluteStartIndex;
+
   /// Adds [value] to the end of the list. May cause the first element to be
   /// trimmed if the list is full.
   void push(T value) {
+    if (_length == _array.length && _length > 1) {
+      // [seance fork] The first element is about to be trimmed; let it hand
+      // externally-held references (e.g. selection anchors on a BufferLine)
+      // to its successor instead of silently detaching them.
+      _getChild(0)?.migrateOnEvict(_getChild(1));
+    }
+
     _adoptChild(_length, value);
 
     if (_length == _array.length) {
@@ -306,6 +319,12 @@ mixin IndexedItem {
     _owner = null;
     _absoluteIndex = null;
   }
+
+  /// [seance fork] Called right before this item is evicted from a full
+  /// buffer, with the item that will become the buffer's first element.
+  /// Implementations can migrate externally-held references (e.g. selection
+  /// anchors held on a BufferLine) to [successor] so they survive the trim.
+  void migrateOnEvict(covariant IndexedItem? successor) {}
 
   /// Moves this item to [newIndex] in the buffer.
   void _move(int newIndex) {
