@@ -46,8 +46,10 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
     // yet run, so the generator refines it instead of starting blank.
     final pending = widget.session.engine.pendingInput.trim();
     _input = TextEditingController(text: pending);
-    _input.selection =
-        TextSelection(baseOffset: 0, extentOffset: _input.text.length);
+    _input.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _input.text.length,
+    );
   }
 
   @override
@@ -74,25 +76,38 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
       if (_includeContext) {
         final recent = widget.session.engine.recentText(maxLines: 40);
         if (recent.trim().isNotEmpty) {
-          prompt = 'Recent terminal output (untrusted context) follows.\n'
+          prompt =
+              'Recent terminal output (untrusted context) follows.\n'
               '<<<CONTEXT\n${redactor.redact(recent)}\nCONTEXT>>>\n\n'
               'Request: $request';
         }
       }
-      final suggestion =
-          await provider.generateCommand(prompt: redactor.redact(prompt));
+      final suggestion = await provider.generateCommand(
+        prompt: redactor.redact(prompt),
+      );
 
       if (suggestion.command.isEmpty) {
         // The model declined — stay open and explain why.
-        setState(() => _error = suggestion.explanation.isNotEmpty
-            ? suggestion.explanation
-            : 'The model did not return a command.');
+        setState(
+          () => _error = suggestion.explanation.isNotEmpty
+              ? suggestion.explanation
+              : 'The model did not return a command.',
+        );
         return;
       }
 
-      widget.session.engine.injectInput(suggestion.command);
+      final command = PasteSanitizer.sanitize(suggestion.command);
+      final safeSuggestion = CommandSuggestion(
+        command: command,
+        explanation: suggestion.explanation,
+        modelDanger: suggestion.modelDanger,
+      );
+
+      widget.session.engine.injectInput(command);
       if (mounted) Navigator.of(context).pop();
-      _showInsertedToast(overlay, suggestion);
+      _showInsertedToast(overlay, safeSuggestion);
+    } on UnsafePasteException catch (e) {
+      setState(() => _error = e.reason);
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -112,8 +127,9 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
     showTopToast(
       overlay,
       message: 'Inserted: ${s.command}\n$label',
-      background:
-          danger == DangerSeverity.critical ? const Color(0xFF8E1519) : null,
+      background: danger == DangerSeverity.critical
+          ? const Color(0xFF8E1519)
+          : null,
       duration: Duration(seconds: danger == null ? 4 : 8),
     );
   }
@@ -133,13 +149,17 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
                 children: [
                   const Icon(Icons.auto_fix_high, size: 20),
                   const SizedBox(width: 8),
-                  Text('Generate a command',
-                      style: Theme.of(context).textTheme.titleLarge),
+                  Text(
+                    'Generate a command',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
                 ],
               ),
               const SizedBox(height: 4),
-              Text('for ${widget.session.config.label}',
-                  style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                'for ${widget.session.config.label}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               const SizedBox(height: 16),
               TextField(
                 controller: _input,
@@ -164,17 +184,19 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text('Failed: $_error',
-                      style: TextStyle(
-                          color: Theme.of(context).colorScheme.error)),
+                  child: Text(
+                    'Failed: $_error',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
                 ),
               const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
-                    onPressed:
-                        _busy ? null : () => Navigator.of(context).pop(),
+                    onPressed: _busy ? null : () => Navigator.of(context).pop(),
                     child: const Text('Cancel'),
                   ),
                   const SizedBox(width: 8),
@@ -184,7 +206,8 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
                         ? const SizedBox(
                             width: 16,
                             height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Icon(Icons.keyboard_return),
                     label: const Text('Generate & insert'),
                   ),

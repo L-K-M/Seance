@@ -25,8 +25,10 @@ class SnippetsPane extends StatelessWidget {
                 children: [
                   const Icon(Icons.bookmarks_outlined, size: 20),
                   const SizedBox(width: 8),
-                  Text('Snippets',
-                      style: Theme.of(context).textTheme.titleMedium),
+                  Text(
+                    'Snippets',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                   const Spacer(),
                   IconButton(
                     tooltip: 'New snippet',
@@ -37,8 +39,7 @@ class SnippetsPane extends StatelessWidget {
               ),
             ),
             const Divider(height: 1),
-            if (state.commandSuggestions.isNotEmpty)
-              _Suggestions(state: state),
+            if (state.commandSuggestions.isNotEmpty) _Suggestions(state: state),
             Expanded(
               child: state.snippets.isEmpty
                   ? const _SnippetsEmpty()
@@ -49,8 +50,11 @@ class SnippetsPane extends StatelessWidget {
                         final s = state.snippets[i];
                         final count = s.placeholders.length;
                         return ListTile(
-                          title: Text(s.title,
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                          title: Text(
+                            s.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                           subtitle: Text(
                             count > 0
                                 ? '$count placeholder${count == 1 ? '' : 's'} · ${_preview(s.body)}'
@@ -67,7 +71,9 @@ class SnippetsPane extends StatelessWidget {
                             itemBuilder: (_) => const [
                               PopupMenuItem(value: 'edit', child: Text('Edit')),
                               PopupMenuItem(
-                                  value: 'delete', child: Text('Delete')),
+                                value: 'delete',
+                                child: Text('Delete'),
+                              ),
                             ],
                           ),
                         );
@@ -80,11 +86,13 @@ class SnippetsPane extends StatelessWidget {
     );
   }
 
-  static String _preview(String body) =>
-      body.replaceAll('\n', ' ').trim();
+  static String _preview(String body) => body.replaceAll('\n', ' ').trim();
 
   Future<void> _insert(
-      BuildContext context, AppState state, Snippet snippet) async {
+    BuildContext context,
+    AppState state,
+    Snippet snippet,
+  ) async {
     final session = state.activeSession;
     final messenger = ScaffoldMessenger.of(context);
     final overlay = Overlay.of(context, rootOverlay: true);
@@ -101,6 +109,12 @@ class SnippetsPane extends StatelessWidget {
       if (values == null) return; // cancelled
       text = snippet.fill(values);
     }
+    try {
+      text = PasteSanitizer.sanitize(text);
+    } on UnsafePasteException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.reason)));
+      return;
+    }
     session.engine.injectInput(text);
     // Top toast so it doesn't cover the prompt the snippet was inserted into.
     showTopToast(
@@ -111,23 +125,31 @@ class SnippetsPane extends StatelessWidget {
   }
 
   Future<void> _edit(
-      BuildContext context, AppState state, Snippet? existing) async {
+    BuildContext context,
+    AppState state,
+    Snippet? existing,
+  ) async {
     await showSnippetEditor(context, state, existing);
   }
 
   Future<void> _delete(
-      BuildContext context, AppState state, Snippet snippet) async {
+    BuildContext context,
+    AppState state,
+    Snippet snippet,
+  ) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: Text('Delete "${snippet.title}"?'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete')),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
@@ -156,19 +178,22 @@ class _Suggestions extends StatelessWidget {
               children: [
                 Icon(Icons.lightbulb_outline, size: 16, color: scheme.primary),
                 const SizedBox(width: 6),
-                Text('Suggested from your history',
-                    style: Theme.of(context).textTheme.labelMedium),
+                Text(
+                  'Suggested from your history',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
               ],
             ),
           ),
           for (final cmd in state.commandSuggestions)
             ListTile(
               dense: true,
-              title: Text(cmd,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(fontFamily: 'monospace', fontSize: 13)),
+              title: Text(
+                cmd,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+              ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -206,8 +231,10 @@ class _SnippetsEmpty extends StatelessWidget {
           children: [
             const Icon(Icons.bookmarks_outlined, size: 36),
             const SizedBox(height: 12),
-            Text('No snippets yet',
-                style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              'No snippets yet',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
             const SizedBox(height: 6),
             Text(
               'Save commands you reuse. Add {{placeholders}} and you\'ll be '
@@ -225,7 +252,10 @@ class _SnippetsEmpty extends StatelessWidget {
 
 /// Add or edit a snippet.
 Future<void> showSnippetEditor(
-    BuildContext context, AppState state, Snippet? existing) {
+  BuildContext context,
+  AppState state,
+  Snippet? existing,
+) {
   return showDialog<void>(
     context: context,
     builder: (_) => _SnippetEditor(state: state, existing: existing),
@@ -242,10 +272,12 @@ class _SnippetEditor extends StatefulWidget {
 }
 
 class _SnippetEditorState extends State<_SnippetEditor> {
-  late final TextEditingController _title =
-      TextEditingController(text: widget.existing?.title ?? '');
-  late final TextEditingController _body =
-      TextEditingController(text: widget.existing?.body ?? '');
+  late final TextEditingController _title = TextEditingController(
+    text: widget.existing?.title ?? '',
+  );
+  late final TextEditingController _body = TextEditingController(
+    text: widget.existing?.body ?? '',
+  );
 
   @override
   void dispose() {
@@ -269,7 +301,8 @@ class _SnippetEditorState extends State<_SnippetEditor> {
             title: title,
             body: body,
             createdAt: now,
-            updatedAt: now)
+            updatedAt: now,
+          )
         : existing.copyWith(title: title, body: body, updatedAt: now);
     await widget.state.saveSnippet(snippet);
     if (mounted) Navigator.of(context).pop();
@@ -307,8 +340,9 @@ class _SnippetEditorState extends State<_SnippetEditor> {
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel')),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
         FilledButton(onPressed: _save, child: const Text('Save')),
       ],
     );
@@ -317,7 +351,10 @@ class _SnippetEditorState extends State<_SnippetEditor> {
 
 /// Ask the user to fill in [names]; returns name→value, or null if cancelled.
 Future<Map<String, String>?> showPlaceholderDialog(
-    BuildContext context, String title, List<String> names) {
+  BuildContext context,
+  String title,
+  List<String> names,
+) {
   final controllers = {for (final n in names) n: TextEditingController()};
   return showDialog<Map<String, String>>(
     context: context,
@@ -347,11 +384,13 @@ Future<Map<String, String>?> showPlaceholderDialog(
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel')),
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
         FilledButton(
-          onPressed: () => Navigator.pop(
-              context, {for (final e in controllers.entries) e.key: e.value.text}),
+          onPressed: () => Navigator.pop(context, {
+            for (final e in controllers.entries) e.key: e.value.text,
+          }),
           child: const Text('Insert'),
         ),
       ],
