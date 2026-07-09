@@ -22,6 +22,23 @@ void main() {
     );
   });
 
+  test('allocation proportionally scales oversized panes', () {
+    final widths = allocateAdaptivePaneWidths(
+      availableWidth: 1100,
+      requestedListWidth: AdaptiveShell.maximumListWidth,
+      requestedUtilityWidth: AdaptiveShell.maximumUtilityWidth,
+    )!;
+
+    expect(widths.list, closeTo(256, 0.01));
+    expect(widths.utility, closeTo(344, 0.01));
+    expect(widths.terminal, AdaptiveShell.minimumTerminalWidth);
+    expect(
+      (widths.list - AdaptiveShell.minimumListWidth) /
+          (widths.utility - AdaptiveShell.minimumUtilityWidth),
+      closeTo(2 / 3, 0.01),
+    );
+  });
+
   Widget testLayout() {
     return const MaterialApp(
       home: AdaptivePaneLayout(

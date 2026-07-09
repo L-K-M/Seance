@@ -17,8 +17,10 @@ class AdaptiveShell extends StatefulWidget {
   static const double breakpoint = 960;
   static const double minimumTerminalWidth = 480;
   static const double minimumListWidth = 200;
+  static const double defaultListWidth = 300;
   static const double maximumListWidth = 480;
   static const double minimumUtilityWidth = 260;
+  static const double defaultUtilityWidth = 340;
   static const double maximumUtilityWidth = 680;
   static const double resizeHandleWidth = 10;
 
@@ -39,6 +41,8 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
         return AdaptivePaneLayout(
           listPane: ServerListPane(onOpen: (s) => _open(state, s)),
           terminalPane: const TerminalPane(showAppBar: false),
+          // The utility panel (Assistant + Snippets) is always available;
+          // Snippets works without an LLM configured.
           utilityPane: const SidebarPanel(),
           narrowPane: _buildNarrow(state),
         );
@@ -165,8 +169,8 @@ class AdaptivePaneLayout extends StatefulWidget {
 }
 
 class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
-  double _requestedListWidth = 300;
-  double _requestedUtilityWidth = 340;
+  double _requestedListWidth = AdaptiveShell.defaultListWidth;
+  double _requestedUtilityWidth = AdaptiveShell.defaultUtilityWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -196,7 +200,7 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
                 key: AdaptivePaneLayout.listResizeHandleKey,
                 onStart: () => _startListResize(widths),
                 onDelta: _resizeList,
-                onEnd: _endResize,
+                onEnd: _endListResize,
               ),
               Expanded(
                 child: SizedBox(
@@ -208,7 +212,7 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
                 key: AdaptivePaneLayout.utilityResizeHandleKey,
                 onStart: () => _startUtilityResize(widths),
                 onDelta: _resizeUtility,
-                onEnd: _endResize,
+                onEnd: _endUtilityResize,
               ),
               SizedBox(
                 key: AdaptivePaneLayout.utilityPaneKey,
@@ -231,6 +235,9 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   double _utilityDragMaximum = AdaptiveShell.maximumUtilityWidth;
 
   void _startListResize(AdaptivePaneWidths widths) {
+    // A window shrink clamps rendered widths without replacing the user's
+    // requests. Starting a drag intentionally adopts the rendered widths so
+    // the handle does not jump back toward those stale requests.
     _listDragStart = widths.list;
     _listDragDelta = 0;
     _listDragMaximum =
@@ -258,6 +265,7 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   }
 
   void _startUtilityResize(AdaptivePaneWidths widths) {
+    // See _startListResize: interaction starts from what the user can see.
     _utilityDragStart = widths.utility;
     _utilityDragDelta = 0;
     _utilityDragMaximum =
@@ -284,8 +292,11 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
     });
   }
 
-  void _endResize() {
+  void _endListResize() {
     _listDragStart = null;
+  }
+
+  void _endUtilityResize() {
     _utilityDragStart = null;
   }
 }
