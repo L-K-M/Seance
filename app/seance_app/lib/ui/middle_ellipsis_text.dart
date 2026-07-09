@@ -49,16 +49,15 @@ class MiddleEllipsisText extends StatelessWidget {
         // Search extended grapheme clusters so truncation never splits a
         // surrogate pair, combining sequence, flag, or ZWJ emoji.
         var lo = 0;
-        var hi = graphemes.length;
+        var hi = graphemes.length - 1;
         var best = _ellipsis;
         while (lo <= hi) {
           final keep = (lo + hi) ~/ 2;
           final head = keep - keep ~/ 2;
           final tail = keep ~/ 2;
-          final candidate = head + tail >= graphemes.length
-              ? text
-              : '${graphemes.take(head).join()}$_ellipsis'
-                    '${graphemes.skip(graphemes.length - tail).join()}';
+          final candidate =
+              '${graphemes.take(head).join()}$_ellipsis'
+              '${graphemes.skip(graphemes.length - tail).join()}';
           if (widthOf(candidate) <= maxWidth) {
             best = candidate;
             lo = keep + 1;
