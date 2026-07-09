@@ -121,6 +121,15 @@ Host bastion db
       expect(DangerLinter.worst(':(){ :|:& };:'), DangerSeverity.critical);
     });
 
+    test('flags recursive delete of a specific system directory', () {
+      // These slipped through the old rule (which only matched a bare /, ~, *).
+      expect(DangerLinter.worst('rm -rf /etc'), DangerSeverity.critical);
+      expect(DangerLinter.worst('sudo rm -rf /var/lib'), DangerSeverity.critical);
+      expect(DangerLinter.worst('rm -fr /usr/local'), DangerSeverity.critical);
+      expect(DangerLinter.worst('rm -rf *'), DangerSeverity.critical);
+      expect(DangerLinter.worst('wipefs -a /dev/sdb'), DangerSeverity.critical);
+    });
+
     test('warns on risky-but-common patterns', () {
       expect(
         DangerLinter.worst('curl https://x.sh | sudo bash'),
@@ -131,12 +140,25 @@ Host bastion db
         DangerSeverity.warning,
       );
       expect(DangerLinter.worst('sudo reboot'), DangerSeverity.warning);
+      expect(DangerLinter.worst('shred -u secret.key'), DangerSeverity.warning);
+      expect(
+        DangerLinter.worst('find . -name "*.log" -delete'),
+        DangerSeverity.warning,
+      );
+      expect(DangerLinter.worst('truncate -s 0 app.log'), DangerSeverity.warning);
+      expect(DangerLinter.worst('git clean -fdx'), DangerSeverity.warning);
     });
 
     test('leaves benign commands alone', () {
       expect(DangerLinter.worst('ls -la'), isNull);
       expect(DangerLinter.worst('git status'), isNull);
       expect(DangerLinter.worst('rm build/output.o'), isNull);
+      // A recursive delete of a RELATIVE path is not flagged (no leading /,~,*).
+      expect(DangerLinter.worst('rm -rf ./build'), isNull);
+      expect(DangerLinter.worst('rm -rf node_modules'), isNull);
+      // git clean dry-run and non-forced finds are fine.
+      expect(DangerLinter.worst('git clean -n'), isNull);
+      expect(DangerLinter.worst('find . -name "*.log"'), isNull);
     });
   });
 
