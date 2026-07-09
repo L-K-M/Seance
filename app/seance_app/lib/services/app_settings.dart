@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:seance_core/seance_core.dart';
 
+import 'atomic_file.dart';
+
 /// User-configurable settings. The LLM assistant is always on (this is a
 /// personal tool), so there is no enable flag — only which provider it uses.
 /// Secret redaction defaults on and is a single global toggle.
@@ -113,7 +115,6 @@ class SettingsStore {
   }
 
   Future<void> save(AppSettings settings) async {
-    await file.parent.create(recursive: true);
-    await file.writeAsString(jsonEncode(settings.toJson()));
+    await writeStringAtomically(file, jsonEncode(settings.toJson()));
   }
 }
