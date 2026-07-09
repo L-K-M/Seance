@@ -79,13 +79,13 @@ work found during review, not a request to revert the merged improvements.
 | [#12](https://github.com/L-K-M/Seance/pull/12) | Reconnect controller binding and scrollback-wide select-all | Reconnect production path and helper are not directly covered |
 | [#13](https://github.com/L-K-M/Seance/pull/13) | Reject KDF downgrades | 4 GiB memory ceiling and unbounded iterations/parallelism/hash length still allow client DoS |
 | [#14](https://github.com/L-K-M/Seance/pull/14) | Pause probes in the background | Bootstrap/background ordering and Flutter lifecycle wiring need broader tests |
+| [#15](https://github.com/L-K-M/Seance/pull/15) | Snippet filtering and dialog controller lifecycle | Review regressions were fixed before merge: controllers now belong to route State and an active filter remains editable below the normal visibility threshold |
 
 ### Existing PRs Still Open
 
 | PR | Intended change | Review assessment before merge |
 |---|---|---|
-| [#15](https://github.com/L-K-M/Seance/pull/15) | Snippet filtering and controller cleanup | Has a hidden-filter regression when deletion drops the list below the search threshold; no filter tests |
-| [#16](https://github.com/L-K-M/Seance/pull/16) | Publish Android APK | Blocker: runner-generated debug certificate changes across releases, so Android upgrades can fail and require uninstalling local data |
+| [#16](https://github.com/L-K-M/Seance/pull/16) | Publish a stably signed Android APK | The upgrade-signature blocker is fixed with a deliberately public, stable sideloading key; remove the temporary PR-only signing workflow before merge and document that this provides continuity, not publisher authenticity |
 
 ### Open PRs Created From This Analysis
 
@@ -692,15 +692,16 @@ Priority: P1
 
 Android backup can restore encrypted preferences without the keystore key. iOS
 lacks local-network disclosure for LAN endpoints. Mobile `localhost` means the
-phone. The Android release path uses debug signing, and PR #16 would publish a
-runner-specific certificate that prevents upgrades.
+phone. PR #16 now uses a committed stable sideloading key, which fixes upgrade
+continuity but deliberately does not establish private publisher authenticity.
 
 Action:
 
 - Exclude/scopely configure Android backup for secure-storage data.
 - Add iOS local-network usage text and tested transport exceptions only where needed.
 - Provide mobile endpoint guidance/discovery.
-- Configure one stable protected Android release key and test upgrade installation.
+- Decide whether debug-grade public signing is sufficient; use a protected private release key if publisher authenticity matters.
+- Test upgrade installation and local-data retention across released APKs.
 - Gate app artifacts on Flutter analysis/tests.
 
 ## Assistant, Privacy, And Safety Backlog
