@@ -60,6 +60,9 @@ class ServerListPane extends StatelessWidget {
                   state.statuses[server.id] ?? ProbeStatus.unknown;
               final session = state.sessionForServer(server.id);
               return _ServerTile(
+                // Stable identity so a background sync replacing the list
+                // reconciles each tile to its server instead of by position.
+                key: ValueKey(server.id),
                 server: server,
                 connection: session?.status ?? TerminalStatus.disconnected,
                 reachability: reachability,
@@ -191,6 +194,7 @@ class _ServerTile extends StatelessWidget {
   final VoidCallback onReconnect;
 
   const _ServerTile({
+    super.key,
     required this.server,
     required this.connection,
     required this.reachability,
