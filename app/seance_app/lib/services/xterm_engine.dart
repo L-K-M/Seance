@@ -168,5 +168,7 @@ class _TerminalOutputSink implements Sink<String> {
   void add(String data) => terminal.write(data);
 
   @override
-  void close() {}
+  void close() {
+    // Decoder closure flushes pending bytes; xterm has no output sink to close.
+  }
 }

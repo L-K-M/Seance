@@ -49,7 +49,7 @@ class HeadlessTerminalEngine implements TerminalEngine {
   String get receivedText => utf8.decode(received, allowMalformed: true);
 
   /// Simulate the user typing/pasting.
-  void type(String text) => _input.add(Uint8List.fromList(utf8.encode(text)));
+  void type(String text) => _input.add(utf8.encode(text));
 
   @override
   void feed(Uint8List data) => _received.add(data);
