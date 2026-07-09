@@ -192,6 +192,16 @@ class SyncServer {
     if (r.protocolVersion != kProtocolVersion) {
       return _error(400, 'protocol_version', 'Protocol version mismatch');
     }
+    if (r.records.length > settings.maxRecordsPerPush) {
+      return _error(413, 'payload_too_large',
+          'Too many records in one push (max ${settings.maxRecordsPerPush})');
+    }
+    for (final incoming in r.records) {
+      if (incoming.blob.length > settings.maxBlobBytes) {
+        return _error(413, 'payload_too_large',
+            'A record blob exceeds the ${settings.maxBlobBytes}-byte limit');
+      }
+    }
     final results = <PushResult>[];
     for (final incoming in r.records) {
       final existing = await storage.getRecord(username, incoming.id);
@@ -237,14 +247,37 @@ class SyncServer {
   }
 
   Future<Map<String, dynamic>?> _readJson(Request req) async {
+    // Reject an oversized body before reading it (a lying/omitted Content-Length
+    // is still caught while streaming below). Throws _PayloadTooLarge, which the
+    // error middleware maps to 413.
+    final declared = req.contentLength;
+    if (declared != null && declared > settings.maxBodyBytes) {
+      throw const _PayloadTooLarge();
+    }
+    final String text;
     try {
-      final text = await req.readAsString();
-      if (text.isEmpty) return null;
+      text = await _readBounded(req, settings.maxBodyBytes);
+    } on _PayloadTooLarge {
+      rethrow;
+    } catch (_) {
+      return null;
+    }
+    if (text.isEmpty) return null;
+    try {
       final decoded = jsonDecode(text);
       return decoded is Map<String, dynamic> ? decoded : null;
     } catch (_) {
       return null;
     }
+  }
+
+  Future<String> _readBounded(Request req, int maxBytes) async {
+    final bytes = <int>[];
+    await for (final chunk in req.read()) {
+      bytes.addAll(chunk);
+      if (bytes.length > maxBytes) throw const _PayloadTooLarge();
+    }
+    return utf8.decode(bytes);
   }
 
   List<int>? _tryBase64Decode(String value) {
@@ -259,6 +292,8 @@ class SyncServer {
     return (Request req) async {
       try {
         return await inner(req);
+      } on _PayloadTooLarge {
+        return _error(413, 'payload_too_large', 'Request body too large');
       } on FormatException {
         return _error(400, 'bad_request', 'Invalid request payload');
       } catch (e) {
@@ -305,6 +340,12 @@ Configure this server's URL in the app's sync settings.</p>
     }
     return diff == 0;
   }
+}
+
+/// Signals that a request body exceeded [ServerSettings.maxBodyBytes]. Mapped to
+/// HTTP 413 by the error middleware.
+class _PayloadTooLarge implements Exception {
+  const _PayloadTooLarge();
 }
 
 /// Minimal handle to a running server so callers can read the bound port and

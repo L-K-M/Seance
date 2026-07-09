@@ -12,6 +12,7 @@ class AnthropicProvider implements LlmProvider {
   final String baseUrl;
   final String apiKey;
   final int maxTokens;
+  final Duration timeout;
   final http.Client _client;
 
   AnthropicProvider({
@@ -19,6 +20,7 @@ class AnthropicProvider implements LlmProvider {
     this.model = 'claude-haiku-4-5-20251001',
     this.baseUrl = 'https://api.anthropic.com',
     this.maxTokens = 1024,
+    this.timeout = const Duration(seconds: 120),
     http.Client? client,
   }) : _client = client ?? http.Client();
 
@@ -90,11 +92,13 @@ class AnthropicProvider implements LlmProvider {
     required List<LlmMessage> messages,
     List<ToolSpec> tools = const [],
   }) async {
-    final res = await _client.post(
-      _endpoint,
-      headers: _headers,
-      body: jsonEncode(buildBody(messages: messages, tools: tools)),
-    );
+    final res = await _client
+        .post(
+          _endpoint,
+          headers: _headers,
+          body: jsonEncode(buildBody(messages: messages, tools: tools)),
+        )
+        .timeout(timeout);
     _throwIfError(res);
     return parseResponse(
         jsonDecode(res.body) as Map<String, dynamic>);
@@ -102,8 +106,9 @@ class AnthropicProvider implements LlmProvider {
 
   @override
   Future<List<String>> listModels() async {
-    final res =
-        await _client.get(Uri.parse('$baseUrl/v1/models'), headers: _headers);
+    final res = await _client
+        .get(Uri.parse('$baseUrl/v1/models'), headers: _headers)
+        .timeout(timeout);
     _throwIfError(res);
     final json = jsonDecode(res.body) as Map<String, dynamic>;
     final data = (json['data'] as List?) ?? const [];
@@ -130,7 +135,7 @@ class AnthropicProvider implements LlmProvider {
     final req = http.Request('POST', _endpoint)
       ..headers.addAll(_headers)
       ..body = jsonEncode(buildBody(messages: messages, stream: true));
-    final res = await _client.send(req);
+    final res = await _client.send(req).timeout(timeout);
     if (res.statusCode >= 400) {
       throw http.ClientException(
           'Anthropic stream failed: HTTP ${res.statusCode}');

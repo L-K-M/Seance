@@ -395,4 +395,54 @@ void main() {
       expect(afterStatus, 401);
     });
   });
+
+  group('request limits', () {
+    test('rejects an oversized request body with 413', () async {
+      final server = SyncServer(
+        storage: InMemoryStorage(),
+        settings: const ServerSettings(
+            openRegistration: true, maxBodyBytes: 200),
+      );
+      final c = TestClient(server.handler);
+      // A register payload padded well past the 200-byte cap.
+      final (status, body) = await c.send(
+        'POST',
+        '/v1/register',
+        body: registerReq('a' * 500).toJson(),
+      );
+      expect(status, 413);
+      expect(body['error'], 'payload_too_large');
+    });
+
+    test('rejects too many records and oversized blobs in a push', () async {
+      final server = SyncServer(
+        storage: InMemoryStorage(),
+        settings: const ServerSettings(
+            openRegistration: true, maxRecordsPerPush: 1, maxBlobBytes: 8),
+      );
+      final c = TestClient(server.handler);
+      final (_, reg) =
+          await c.send('POST', '/v1/register', body: registerReq('bob').toJson());
+      c.token = reg['token'] as String;
+
+      final (tooMany, b1) = await c.send(
+        'PUT',
+        '/v1/records',
+        auth: true,
+        body: PushRequest(records: [rec('x', 1, 'd'), rec('y', 2, 'd')]).toJson(),
+      );
+      expect(tooMany, 413);
+      expect(b1['error'], 'payload_too_large');
+
+      // A single record whose blob ('sealed-toolongid' = 16 bytes) exceeds 8.
+      final (tooBig, b2) = await c.send(
+        'PUT',
+        '/v1/records',
+        auth: true,
+        body: PushRequest(records: [rec('toolongid', 1, 'd')]).toJson(),
+      );
+      expect(tooBig, 413);
+      expect(b2['error'], 'payload_too_large');
+    });
+  });
 }

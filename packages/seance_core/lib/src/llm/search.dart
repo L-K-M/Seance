@@ -24,10 +24,14 @@ abstract class SearchProvider {
 /// same "run it in Docker yourself" story as the sync server.
 class SearxngSearch implements SearchProvider {
   final String baseUrl;
+  final Duration timeout;
   final http.Client _client;
 
-  SearxngSearch({required this.baseUrl, http.Client? client})
-      : _client = client ?? http.Client();
+  SearxngSearch({
+    required this.baseUrl,
+    http.Client? client,
+    this.timeout = const Duration(seconds: 20),
+  }) : _client = client ?? http.Client();
 
   @override
   Future<List<SearchResult>> search(String query, {int limit = 5}) async {
@@ -35,7 +39,7 @@ class SearxngSearch implements SearchProvider {
       'q': query,
       'format': 'json',
     });
-    final res = await _client.get(uri);
+    final res = await _client.get(uri).timeout(timeout);
     if (res.statusCode >= 400) {
       throw http.ClientException('SearXNG error HTTP ${res.statusCode}');
     }
@@ -57,12 +61,14 @@ class SearxngSearch implements SearchProvider {
 class BraveSearch implements SearchProvider {
   final String apiKey;
   final String baseUrl;
+  final Duration timeout;
   final http.Client _client;
 
   BraveSearch({
     required this.apiKey,
     this.baseUrl = 'https://api.search.brave.com',
     http.Client? client,
+    this.timeout = const Duration(seconds: 20),
   }) : _client = client ?? http.Client();
 
   @override
@@ -72,7 +78,7 @@ class BraveSearch implements SearchProvider {
     final res = await _client.get(uri, headers: {
       'accept': 'application/json',
       'x-subscription-token': apiKey,
-    });
+    }).timeout(timeout);
     if (res.statusCode >= 400) {
       throw http.ClientException('Brave Search error HTTP ${res.statusCode}');
     }

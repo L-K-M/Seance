@@ -15,6 +15,15 @@ class ServerSettings {
   final int loginMaxAttempts;
   final Duration loginWindow;
 
+  /// Hard cap on a single request body, to blunt unauthenticated
+  /// memory-exhaustion. Default 8 MiB.
+  final int maxBodyBytes;
+
+  /// Cap on records accepted in one push, and on a single record's encrypted
+  /// blob, to bound authenticated abuse. Defaults: 1000 records, 1 MiB blob.
+  final int maxRecordsPerPush;
+  final int maxBlobBytes;
+
   const ServerSettings({
     this.bindAddress = '0.0.0.0',
     this.port = 8787,
@@ -22,6 +31,9 @@ class ServerSettings {
     this.dbPath,
     this.loginMaxAttempts = 10,
     this.loginWindow = const Duration(minutes: 1),
+    this.maxBodyBytes = 8 * 1024 * 1024,
+    this.maxRecordsPerPush = 1000,
+    this.maxBlobBytes = 1024 * 1024,
   });
 
   factory ServerSettings.fromEnvironment(Map<String, String> env) {
@@ -40,6 +52,12 @@ class ServerSettings {
           int.tryParse(env['SEANCE_LOGIN_MAX_ATTEMPTS'] ?? '') ?? 10,
       loginWindow: Duration(
           seconds: int.tryParse(env['SEANCE_LOGIN_WINDOW_SECONDS'] ?? '') ?? 60),
+      maxBodyBytes:
+          int.tryParse(env['SEANCE_MAX_BODY_BYTES'] ?? '') ?? 8 * 1024 * 1024,
+      maxRecordsPerPush:
+          int.tryParse(env['SEANCE_MAX_RECORDS_PER_PUSH'] ?? '') ?? 1000,
+      maxBlobBytes:
+          int.tryParse(env['SEANCE_MAX_BLOB_BYTES'] ?? '') ?? 1024 * 1024,
     );
   }
 
@@ -56,5 +74,8 @@ class ServerSettings {
         dbPath: dbPath ?? this.dbPath,
         loginMaxAttempts: loginMaxAttempts,
         loginWindow: loginWindow,
+        maxBodyBytes: maxBodyBytes,
+        maxRecordsPerPush: maxRecordsPerPush,
+        maxBlobBytes: maxBlobBytes,
       );
 }

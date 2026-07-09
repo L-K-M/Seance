@@ -97,6 +97,9 @@ class ProbeService {
 
   void updateServers(List<ServerConfig> servers) => _servers = servers;
 
+  /// Whether probing is currently paused (e.g. the app is backgrounded).
+  bool get isPaused => _paused;
+
   void pause() => _paused = true;
   void resume() {
     if (_paused) {

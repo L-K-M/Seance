@@ -51,7 +51,10 @@ class _ServerEditorState extends State<_ServerEditor> {
     _host = TextEditingController(text: e?.host ?? '');
     _port = TextEditingController(text: '${e?.port ?? 22}');
     _user = TextEditingController(text: e?.username ?? '');
-    _auth = e?.authMethod ?? AuthMethod.agent;
+    // Default new servers to password: ssh-agent is offered but not yet
+    // supported by the backend, so defaulting to it would dead-end the very
+    // first "add a server and connect".
+    _auth = e?.authMethod ?? AuthMethod.password;
     _keyPath.text = e?.identityFilePath ?? '';
     _referenceKeyFile = e?.identityFilePath != null;
     // New credentials default to syncable (a no-op until the global "sync saved
@@ -110,8 +113,7 @@ class _ServerEditorState extends State<_ServerEditor> {
                     controller: _port,
                     decoration: const InputDecoration(labelText: 'Port'),
                     keyboardType: TextInputType.number,
-                    validator: (v) =>
-                        int.tryParse(v ?? '') == null ? 'invalid' : null,
+                    validator: _validatePort,
                   ),
                 ),
               ],
@@ -160,8 +162,14 @@ class _ServerEditorState extends State<_ServerEditor> {
   List<Widget> _authFields() {
     switch (_auth) {
       case AuthMethod.agent:
-        return const [
-          Text('Keys are provided by your ssh-agent; nothing is stored.'),
+        return [
+          const Text('Keys are provided by your ssh-agent; nothing is stored.'),
+          const SizedBox(height: 8),
+          Text(
+            'ssh-agent auth isn\'t supported yet — connecting will fail. '
+            'Choose Password or Private key for now.',
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
         ];
       case AuthMethod.password:
         return [
@@ -225,6 +233,12 @@ class _ServerEditorState extends State<_ServerEditor> {
   static String? _required(String? v) =>
       (v == null || v.trim().isEmpty) ? 'Required' : null;
 
+  static String? _validatePort(String? v) {
+    final port = int.tryParse((v ?? '').trim());
+    if (port == null || port < 1 || port > 65535) return '1–65535';
+    return null;
+  }
+
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
@@ -239,7 +253,12 @@ class _ServerEditorState extends State<_ServerEditor> {
       secretRef ??= uuidV4();
       secret = Secret(
           id: secretRef, kind: SecretKind.password, value: _password.text);
-    } else if (_auth == AuthMethod.privateKey && !_referenceKeyFile) {
+    } else if (_auth == AuthMethod.privateKey &&
+        !_referenceKeyFile &&
+        _keyPem.text.isNotEmpty) {
+      // Guard on isNotEmpty (like the password branch): the PEM field starts
+      // blank when editing an existing server, so without this, editing any
+      // other field and saving would overwrite the stored key with "".
       secretRef ??= uuidV4();
       secret = Secret(
         id: secretRef,
