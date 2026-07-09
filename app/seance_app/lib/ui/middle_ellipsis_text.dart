@@ -25,7 +25,9 @@ class MiddleEllipsisText extends StatelessWidget {
         textScaler: scaler,
         textDirection: dir,
       )..layout();
-      return tp.width;
+      final width = tp.width;
+      tp.dispose(); // TextPainter holds a native paragraph; don't leak it
+      return width;
     }
 
     return LayoutBuilder(

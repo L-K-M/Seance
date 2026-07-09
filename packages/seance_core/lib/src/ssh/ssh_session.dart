@@ -52,14 +52,35 @@ typedef KeyboardInteractiveResponder = Future<List<String>> Function(
 class SshConnectionLog {
   final List<String> lines = [];
 
-  /// Called after every [add] so a live view can repaint.
-  final void Function()? onUpdate;
+  /// Called after every [add] so a live view can repaint. Cleared by [freeze].
+  void Function()? onUpdate;
+
+  bool _frozen = false;
+
+  /// Bound the transcript: dartssh2's `printTrace` fires per packet, so an
+  /// unfrozen log on a busy session would grow without limit.
+  static const int _maxLines = 400;
 
   SshConnectionLog({this.onUpdate});
 
   void add(String line) {
+    if (_frozen) return;
     lines.add(line);
+    if (lines.length > _maxLines) {
+      lines.removeRange(0, lines.length - _maxLines);
+    }
     onUpdate?.call();
+  }
+
+  /// Stop recording and notifying. Call this once a connection is established:
+  /// the log only exists to diagnose connection *failures* (which happen during
+  /// connect), but dartssh2 keeps calling `printTrace` for the whole session —
+  /// left live, every packet would fire [onUpdate] (rebuilding the app) and
+  /// append a line forever. A failed attempt never freezes, so its full
+  /// transcript is preserved for the error view.
+  void freeze() {
+    _frozen = true;
+    onUpdate = null;
   }
 
   @override

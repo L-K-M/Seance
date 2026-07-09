@@ -246,6 +246,10 @@ class AppState extends ChangeNotifier {
       );
       tab.session = session;
       tab.connecting = false;
+      // The connection is up: stop the connection log from capturing dartssh2's
+      // per-packet trace, which would otherwise fire notifyListeners (rebuilding
+      // the whole app) on every packet for the life of the session.
+      log.freeze();
       session.onClosed = () {
         // Remote side ended: flip to disconnected if this is still the tab.
         if (sessions[config.id] == tab) {

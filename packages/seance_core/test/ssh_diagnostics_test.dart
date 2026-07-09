@@ -24,6 +24,27 @@ void main() {
       expect(log.toString(), 'one\ntwo');
       expect(updates, 2);
     });
+
+    test('freeze stops recording and notifying (no per-packet rebuild storm)',
+        () {
+      var updates = 0;
+      final log = SshConnectionLog(onUpdate: () => updates++);
+      log.add('connecting');
+      log.freeze();
+      log.add('trace after connect'); // dartssh2 keeps calling printTrace
+      expect(log.lines, ['connecting'], reason: 'frozen adds are dropped');
+      expect(updates, 1, reason: 'onUpdate must not fire once frozen');
+    });
+
+    test('caps the transcript so a busy session cannot grow it without limit',
+        () {
+      final log = SshConnectionLog();
+      for (var i = 0; i < 1000; i++) {
+        log.add('line $i');
+      }
+      expect(log.lines.length, lessThanOrEqualTo(400));
+      expect(log.lines.last, 'line 999'); // newest kept
+    });
   });
 
   group('SshSessionManager.connect diagnostics', () {
