@@ -64,8 +64,10 @@ class _SnippetsPaneState extends State<SnippetsPane> {
               ),
             ),
             const Divider(height: 1),
-            // A filter box, once there are enough snippets to warrant scrolling.
-            if (all.length > 4)
+            // A filter box, once there are enough snippets to warrant
+            // scrolling — but keep it while a query is active, or filtering
+            // the list below the threshold would strand an uneditable filter.
+            if (all.length > 4 || _query.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
                 child: TextField(
@@ -423,52 +425,82 @@ Future<Map<String, String>?> showPlaceholderDialog(
   BuildContext context,
   String title,
   List<String> names,
-) async {
-  final controllers = {for (final n in names) n: TextEditingController()};
-  try {
-    return await showDialog<Map<String, String>>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title),
-        content: SizedBox(
-          width: 420,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (var i = 0; i < names.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: TextField(
-                      controller: controllers[names[i]],
-                      autofocus: i == 0,
-                      decoration: InputDecoration(
-                        labelText: names[i],
-                        border: const OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, {
-              for (final e in controllers.entries) e.key: e.value.text,
-            }),
-            child: const Text('Insert'),
-          ),
-        ],
-      ),
-    );
-  } finally {
-    for (final c in controllers.values) {
+) {
+  return showDialog<Map<String, String>>(
+    context: context,
+    builder: (_) => _PlaceholderDialog(title: title, names: names),
+  );
+}
+
+/// Owns one controller per placeholder in its [State] so they are disposed in
+/// [State.dispose] — after the route's exit animation, once the fields are
+/// truly unmounted. Disposing right after `await showDialog(...)` is too
+/// early: the pop future completes when the reverse transition *starts*, the
+/// fields stay mounted through it, and the framework can still write to a
+/// controller (e.g. `clearComposing()` when the focused field loses focus) —
+/// a use-after-dispose that throws in debug builds whenever an IME composing
+/// region is active (regression: test/placeholder_dialog_test.dart).
+class _PlaceholderDialog extends StatefulWidget {
+  const _PlaceholderDialog({required this.title, required this.names});
+
+  final String title;
+  final List<String> names;
+
+  @override
+  State<_PlaceholderDialog> createState() => _PlaceholderDialogState();
+}
+
+class _PlaceholderDialogState extends State<_PlaceholderDialog> {
+  late final Map<String, TextEditingController> _controllers = {
+    for (final n in widget.names) n: TextEditingController(),
+  };
+
+  @override
+  void dispose() {
+    for (final c in _controllers.values) {
       c.dispose();
     }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < widget.names.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: TextField(
+                    controller: _controllers[widget.names[i]],
+                    autofocus: i == 0,
+                    decoration: InputDecoration(
+                      labelText: widget.names[i],
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, {
+            for (final e in _controllers.entries) e.key: e.value.text,
+          }),
+          child: const Text('Insert'),
+        ),
+      ],
+    );
   }
 }
