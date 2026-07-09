@@ -64,8 +64,12 @@ void terminalSelectAll(TerminalSession tab) {
   if (controller == null) return;
   final terminal = tab.engine.terminal;
   final buffer = terminal.buffer;
+  // Start at row 0 so scrollback is included. (The old start of
+  // `buffer.height - viewHeight` is the top of the *visible* page, which
+  // silently dropped everything scrolled off — contradicting this function's
+  // own "scrollback included" contract.)
   controller.setSelection(
-    buffer.createAnchor(0, buffer.height - terminal.viewHeight),
+    buffer.createAnchor(0, 0),
     buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
   );
 }

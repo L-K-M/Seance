@@ -174,6 +174,16 @@ class _SessionViewState extends State<_SessionView> {
   @override
   void didUpdateWidget(_SessionView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // A reconnect swaps in a brand-new TerminalSession under the same server id,
+    // so this State is reused (same ValueKey) and initState does NOT re-run.
+    // Re-bind the selection controller to the new tab, or the macOS Edit menu /
+    // Copy / Select All would silently no-op for the rest of the session.
+    if (!identical(widget.tab, oldWidget.tab)) {
+      if (identical(oldWidget.tab.controller, _terminalController)) {
+        oldWidget.tab.controller = null;
+      }
+      widget.tab.controller = _terminalController;
+    }
     // Focus the terminal when this session becomes the active one.
     if (widget.isActive && !oldWidget.isActive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
