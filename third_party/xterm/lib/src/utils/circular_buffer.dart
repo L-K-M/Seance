@@ -201,6 +201,14 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
       return;
     }
 
+    if (_length >= _array.length && _length > 1) {
+      // [seance fork] The move loop below wraps the last slot onto the first,
+      // evicting the oldest element — same as push(), so give it the same
+      // chance to hand its anchors to its successor. (Hit via margin scrolls:
+      // DECSTBM with top=0 inserts at the bottom margin on a full buffer.)
+      _getChild(0)?.migrateOnEvict(_getChild(1));
+    }
+
     for (var i = _length - 1; i >= index; i--) {
       _moveChild(i, i + 1);
     }
@@ -305,6 +313,12 @@ mixin IndexedItem {
 
   /// Whether this item is currently stored in a buffer.
   bool get attached => _owner != null;
+
+  /// [seance fork] Whether this item is currently stored in [owner]
+  /// specifically. `attached` alone cannot distinguish the main buffer from
+  /// the alt buffer — anchors captured in one must not be resolved against
+  /// the other.
+  bool attachedTo(IndexAwareCircularBuffer owner) => identical(_owner, owner);
 
   /// Sets the owner and index of this item. This is called by the buffer when
   /// the item is adopted.

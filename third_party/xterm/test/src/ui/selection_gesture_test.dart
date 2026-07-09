@@ -294,4 +294,121 @@ void main() {
       );
     });
   });
+
+  group('review-fleet regressions', () {
+    testWidgets('shift-click after switching to the alt buffer does not throw',
+        (tester) async {
+      final terminal = Terminal(maxLines: 200);
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      // Build real scrollback so main-buffer rows exceed alt-buffer height.
+      for (var i = 0; i < 120; i++) {
+        terminal.write('scrollback $i\r\n');
+      }
+      await tester.pump();
+
+      // Plain click records _lastTapAnchor at a large absolute row.
+      await tester.tapAt(cellCenter(tester, 2, terminal.buffer.height - 2),
+          kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // Switch to the alt buffer (vim/less do this) — far fewer rows.
+      terminal.write('\x1b[?1049h');
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.tapAt(cellCenter(tester, 5, 3),
+          kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+      // Pre-fix this threw a RangeError resolving the main-buffer row
+      // against the alt buffer. Now the stale anchor is ignored.
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('TerminalView.onTapUp fires for a plain click', (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      var tapUps = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              controller: controller,
+              onTapUp: (details, offset) => tapUps++,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      terminal.write('hello');
+      await tester.pump();
+
+      await tester.tapAt(cellCenter(tester, 1, 0),
+          kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // Upstream declared the callback but never invoked it.
+      expect(tapUps, 1);
+    });
+
+    testWidgets(
+        'disposing a controller with a live selection releases its '
+        'anchors', (tester) async {
+      final terminal = Terminal(maxLines: 50);
+      final controller = TerminalController();
+      for (var i = 0; i < 40; i++) {
+        terminal.write('line $i\r\n');
+      }
+      controller.setSelection(
+        terminal.buffer.createAnchor(0, 0),
+        terminal.buffer.createAnchor(5, 5),
+      );
+      final anchoredLine = terminal.buffer.lines[0];
+      expect(anchoredLine.anchors, isNotEmpty);
+      controller.dispose();
+      // Pre-fix the two selection anchors stayed registered on the line
+      // forever (and anchor migration would have kept them alive across
+      // trims indefinitely).
+      expect(anchoredLine.anchors, isEmpty);
+    });
+
+    testWidgets(
+        'select-all survives a margin scroll on a full buffer '
+        '(insert eviction path)', (tester) async {
+      final terminal = Terminal(maxLines: 120);
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      for (var i = 0; i < 150; i++) {
+        terminal.write('fill $i\r\n');
+      }
+      await tester.pump();
+
+      controller.setSelection(
+        terminal.buffer.createAnchor(0, 0),
+        terminal.buffer.createAnchor(
+          terminal.viewWidth,
+          terminal.buffer.height - 1,
+        ),
+      );
+      expect(controller.selection, isNotNull);
+
+      // DECSTBM with top=0 and a bottom margin ABOVE the last row (the
+      // status-line layout): IND at the bottom margin then runs
+      // lines.insert(absoluteMarginBottom + 1, ...) on a full buffer —
+      // the insert() eviction path, not push().
+      final marginBottom = terminal.viewHeight - 1;
+      terminal.write('\x1b[1;${marginBottom}r');
+      terminal.write('\x1b[$marginBottom;1H'); // cursor to the bottom margin
+      for (var i = 0; i < 10; i++) {
+        terminal.write('\x1bD'); // IND: margin scroll via insert()
+      }
+      await tester.pump();
+
+      expect(controller.selection, isNotNull,
+          reason: 'insert()-path evictions must migrate anchors like push()');
+    });
+  });
 }

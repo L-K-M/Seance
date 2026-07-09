@@ -203,6 +203,13 @@ class TerminalViewState extends State<TerminalView> {
       }
       _scrollController = widget.scrollController ?? ScrollController();
     }
+    if (oldWidget.terminal != widget.terminal) {
+      // [seance fork] The recorded click belongs to the old terminal's
+      // buffer; resolving it against the new one would mix coordinate
+      // spaces (and can throw — the new buffer may be far shorter).
+      _lastTapAnchor?.dispose();
+      _lastTapAnchor = null;
+    }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
   }
@@ -388,16 +395,24 @@ class TerminalViewState extends State<TerminalView> {
 
   /// [seance fork] Shift-click selection extension. Returns false when there
   /// is nothing to extend from (no live selection and no recorded click).
+  /// Every anchor is validated against the ACTIVE buffer — an anchor captured
+  /// in the main buffer must not be resolved against the alt buffer (its row
+  /// can exceed the alt buffer's height, and even in range it points at
+  /// unrelated text).
   bool _tryExtendSelection(TapDownDetails details) {
-    if (_controller.extendSelectionTo(
-      renderTerminal.createAnchorAt(details.localPosition),
-    )) {
+    final buffer = widget.terminal.buffer;
+    final base = _controller.selectionBaseAnchor;
+    if (base != null &&
+        buffer.ownsAnchor(base) &&
+        _controller.extendSelectionTo(
+          renderTerminal.createAnchorAt(details.localPosition),
+        )) {
       return true;
     }
     final last = _lastTapAnchor;
-    if (last != null && last.attached) {
+    if (last != null && buffer.ownsAnchor(last)) {
       _controller.setSelection(
-        widget.terminal.buffer.createAnchorFromOffset(last.offset),
+        buffer.createAnchorFromOffset(last.offset),
         renderTerminal.createAnchorAt(details.localPosition),
       );
       return true;

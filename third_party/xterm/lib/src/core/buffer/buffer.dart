@@ -476,6 +476,12 @@ class Buffer {
     }
   }
 
+  /// [seance fork] Whether [anchor] is attached to a line of THIS buffer.
+  /// An anchor captured in the main buffer must not be resolved against the
+  /// alt buffer (or a different Terminal's buffer) — its row can exceed the
+  /// other buffer's height, and even in range it points at unrelated text.
+  bool ownsAnchor(CellAnchor anchor) => anchor.line?.attachedTo(lines) ?? false;
+
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
   CellAnchor createAnchor(int x, int y) {
     return lines[y].createAnchor(x);

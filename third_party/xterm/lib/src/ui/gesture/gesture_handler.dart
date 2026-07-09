@@ -116,6 +116,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       onLongPressStart: onLongPressStart,
       onLongPressMoveUpdate: onLongPressMoveUpdate,
       onLongPressUp: onLongPressUp,
+      onLongPressEnd: (_) => _endSelectionGesture(),
+      onLongPressCancel: _endSelectionGesture,
       onDragStart: onDragStart,
       onDragUpdate: onDragUpdate,
       onDragEnd: onDragEnd,
@@ -175,7 +177,13 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
   }
 
+  /// [seance fork] Whether the current left press's DOWN was reported to the
+  /// terminal. The matching UP must route the same way even if the shift key
+  /// changes state mid-press — a remote that saw the down needs the up.
+  bool _leftDownSentToTerminal = false;
+
   void onTapDown(TapDownDetails details, int tapCount) {
+    _leftDownSentToTerminal = _shouldSendTapEvent;
     // onTapDown is special, as it will always call the supplied callback.
     // The TerminalView depends on it to bring the terminal into focus.
     _tapDown(
@@ -188,9 +196,20 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
   /// [seance fork] Button-up used to be reported only for *single* taps
   /// (via onSingleTapUp), leaving mouse-reporting remotes with a stuck button
-  /// after a double click. Every tap-up now reports exactly once, here.
+  /// after a double click. Every tap-up now reports exactly once, here,
+  /// routed the way its down was routed.
   void onTapUp(TapUpDetails details) {
-    _tapUp(widget.onTapUp, details, TerminalMouseButton.left);
+    var handled = false;
+    if (_leftDownSentToTerminal) {
+      handled = renderTerminal.mouseEvent(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.up,
+        details.localPosition,
+      );
+    }
+    if (!handled) {
+      widget.onTapUp?.call(details);
+    }
   }
 
   void onSingleTapUp(TapUpDetails details) {

@@ -177,8 +177,9 @@ class BufferLine with IndexedItem {
     }
 
     // Update anchors, remove anchors that are inside the removed range.
-    for (var i = 0; i < _anchors.length; i++) {
-      final anchor = _anchors[i];
+    // [seance fork] Iterate a snapshot: dispose() removes from _anchors, and
+    // the old index loop skipped whichever anchor slid into the freed slot.
+    for (final anchor in _anchors.toList()) {
       if (anchor.x >= start) {
         if (anchor.x < start + count) {
           anchor.dispose();
@@ -216,8 +217,8 @@ class BufferLine with IndexedItem {
     }
 
     // Update anchors, move anchors that are after the inserted range.
-    for (var i = 0; i < _anchors.length; i++) {
-      final anchor = _anchors[i];
+    // [seance fork] Snapshot for the same reason as removeCells above.
+    for (final anchor in _anchors.toList()) {
       if (anchor.x >= start + count) {
         anchor.reposition(anchor.x + count);
 
@@ -364,7 +365,8 @@ class BufferLine with IndexedItem {
   }
 
   void dispose() {
-    for (final anchor in _anchors) {
+    // [seance fork] Snapshot: anchor.dispose() mutates _anchors.
+    for (final anchor in _anchors.toList()) {
       anchor.dispose();
     }
   }

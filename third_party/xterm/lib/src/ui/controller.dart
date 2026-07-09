@@ -112,6 +112,13 @@ class TerminalController with ChangeNotifier {
     return true;
   }
 
+  /// [seance fork] The live selection's base anchor, or null. Read-only —
+  /// the controller keeps ownership. Lets the view validate the base against
+  /// the active buffer before extending (shift-click across a main/alt
+  /// buffer switch must not mix coordinate spaces).
+  CellAnchor? get selectionBaseAnchor =>
+      (_selectionBase?.attached ?? false) ? _selectionBase : null;
+
   /// Clears the current selection.
   void clearSelection() {
     _selectionBase?.dispose();
@@ -119,6 +126,19 @@ class TerminalController with ChangeNotifier {
     _selectionExtent?.dispose();
     _selectionExtent = null;
     notifyListeners();
+  }
+
+  /// [seance fork] Release the selection anchors on dispose. Without this a
+  /// controller disposed mid-selection leaked its two anchors — and anchor
+  /// migration (BufferLine.migrateOnEvict) would then keep them alive in the
+  /// buffer forever.
+  @override
+  void dispose() {
+    _selectionBase?.dispose();
+    _selectionBase = null;
+    _selectionExtent?.dispose();
+    _selectionExtent = null;
+    super.dispose();
   }
 
   // Select which type of pointer events are send to the terminal.

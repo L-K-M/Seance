@@ -243,7 +243,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final start = lines.absoluteStartIndex;
     if (identical(lines, _lastLines)) {
       final trimmed = start - _lastAbsoluteStartIndex;
-      if (trimmed > 0 && !_stickToBottom) {
+      // _scrollOffset > 0: don't fight BouncingScrollPhysics' overscroll
+      // region (offset < 0 while rubber-banding at the top).
+      if (trimmed > 0 && !_stickToBottom && _scrollOffset > 0) {
         final delta = trimmed * _painter.cellSize.height;
         final target = max(_scrollOffset - delta, 0.0);
         _offset.correctBy(target - _scrollOffset);
@@ -343,7 +345,10 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// selection start slide through content whenever the viewport moved
   /// mid-drag (streaming output, wheel scroll, stick-to-bottom re-pin).
   void selectCharactersTo(CellAnchor start, Offset to) {
-    if (!start.attached) return;
+    // Ownership, not just attachment: a mid-gesture main/alt buffer switch
+    // leaves [start] attached to the OTHER buffer, whose rows can exceed this
+    // buffer's height — resolving it here would throw (or select nonsense).
+    if (!_terminal.buffer.ownsAnchor(start)) return;
     final fromPosition = start.offset;
     var toPosition = getCellOffset(to);
     if (!toPosition.isBefore(fromPosition)) {
@@ -359,7 +364,11 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// [wordBegin]/[wordEnd] (anchors captured at gesture start) to include the
   /// word under pixel [to]. Same anchoring rationale as [selectCharactersTo].
   void selectWordTo(CellAnchor wordBegin, CellAnchor wordEnd, Offset to) {
-    if (!wordBegin.attached || !wordEnd.attached) return;
+    // Same ownership rationale as [selectCharactersTo].
+    if (!_terminal.buffer.ownsAnchor(wordBegin) ||
+        !_terminal.buffer.ownsAnchor(wordEnd)) {
+      return;
+    }
     final toBoundary = _terminal.buffer.getWordBoundary(getCellOffset(to));
     if (toBoundary == null) return;
     final range =

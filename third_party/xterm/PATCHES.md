@@ -105,3 +105,63 @@ what must be preserved.
 14. **`TerminalView.onTapUp` actually fires** (via
     `gesture_handler.dart#onTapUp`): upstream declared the public callback
     but never invoked it.
+
+### Hardening from the adversarial review round (same regression file)
+
+15. **Cross-buffer anchor safety** (`core/buffer/buffer.dart#ownsAnchor`,
+    `utils/circular_buffer.dart#attachedTo`, `terminal_view.dart`,
+    `ui/render.dart`): every anchor captured for shift-click or a drag is now
+    validated against the ACTIVE buffer before being resolved. An anchor
+    captured in the main buffer and resolved against the alt buffer (vim/less
+    opened between clicks, or a buffer switch mid-drag — the autoscroll
+    ticker keeps extending without new pointer events) threw a RangeError:
+    main-buffer rows can exceed the alt buffer's height. The view also drops
+    its recorded click when the widget's Terminal instance is swapped
+    (reconnect).
+
+16. **Left button-up reaches mouse-reporting remotes again**
+    (`ui/gesture/gesture_detector.dart`, `ui/gesture/gesture_handler.dart`):
+    the first fork cut moved up-reporting to an onTapUp path the detector
+    never invoked, so remotes saw downs with no ups (upstream at least
+    reported singles). Every tap-up now reports exactly once, routed the way
+    its down was routed (the down's shift/readOnly decision is remembered —
+    releasing shift mid-press no longer strands the remote's button state).
+
+17. **Long-press end/cancel wired** (`gesture_detector.dart`,
+    `gesture_handler.dart`): a cancelled long-press (system gesture stealing
+    the pointer) previously left the edge-autoscroll ticker running forever
+    and the word anchors alive. Tap-cancel (a press that becomes a drag) also
+    resets the multi-click sequence so it can't pollute a later click's
+    count.
+
+18. **Anchor-eviction coverage widened**
+    (`utils/circular_buffer.dart#insert`): the full-buffer eviction inside
+    `insert()` — hit by IND margin scrolls with top=0 and a bottom margin
+    above the last row (status-line layouts) — now migrates anchors exactly
+    like `push()`. Known remaining gap, accepted: `replaceWith()` after a
+    reflow that overflows maxLines drops the overflowed head lines without
+    migration (a width-resize of a full scrollback degrades to upstream's
+    detach behavior there).
+
+19. **Anchor-loop hygiene** (`core/buffer/line.dart`): `removeCells`,
+    `insertCells`, and `BufferLine.dispose` iterated `_anchors` while
+    `CellAnchor.dispose()`/`reparent` mutate it — skipping anchors (stale
+    selection endpoints after DCH/ICH) or throwing
+    ConcurrentModificationError. All three now iterate a snapshot.
+
+20. **Controller disposal releases selection anchors**
+    (`ui/controller.dart#dispose`): a controller disposed mid-selection
+    leaked its two anchors; with anchor migration (patch 9) they would have
+    been kept alive by the buffer indefinitely.
+
+21. **Trim scroll-anchoring respects bounce overscroll**
+    (`ui/render.dart#_correctForTrimmedLines`): the correction is skipped
+    while `_scrollOffset <= 0` so it cannot fight BouncingScrollPhysics'
+    rubber-banding at the top.
+
+### App-layer notes (outside this package)
+
+- The app passes `shortcuts: {}` and instead routes ⌘C/⌘V/⌘A on
+  macOS/iPadOS and Ctrl+Shift+C/V/A elsewhere through its own key handler —
+  plain Ctrl+A/Ctrl+V flow to the shell (readline line-home / literal ^V).
+

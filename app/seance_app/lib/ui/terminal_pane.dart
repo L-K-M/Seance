@@ -149,10 +149,6 @@ class _SessionViewState extends State<_SessionView> {
   final FocusNode _focus = FocusNode();
   // Our own controller so the copy/paste menu can read (and set) the selection.
   final TerminalController _terminalController = TerminalController();
-  // Reaches the render object to convert a click into a word/line selection.
-  final GlobalKey<TerminalViewState> _terminalViewKey =
-      GlobalKey<TerminalViewState>();
-
   @override
   void initState() {
     super.initState();
@@ -222,7 +218,6 @@ class _SessionViewState extends State<_SessionView> {
     // recognizers: its selections were force-cleared ~100ms later.
     return TerminalView(
       tab.engine.terminal,
-      key: _terminalViewKey,
       controller: _terminalController,
       focusNode: _focus,
       autofocus: widget.isActive,
@@ -257,7 +252,11 @@ class _SessionViewState extends State<_SessionView> {
       return KeyEventResult.handled;
     }
 
-    final clip = Platform.isMacOS
+    // Apple platforms use ⌘ (on iPad this is the only hardware-keyboard
+    // path — there is no native menu to fall back to); elsewhere
+    // Ctrl+Shift leaves plain Ctrl+C/A for the shell.
+    final apple = Platform.isMacOS || Platform.isIOS;
+    final clip = apple
         ? keys.isMetaPressed
         : (keys.isControlPressed && keys.isShiftPressed);
     if (clip && event.logicalKey == LogicalKeyboardKey.keyC) {
@@ -267,6 +266,10 @@ class _SessionViewState extends State<_SessionView> {
     }
     if (clip && event.logicalKey == LogicalKeyboardKey.keyV) {
       terminalPaste(widget.tab);
+      return KeyEventResult.handled;
+    }
+    if (clip && event.logicalKey == LogicalKeyboardKey.keyA) {
+      terminalSelectAll(widget.tab);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;

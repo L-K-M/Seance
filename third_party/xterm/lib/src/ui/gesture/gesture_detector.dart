@@ -25,6 +25,8 @@ class TerminalGestureDetector extends StatefulWidget {
     this.onLongPressStart,
     this.onLongPressMoveUpdate,
     this.onLongPressUp,
+    this.onLongPressEnd,
+    this.onLongPressCancel,
     this.onDragStart,
     this.onDragUpdate,
     this.onDragEnd,
@@ -62,6 +64,13 @@ class TerminalGestureDetector extends StatefulWidget {
   final GestureLongPressMoveUpdateCallback? onLongPressMoveUpdate;
 
   final GestureLongPressUpCallback? onLongPressUp;
+
+  /// [seance fork] End/cancel companions to the long-press callbacks —
+  /// without them a cancelled long-press could never release per-gesture
+  /// state (selection anchors, the edge-autoscroll ticker).
+  final GestureLongPressEndCallback? onLongPressEnd;
+
+  final GestureLongPressCancelCallback? onLongPressCancel;
 
   final GestureDragStartCallback? onDragStart;
 
@@ -119,6 +128,9 @@ class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
   }
 
   void _handleTapUp(TapUpDetails details) {
+    // Every tap-up, regardless of count — mouse-reporting remotes need a
+    // button-up for each button-down or they see a stuck button.
+    widget.onTapUp?.call(details);
     if (_tapCount == 1) {
       widget.onSingleTapUp?.call(details);
     }
@@ -132,6 +144,14 @@ class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
     _tapSequenceTimer = null;
     _lastTapOffset = null;
     _tapCount = 0;
+  }
+
+  /// [seance fork] The tap lost the arena (the pointer became a drag). Reset
+  /// the sequence so the drag's press — which already fired _handleTapDown at
+  /// the deadline — can't count toward a later click's double/triple.
+  void _handleTapCancel() {
+    _tapSequenceTimer?.cancel();
+    _tapSequenceTimeout();
   }
 
   bool _isWithinDoubleTapTolerance(Offset secondTapOffset) {
@@ -160,6 +180,7 @@ class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
         instance
           ..onTapDown = _handleTapDown
           ..onTapUp = _handleTapUp
+          ..onTapCancel = _handleTapCancel
           ..onSecondaryTapDown = widget.onSecondaryTapDown
           ..onSecondaryTapUp = widget.onSecondaryTapUp
           ..onTertiaryTapDown = widget.onTertiaryTapDown
@@ -180,7 +201,9 @@ class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
         instance
           ..onLongPressStart = widget.onLongPressStart
           ..onLongPressMoveUpdate = widget.onLongPressMoveUpdate
-          ..onLongPressUp = widget.onLongPressUp;
+          ..onLongPressUp = widget.onLongPressUp
+          ..onLongPressEnd = widget.onLongPressEnd
+          ..onLongPressCancel = widget.onLongPressCancel;
       },
     );
 
