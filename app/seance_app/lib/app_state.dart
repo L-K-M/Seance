@@ -463,6 +463,19 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// React to the app moving in/out of the foreground (wired to the app
+  /// lifecycle in `main`). While backgrounded, pause the reachability probe so
+  /// it stops opening a TCP connection to every server every ~45s — which would
+  /// otherwise drain battery/data on mobile and spam remote sshd/auth logs
+  /// (fail2ban) even when the app isn't visible.
+  void setForeground(bool foreground) {
+    if (foreground) {
+      services.probe.resume();
+    } else {
+      services.probe.pause();
+    }
+  }
+
   /// Close a server's SSH session but keep viewing it: the tab stays, its dot
   /// goes grey (disconnected), and the pane offers a reconnect.
   Future<void> disconnect(String serverId) async {
