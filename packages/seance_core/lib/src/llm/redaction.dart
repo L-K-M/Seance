@@ -8,7 +8,12 @@ class SecretRedactor {
 
   final List<RegExp> _patterns;
 
-  SecretRedactor({List<RegExp> extraPatterns = const []})
+  /// When false, [redact] is a pass-through. This lets the app honor the
+  /// user's "Redact secrets before sending" toggle (the safe default is on);
+  /// the redactor is still constructed the same way at every call site.
+  final bool enabled;
+
+  SecretRedactor({List<RegExp> extraPatterns = const [], this.enabled = true})
     : _patterns = [..._builtin, ...extraPatterns];
 
   static final List<RegExp> _builtin = [
@@ -37,8 +42,10 @@ class SecretRedactor {
     ),
   ];
 
-  /// Returns [text] with any matched secret spans replaced by a mask.
+  /// Returns [text] with any matched secret spans replaced by a mask. When
+  /// [enabled] is false this is a pass-through and returns [text] unchanged.
   String redact(String text) {
+    if (!enabled) return text;
     var out = text;
     for (final p in _patterns) {
       out = out.replaceAllMapped(p, (m) {
