@@ -220,7 +220,6 @@ class SshSessionManager {
     }
 
     final target = '${config.username}@${config.host}:${config.port}';
-    note('Connecting to $target …');
     note('Auth method: ${_methodLabel(credentials.method)}');
 
     List<SSHKeyPair>? identities;
@@ -253,6 +252,7 @@ class SshSessionManager {
 
     SSHSocket socket;
     try {
+      note('Connecting to $target …');
       socket = await _connect(config.host, config.port, timeout);
     } catch (e) {
       note('Could not open a TCP connection: $e');

@@ -107,7 +107,9 @@ void main() {
       );
 
       expect(connectorCalled, isFalse);
+      expect(log.toString(), contains('Auth method: public key'));
       expect(log.toString(), contains('Could not load the private key'));
+      expect(log.toString(), isNot(contains('Connecting to')));
       await engine.dispose();
     });
 
