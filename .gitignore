@@ -18,6 +18,10 @@ app/seance_app/ios/Pods/
 app/seance_app/android/.gradle/
 app/seance_app/**/GeneratedPluginRegistrant.*
 
+# Vendored xterm fork: resolution artifacts only (sources are committed)
+third_party/xterm/pubspec.lock
+third_party/xterm/test/src/failures/
+
 # Server runtime data
 packages/seance_sync_server/data/
 *.sqlite

@@ -14,9 +14,12 @@ dependencies:
   # a thin UI over it. Re-exports seance_protocol.
   seance_core:
     path: ../../packages/seance_core
-  # Terminal widget (vendor/fork later per the proposal; libghostty swaps in
-  # behind seance_core's TerminalEngine seam when it tags a release).
-  xterm: ^4.0.0
+  # Terminal widget — Séance's vendored fork of xterm.dart 4.0.0 (selection
+  # fixes upstream's private gesture wiring makes unreachable from the app;
+  # see third_party/xterm/PATCHES.md). libghostty swaps in behind
+  # seance_core's TerminalEngine seam when it tags a release.
+  xterm:
+    path: ../../third_party/xterm
   # OS keystore for the vault master key and LLM API keys.
   flutter_secure_storage: ^10.0.0
   path_provider: ^2.1.0
