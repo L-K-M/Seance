@@ -58,6 +58,9 @@ class _ChatSidebarState extends State<ChatSidebar> {
     final controller = ChatController(
       provider: provider,
       searchProvider: search,
+      // Honor the "Redact secrets before sending" toggle (default on).
+      redactor:
+          SecretRedactor(enabled: state.services.settings.redactionEnabled),
       onPaste: (command) {
         // Place the (newline-free) command into the session that originated the
         // current chat turn, not whichever tab happens to be active later.
@@ -275,32 +278,70 @@ class _ChatSidebarState extends State<ChatSidebar> {
                   ],
                 ),
               ),
-            for (final cmd in m.staged)
-              Container(
-                margin: const EdgeInsets.only(top: 6),
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: scheme.surface,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.keyboard_return, size: 14),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        'placed in prompt: $cmd',
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            for (final cmd in m.staged) _StagedCommand(command: cmd),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A command the assistant placed in the prompt, with an independent danger-
+/// linter check surfaced inline — the chat path used to stage commands without
+/// any warning, unlike the command generator.
+class _StagedCommand extends StatelessWidget {
+  final String command;
+  const _StagedCommand({required this.command});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final danger = DangerLinter.worst(command);
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(6),
+        border: danger == DangerSeverity.critical
+            ? Border.all(color: scheme.error)
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.keyboard_return, size: 14),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'placed in prompt: $command',
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+          if (danger != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      size: 14, color: scheme.error),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      danger == DangerSeverity.critical
+                          ? 'Critical — review carefully before running'
+                          : 'Review before running',
+                      style: TextStyle(fontSize: 11, color: scheme.error),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
