@@ -157,6 +157,10 @@ Host bastion db
     test('sanitizeFirstLine collapses a block to its first command', () {
       expect(PasteSanitizer.sanitizeFirstLine('cd /tmp\nrm x\n'), 'cd /tmp');
     });
+
+    test('sanitizeFirstLine treats a bare carriage return as a line break', () {
+      expect(PasteSanitizer.sanitizeFirstLine('cd /tmp\rrm x'), 'cd /tmp');
+    });
   });
 
   group('SecretRedactor', () {
