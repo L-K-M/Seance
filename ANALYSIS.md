@@ -62,23 +62,28 @@ semantics and durable credential ownership rather than the primitive choices.
 | [#4](https://github.com/L-K-M/Seance/pull/4) | Bind Compose HTTP port to loopback | App transport policy and reverse-proxy examples remain |
 | [#5](https://github.com/L-K-M/Seance/pull/5) | Return generic server errors | Server-side structured logging remains absent |
 
-### Existing Open PRs Reviewed
+### Reviewed PRs Merged After Analysis
 
-These branches passed ordinary product CI at review time. The separate GLM
-review job fails because its workflow cannot post a comment with the granted
-permissions, not because Dart, Flutter, or Docker checks fail.
+PRs #6 through #14 were merged after the review and analysis commit. Their
+changes are now part of `main`; the notes below are residual risks or follow-up
+work found during review, not a request to revert the merged improvements.
+
+| PR | Merged change | Residual review finding |
+|---|---|---|
+| [#6](https://github.com/L-K-M/Seance/pull/6) | Atomic JSON writes and corruption recovery | All writers share one `.tmp` path; concurrent fallback can delete a valid destination; transient I/O is treated as corruption |
+| [#7](https://github.com/L-K-M/Seance/pull/7) | Credential edit guard, port validation, supported default auth | Blank-key wipe is fixed, but auth transitions can retain a wrong old secret; editor paths lack direct tests |
+| [#8](https://github.com/L-K-M/Seance/pull/8) | HTTP/LLM/search timeouts | `Future.timeout` does not cancel the request; owned clients still lack disposal; stream idle/body limits remain |
+| [#9](https://github.com/L-K-M/Seance/pull/9) | Expanded danger-linter patterns | Quoted paths, long options, redirection, and option-order forms still evade rules |
+| [#10](https://github.com/L-K-M/Seance/pull/10) | Honor redaction toggle and lint chat commands | Outbound inspector remains absent; broader redaction limitations remain under SOL-045 |
+| [#11](https://github.com/L-K-M/Seance/pull/11) | Body, batch, and blob limits | No account quotas or pull pagination; configured limits still need strict startup validation |
+| [#12](https://github.com/L-K-M/Seance/pull/12) | Reconnect controller binding and scrollback-wide select-all | Reconnect production path and helper are not directly covered |
+| [#13](https://github.com/L-K-M/Seance/pull/13) | Reject KDF downgrades | 4 GiB memory ceiling and unbounded iterations/parallelism/hash length still allow client DoS |
+| [#14](https://github.com/L-K-M/Seance/pull/14) | Pause probes in the background | Bootstrap/background ordering and Flutter lifecycle wiring need broader tests |
+
+### Existing PRs Still Open
 
 | PR | Intended change | Review assessment before merge |
 |---|---|---|
-| [#6](https://github.com/L-K-M/Seance/pull/6) | Atomic JSON writes and corruption recovery | Needs changes: all writers share one `.tmp` path; concurrent fallback can delete a valid destination; transient I/O is treated as corruption |
-| [#7](https://github.com/L-K-M/Seance/pull/7) | Credential edit guard, port validation, supported default auth | Partial: blank-key wipe is fixed, but auth transitions can retain a wrong old secret; editor paths lack direct tests |
-| [#8](https://github.com/L-K-M/Seance/pull/8) | HTTP/LLM/search timeouts | Useful partial: `Future.timeout` does not cancel the request; owned clients still lack disposal; stream idle/body limits remain |
-| [#9](https://github.com/L-K-M/Seance/pull/9) | Expand danger-linter patterns | Useful partial: quoted paths, long options, redirection, and option-order forms still evade rules |
-| [#10](https://github.com/L-K-M/Seance/pull/10) | Honor redaction toggle and lint chat commands | Good direction; lacks end-to-end settings/UI tests and an outbound inspector |
-| [#11](https://github.com/L-K-M/Seance/pull/11) | Body, batch, and blob limits | Useful partial: no account quotas or pull pagination; invalid zero/negative configured limits need rejection |
-| [#12](https://github.com/L-K-M/Seance/pull/12) | Reconnect controller binding and scrollback-wide select-all | Good fixes; reconnect production path and helper are not directly covered |
-| [#13](https://github.com/L-K-M/Seance/pull/13) | Reject KDF downgrades | Needs changes: 4 GiB memory ceiling and unbounded iterations/parallelism/hash length still allow client DoS |
-| [#14](https://github.com/L-K-M/Seance/pull/14) | Pause probes in the background | Partial: bootstrap/background ordering and Flutter lifecycle wiring need tests |
 | [#15](https://github.com/L-K-M/Seance/pull/15) | Snippet filtering and controller cleanup | Has a hidden-filter regression when deletion drops the list below the search threshold; no filter tests |
 | [#16](https://github.com/L-K-M/Seance/pull/16) | Publish Android APK | Blocker: runner-generated debug certificate changes across releases, so Android upgrades can fail and require uninstalling local data |
 
@@ -236,7 +241,7 @@ Action:
 Priority: P0
 
 References: `packages/seance_protocol/lib/src/crypto/vault.dart`,
-`app/seance_app/lib/services/app_services.dart:129-148`, open PR #13
+`app/seance_app/lib/services/app_services.dart:129-148`, merged PR #13
 
 The prelogin endpoint controls client KDF parameters. PR #13 adds a minimum but
 allows a 4 GiB memory value and lacks safe ceilings for iterations, parallelism,
@@ -255,7 +260,7 @@ Action:
 
 Priority: P0
 
-References: `app/seance_app/lib/ui/server_editor.dart`, open PR #7
+References: `app/seance_app/lib/ui/server_editor.dart`, merged PR #7
 
 Current main can overwrite a stored private key with empty text when unrelated
 fields are edited. PR #7 guards that path, but auth transitions can still retain
@@ -607,7 +612,7 @@ Action:
 
 Priority: P1
 
-Open PR #6 improves the current truncate-in-place behavior but introduces a
+Merged PR #6 improves the current truncate-in-place behavior but introduces a
 shared-temp race and broad error recovery. Linux also permits multiple app
 processes writing the same files.
 
@@ -775,7 +780,7 @@ Action:
 
 Priority: P1
 
-Merged PRs #1/#2 and open PR #10 improve individual paths, but generator,
+Merged PRs #1/#2/#10 improve individual paths, but generator,
 snippets, and chat still separately append text to current PTY input and surface
 danger differently.
 
