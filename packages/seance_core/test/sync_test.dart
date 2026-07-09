@@ -147,12 +147,13 @@ void main() {
       expect(await store.highWaterSeq(), 2);
     });
 
-    test('rejected push pulls and adopts the other device winner', () async {
+    test('rejected push adopts lexicographically larger device ID on a tie',
+        () async {
       final store = InMemoryLocalRecordStore();
       await store.putLocal(rec('shared', 10, 'A', tag: 1));
       final api = PushRaceApi(
         FakeServer(),
-        rec('shared', 11, 'B', tag: 2),
+        rec('shared', 10, 'B', tag: 2),
         concurrentFirst: true,
       );
 
@@ -161,7 +162,8 @@ void main() {
       final adopted = await store.getRecord('shared');
       expect(outcome.pulled, 1);
       expect(outcome.pushed, 0);
-      expect(adopted!.deviceId, 'B');
+      expect(adopted!.updatedAt, 10);
+      expect(adopted.deviceId, 'B');
       expect(adopted.blob, equals(Uint8List.fromList([2])));
       expect(await store.dirtyRecords(), isEmpty);
       expect(await store.highWaterSeq(), 1);
@@ -199,7 +201,11 @@ void main() {
 
         await engine.sync(api);
 
-        expect(api.requestedSince, [0, 0, 2]);
+        expect(
+          api.requestedSince.take(2),
+          [0, 0],
+          reason: 'an unobserved latestSeq must not advance the next pull',
+        );
         expect(await store.getRecord('remote'), isNotNull);
         expect(await store.highWaterSeq(), 2);
       },

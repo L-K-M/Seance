@@ -52,6 +52,7 @@ class SyncEngine {
     final resp = await api.pull(since: since);
     var applied = 0;
     var snapshotHighWater = since;
+    // Pulled records should carry server-assigned seqs; trust only observed seqs.
     for (final remote in resp.records) {
       final remoteSeq = remote.seq;
       if (remoteSeq != null && remoteSeq > snapshotHighWater) {
