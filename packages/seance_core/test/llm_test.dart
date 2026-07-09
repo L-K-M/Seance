@@ -15,6 +15,7 @@ import 'package:test/test.dart';
 class FakeProvider implements LlmProvider {
   final List<ChatTurn> _turns;
   final List<List<LlmMessage>> received = [];
+  final List<List<ToolSpec>> receivedTools = [];
   int _i = 0;
   FakeProvider(this._turns);
 
@@ -25,6 +26,7 @@ class FakeProvider implements LlmProvider {
   Future<ChatTurn> chat(
       {required List<LlmMessage> messages, List<ToolSpec> tools = const []}) async {
     received.add(messages);
+    receivedTools.add(tools);
     return _turns[_i++];
   }
 
@@ -312,6 +314,158 @@ void main() {
           result.sent.firstWhere((s) => s.label.contains('terminal'));
       expect(sentContext.content, isNot(contains('ghp_0123456789')));
       expect(sentContext.content, contains('«redacted»'));
+    });
+
+    test(
+      'dispatches exactly the permitted rounds then disables tools',
+      () async {
+        final provider = FakeProvider([
+          const ChatTurn(
+            text: '',
+            toolCalls: [
+              ToolCall(
+                id: 'c1',
+                name: 'web_search',
+                arguments: {'query': 'first'},
+              ),
+            ],
+          ),
+          const ChatTurn(
+            text: '',
+            toolCalls: [
+              ToolCall(
+                id: 'c2',
+                name: 'web_search',
+                arguments: {'query': 'second'},
+              ),
+            ],
+          ),
+          const ChatTurn(text: 'Final answer.'),
+        ]);
+        final search = FakeSearch();
+        final chat = ChatController(
+          provider: provider,
+          onPaste: (_) {},
+          searchProvider: search,
+          maxToolIterations: 2,
+        );
+
+        final result = await chat.send('research this');
+
+        expect(search.queries, ['first', 'second']);
+        expect(provider.received, hasLength(3));
+        expect(provider.receivedTools[0], ChatTools.all);
+        expect(provider.receivedTools[1], ChatTools.all);
+        expect(provider.receivedTools[2], isEmpty);
+        expect(result.reply, 'Final answer.');
+      },
+    );
+
+    test('does not drop the last permitted tool action', () async {
+      final provider = FakeProvider([
+        const ChatTurn(
+          text: '',
+          toolCalls: [
+            ToolCall(
+              id: 'c1',
+              name: 'paste_to_prompt',
+              arguments: {'command': 'pwd'},
+            ),
+          ],
+        ),
+        const ChatTurn(text: 'Review the staged command.'),
+      ]);
+      final pasted = <String>[];
+      final chat = ChatController(
+        provider: provider,
+        onPaste: pasted.add,
+        maxToolIterations: 1,
+      );
+
+      final result = await chat.send('where am I?');
+
+      expect(pasted, ['pwd']);
+      expect(result.stagedCommands, ['pwd']);
+      expect(provider.receivedTools.last, isEmpty);
+    });
+
+    test('returns a nonblank fallback for a disabled tool-only turn', () async {
+      final provider = FakeProvider([
+        const ChatTurn(
+          text: '',
+          toolCalls: [
+            ToolCall(
+              id: 'c1',
+              name: 'web_search',
+              arguments: {'query': 'allowed'},
+            ),
+          ],
+        ),
+        const ChatTurn(
+          text: '',
+          toolCalls: [
+            ToolCall(
+              id: 'c2',
+              name: 'paste_to_prompt',
+              arguments: {'command': 'not-allowed'},
+            ),
+          ],
+        ),
+      ]);
+      final pasted = <String>[];
+      final chat = ChatController(
+        provider: provider,
+        onPaste: pasted.add,
+        maxToolIterations: 1,
+      );
+
+      final result = await chat.send('help');
+
+      expect(result.reply, isNotEmpty);
+      expect(result.reply, contains('tool-use limit'));
+      expect(pasted, isEmpty);
+      expect(provider.receivedTools.last, isEmpty);
+    });
+
+    test('keeps modeled roles alternating after a pure tool call', () async {
+      final provider = FakeProvider([
+        const ChatTurn(
+          text: '',
+          toolCalls: [
+            ToolCall(
+              id: 'c1',
+              name: 'paste_to_prompt',
+              arguments: {'command': 'ls'},
+            ),
+          ],
+        ),
+        const ChatTurn(text: 'Ready.'),
+      ]);
+      final chat = ChatController(
+        provider: provider,
+        onPaste: (_) {},
+        maxToolIterations: 1,
+      );
+
+      await chat.send('list files');
+
+      expect(provider.received[1].map((message) => message.role), [
+        LlmRole.system,
+        LlmRole.user,
+        LlmRole.assistant,
+        LlmRole.user,
+      ]);
+    });
+
+    test('rejects a negative tool iteration limit', () {
+      expect(
+        () => ChatController(
+          provider: FakeProvider(const []),
+          onPaste: (_) {},
+          maxToolIterations: -1,
+        ),
+        throwsArgumentError,
+      );
     });
   });
 }
