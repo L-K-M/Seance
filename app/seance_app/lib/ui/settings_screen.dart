@@ -3,6 +3,7 @@ import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import 'sync_enrollment_validation.dart';
 
 /// Settings: LLM provider (the assistant is always on — this only picks which
 /// model), the web-search backend, secret redaction, and sync enrolment.
@@ -21,6 +22,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final _syncUrl = TextEditingController();
   late final _syncUser = TextEditingController();
   final _syncPass = TextEditingController();
+  final _syncPassConfirm = TextEditingController();
 
   late LlmProviderKind _kind;
   late bool _redaction;
@@ -69,7 +71,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _searxng,
       _syncUrl,
       _syncUser,
-      _syncPass
+      _syncPass,
+      _syncPassConfirm,
     ]) {
       c.dispose();
     }
@@ -221,6 +224,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'storing secrets you want synced.',
           ),
           const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.errorContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.warning_amber_rounded, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'The vault passphrase cannot be reset or recovered through '
+                    'the sync server. Store it safely before registering.',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onErrorContainer,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('Sync automatically'),
@@ -260,6 +287,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _syncPass,
             obscureText: true,
             decoration: const InputDecoration(labelText: 'Vault passphrase'),
+          ),
+          TextField(
+            controller: _syncPassConfirm,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'Confirm vault passphrase',
+              helperText: 'Required for registration only; login ignores it.',
+            ),
           ),
           const SizedBox(height: 8),
           // Wrap (not Row) so the buttons flow onto multiple lines on narrow
@@ -380,6 +415,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _sync(AppState state, {required bool register}) async {
+    final validationError = validateSyncEnrollment(
+      mode: register ? SyncEnrollmentMode.register : SyncEnrollmentMode.login,
+      baseUrl: _syncUrl.text,
+      username: _syncUser.text,
+      passphrase: _syncPass.text,
+      confirmationPassphrase: _syncPassConfirm.text,
+    );
+    if (validationError != null) {
+      setState(() => _syncStatus = validationError);
+      return;
+    }
+
     setState(() {
       _saving = true;
       _syncStatus = register ? 'Registering…' : 'Logging in…';
@@ -398,15 +445,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           passphrase: _syncPass.text,
         );
       }
-      // Enrolment done: start auto-sync and pull immediately.
+      // Schedule periodic sync if enabled, then always verify enrollment with
+      // one immediate round.
       state.ensureAutoSyncTimer();
-      setState(() => _syncStatus = 'Connected. Synchronizing…');
-      if (state.services.settings.autoSync) {
-        await state.syncNow();
+      if (mounted) {
+        setState(() => _syncStatus = 'Connected. Synchronizing…');
       }
+      await state.syncNow();
       if (mounted) setState(() => _syncStatus = 'Connected and synced.');
     } catch (e) {
-      setState(() => _syncStatus = 'Failed: $e');
+      if (mounted) setState(() => _syncStatus = 'Failed: $e');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -419,12 +467,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
     try {
       final outcome = await state.syncNow();
-      setState(() => _syncStatus =
-          'Synced: pulled ${outcome.pulled}, pushed ${outcome.pushed}.');
+      if (mounted) {
+        setState(() => _syncStatus =
+            'Synced: pulled ${outcome.pulled}, pushed ${outcome.pushed}.');
+      }
     } catch (e) {
-      setState(() => _syncStatus = 'Failed: $e');
+      if (mounted) setState(() => _syncStatus = 'Failed: $e');
     } finally {
-      setState(() => _saving = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 }
