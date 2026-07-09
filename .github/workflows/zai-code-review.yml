@@ -1,7 +1,7 @@
 name: GLM 5.2 PR Review
 
 on:
-  pull_request:
+  pull_request_target:
     types:
       - opened
       - reopened
@@ -28,6 +28,7 @@ jobs:
           ZAI_API_KEY: ${{ env.ZAI_API_KEY }}
           ZAI_MODEL: glm-5.2
           ZAI_REVIEWER_NAME: GLM 5.2 Code Review
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Skip when Z.ai API key is unavailable
         if: ${{ env.ZAI_API_KEY == '' }}
