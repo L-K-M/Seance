@@ -95,8 +95,10 @@ _Last updated: 2026-07-08 — automatic sync, opt-in credential sync, mobile key
     keyboard and key row change the available space. A soft keyboard with a
     floating/overlay mode may still cover the last row — revisit if it recurs.
 
-11. **Terminal copy/paste.** Right-click gives Copy / Paste / Select all;
-    drag or double-click selects; Ctrl+Shift+C/V work on Linux/Windows. On
+11. **Terminal copy/paste.** Right-click gives Copy / Paste / Select all; drag
+    selects, and double-click selects a word / triple-click a line (detected via
+    a passive `Listener` because xterm's own double-tap is preempted by its
+    mouse drag recognizer and it has no triple-tap). Ctrl+Shift+C/V work on
     macOS the native Edit menu (Copy/Paste/Select All, ⌘C/⌘V/⌘A) is now
     retargeted (`MainFlutterWindow.swift`) to route to the active terminal when
     a terminal is focused, and to fall back to the native path (text fields)

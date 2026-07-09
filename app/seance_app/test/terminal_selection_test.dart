@@ -35,4 +35,34 @@ void main() {
     expect(text, contains('hello world'));
     expect(text, contains('second line'));
   });
+
+  // Guards the double-click path: we reach the render object through a
+  // GlobalKey<TerminalViewState> and call selectWord (xterm's public API).
+  testWidgets('selectWord via the render object selects a single word',
+      (tester) async {
+    final terminal = Terminal(maxLines: 100);
+    final controller = TerminalController();
+    final key = GlobalKey<TerminalViewState>();
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalView(terminal, key: key, controller: controller),
+        ),
+      ),
+    );
+    await tester.pump();
+    terminal.write('hello world\r\n');
+    await tester.pump();
+
+    // Click near the start of the first line ("hello").
+    key.currentState!.renderTerminal.selectWord(const Offset(6, 6));
+
+    final selection = controller.selection;
+    expect(selection, isNotNull);
+    final word = terminal.buffer.getText(selection).trim();
+    expect(word, isNotEmpty);
+    expect(word, isNot(contains(' '))); // a word, not the whole line
+  });
 }
