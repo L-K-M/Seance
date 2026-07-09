@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:xterm/xterm.dart';
 
 import '../services/xterm_engine.dart';
 
@@ -45,42 +44,38 @@ class TerminalKeyboardBar extends StatelessWidget {
                       vertical: 6,
                     ),
                     children: [
-                      _label(context, 'esc', _esc, 'Escape'),
-                      _label(context, 'tab', _tab, 'Tab'),
+                      _label('esc', _esc, 'Escape'),
+                      _label('tab', _tab, 'Tab'),
                       _ctrlKey(context),
-                      _label(context, '^C', _ctrlC, 'Control C'),
+                      _label('^C', _ctrlC, 'Control C'),
                       _icon(
-                        context,
                         Icons.keyboard_arrow_left,
-                        TerminalKey.arrowLeft,
+                        TerminalCursorKey.arrowLeft,
                         'Left arrow',
                       ),
                       _icon(
-                        context,
                         Icons.keyboard_arrow_up,
-                        TerminalKey.arrowUp,
+                        TerminalCursorKey.arrowUp,
                         'Up arrow',
                       ),
                       _icon(
-                        context,
                         Icons.keyboard_arrow_down,
-                        TerminalKey.arrowDown,
+                        TerminalCursorKey.arrowDown,
                         'Down arrow',
                       ),
                       _icon(
-                        context,
                         Icons.keyboard_arrow_right,
-                        TerminalKey.arrowRight,
+                        TerminalCursorKey.arrowRight,
                         'Right arrow',
                       ),
-                      _terminalKey(context, 'home', TerminalKey.home, 'Home'),
-                      _terminalKey(context, 'end', TerminalKey.end, 'End'),
-                      _label(context, 'pgup', _pgUp, 'Page up'),
-                      _label(context, 'pgdn', _pgDn, 'Page down'),
-                      _char(context, '|', 'Pipe'),
-                      _char(context, '/', 'Slash'),
-                      _char(context, '-', 'Hyphen'),
-                      _char(context, '~', 'Tilde'),
+                      _cursorKey('home', TerminalCursorKey.home, 'Home'),
+                      _cursorKey('end', TerminalCursorKey.end, 'End'),
+                      _label('pgup', _pgUp, 'Page up'),
+                      _label('pgdn', _pgDn, 'Page down'),
+                      _char('|', 'Pipe'),
+                      _char('/', 'Slash'),
+                      _char('-', 'Hyphen'),
+                      _char('~', 'Tilde'),
                     ],
                   ),
                 ),
@@ -99,55 +94,42 @@ class TerminalKeyboardBar extends StatelessWidget {
     );
   }
 
-  Widget _label(
-    BuildContext context,
-    String text,
-    List<int> bytes,
-    String semanticLabel,
-  ) => _KeyButton(
-    onTap: () => engine.sendKey(bytes),
-    semanticLabel: semanticLabel,
-    child: Text(
-      text,
-      style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-    ),
-  );
-
-  Widget _icon(
-    BuildContext context,
-    IconData icon,
-    TerminalKey key,
-    String semanticLabel,
-  ) => _KeyButton(
-    onTap: () => engine.sendTerminalKey(key),
-    semanticLabel: semanticLabel,
-    tooltip: semanticLabel,
-    child: Icon(icon, size: 20),
-  );
-
-  Widget _terminalKey(
-    BuildContext context,
-    String text,
-    TerminalKey key,
-    String semanticLabel,
-  ) => _KeyButton(
-    onTap: () => engine.sendTerminalKey(key),
-    semanticLabel: semanticLabel,
-    child: Text(
-      text,
-      style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-    ),
-  );
-
-  Widget _char(BuildContext context, String ch, String semanticLabel) =>
+  Widget _label(String text, List<int> bytes, String semanticLabel) =>
       _KeyButton(
-        onTap: () => engine.sendKey(utf8.encode(ch)),
+        onTap: () => engine.sendKey(bytes),
         semanticLabel: semanticLabel,
         child: Text(
-          ch,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
+          text,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
         ),
       );
+
+  Widget _icon(IconData icon, TerminalCursorKey key, String semanticLabel) =>
+      _KeyButton(
+        onTap: () => engine.sendCursorKey(key),
+        semanticLabel: semanticLabel,
+        tooltip: semanticLabel,
+        child: Icon(icon, size: 20),
+      );
+
+  Widget _cursorKey(String text, TerminalCursorKey key, String semanticLabel) =>
+      _KeyButton(
+        onTap: () => engine.sendCursorKey(key),
+        semanticLabel: semanticLabel,
+        child: Text(
+          text,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+        ),
+      );
+
+  Widget _char(String ch, String semanticLabel) => _KeyButton(
+    onTap: () => engine.sendKey(utf8.encode(ch)),
+    semanticLabel: semanticLabel,
+    child: Text(
+      ch,
+      style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
+    ),
+  );
 
   /// The sticky Ctrl modifier, highlighted while armed.
   Widget _ctrlKey(BuildContext context) {

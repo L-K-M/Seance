@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -76,6 +77,27 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('cursor keys leave armed Ctrl and pending input unchanged', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await pumpBar(tester);
+    engine.injectInput('echo');
+    await tester.pump();
+    engine.toggleCtrl();
+
+    expect(await tapKey(tester, 'Left arrow'), [0x1b, 0x5b, 0x44]);
+    expect(engine.ctrlArmed.value, isTrue);
+    expect(engine.pendingInput, 'echo');
+
+    output.clear();
+    engine.terminal.onOutput!('c');
+    await tester.pump();
+    expect(output.expand((chunk) => chunk).toList(), [0x03]);
+    expect(engine.ctrlArmed.value, isFalse);
+    semantics.dispose();
+  });
+
   testWidgets('raw control, page, and punctuation keys stay unchanged', (
     tester,
   ) async {
@@ -87,10 +109,10 @@ void main() {
     expect(await tapKey(tester, 'Control C'), [0x03]);
     expect(await tapKey(tester, 'Page up'), [0x1b, 0x5b, 0x35, 0x7e]);
     expect(await tapKey(tester, 'Page down'), [0x1b, 0x5b, 0x36, 0x7e]);
-    expect(await tapKey(tester, 'Pipe'), '|'.codeUnits);
-    expect(await tapKey(tester, 'Slash'), '/'.codeUnits);
-    expect(await tapKey(tester, 'Hyphen'), '-'.codeUnits);
-    expect(await tapKey(tester, 'Tilde'), '~'.codeUnits);
+    expect(await tapKey(tester, 'Pipe'), utf8.encode('|'));
+    expect(await tapKey(tester, 'Slash'), utf8.encode('/'));
+    expect(await tapKey(tester, 'Hyphen'), utf8.encode('-'));
+    expect(await tapKey(tester, 'Tilde'), utf8.encode('~'));
     semantics.dispose();
   });
 

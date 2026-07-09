@@ -5,6 +5,18 @@ import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
 import 'package:xterm/xterm.dart';
 
+enum TerminalCursorKey {
+  arrowUp(0x41),
+  arrowDown(0x42),
+  arrowRight(0x43),
+  arrowLeft(0x44),
+  home(0x48),
+  end(0x46);
+
+  final int finalByte;
+  const TerminalCursorKey(this.finalByte);
+}
+
 /// A [TerminalEngine] backed by xterm.dart's [Terminal]. This is the concrete
 /// v1 terminal; a future libghostty engine drops in behind the same interface
 /// (see the proposal's M10). Bytes from SSH are written to the terminal;
@@ -116,19 +128,12 @@ class XtermTerminalEngine implements TerminalEngine {
     _input.add(Uint8List.fromList(bytes));
   }
 
-  /// Send a logical terminal [key] through xterm's key encoder. This must be
-  /// used for cursor keys because their escape sequence depends on DECCKM.
-  void sendTerminalKey(TerminalKey key) {
-    // xterm 4.0's keytab handler reads appKeypadMode for its AppCuKeys rules,
-    // even though DECCKM is tracked separately as cursorKeysMode. Mirror that
-    // state only while encoding so keyInput emits the correct CSI/SS3 sequence.
-    final appKeypadMode = terminal.appKeypadMode;
-    terminal.setAppKeypadMode(terminal.cursorKeysMode);
-    try {
-      terminal.keyInput(key);
-    } finally {
-      terminal.setAppKeypadMode(appKeypadMode);
-    }
+  /// Send an arrow, Home, or End [key] using the active DECCKM mode.
+  void sendCursorKey(TerminalCursorKey key) {
+    final prefix = terminal.cursorKeysMode ? 0x4f : 0x5b; // SS3 or CSI
+    // Cursor sequences are intentionally terminal controls, not command text.
+    // Bypass pending-input tracking and leave one-shot Ctrl armed for typing.
+    _input.add(Uint8List.fromList([0x1b, prefix, key.finalByte]));
   }
 
   /// Toggle the one-shot Ctrl modifier (armed by the key row's Ctrl button).
