@@ -170,8 +170,15 @@ class XtermTerminalEngine implements TerminalEngine {
     return all.sublist(start).join('\n').trimRight();
   }
 
+  bool _disposed = false;
+
   @override
   Future<void> dispose() async {
+    // Idempotent: with per-server tabs, closeTab/reconnect can dispose an
+    // engine that a closing SshSession also disposes. A second dispose would
+    // otherwise re-dispose the ValueNotifier (a debug assertion).
+    if (_disposed) return;
+    _disposed = true;
     _terminalDecoder.close();
     ctrlArmed.dispose();
     await _input.close();

@@ -66,7 +66,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
         // current chat turn, not whichever tab happens to be active later.
         final session = _pasteTarget;
         if (session == null ||
-            state.sessions[session.serverId] != session ||
+            !identical(state.sessionById(session.id), session) ||
             !session.isConnected) {
           return;
         }

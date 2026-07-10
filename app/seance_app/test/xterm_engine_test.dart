@@ -118,4 +118,12 @@ void main() {
       expect(e.recentText(), 'a\uFFFDb\uFFFD');
     },
   );
+  test('dispose is idempotent', () async {
+    // With per-server tabs, closeTab/reconnect can dispose an engine that a
+    // closing SshSession also disposes. A second dispose must not re-dispose
+    // the ValueNotifier (a debug assertion) or throw.
+    final e = XtermTerminalEngine();
+    await e.dispose();
+    await e.dispose(); // no throw
+  });
 }

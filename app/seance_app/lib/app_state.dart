@@ -12,9 +12,12 @@ import 'services/xterm_engine.dart';
 /// server list (green / grey / red, with a spinner while connecting).
 enum TerminalStatus { connecting, connected, disconnected, error }
 
-/// One terminal session, bound one-to-one to a server. The server list is the
-/// tab list: each server has at most one [TerminalSession].
+/// One terminal session — a single SSH connection. A server can have several
+/// (shown as tabs inside its terminal pane), so a session has its own [id]
+/// distinct from its [serverId]; many sessions can share one [serverId].
 class TerminalSession {
+  /// Unique per connection (not per server) — the tab identity.
+  final String id;
   final String serverId;
   final ServerConfig config;
   XtermTerminalEngine engine;
@@ -32,6 +35,7 @@ class TerminalSession {
   TerminalController? controller;
 
   TerminalSession({
+    required this.id,
     required this.serverId,
     required this.config,
     required this.engine,
@@ -51,8 +55,8 @@ class TerminalSession {
 }
 
 /// Top-level app state: the server list, live reachability, and the open
-/// terminal sessions (one per server). The UI is a thin `ListenableBuilder`
-/// over this.
+/// terminal sessions. A server may have several sessions (tabs); the UI is a
+/// thin `ListenableBuilder` over this.
 class AppState extends ChangeNotifier {
   final AppServices services;
   late final SshSessionManager _sessionManager;
@@ -61,11 +65,18 @@ class AppState extends ChangeNotifier {
   List<Snippet> snippets = [];
   Map<String, ProbeStatus> statuses = {};
 
-  /// Open terminal sessions keyed by server id — one per server.
-  final Map<String, TerminalSession> sessions = {};
+  /// All open sessions, in a stable global order. Sessions for the same server
+  /// are kept contiguous (enforced on insert), so a per-server tab strip is a
+  /// simple order-preserving filter and adjacent tabs are always same-server.
+  final List<TerminalSession> sessions = [];
 
-  /// The server whose terminal is shown in the right pane.
-  String? activeServerId;
+  /// The id of the session shown in the right pane (see [activeServerId],
+  /// which is derived from it).
+  String? activeSessionId;
+
+  /// The most-recently-focused session per server, so re-selecting a server
+  /// row returns to the tab the user last used there.
+  final Map<String, String> _lastSessionForServer = {};
 
   /// Whether the assistant is configured enough to be usable (drives whether
   /// the LLM sidebar is shown). Refreshed at load and after settings change.
@@ -122,10 +133,43 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  TerminalSession? get activeSession =>
-      activeServerId == null ? null : sessions[activeServerId];
+  /// The server whose terminal is shown — derived from the active session, so
+  /// there is a single source of truth. Null when nothing is open.
+  String? get activeServerId => activeSession?.serverId;
 
-  TerminalSession? sessionForServer(String serverId) => sessions[serverId];
+  TerminalSession? get activeSession => sessionById(activeSessionId);
+
+  TerminalSession? sessionById(String? id) {
+    if (id == null) return null;
+    for (final s in sessions) {
+      if (s.id == id) return s;
+    }
+    return null;
+  }
+
+  /// This server's sessions in tab order (a stable filter of [sessions]).
+  List<TerminalSession> sessionsForServer(String serverId) =>
+      sessionsForServerIn(sessions, serverId);
+
+  /// This server's sessions within an arbitrary ordered [list].
+  @visibleForTesting
+  static List<TerminalSession> sessionsForServerIn(
+    List<TerminalSession> list,
+    String serverId,
+  ) => [
+    for (final s in list)
+      if (s.serverId == serverId) s,
+  ];
+
+  /// Insert index that keeps a server's sessions contiguous: just after that
+  /// server's last existing session, or at the end when it has none.
+  @visibleForTesting
+  static int insertIndexFor(List<TerminalSession> list, String serverId) {
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i].serverId == serverId) return i + 1;
+    }
+    return list.length;
+  }
 
   Future<void> load() async {
     servers = await services.configStore.listServers();
@@ -184,7 +228,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> deleteServer(String id) async {
-    await closeSession(id);
+    await closeAllTabsForServer(id);
     final server = await services.configStore.getServer(id);
     if (server?.secretRef != null) {
       await services.vault.deleteSecret(server!.secretRef!);
@@ -192,7 +236,6 @@ class AppState extends ChangeNotifier {
     await services.configStore.deleteServer(id);
     servers = await services.configStore.listServers();
     services.probe.updateServers(servers);
-    if (activeServerId == id) activeServerId = null;
     notifyListeners();
     _scheduleAutoSync();
   }
@@ -212,44 +255,58 @@ class AppState extends ChangeNotifier {
     return hosts.length;
   }
 
-  /// Open [config]'s terminal. If it is already connected (or connecting), just
-  /// focus it; if it is disconnected or errored, reconnect. Always makes it the
-  /// active session.
+  /// Open [config]'s terminal from the server list. If the server already has
+  /// tabs, focus the one last used there (reconnecting it in place if it had
+  /// dropped); otherwise open a first tab. This keeps the server row's
+  /// "focus-or-connect" behavior unchanged for the common single-tab case.
   Future<void> openTerminal(ServerConfig config) async {
-    final existing = sessions[config.id];
-    activeServerId = config.id;
-    if (existing != null &&
-        (existing.status == TerminalStatus.connected ||
-            existing.status == TerminalStatus.connecting)) {
-      notifyListeners();
+    final existing = sessionsForServer(config.id);
+    if (existing.isEmpty) {
+      await newTab(config);
       return;
     }
-    await _connect(config);
+    final last = sessionById(_lastSessionForServer[config.id]) ?? existing.last;
+    focusSession(last.id);
+    if (last.status == TerminalStatus.disconnected ||
+        last.status == TerminalStatus.error) {
+      await reconnect(last.id);
+    }
   }
 
-  /// (Re)establish the SSH session for [config], replacing any prior engine.
-  Future<void> _connect(ServerConfig config) async {
-    final log = SshConnectionLog(onUpdate: notifyListeners);
-    final engine = XtermTerminalEngine(onCommand: _recordCommand);
+  /// Open an additional session (tab) for [config], adjacent to that server's
+  /// existing tabs, and connect it.
+  Future<void> newTab(ServerConfig config) async {
     final tab = TerminalSession(
+      id: uuidV4(),
       serverId: config.id,
       config: config,
-      engine: engine,
-      log: log,
+      engine: XtermTerminalEngine(onCommand: _recordCommand),
+      log: SshConnectionLog(onUpdate: notifyListeners),
     );
-    // Drop any previous session for this server before replacing it.
-    await sessions[config.id]?.session?.close();
-    sessions[config.id] = tab;
+    sessions.insert(insertIndexFor(sessions, config.id), tab);
+    _setActive(tab.id);
     notifyListeners();
+    await _connect(tab);
+  }
 
+  /// Establish the SSH session for an already-inserted [tab].
+  Future<void> _connect(TerminalSession tab) async {
+    final engine = tab.engine;
+    final log = tab.log;
     try {
-      final credentials = await services.resolveCredentials(config);
+      final credentials = await services.resolveCredentials(tab.config);
       final session = await _sessionManager.connect(
-        config: config,
+        config: tab.config,
         credentials: credentials,
         engine: engine,
         log: log,
       );
+      // The tab may have been closed (or replaced by a reconnect) while we
+      // awaited; if so, drop the session we just opened.
+      if (!identical(sessionById(tab.id), tab)) {
+        await session.close();
+        return;
+      }
       tab.session = session;
       tab.connecting = false;
       // The connection is up: stop the connection log from capturing dartssh2's
@@ -258,7 +315,7 @@ class AppState extends ChangeNotifier {
       log.freeze();
       session.onClosed = () {
         // Remote side ended: flip to disconnected if this is still the tab.
-        if (sessions[config.id] == tab) {
+        if (identical(sessionById(tab.id), tab)) {
           tab.connecting = false;
           notifyListeners();
         }
@@ -268,25 +325,55 @@ class AppState extends ChangeNotifier {
         if (!session.isClosed) session.resize(TerminalSize(w, h));
       };
     } catch (e) {
+      if (!identical(sessionById(tab.id), tab)) return;
       tab.connecting = false;
       tab.error = e is SshConnectException ? e.message : e.toString();
     }
     notifyListeners();
   }
 
-  /// Retry the connection for a server whose session failed or dropped.
-  Future<void> reconnect(String serverId) async {
-    final config = _configFor(serverId);
-    if (config == null) return;
-    activeServerId = serverId;
-    await _connect(config);
+  /// Retry a session that failed or dropped: replace it in place with a fresh
+  /// connection (new engine, new id) at the same tab position, disposing the
+  /// old one. A new id means a fresh `_SessionView` mounts cleanly.
+  Future<void> reconnect(String sessionId) async {
+    final index = sessions.indexWhere((s) => s.id == sessionId);
+    if (index < 0) return;
+    final old = sessions[index];
+    final config = _configFor(old.serverId) ?? old.config;
+
+    final replacement = TerminalSession(
+      id: uuidV4(),
+      serverId: old.serverId,
+      config: config,
+      engine: XtermTerminalEngine(onCommand: _recordCommand),
+      log: SshConnectionLog(onUpdate: notifyListeners),
+    );
+    sessions[index] = replacement;
+    if (activeSessionId == old.id) _setActive(replacement.id);
+    await _disposeSession(old);
+    notifyListeners();
+    await _connect(replacement);
   }
 
   ServerConfig? _configFor(String serverId) {
     for (final s in servers) {
       if (s.id == serverId) return s;
     }
-    return sessions[serverId]?.config;
+    for (final s in sessions) {
+      if (s.serverId == serverId) return s.config;
+    }
+    return null;
+  }
+
+  /// Close a session's SSH connection AND dispose its engine. For a session
+  /// that never connected (still connecting, or errored) there is no session
+  /// to close the engine for us, so dispose it directly.
+  Future<void> _disposeSession(TerminalSession tab) async {
+    if (tab.session != null) {
+      await tab.session!.close(); // SshSession.close disposes the engine
+    } else {
+      await tab.engine.dispose();
+    }
   }
 
   /// Seed the built-in snippets on first launch only (guarded by a persisted
@@ -458,9 +545,29 @@ class AppState extends ChangeNotifier {
     return firstLine.length <= 40 ? firstLine : '${firstLine.substring(0, 39)}…';
   }
 
+  /// Focus a server's most-recently-used tab (or its last tab).
   void focusServer(String serverId) {
-    activeServerId = serverId;
+    final sessions = sessionsForServer(serverId);
+    if (sessions.isEmpty) return;
+    final last = sessionById(_lastSessionForServer[serverId]) ?? sessions.last;
+    focusSession(last.id);
+  }
+
+  /// Make [sessionId] the active session (the tab shown in the pane).
+  void focusSession(String sessionId) {
+    if (sessionById(sessionId) == null) return;
+    _setActive(sessionId);
     notifyListeners();
+  }
+
+  /// Set the active session and remember it as its server's most-recent tab.
+  /// Does not notify — callers do, so multiple state changes coalesce.
+  void _setActive(String? sessionId) {
+    activeSessionId = sessionId;
+    final session = sessionById(sessionId);
+    if (session != null) {
+      _lastSessionForServer[session.serverId] = session.id;
+    }
   }
 
   /// React to the app moving in/out of the foreground (wired to the app
@@ -476,10 +583,10 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// Close a server's SSH session but keep viewing it: the tab stays, its dot
-  /// goes grey (disconnected), and the pane offers a reconnect.
-  Future<void> disconnect(String serverId) async {
-    final tab = sessions[serverId];
+  /// Close a session's SSH connection but keep the tab: its dot goes grey
+  /// (disconnected) and the pane offers a reconnect.
+  Future<void> disconnect(String sessionId) async {
+    final tab = sessionById(sessionId);
     if (tab == null) return;
     await tab.session?.close();
     tab.session = null;
@@ -488,17 +595,69 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Close a server's session (if any) and drop it from the open set. Used when
-  /// the server itself is deleted.
-  Future<void> closeSession(String serverId) async {
-    final tab = sessions.remove(serverId);
-    if (tab == null) return;
-    await tab.session?.close();
-    if (activeServerId == serverId) {
-      activeServerId =
-          sessions.isNotEmpty ? sessions.keys.last : null;
+  /// Close a single tab and drop it. The active session falls back to the next
+  /// tab of the same server, then the previous, then any other server's
+  /// most-recent tab, then null (which returns the UI to the server list).
+  Future<void> closeTab(String sessionId) async {
+    final index = sessions.indexWhere((s) => s.id == sessionId);
+    if (index < 0) return;
+    final tab = sessions[index];
+    final wasActive = activeSessionId == tab.id;
+    final siblingsBefore = sessionsForServer(tab.serverId);
+    sessions.removeAt(index);
+    if (_lastSessionForServer[tab.serverId] == tab.id) {
+      _lastSessionForServer.remove(tab.serverId);
+    }
+    await _disposeSession(tab);
+
+    if (wasActive) {
+      _setActive(
+        fallbackAfterClosing(
+          closed: tab,
+          siblingsBefore: siblingsBefore,
+          remaining: sessions,
+          lastSessionForServer: _lastSessionForServer,
+        )?.id,
+      );
     }
     notifyListeners();
+  }
+
+  /// Pick the session to focus after [closed] is removed: the next tab of the
+  /// same server (else the previous), then any other server's most-recent tab,
+  /// then the last remaining session, then null.
+  @visibleForTesting
+  static TerminalSession? fallbackAfterClosing({
+    required TerminalSession closed,
+    required List<TerminalSession> siblingsBefore,
+    required List<TerminalSession> remaining,
+    required Map<String, String> lastSessionForServer,
+  }) {
+    final sameServer = sessionsForServerIn(remaining, closed.serverId);
+    if (sameServer.isNotEmpty) {
+      // The removed tab's old position now holds its successor; clamp to the
+      // last when it was the final tab.
+      final closedPos = siblingsBefore.indexWhere((s) => s.id == closed.id);
+      if (closedPos >= 0 && closedPos < sameServer.length) {
+        return sameServer[closedPos];
+      }
+      return sameServer.last;
+    }
+    // No tabs left for this server: prefer another server's most-recent tab.
+    for (final id in lastSessionForServer.values) {
+      for (final s in remaining) {
+        if (s.id == id) return s;
+      }
+    }
+    return remaining.isNotEmpty ? remaining.last : null;
+  }
+
+  /// Close every tab of a server (used when the server is deleted).
+  Future<void> closeAllTabsForServer(String serverId) async {
+    final ids = [for (final s in sessionsForServer(serverId)) s.id];
+    for (final id in ids) {
+      await closeTab(id);
+    }
   }
 
   @override
@@ -508,8 +667,8 @@ class AppState extends ChangeNotifier {
     _syncDebounce?.cancel();
     _statsSaveDebounce?.cancel();
     services.probe.dispose();
-    for (final t in sessions.values) {
-      t.session?.close();
+    for (final t in sessions) {
+      _disposeSession(t);
     }
     super.dispose();
   }
