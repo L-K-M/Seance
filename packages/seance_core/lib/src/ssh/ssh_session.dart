@@ -220,21 +220,7 @@ class SshSessionManager {
     }
 
     final target = '${config.username}@${config.host}:${config.port}';
-    note('Connecting to $target …');
     note('Auth method: ${_methodLabel(credentials.method)}');
-
-    SSHSocket socket;
-    try {
-      socket = await _connect(config.host, config.port, timeout);
-    } catch (e) {
-      note('Could not open a TCP connection: $e');
-      throw SshConnectException(
-        'Could not reach ${config.host}:${config.port} — $e',
-        e,
-        log ?? SshConnectionLog(),
-      );
-    }
-    note('TCP connection established; starting SSH handshake.');
 
     List<SSHKeyPair>? identities;
     if (credentials.method == AuthMethod.privateKey) {
@@ -263,6 +249,20 @@ class SshSessionManager {
             '${_fingerprint(kp.toPublicKey().encode())}');
       }
     }
+
+    SSHSocket socket;
+    try {
+      note('Connecting to $target …');
+      socket = await _connect(config.host, config.port, timeout);
+    } catch (e) {
+      note('Could not open a TCP connection: $e');
+      throw SshConnectException(
+        'Could not reach ${config.host}:${config.port} — $e',
+        e,
+        log ?? SshConnectionLog(),
+      );
+    }
+    note('TCP connection established; starting SSH handshake.');
 
     final client = SSHClient(
       socket,

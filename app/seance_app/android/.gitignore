@@ -12,3 +12,10 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+# …except Séance's committed release keystore — deliberately public. It gives
+# every build (local or CI) the SAME signing identity, so a downloaded release
+# APK upgrades an installed one instead of demanding an uninstall (which would
+# wipe the app's local data). The tradeoff, made knowingly: the signature
+# provides upgrade continuity, NOT publisher authenticity — trust comes from
+# downloading via this repo's releases (see build.gradle.kts).
+!app/ci-release.jks

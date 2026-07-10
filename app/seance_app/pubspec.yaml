@@ -8,6 +8,7 @@ environment:
   flutter: ">=3.24.0"
 
 dependencies:
+  characters: ^1.4.0
   flutter:
     sdk: flutter
   # The entire client core lives here (SSH, TOFU, sync, LLM, vault); the app is

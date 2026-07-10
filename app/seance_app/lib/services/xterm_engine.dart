@@ -5,6 +5,18 @@ import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
 import 'package:xterm/xterm.dart';
 
+enum TerminalCursorKey {
+  arrowUp(0x41),
+  arrowDown(0x42),
+  arrowRight(0x43),
+  arrowLeft(0x44),
+  home(0x48),
+  end(0x46);
+
+  final int finalByte;
+  const TerminalCursorKey(this.finalByte);
+}
+
 /// A [TerminalEngine] backed by xterm.dart's [Terminal]. This is the concrete
 /// v1 terminal; a future libghostty engine drops in behind the same interface
 /// (see the proposal's M10). Bytes from SSH are written to the terminal;
@@ -13,6 +25,7 @@ class XtermTerminalEngine implements TerminalEngine {
   final Terminal terminal;
   final StreamController<Uint8List> _input =
       StreamController<Uint8List>.broadcast();
+  late final ByteConversionSink _terminalDecoder;
   TerminalSize _size;
 
   /// Fired with each completed command line the user submits (Enter). Best
@@ -36,6 +49,8 @@ class XtermTerminalEngine implements TerminalEngine {
       {int maxLines = 10000, TerminalSize? initialSize, this.onCommand})
       : terminal = Terminal(maxLines: maxLines),
         _size = initialSize ?? const TerminalSize(80, 24) {
+    _terminalDecoder = const Utf8Decoder(allowMalformed: true)
+        .startChunkedConversion(_TerminalOutputSink(terminal));
     // Keystrokes / paste / device replies produced by the terminal go to SSH.
     terminal.onOutput = (data) {
       final out = _applyCtrl(data);
@@ -81,8 +96,7 @@ class XtermTerminalEngine implements TerminalEngine {
         _submitPending();
       } else if (r == 0x7f || r == 0x08) {
         if (_pendingInput.isNotEmpty) {
-          _pendingInput =
-              _pendingInput.substring(0, _pendingInput.length - 1);
+          _pendingInput = _pendingInput.substring(0, _pendingInput.length - 1);
         }
       } else if (r == 0x15 || r == 0x03) {
         _pendingInput = ''; // Ctrl-U (kill line) / Ctrl-C (interrupt)
@@ -107,12 +121,20 @@ class XtermTerminalEngine implements TerminalEngine {
     _input.add(Uint8List.fromList(utf8.encode(text)));
   }
 
-  /// Send raw [bytes] to the session — used by the on-screen key row for keys
-  /// the soft keyboard lacks (Tab, arrows, Esc, Ctrl-C, …). Unlike
+  /// Send raw [bytes] to the session — used by the on-screen key row for fixed
+  /// byte inputs such as Tab, Esc, and Ctrl-C. Unlike
   /// [injectInput] this is allowed to carry control bytes such as Enter.
   void sendKey(List<int> bytes) {
     _trackPending(utf8.decode(bytes, allowMalformed: true));
     _input.add(Uint8List.fromList(bytes));
+  }
+
+  /// Send an arrow, Home, or End [key] using the active DECCKM mode.
+  void sendCursorKey(TerminalCursorKey key) {
+    final prefix = terminal.cursorKeysMode ? 0x4f : 0x5b; // SS3 or CSI
+    // Cursor sequences are intentionally terminal controls, not command text.
+    // Bypass pending-input tracking and leave one-shot Ctrl armed for typing.
+    _input.add(Uint8List.fromList([0x1b, prefix, key.finalByte]));
   }
 
   /// Toggle the one-shot Ctrl modifier (armed by the key row's Ctrl button).
@@ -120,9 +142,7 @@ class XtermTerminalEngine implements TerminalEngine {
 
   @override
   void feed(Uint8List data) {
-    // Terminals are byte streams; SSH may split UTF-8 across packets, so decode
-    // leniently. (A future libghostty backend consumes bytes directly.)
-    terminal.write(utf8.decode(data, allowMalformed: true));
+    _terminalDecoder.add(data);
   }
 
   @override
@@ -152,7 +172,22 @@ class XtermTerminalEngine implements TerminalEngine {
 
   @override
   Future<void> dispose() async {
+    _terminalDecoder.close();
     ctrlArmed.dispose();
     await _input.close();
+  }
+}
+
+class _TerminalOutputSink implements Sink<String> {
+  final Terminal terminal;
+
+  _TerminalOutputSink(this.terminal);
+
+  @override
+  void add(String data) => terminal.write(data);
+
+  @override
+  void close() {
+    // Decoder closure flushes pending bytes; xterm has no output sink to close.
   }
 }

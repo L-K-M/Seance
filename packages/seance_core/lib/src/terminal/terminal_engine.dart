@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 class TerminalSize {
@@ -45,10 +46,10 @@ class HeadlessTerminalEngine implements TerminalEngine {
   Uint8List get received => _received.toBytes();
 
   /// Everything fed so far, decoded as UTF-8 (lossy) — handy for assertions.
-  String get receivedText => String.fromCharCodes(received);
+  String get receivedText => utf8.decode(received, allowMalformed: true);
 
   /// Simulate the user typing/pasting.
-  void type(String text) => _input.add(Uint8List.fromList(text.codeUnits));
+  void type(String text) => _input.add(utf8.encode(text));
 
   @override
   void feed(Uint8List data) => _received.add(data);

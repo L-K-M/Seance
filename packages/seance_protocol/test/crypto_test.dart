@@ -105,12 +105,100 @@ void main() {
       }
     });
 
+    test('matches a fixed known-answer vector', () {
+      const key = <int>[
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+      ];
+      // Keep grouping in the literal so the vector locks the display format as
+      // well as the Base32 body and checksum.
+      const code = '000G-40R4-0M30-E209-185G-R38E-1W81-'
+          '24GK-2GAH-C5RR-34D1-P70X-3RFG-3D';
+
+      expect(RecoveryKey.encode(key), code);
+      expect(RecoveryKey.decode(code), equals(key));
+    });
+
+    test('rejects short and long keys when encoding', () {
+      for (final length in [0, 31, 33, 64]) {
+        expect(
+          () => RecoveryKey.encode(List<int>.filled(length, 0)),
+          throwsArgumentError,
+          reason: 'accepted a $length-byte key',
+        );
+      }
+    });
+
     test('is grouped, dash-separated, and case/space tolerant', () {
       final key = secureRandomBytes(32);
       final code = RecoveryKey.encode(key);
       expect(code, contains('-'));
       final messy = code.toLowerCase().replaceAll('-', ' ');
       expect(RecoveryKey.decode(messy), equals(key));
+    });
+
+    test('accepts Crockford O, I, and L aliases', () {
+      final zeroKey = List<int>.filled(32, 0);
+      final zeroCode = RecoveryKey.encode(zeroKey);
+      expect(zeroCode, contains('0'));
+      expect(RecoveryKey.decode(zeroCode.replaceAll('0', 'O')), zeroKey);
+
+      final oneKey = List<int>.filled(32, 0)..[0] = 8;
+      final oneCode = RecoveryKey.encode(oneKey);
+      expect(oneCode, contains('1'));
+      expect(RecoveryKey.decode(oneCode.replaceAll('1', 'I')), oneKey);
+      expect(RecoveryKey.decode(oneCode.replaceAll('1', 'L')), oneKey);
+    });
+
+    test('rejects short and long normalized codes', () {
+      final code = RecoveryKey.encode(
+        List<int>.filled(32, 0),
+      ).replaceAll('-', '');
+      expect(
+        () => RecoveryKey.decode(code.substring(1)),
+        throwsA(isA<FormatException>()),
+      );
+      expect(
+        () => RecoveryKey.decode('${code}0'),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('rejects every alteration of final-body padding bits', () {
+      const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+      const finalBodyIndex = 51;
+
+      for (final finalDataBit in [0, 1]) {
+        final key = List<int>.filled(32, 0)..[31] = finalDataBit;
+        final code = RecoveryKey.encode(key).replaceAll('-', '');
+        final canonicalValue = alphabet.indexOf(code[finalBodyIndex]);
+        expect(canonicalValue, finalDataBit << 4);
+
+        for (var paddingBits = 1; paddingBits < 16; paddingBits++) {
+          final altered =
+              code.substring(0, finalBodyIndex) +
+              alphabet[canonicalValue | paddingBits] +
+              code.substring(finalBodyIndex + 1);
+          expect(
+            () => RecoveryKey.decode(altered),
+            throwsA(isA<FormatException>()),
+            reason:
+                'accepted data bit $finalDataBit with padding bits '
+                '$paddingBits',
+          );
+        }
+      }
+    });
+
+    test('rejects oversized input', () {
+      final code = RecoveryKey.encode(List<int>.filled(32, 0));
+      final oversized = '${List<String>.filled(1024, ' ').join()}$code';
+      expect(
+        () => RecoveryKey.decode(oversized),
+        throwsA(isA<FormatException>()),
+      );
     });
 
     test('rejects a corrupted checksum symbol (deterministic)', () {

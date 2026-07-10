@@ -119,7 +119,8 @@ tabs-within-tabs/splits, OIDC on the sync server, libghostty terminal backend
   `L-K-M/Seance` now.
 - Release/build/deploy tooling is in place and aligned with the sibling repos:
   `scripts/release.sh` (pubspec-lockstep bump + `v*` tag →
-  `.github/workflows/release.yml` publishes server binaries + the GHCR image),
+  `.github/workflows/release.yml` publishes the server binaries, the GHCR image,
+  and the Android APK),
   `scripts/build.sh` (all local targets, staged into `dist/`), `./update.sh`
   (compose redeploy).
 - Flutter platform folders are now committed, carrying the `Séance` app name,
