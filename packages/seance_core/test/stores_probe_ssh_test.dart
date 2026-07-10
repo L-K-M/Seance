@@ -145,5 +145,20 @@ void main() {
       await sub.cancel();
       await engine.dispose();
     });
+
+    test('decodes received bytes and encodes typed text as UTF-8', () async {
+      final engine = HeadlessTerminalEngine();
+      final got = <int>[];
+      final sub = engine.userInput.listen(got.addAll);
+
+      engine.feed(Uint8List.fromList([...utf8.encode('hé😀'), 0xff]));
+      engine.type('λ😀');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(engine.receivedText, 'hé😀\uFFFD');
+      expect(got, utf8.encode('λ😀'));
+      await sub.cancel();
+      await engine.dispose();
+    });
   });
 }
