@@ -8,6 +8,7 @@ import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../theme.dart';
 import 'app_menus.dart';
 import 'command_generator.dart';
 import 'sidebar_panel.dart';
@@ -17,12 +18,17 @@ import 'terminal_keyboard_bar.dart';
 /// terminal to reflow above the soft keyboard; desktops use a hardware keyboard.
 final bool _isTouchPlatform = Platform.isAndroid || Platform.isIOS;
 
-/// Right pane / second screen: the active server's terminal. The server list is
-/// the tab list, so there is no tab strip here.
+/// Right pane / second screen: the active server's terminal.
 ///
-/// Every open session stays mounted in an [IndexedStack] so switching servers
-/// is instant — the previously-rendered terminal is shown immediately instead
-/// of being rebuilt (which flashed a blank pane for a few seconds).
+/// A server can have several sessions, shown as a tab strip at the top of the
+/// pane (only when that server has more than one — a single-tab server looks
+/// exactly as before). Tabs are one level *below* the server list: the strip
+/// only ever shows the active server's sessions, so adjacent tabs are always
+/// the same server.
+///
+/// Every open session stays mounted in an [IndexedStack] so switching tabs (or
+/// servers) is instant — the previously-rendered terminal is shown immediately
+/// instead of being rebuilt (which flashed a blank pane for a few seconds).
 ///
 /// In the wide layout the server name and disconnect controls live in the
 /// sidebar, so the app bar is dropped ([showAppBar] false). The narrow layout
@@ -48,6 +54,9 @@ class TerminalPane extends StatelessWidget {
         final active = state.activeSession;
         final showKeyRow =
             _isTouchPlatform && active != null && active.isConnected;
+        final serverTabs = active == null
+            ? const <TerminalSession>[]
+            : state.sessionsForServer(active.serverId);
         return Scaffold(
           // Reflow the terminal (and the key row) above the soft keyboard.
           resizeToAvoidBottomInset: true,
@@ -57,6 +66,10 @@ class TerminalPane extends StatelessWidget {
           appBar: showAppBar ? _appBar(context, state) : null,
           body: Column(
             children: [
+              // The strip appears only once a server has 2+ tabs, so the
+              // single-session case is visually unchanged.
+              if (active != null && serverTabs.length > 1)
+                _TabStrip(state: state, active: active),
               Expanded(child: _body(state)),
               if (showKeyRow) TerminalKeyboardBar(engine: active.engine),
             ],
@@ -81,18 +94,24 @@ class TerminalPane extends StatelessWidget {
             icon: const Icon(Icons.auto_fix_high),
             onPressed: () => showCommandGenerator(context, state),
           ),
+        if (active != null)
+          IconButton(
+            tooltip: 'New tab',
+            icon: const Icon(Icons.add),
+            onPressed: () => state.newTab(active.config),
+          ),
         if (status == TerminalStatus.connected)
           IconButton(
             tooltip: 'Disconnect',
             icon: const Icon(Icons.link_off),
-            onPressed: () => state.disconnect(active!.serverId),
+            onPressed: () => state.disconnect(active!.id),
           ),
         if (status == TerminalStatus.error ||
             status == TerminalStatus.disconnected)
           IconButton(
             tooltip: 'Reconnect',
             icon: const Icon(Icons.refresh),
-            onPressed: () => state.reconnect(active!.serverId),
+            onPressed: () => state.reconnect(active!.id),
           ),
         if (showAssistantAffordance)
           Builder(
@@ -107,10 +126,9 @@ class TerminalPane extends StatelessWidget {
   }
 
   Widget _body(AppState state) {
-    final entries = state.sessions.values.toList();
+    final entries = state.sessions;
     if (entries.isEmpty) return const _NoSession();
-    final index =
-        entries.indexWhere((t) => t.serverId == state.activeServerId);
+    final index = entries.indexWhere((t) => t.id == state.activeSessionId);
     if (index < 0) return const _NoSession();
     return IndexedStack(
       index: index,
@@ -118,13 +136,153 @@ class TerminalPane extends StatelessWidget {
       children: [
         for (var i = 0; i < entries.length; i++)
           _SessionView(
-            key: ValueKey(entries[i].serverId),
+            // Keyed by session id (not server id): a reconnect swaps in a new
+            // session with a new id, so a fresh _SessionView mounts and binds
+            // its controller in initState — no didUpdateWidget rebind needed.
+            key: ValueKey(entries[i].id),
             tab: entries[i],
             state: state,
             isActive: i == index,
           ),
       ],
     );
+  }
+}
+
+/// The per-server tab strip, shown above the terminal when a server has more
+/// than one open session. Renders only the active server's sessions, so
+/// adjacent tabs are always the same server.
+class _TabStrip extends StatelessWidget {
+  final AppState state;
+  final TerminalSession active;
+  const _TabStrip({required this.state, required this.active});
+
+  @override
+  Widget build(BuildContext context) {
+    final tabs = state.sessionsForServer(active.serverId);
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 38,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (var i = 0; i < tabs.length; i++)
+                    _TabChip(
+                      // 1-based ordinal within the server; no OSC title yet.
+                      label: 'Session ${i + 1}',
+                      status: tabs[i].status,
+                      selected: tabs[i].id == state.activeSessionId,
+                      onTap: () => state.focusSession(tabs[i].id),
+                      onClose: () => state.closeTab(tabs[i].id),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'New tab',
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.add),
+            onPressed: () => state.newTab(active.config),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TabChip extends StatelessWidget {
+  final String label;
+  final TerminalStatus status;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+
+  const _TabChip({
+    required this.label,
+    required this.status,
+    required this.selected,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // Middle-click closes, matching browser/terminal tab conventions.
+    return GestureDetector(
+      onTertiaryTapUp: (_) => onClose(),
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          height: 38,
+          padding: const EdgeInsets.only(left: 12, right: 4),
+          decoration: BoxDecoration(
+            color: selected ? scheme.surface : Colors.transparent,
+            border: Border(
+              bottom: BorderSide(
+                color: selected ? scheme.primary : Colors.transparent,
+                width: 2,
+              ),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _TabStatusDot(status: status),
+              const SizedBox(width: 6),
+              Text(label,
+                  style: TextStyle(
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                  )),
+              const SizedBox(width: 2),
+              IconButton(
+                tooltip: 'Close tab',
+                iconSize: 15,
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: const Icon(Icons.close),
+                onPressed: onClose,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The small status dot on a tab chip (mirrors the server-list dot semantics
+/// at a smaller size).
+class _TabStatusDot extends StatelessWidget {
+  final TerminalStatus status;
+  const _TabStatusDot({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    if (status == TerminalStatus.connecting) {
+      return const SizedBox(
+        width: 9,
+        height: 9,
+        child: CircularProgressIndicator(strokeWidth: 1.6),
+      );
+    }
+    final color = switch (status) {
+      TerminalStatus.connected => StatusColors.online(context),
+      TerminalStatus.error => StatusColors.offline(context),
+      _ => StatusColors.unknown(context),
+    };
+    return Icon(Icons.circle, size: 9, color: color);
   }
 }
 
@@ -162,16 +320,11 @@ class _SessionViewState extends State<_SessionView> {
   @override
   void didUpdateWidget(_SessionView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // A reconnect swaps in a brand-new TerminalSession under the same server id,
-    // so this State is reused (same ValueKey) and initState does NOT re-run.
-    // Re-bind the selection controller to the new tab, or the macOS Edit menu /
-    // Copy / Select All would silently no-op for the rest of the session.
-    if (!identical(widget.tab, oldWidget.tab)) {
-      if (identical(oldWidget.tab.controller, _terminalController)) {
-        oldWidget.tab.controller = null;
-      }
-      widget.tab.controller = _terminalController;
-    }
+    // Sessions are keyed by their (immutable) id, so widget.tab is stable for
+    // the life of this State — a reconnect mounts a fresh _SessionView with a
+    // new id instead of swapping the tab under this one, so no controller
+    // rebind is needed (the old server-id keying required one).
+    //
     // Focus the terminal when this session becomes the active one.
     if (widget.isActive && !oldWidget.isActive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -259,6 +412,11 @@ class _SessionViewState extends State<_SessionView> {
     final clip = apple
         ? keys.isMetaPressed
         : (keys.isControlPressed && keys.isShiftPressed);
+    // Open another tab for this server: ⌘T / Ctrl+Shift+T.
+    if (clip && event.logicalKey == LogicalKeyboardKey.keyT) {
+      widget.state.newTab(widget.tab.config);
+      return KeyEventResult.handled;
+    }
     if (clip && event.logicalKey == LogicalKeyboardKey.keyC) {
       return terminalCopy(widget.tab)
           ? KeyEventResult.handled
@@ -332,7 +490,7 @@ class _ConnectionError extends StatelessWidget {
               Text(tab.error!, textAlign: TextAlign.center),
               const SizedBox(height: 16),
               FilledButton.icon(
-                onPressed: () => state.reconnect(tab.serverId),
+                onPressed: () => state.reconnect(tab.id),
                 icon: const Icon(Icons.refresh),
                 label: const Text('Retry'),
               ),
@@ -367,7 +525,7 @@ class _Disconnected extends StatelessWidget {
             const Text('The session ended.', textAlign: TextAlign.center),
             const SizedBox(height: 16),
             FilledButton.icon(
-              onPressed: () => state.reconnect(tab.serverId),
+              onPressed: () => state.reconnect(tab.id),
               icon: const Icon(Icons.refresh),
               label: const Text('Reconnect'),
             ),

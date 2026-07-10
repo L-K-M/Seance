@@ -58,20 +58,31 @@ class ServerListPane extends StatelessWidget {
               final server = state.servers[i];
               final reachability =
                   state.statuses[server.id] ?? ProbeStatus.unknown;
-              final session = state.sessionForServer(server.id);
+              final tabs = state.sessionsForServer(server.id);
               return _ServerTile(
                 // Stable identity so a background sync replacing the list
                 // reconciles each tile to its server instead of by position.
                 key: ValueKey(server.id),
                 server: server,
-                connection: session?.status ?? TerminalStatus.disconnected,
+                connection: _aggregateStatus(tabs),
+                tabCount: tabs.length,
                 reachability: reachability,
                 selected: server.id == state.activeServerId,
                 onTap: () => onOpen(server),
+                onNewTab: () => state.newTab(server),
                 onEdit: () => _editServer(context, state, server),
                 onDelete: () => _deleteServer(context, state, server),
-                onDisconnect: () => state.disconnect(server.id),
-                onReconnect: () => state.reconnect(server.id),
+                // Disconnect every live tab; reconnect the lone dead tab.
+                onDisconnect: () {
+                  for (final t in tabs) {
+                    if (t.status == TerminalStatus.connected) {
+                      state.disconnect(t.id);
+                    }
+                  }
+                },
+                onReconnect: tabs.length == 1
+                    ? () => state.reconnect(tabs.first.id)
+                    : null,
               );
             },
           );
@@ -182,24 +193,50 @@ class _SyncIndicator extends StatelessWidget {
   }
 }
 
+/// Aggregate a server's tab statuses into the single dot shown on its row:
+/// any connecting wins (spinner), else any connected (green), else any error
+/// (red), else disconnected/none (grey).
+TerminalStatus _aggregateStatus(List<TerminalSession> tabs) {
+  if (tabs.any((t) => t.status == TerminalStatus.connecting)) {
+    return TerminalStatus.connecting;
+  }
+  if (tabs.any((t) => t.status == TerminalStatus.connected)) {
+    return TerminalStatus.connected;
+  }
+  if (tabs.any((t) => t.status == TerminalStatus.error)) {
+    return TerminalStatus.error;
+  }
+  return TerminalStatus.disconnected;
+}
+
 class _ServerTile extends StatelessWidget {
   final ServerConfig server;
   final TerminalStatus connection;
+
+  /// Number of open sessions (tabs) for this server; a small "×N" appears
+  /// beside the dot when >1.
+  final int tabCount;
   final ProbeStatus reachability;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onNewTab;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onDisconnect;
-  final VoidCallback onReconnect;
+
+  /// Only offered when the server has exactly one (dead) tab; per-tab
+  /// reconnect otherwise lives in the pane.
+  final VoidCallback? onReconnect;
 
   const _ServerTile({
     super.key,
     required this.server,
     required this.connection,
+    required this.tabCount,
     required this.reachability,
     required this.selected,
     required this.onTap,
+    required this.onNewTab,
     required this.onEdit,
     required this.onDelete,
     required this.onDisconnect,
@@ -209,10 +246,21 @@ class _ServerTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final connected = connection == TerminalStatus.connected;
-    final hasSession = connection != TerminalStatus.disconnected;
+    final hasSession = tabCount > 0;
     return ListTile(
       selected: selected,
-      leading: _ConnectionDot(status: connection),
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ConnectionDot(status: connection),
+          if (tabCount > 1)
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Text('×$tabCount',
+                  style: Theme.of(context).textTheme.labelSmall),
+            ),
+        ],
+      ),
       title: MiddleEllipsisText(server.label),
       subtitle: Text('${server.username}@${server.host}:${server.port}',
           maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -224,6 +272,8 @@ class _ServerTile extends StatelessWidget {
           PopupMenuButton<String>(
             onSelected: (v) {
               switch (v) {
+                case 'newTab':
+                  onNewTab();
                 case 'edit':
                   onEdit();
                 case 'delete':
@@ -231,14 +281,16 @@ class _ServerTile extends StatelessWidget {
                 case 'disconnect':
                   onDisconnect();
                 case 'reconnect':
-                  onReconnect();
+                  onReconnect?.call();
               }
             },
             itemBuilder: (_) => [
+              const PopupMenuItem(value: 'newTab', child: Text('New tab')),
               if (connected)
-                const PopupMenuItem(
-                    value: 'disconnect', child: Text('Disconnect')),
-              if (hasSession && !connected)
+                PopupMenuItem(
+                    value: 'disconnect',
+                    child: Text(tabCount > 1 ? 'Disconnect all' : 'Disconnect')),
+              if (hasSession && !connected && onReconnect != null)
                 const PopupMenuItem(
                     value: 'reconnect', child: Text('Reconnect')),
               const PopupMenuItem(value: 'edit', child: Text('Edit')),

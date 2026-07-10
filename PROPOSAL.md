@@ -93,7 +93,7 @@ flowchart LR
     subgraph app [Seance app - one Flutter process]
         UI[Adaptive UI shell\ntwo panes / two screens]
         TE[TerminalEngine interface\nxterm.dart now, flterm later]
-        SM[SessionManager\n1 SshSession per server]
+        SM[SessionManager\nN SshSessions per server]
         PS[ProbeService\nonline/offline]
         DB[(drift/SQLite\nconfigs, host keys,\nsync metadata)]
         VAULT[Secret vault\nXChaCha20-Poly1305]
@@ -294,7 +294,7 @@ v1 = **desktop + LLM assistant + sync**. The assistant is core (decision log) an
 | Prompt injection via scrollback (and now via fetched web content) | Paste tool cannot submit — newlines rejected, control chars stripped, danger linter on every paste; search queries redacted and visible in the transcript; no execution or file tools; review-before-run gate on every suggested command |
 | Solo-dev scope creep (5 platforms + server + LLM) | v1 gated on desktop + LLM + sync; sync ships file-based first so the server is cuttable; mobile is explicitly non-blocking; pre-authorized cut lines live in this document, not in a crunch-time decision |
 
-**Deliberately not built (v1):** SFTP browser, port-forwarding UI, ProxyJump editor (import only), tmux integration, Mosh, OIDC on the sync server, LLM tools beyond §6.3's two (no execution, no file access), terminal tabs-within-tabs/splits.
+**Deliberately not built (v1):** SFTP browser, port-forwarding UI, ProxyJump editor (import only), tmux integration, Mosh, OIDC on the sync server, LLM tools beyond §6.3's two (no execution, no file access), terminal splits (multiple panes shown at once). *(Per-server connection tabs — several sessions to one server, one level below the server list — were originally in this list but are now built; see docs/STATUS.md.)*
 
 ---
 
