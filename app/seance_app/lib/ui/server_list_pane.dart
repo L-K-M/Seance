@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_state.dart';
 import '../main.dart';
@@ -48,43 +49,20 @@ class ServerListPane extends StatelessWidget {
       body: ListenableBuilder(
         listenable: state,
         builder: (context, _) {
-          if (state.servers.isEmpty) {
-            return const _EmptyState();
-          }
-          return ListView.separated(
-            itemCount: state.servers.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, i) {
-              final server = state.servers[i];
-              final reachability =
-                  state.statuses[server.id] ?? ProbeStatus.unknown;
-              final tabs = state.sessionsForServer(server.id);
-              return _ServerTile(
-                // Stable identity so a background sync replacing the list
-                // reconciles each tile to its server instead of by position.
-                key: ValueKey(server.id),
-                server: server,
-                connection: _aggregateStatus(tabs),
-                tabCount: tabs.length,
-                reachability: reachability,
-                selected: server.id == state.activeServerId,
-                onTap: () => onOpen(server),
-                onNewTab: () => state.newTab(server),
-                onEdit: () => _editServer(context, state, server),
-                onDelete: () => _deleteServer(context, state, server),
-                // Disconnect every live tab; reconnect the lone dead tab.
-                onDisconnect: () {
-                  for (final t in tabs) {
-                    if (t.status == TerminalStatus.connected) {
-                      state.disconnect(t.id);
-                    }
-                  }
-                },
-                onReconnect: tabs.length == 1
-                    ? () => state.reconnect(tabs.first.id)
-                    : null,
-              );
-            },
+          final list = state.servers.isEmpty
+              ? const _EmptyState()
+              : _serverList(context, state);
+          final update = state.updateInfo;
+          if (update == null) return list;
+          // A newer release exists: show a dismissible banner above the list.
+          return Column(
+            children: [
+              _UpdateBanner(
+                info: update,
+                onDismiss: state.dismissUpdateNotice,
+              ),
+              Expanded(child: list),
+            ],
           );
         },
       ),
@@ -93,6 +71,43 @@ class ServerListPane extends StatelessWidget {
         icon: const Icon(Icons.add),
         label: const Text('Add server'),
       ),
+    );
+  }
+
+  Widget _serverList(BuildContext context, AppState state) {
+    return ListView.separated(
+      itemCount: state.servers.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (context, i) {
+        final server = state.servers[i];
+        final reachability = state.statuses[server.id] ?? ProbeStatus.unknown;
+        final tabs = state.sessionsForServer(server.id);
+        return _ServerTile(
+          // Stable identity so a background sync replacing the list
+          // reconciles each tile to its server instead of by position.
+          key: ValueKey(server.id),
+          server: server,
+          connection: _aggregateStatus(tabs),
+          tabCount: tabs.length,
+          reachability: reachability,
+          selected: server.id == state.activeServerId,
+          onTap: () => onOpen(server),
+          onNewTab: () => state.newTab(server),
+          onEdit: () => _editServer(context, state, server),
+          onDelete: () => _deleteServer(context, state, server),
+          // Disconnect every live tab; reconnect the lone dead tab.
+          onDisconnect: () {
+            for (final t in tabs) {
+              if (t.status == TerminalStatus.connected) {
+                state.disconnect(t.id);
+              }
+            }
+          },
+          onReconnect: tabs.length == 1
+              ? () => state.reconnect(tabs.first.id)
+              : null,
+        );
+      },
     );
   }
 
@@ -190,6 +205,51 @@ class _SyncIndicator extends StatelessWidget {
       );
     }
     return const SizedBox.shrink();
+  }
+}
+
+/// A dismissible banner shown above the server list when a newer release
+/// exists on GitHub. It only offers a link to the releases page — Séance never
+/// downloads or installs an update; the user decides.
+class _UpdateBanner extends StatelessWidget {
+  final UpdateInfo info;
+  final VoidCallback onDismiss;
+  const _UpdateBanner({required this.info, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+        child: Row(
+          children: [
+            Icon(Icons.system_update_outlined,
+                size: 20, color: scheme.onSecondaryContainer),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Séance ${info.latestVersion} is available.',
+                style: TextStyle(color: scheme.onSecondaryContainer),
+              ),
+            ),
+            TextButton(
+              onPressed: () => launchUrl(info.releasesUrl,
+                  mode: LaunchMode.externalApplication),
+              child: const Text('View release'),
+            ),
+            IconButton(
+              tooltip: 'Dismiss',
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.close),
+              onPressed: onDismiss,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

@@ -24,6 +24,11 @@ dependencies:
   # OS keystore for the vault master key and LLM API keys.
   flutter_secure_storage: ^10.0.0
   path_provider: ^2.1.0
+  # The running app version (compared against the latest GitHub release to
+  # offer an update notification — never to download or install anything).
+  package_info_plus: ^8.0.0
+  # Opens the releases page in the browser when an update is available.
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_lints: ^5.0.0
