@@ -6,7 +6,6 @@ import '../app_state.dart';
 import '../main.dart';
 import '../theme.dart';
 import 'app_menus.dart';
-import 'command_generator.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_editor.dart';
 
@@ -28,12 +27,6 @@ class ServerListPane extends StatelessWidget {
             builder: (context, _) =>
                 _SyncIndicator(state: state, onTap: () => _openSettings(context)),
           ),
-          if (state.llmConfigured)
-            IconButton(
-              tooltip: 'Generate a command (⌘K)',
-              icon: const Icon(Icons.auto_fix_high),
-              onPressed: () => showCommandGenerator(context, state),
-            ),
           IconButton(
             tooltip: 'Import ~/.ssh/config',
             icon: const Icon(Icons.download_outlined),

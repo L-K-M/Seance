@@ -58,7 +58,7 @@ class TerminalPane extends StatelessWidget {
           endDrawer: showAssistantAffordance
               ? const Drawer(width: 380, child: SidebarPanel())
               : null,
-          appBar: showAppBar ? _appBar(context, state) : null,
+          appBar: showAppBar ? _appBar(state) : null,
           body: Column(
             children: [
               if (active != null)
@@ -68,6 +68,7 @@ class TerminalPane extends StatelessWidget {
                   onFocus: state.focusSession,
                   onClose: state.closeTab,
                   onNewTab: () => state.newTab(active.config),
+                  onGenerateCommand: () => openCommandGenerator(state),
                 ),
               Expanded(child: _body(state)),
               if (showKeyRow) TerminalKeyboardBar(engine: active.engine),
@@ -78,7 +79,7 @@ class TerminalPane extends StatelessWidget {
     );
   }
 
-  PreferredSizeWidget _appBar(BuildContext context, AppState state) {
+  PreferredSizeWidget _appBar(AppState state) {
     final active = state.activeSession;
     final status = active?.status;
     return AppBar(
@@ -87,12 +88,6 @@ class TerminalPane extends StatelessWidget {
           : null,
       title: Text(active?.config.label ?? 'Terminal'),
       actions: [
-        if (state.llmConfigured && status == TerminalStatus.connected)
-          IconButton(
-            tooltip: 'Generate command',
-            icon: const Icon(Icons.auto_fix_high),
-            onPressed: () => showCommandGenerator(context, state),
-          ),
         if (status == TerminalStatus.connected)
           IconButton(
             tooltip: 'Disconnect',
@@ -142,15 +137,16 @@ class TerminalPane extends StatelessWidget {
   }
 }
 
-/// The active server's tab strip, including the affordance that opens another
-/// session. It remains visible for a single session so that affordance is never
-/// hidden behind the action it triggers.
+/// The active server's tab strip, including actions to open another session and
+/// generate a command for the current one. It remains visible for a single
+/// session so those actions are always reachable.
 class TerminalTabStrip extends StatelessWidget {
   final List<TerminalSession> tabs;
   final String? activeSessionId;
   final ValueChanged<String> onFocus;
   final ValueChanged<String> onClose;
   final VoidCallback onNewTab;
+  final VoidCallback onGenerateCommand;
 
   const TerminalTabStrip({
     super.key,
@@ -159,6 +155,7 @@ class TerminalTabStrip extends StatelessWidget {
     required this.onFocus,
     required this.onClose,
     required this.onNewTab,
+    required this.onGenerateCommand,
   });
 
   @override
@@ -194,8 +191,25 @@ class TerminalTabStrip extends StatelessWidget {
             tooltip: 'New tab',
             iconSize: 18,
             visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 38),
             icon: const Icon(Icons.add),
             onPressed: onNewTab,
+          ),
+          VerticalDivider(
+            width: 1,
+            indent: 7,
+            endIndent: 7,
+            color: scheme.outlineVariant,
+          ),
+          IconButton(
+            tooltip: 'Generate command',
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 38),
+            icon: const Icon(Icons.auto_fix_high),
+            onPressed: onGenerateCommand,
           ),
         ],
       ),
