@@ -24,9 +24,14 @@ class DangerFinding {
 class DangerLinter {
   static final List<_Rule> _rules = [
     _Rule(
-      RegExp(r'\brm\s+(-{1,2}[a-zA-Z]+\s+)*-{1,2}[a-zA-Z]*[rf][a-zA-Z]*\s+.*?(/|~|\*|\$HOME)(/|\s|\*|$)'),
+      // A recursive/forced rm whose target is an ABSOLUTE path (/, /etc,
+      // /var/lib, …), a home path (~, $HOME), or a wildcard. The lookahead
+      // requires an -r/-f flag; the target must start after whitespace so a
+      // relative path like `a/b` isn't matched. (The old rule only fired on a
+      // bare `/`, `~`, `*`, or `$HOME`, so `rm -rf /etc` slipped through.)
+      RegExp(r'\brm\b(?=[^\n]*\s-{1,2}[a-zA-Z]*[rf])[^\n]*\s(/\S*|~\S*|\$HOME\S*|\*)(\s|$)'),
       DangerSeverity.critical,
-      'Recursive/forced delete of a root, home, or wildcard path.',
+      'Recursive/forced delete of an absolute, home, or wildcard path.',
     ),
     _Rule(
       RegExp(r'\bdd\b.*\bof=/dev/'),
@@ -37,6 +42,11 @@ class DangerLinter {
       RegExp(r'\bmkfs(\.\w+)?\b'),
       DangerSeverity.critical,
       'Creates a filesystem, erasing the target device.',
+    ),
+    _Rule(
+      RegExp(r'\bwipefs\b'),
+      DangerSeverity.critical,
+      'wipefs erases the filesystem signatures from a device.',
     ),
     _Rule(
       RegExp(r'>\s*/dev/(sd|nvme|vd|hd)\w+'),
@@ -57,6 +67,26 @@ class DangerLinter {
       RegExp(r'\bchmod\s+(-R\s+)?0?777\b'),
       DangerSeverity.warning,
       'World-writable permissions (777) are almost never intended.',
+    ),
+    _Rule(
+      RegExp(r'\bshred\b'),
+      DangerSeverity.warning,
+      'shred overwrites a file so it cannot be recovered.',
+    ),
+    _Rule(
+      RegExp(r'\bfind\b[^\n]*\s-delete\b'),
+      DangerSeverity.warning,
+      'find -delete removes every matched file.',
+    ),
+    _Rule(
+      RegExp(r'\btruncate\b[^\n]*-s\s*0\b'),
+      DangerSeverity.warning,
+      'truncate -s 0 discards a file\'s contents.',
+    ),
+    _Rule(
+      RegExp(r'\bgit\s+clean\b[^\n]*\s-[a-zA-Z]*f'),
+      DangerSeverity.warning,
+      'git clean -f deletes untracked files (-x/-d widen the blast radius).',
     ),
     _Rule(
       RegExp(r'\b(shutdown|reboot|halt|poweroff)\b'),

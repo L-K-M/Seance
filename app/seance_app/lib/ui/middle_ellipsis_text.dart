@@ -1,3 +1,4 @@
+import 'package:characters/characters.dart' as characters;
 import 'package:flutter/material.dart';
 
 /// A single-line text that truncates in the MIDDLE with an ellipsis when it
@@ -13,10 +14,19 @@ class MiddleEllipsisText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final effectiveStyle =
-        style ?? DefaultTextStyle.of(context).style;
+    final effectiveStyle = style ?? DefaultTextStyle.of(context).style;
     final scaler = MediaQuery.textScalerOf(context);
     final dir = Directionality.of(context);
+    final graphemes = characters.Characters(text).toList(growable: false);
+
+    Text renderedText(String visibleText) => Text(
+      visibleText,
+      style: effectiveStyle,
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.clip,
+      semanticsLabel: text,
+    );
 
     double widthOf(String s) {
       final tp = TextPainter(
@@ -34,22 +44,20 @@ class MiddleEllipsisText extends StatelessWidget {
       builder: (context, constraints) {
         final maxWidth = constraints.maxWidth;
         if (maxWidth.isInfinite || widthOf(text) <= maxWidth) {
-          return Text(text,
-              style: effectiveStyle, maxLines: 1, softWrap: false);
+          return renderedText(text);
         }
-        // Binary-search the largest number of characters (split head+tail
-        // around a middle ellipsis) that still fits.
+        // Search extended grapheme clusters so truncation never splits a
+        // surrogate pair, combining sequence, flag, or ZWJ emoji.
         var lo = 0;
-        var hi = text.length;
+        var hi = graphemes.length - 1;
         var best = _ellipsis;
         while (lo <= hi) {
           final keep = (lo + hi) ~/ 2;
           final head = keep - keep ~/ 2;
           final tail = keep ~/ 2;
-          final candidate = head + tail >= text.length
-              ? text
-              : '${text.substring(0, head)}$_ellipsis'
-                  '${text.substring(text.length - tail)}';
+          final candidate =
+              '${graphemes.take(head).join()}$_ellipsis'
+              '${graphemes.skip(graphemes.length - tail).join()}';
           if (widthOf(candidate) <= maxWidth) {
             best = candidate;
             lo = keep + 1;
@@ -57,7 +65,7 @@ class MiddleEllipsisText extends StatelessWidget {
             hi = keep - 1;
           }
         }
-        return Text(best, style: effectiveStyle, maxLines: 1, softWrap: false);
+        return renderedText(best);
       },
     );
   }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -28,6 +29,25 @@ void main() {
     test('leaves a clean base URL untouched', () {
       final sync = HttpSyncClient(baseUrl: 'http://localhost:8080');
       expect(sync.baseUrl, 'http://localhost:8080');
+    });
+  });
+
+  group('HttpSyncClient timeout', () {
+    test('a hung request times out instead of hanging forever', () async {
+      final client = MockClient((req) async {
+        // Never responds within the client's timeout.
+        await Future<void>.delayed(const Duration(seconds: 5));
+        return http.Response('{}', 200);
+      });
+      final sync = HttpSyncClient(
+        baseUrl: 'https://host',
+        client: client,
+        timeout: const Duration(milliseconds: 20),
+      );
+      await expectLater(
+        sync.pull(since: 0),
+        throwsA(isA<TimeoutException>()),
+      );
     });
   });
 }

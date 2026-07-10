@@ -25,6 +25,7 @@ class XtermTerminalEngine implements TerminalEngine {
   final Terminal terminal;
   final StreamController<Uint8List> _input =
       StreamController<Uint8List>.broadcast();
+  late final ByteConversionSink _terminalDecoder;
   TerminalSize _size;
 
   /// Fired with each completed command line the user submits (Enter). Best
@@ -44,12 +45,12 @@ class XtermTerminalEngine implements TerminalEngine {
   /// as its control code (e.g. `c` → 0x03). Consumed after one keystroke.
   final ValueNotifier<bool> ctrlArmed = ValueNotifier<bool>(false);
 
-  XtermTerminalEngine({
-    int maxLines = 10000,
-    TerminalSize? initialSize,
-    this.onCommand,
-  }) : terminal = Terminal(maxLines: maxLines),
-       _size = initialSize ?? const TerminalSize(80, 24) {
+  XtermTerminalEngine(
+      {int maxLines = 10000, TerminalSize? initialSize, this.onCommand})
+      : terminal = Terminal(maxLines: maxLines),
+        _size = initialSize ?? const TerminalSize(80, 24) {
+    _terminalDecoder = const Utf8Decoder(allowMalformed: true)
+        .startChunkedConversion(_TerminalOutputSink(terminal));
     // Keystrokes / paste / device replies produced by the terminal go to SSH.
     terminal.onOutput = (data) {
       final out = _applyCtrl(data);
@@ -141,9 +142,7 @@ class XtermTerminalEngine implements TerminalEngine {
 
   @override
   void feed(Uint8List data) {
-    // Terminals are byte streams; SSH may split UTF-8 across packets, so decode
-    // leniently. (A future libghostty backend consumes bytes directly.)
-    terminal.write(utf8.decode(data, allowMalformed: true));
+    _terminalDecoder.add(data);
   }
 
   @override
@@ -173,7 +172,22 @@ class XtermTerminalEngine implements TerminalEngine {
 
   @override
   Future<void> dispose() async {
+    _terminalDecoder.close();
     ctrlArmed.dispose();
     await _input.close();
+  }
+}
+
+class _TerminalOutputSink implements Sink<String> {
+  final Terminal terminal;
+
+  _TerminalOutputSink(this.terminal);
+
+  @override
+  void add(String data) => terminal.write(data);
+
+  @override
+  void close() {
+    // Decoder closure flushes pending bytes; xterm has no output sink to close.
   }
 }

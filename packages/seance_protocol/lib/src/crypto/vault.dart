@@ -30,6 +30,20 @@ class Argon2Params {
         parallelism = 1,
         hashLength = 32;
 
+  /// The minimum work factors a client will accept when deriving its vault key
+  /// from a passphrase — the v1 defaults. Parameters may be *raised* over time
+  /// (a newer device honors whatever the account was created with), but a
+  /// client must never derive its end-to-end key with anything *weaker*, or a
+  /// malicious/compromised server could force a KDF downgrade at prelogin and
+  /// then cheaply brute-force the passphrase against the ciphertext it holds.
+  static const Argon2Params minimum = Argon2Params();
+
+  /// Whether these parameters are at least as strong as [floor].
+  bool meetsMinimum(Argon2Params floor) =>
+      memory >= floor.memory &&
+      iterations >= floor.iterations &&
+      hashLength >= floor.hashLength;
+
   Map<String, dynamic> toJson() => {
         'memory': memory,
         'iterations': iterations,
@@ -37,12 +51,25 @@ class Argon2Params {
         'hashLength': hashLength,
       };
 
-  factory Argon2Params.fromJson(Map<String, dynamic> json) => Argon2Params(
-        memory: json['memory'] as int,
-        iterations: json['iterations'] as int,
-        parallelism: json['parallelism'] as int,
-        hashLength: json['hashLength'] as int,
-      );
+  factory Argon2Params.fromJson(Map<String, dynamic> json) {
+    final params = Argon2Params(
+      memory: (json['memory'] as num).toInt(),
+      iterations: (json['iterations'] as num).toInt(),
+      parallelism: (json['parallelism'] as num).toInt(),
+      hashLength: (json['hashLength'] as num).toInt(),
+    );
+    // Reject nonsensical values (a non-positive or absurd count would crash the
+    // Argon2id constructor or, at 0, silently weaken the KDF). 4 GiB (in KiB)
+    // is a generous memory ceiling that still blocks an OOM-inducing value.
+    if (params.memory < 1 ||
+        params.memory > 4 * 1024 * 1024 ||
+        params.iterations < 1 ||
+        params.parallelism < 1 ||
+        params.hashLength < 16) {
+      throw const FormatException('Argon2 parameters out of range');
+    }
+    return params;
+  }
 }
 
 /// The three keys derived from a user's passphrase.

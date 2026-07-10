@@ -14,12 +14,14 @@ class OpenAiCompatibleProvider implements LlmProvider {
   final String model;
   final String baseUrl;
   final String apiKey;
+  final Duration timeout;
   final http.Client _client;
 
   OpenAiCompatibleProvider({
     required this.baseUrl,
     this.apiKey = '',
     this.model = 'gpt-5.4-mini',
+    this.timeout = const Duration(seconds: 120),
     http.Client? client,
   }) : _client = client ?? http.Client();
 
@@ -90,11 +92,13 @@ class OpenAiCompatibleProvider implements LlmProvider {
     required List<LlmMessage> messages,
     List<ToolSpec> tools = const [],
   }) async {
-    final res = await _client.post(
-      _endpoint,
-      headers: _headers,
-      body: jsonEncode(buildBody(messages: messages, tools: tools)),
-    );
+    final res = await _client
+        .post(
+          _endpoint,
+          headers: _headers,
+          body: jsonEncode(buildBody(messages: messages, tools: tools)),
+        )
+        .timeout(timeout);
     if (res.statusCode >= 400) {
       throw http.ClientException(
           'OpenAI-compatible API error HTTP ${res.statusCode}: ${res.body}');
@@ -104,8 +108,9 @@ class OpenAiCompatibleProvider implements LlmProvider {
 
   @override
   Future<List<String>> listModels() async {
-    final res =
-        await _client.get(Uri.parse('$baseUrl/models'), headers: _headers);
+    final res = await _client
+        .get(Uri.parse('$baseUrl/models'), headers: _headers)
+        .timeout(timeout);
     if (res.statusCode >= 400) {
       throw http.ClientException(
           'OpenAI-compatible API error HTTP ${res.statusCode}: ${res.body}');
@@ -135,7 +140,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
     final req = http.Request('POST', _endpoint)
       ..headers.addAll(_headers)
       ..body = jsonEncode(buildBody(messages: messages, stream: true));
-    final res = await _client.send(req);
+    final res = await _client.send(req).timeout(timeout);
     if (res.statusCode >= 400) {
       throw http.ClientException(
           'OpenAI-compatible stream failed: HTTP ${res.statusCode}');

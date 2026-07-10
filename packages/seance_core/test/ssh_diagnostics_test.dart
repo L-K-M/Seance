@@ -78,6 +78,41 @@ void main() {
       await engine.dispose();
     });
 
+    test('an invalid private key is rejected before opening a socket',
+        () async {
+      var connectorCalled = false;
+      final mgr = SshSessionManager(
+        tofu: TofuVerifier(InMemoryHostKeyStore()),
+        onHostKey: (_) async => true,
+        connect: (host, port, timeout) async {
+          connectorCalled = true;
+          throw StateError('should not connect');
+        },
+      );
+      final log = SshConnectionLog();
+      final engine = HeadlessTerminalEngine();
+
+      await expectLater(
+        () => mgr.connect(
+          config: _server(),
+          credentials: const SshCredentials.privateKey('not a PEM key'),
+          engine: engine,
+          log: log,
+        ),
+        throwsA(isA<SshConnectException>().having(
+          (e) => e.message,
+          'message',
+          contains('Could not load the private key'),
+        )),
+      );
+
+      expect(connectorCalled, isFalse);
+      expect(log.toString(), contains('Auth method: public key'));
+      expect(log.toString(), contains('Could not load the private key'));
+      expect(log.toString(), isNot(contains('Connecting to')));
+      await engine.dispose();
+    });
+
     SshConnectionLog logWith(List<String> accepted) => SshConnectionLog()
       ..add('  <- sock: SSH_Message_Userauth_Failure('
           'methodsLeft: [${accepted.join(', ')}], partialSuccess: false)');

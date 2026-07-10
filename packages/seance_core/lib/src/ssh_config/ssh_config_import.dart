@@ -23,7 +23,9 @@ class ImportedHost {
 
   /// Build a Séance [ServerConfig] from this entry. An `IdentityFile` becomes a
   /// "reference, don't store" private-key config; otherwise we default to
-  /// ssh-agent, the lowest-risk mode.
+  /// password. (ssh-agent would be the natural default for a keyless host, but
+  /// the backend doesn't support agent auth yet, so defaulting to it would make
+  /// every such imported host fail to connect. The user can switch to a key.)
   ServerConfig toServerConfig({required String id, required int now}) {
     final hasKey = identityFile != null && identityFile!.trim().isNotEmpty;
     return ServerConfig(
@@ -32,7 +34,7 @@ class ImportedHost {
       host: effectiveHost,
       port: port ?? 22,
       username: user ?? '',
-      authMethod: hasKey ? AuthMethod.privateKey : AuthMethod.agent,
+      authMethod: hasKey ? AuthMethod.privateKey : AuthMethod.password,
       identityFilePath: hasKey ? identityFile : null,
       createdAt: now,
       updatedAt: now,

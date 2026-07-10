@@ -12,12 +12,20 @@ class HttpSyncClient implements SyncApi {
   final String baseUrl;
   final http.Client _client;
 
+  /// Per-request timeout. Without one, a hung connection would leave
+  /// `AppState.syncing` stuck true forever (spinner frozen, auto-sync wedged
+  /// because it early-returns while a round is "in progress").
+  final Duration timeout;
+
   /// The session bearer token, set by [register]/[login]. Public so the app can
   /// persist and restore it across launches.
   String? token;
 
-  HttpSyncClient({required String baseUrl, http.Client? client})
-      : baseUrl = _normalizeBaseUrl(baseUrl),
+  HttpSyncClient({
+    required String baseUrl,
+    http.Client? client,
+    this.timeout = const Duration(seconds: 30),
+  })  : baseUrl = _normalizeBaseUrl(baseUrl),
         _client = client ?? http.Client();
 
   /// Paths are appended verbatim, so a pasted "https://host/" would produce
@@ -48,9 +56,11 @@ class HttpSyncClient implements SyncApi {
 
   /// Create an account and receive a session token.
   Future<void> register(RegisterRequest request) async {
-    final res = await _client.post(_uri('/v1/register'),
-        headers: {'content-type': 'application/json'},
-        body: jsonEncode(request.toJson()));
+    final res = await _client
+        .post(_uri('/v1/register'),
+            headers: {'content-type': 'application/json'},
+            body: jsonEncode(request.toJson()))
+        .timeout(timeout);
     if (res.statusCode >= 400) _fail(res);
     token = LoginResponse.fromJson(jsonDecode(res.body) as Map<String, dynamic>)
         .token;
@@ -58,9 +68,11 @@ class HttpSyncClient implements SyncApi {
 
   /// Fetch the KDF salt/params for a username so a new device can derive keys.
   Future<PreloginResponse> prelogin(String username) async {
-    final res = await _client.post(_uri('/v1/prelogin'),
-        headers: {'content-type': 'application/json'},
-        body: jsonEncode({'username': username}));
+    final res = await _client
+        .post(_uri('/v1/prelogin'),
+            headers: {'content-type': 'application/json'},
+            body: jsonEncode({'username': username}))
+        .timeout(timeout);
     if (res.statusCode >= 400) _fail(res);
     return PreloginResponse.fromJson(
         jsonDecode(res.body) as Map<String, dynamic>);
@@ -68,35 +80,40 @@ class HttpSyncClient implements SyncApi {
 
   /// Exchange the auth verifier for a session token.
   Future<void> login(LoginRequest request) async {
-    final res = await _client.post(_uri('/v1/login'),
-        headers: {'content-type': 'application/json'},
-        body: jsonEncode(request.toJson()));
+    final res = await _client
+        .post(_uri('/v1/login'),
+            headers: {'content-type': 'application/json'},
+            body: jsonEncode(request.toJson()))
+        .timeout(timeout);
     if (res.statusCode >= 400) _fail(res);
     token = LoginResponse.fromJson(jsonDecode(res.body) as Map<String, dynamic>)
         .token;
   }
 
   Future<void> deleteAccount() async {
-    final res =
-        await _client.delete(_uri('/v1/account'), headers: _authHeaders);
+    final res = await _client
+        .delete(_uri('/v1/account'), headers: _authHeaders)
+        .timeout(timeout);
     if (res.statusCode >= 400) _fail(res);
     token = null;
   }
 
   @override
   Future<PullResponse> pull({required int since}) async {
-    final res = await _client.get(
-        _uri('/v1/sync', {'since': '$since'}),
-        headers: _authHeaders);
+    final res = await _client
+        .get(_uri('/v1/sync', {'since': '$since'}), headers: _authHeaders)
+        .timeout(timeout);
     if (res.statusCode >= 400) _fail(res);
     return PullResponse.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   @override
   Future<PushResponse> push(List<EncryptedRecord> records) async {
-    final res = await _client.put(_uri('/v1/records'),
-        headers: _authHeaders,
-        body: jsonEncode(PushRequest(records: records).toJson()));
+    final res = await _client
+        .put(_uri('/v1/records'),
+            headers: _authHeaders,
+            body: jsonEncode(PushRequest(records: records).toJson()))
+        .timeout(timeout);
     if (res.statusCode >= 400) _fail(res);
     return PushResponse.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }

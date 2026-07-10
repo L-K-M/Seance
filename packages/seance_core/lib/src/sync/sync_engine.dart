@@ -51,7 +51,13 @@ class SyncEngine {
     final since = await store.highWaterSeq();
     final resp = await api.pull(since: since);
     var applied = 0;
+    var snapshotHighWater = since;
+    // Pulled records should carry server-assigned seqs; trust only observed seqs.
     for (final remote in resp.records) {
+      final remoteSeq = remote.seq;
+      if (remoteSeq != null && remoteSeq > snapshotHighWater) {
+        snapshotHighWater = remoteSeq;
+      }
       final local = await store.getRecord(remote.id);
       if (local == null) {
         await store.putRemote(remote);
@@ -68,7 +74,7 @@ class SyncEngine {
       }
       // Else the local copy is newer and stays dirty for the push phase.
     }
-    await store.setHighWaterSeq(resp.latestSeq);
+    await store.setHighWaterSeq(snapshotHighWater);
     return applied;
   }
 
@@ -83,13 +89,11 @@ class SyncEngine {
         await store.markSynced(result.id, result.seq);
         accepted++;
       } else {
-        // Server held a newer version; stop treating ours as dirty and let the
-        // next pull bring the winner down.
-        await store.markSynced(result.id, result.seq);
+        // Keep the losing local version dirty until a pull adopts the server
+        // winner; assigning the winner's seq here would mislabel our payload.
         rejected++;
       }
     }
-    await store.setHighWaterSeq(resp.latestSeq);
     return (accepted: accepted, rejected: rejected);
   }
 }
