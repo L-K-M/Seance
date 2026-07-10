@@ -3,6 +3,7 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private var menuChannel: FlutterMethodChannel?
+  private var filesChannel: FlutterMethodChannel?
 
   /// Whether a terminal (rather than a text field) currently has focus. Pushed
   /// from Dart so the Edit menu can route Copy/Paste/Select All to the active
@@ -33,6 +34,43 @@ class MainFlutterWindow: NSWindow {
       } else {
         result(FlutterMethodNotImplemented)
       }
+    }
+
+    filesChannel = FlutterMethodChannel(
+      name: "seance/files",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    filesChannel?.setMethodCallHandler { call, result in
+      guard call.method == "openWithApplication",
+            let arguments = call.arguments as? [String: Any],
+            let path = arguments["path"] as? String,
+            let bundleIdentifier = arguments["bundleIdentifier"] as? String else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      guard let application = NSWorkspace.shared.urlForApplication(
+        withBundleIdentifier: bundleIdentifier) else {
+        result(FlutterError(
+          code: "APPLICATION_NOT_FOUND",
+          message: "BBEdit is not installed.",
+          details: nil))
+        return
+      }
+      let configuration = NSWorkspace.OpenConfiguration()
+      NSWorkspace.shared.open(
+        [URL(fileURLWithPath: path)],
+        withApplicationAt: application,
+        configuration: configuration) { _, error in
+          if let error = error {
+            DispatchQueue.main.async {
+              result(FlutterError(
+                code: "OPEN_FAILED",
+                message: error.localizedDescription,
+                details: nil))
+            }
+          } else {
+            DispatchQueue.main.async { result(nil) }
+          }
+        }
     }
 
     RegisterGeneratedPlugins(registry: flutterViewController)

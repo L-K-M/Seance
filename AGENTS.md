@@ -104,7 +104,7 @@ the latest code and rebuilds + recreates the stack in one step.
 Everything security- or correctness-critical is covered by tests that run in CI
 (`.github/workflows/ci.yml`):
 
-- **82 Dart tests** across the three packages — crypto round-trips and
+- **181 Dart tests** across the three packages — crypto round-trips and
   wrong-key/tamper rejection, verifier independence, recovery-code corruption
   detection, TOFU decisions, the danger linter, paste sanitization, secret
   redaction, LLM request/response handling and the chat tool loop, **two-device
@@ -258,7 +258,7 @@ flutter analyze+test, and the Docker build.
 
 ## 4. How things were verified (so you can re-verify)
 
-- 82 Dart tests + 2 Flutter widget tests, all analyze clean.
+- 181 Dart tests + 107 Flutter tests, all analyze clean.
 - Sync correctness is proven two ways: `seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and
   `seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +

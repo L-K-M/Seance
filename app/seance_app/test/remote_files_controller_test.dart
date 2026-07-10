@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:seance_app/services/managed_remote_file_store.dart';
 import 'package:seance_app/services/remote_files_controller.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -13,6 +14,9 @@ void main() {
     final controller = RemoteFilesController(
       () async => remote,
       shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
     );
 
     await controller.initialize();
@@ -33,6 +37,9 @@ void main() {
     final controller = RemoteFilesController(
       () async => remote,
       shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
     );
     await controller.initialize();
 
@@ -60,6 +67,9 @@ void main() {
       () async => remote,
       shellDirectory: shellDirectory,
       terminalTitle: terminalTitle,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
     );
 
     await controller.initialize();
@@ -87,6 +97,9 @@ void main() {
     final controller = RemoteFilesController(
       () async => remote,
       shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
     );
     await controller.initialize();
 
@@ -115,18 +128,21 @@ void main() {
     final controller = RemoteFilesController(
       () async => remote,
       shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
     );
     await controller.initialize();
     final entry = controller.entries.singleWhere(
       (item) => item.name == 'a.txt',
     );
-    controller.trackLocalCopy(entry, '/tmp/managed-copy');
+    await controller.checkoutRemoteFile(entry);
 
     final detached = controller.takeLocalCopies();
     controller.dispose();
 
     expect(detached.keys, [entry.path]);
-    expect(detached[entry.path]!.localPath, '/tmp/managed-copy');
+    expect(detached[entry.path]!.localPath, isNotEmpty);
     shellDirectory.dispose();
   });
 
@@ -136,6 +152,9 @@ void main() {
     final controller = RemoteFilesController(
       () async => remote,
       shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
     );
     await controller.initialize();
     final folder = controller.entries.singleWhere((item) => item.isDirectory);
@@ -145,7 +164,7 @@ void main() {
       type: RemoteFileType.file,
       size: 4,
     );
-    controller.trackLocalCopy(child, '/tmp/child-copy');
+    await controller.checkoutRemoteFile(child);
 
     await controller.renameEntry(folder, 'renamed');
 
@@ -165,17 +184,16 @@ void main() {
     final controller = RemoteFilesController(
       () async => remote,
       shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
     );
     await controller.initialize();
     final entry = controller.entries.singleWhere(
       (item) => item.name == 'a.txt',
     );
-    final directory = await Directory.systemTemp.createTemp(
-      'seance-edit-test-',
-    );
-    final local = File('${directory.path}/a.txt');
-    await local.writeAsBytes([4, 5, 6]);
-    controller.trackLocalCopy(entry, local.path);
+    final copy = await controller.checkoutRemoteFile(entry);
+    await controller.localFile(copy).writeAsBytes([4, 5, 6]);
 
     await controller.uploadLocalCopy(controller.localCopies[entry.path]!);
 
@@ -184,6 +202,173 @@ void main() {
     controller.dispose();
     shellDirectory.dispose();
   });
+
+  test(
+    'a save during upload remains dirty and is not silently accepted',
+    () async {
+      final remote = _FakeRemoteFileSystem();
+      final shellDirectory = ValueNotifier<String?>(null);
+      final controller = RemoteFilesController(
+        () async => remote,
+        shellDirectory: shellDirectory,
+        managedFileStore: _store(),
+        serverId: 'server',
+        editSessionId: 'session',
+      );
+      await controller.initialize();
+      final entry = controller.entries.singleWhere(
+        (item) => item.name == 'a.txt',
+      );
+      final copy = await controller.checkoutRemoteFile(entry);
+      final local = controller.localFile(copy);
+      await local.writeAsBytes([4, 5, 6]);
+      remote.duringUpload = () => local.writeAsBytes([7, 8, 9]);
+
+      await controller.uploadLocalCopy(copy);
+
+      expect(remote.uploaded[entry.path], [4, 5, 6]);
+      expect(controller.localCopies[entry.path]!.dirty, isTrue);
+      controller.dispose();
+      shellDirectory.dispose();
+    },
+  );
+
+  test('concurrent opens share one durable checkout', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final store = _store();
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      managedFileStore: store,
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+
+    final copies = await Future.wait([
+      controller.checkoutRemoteFile(entry),
+      controller.checkoutRemoteFile(entry),
+    ]);
+
+    expect(copies[0].id, copies[1].id);
+    expect(await store.listForSession('session'), hasLength(1));
+    controller.dispose();
+    shellDirectory.dispose();
+  });
+
+  test(
+    'filters, sorts, selects, hides dotfiles, and saves bookmarks',
+    () async {
+      final remote = _FakeRemoteFileSystem();
+      remote.directories['/home/test']!.add(
+        const RemoteFileEntry(
+          path: '/home/test/.secret',
+          name: '.secret',
+          type: RemoteFileType.file,
+          size: 1,
+        ),
+      );
+      final shellDirectory = ValueNotifier<String?>(null);
+      List<String>? savedBookmarks;
+      final controller = RemoteFilesController(
+        () async => remote,
+        shellDirectory: shellDirectory,
+        managedFileStore: _store(),
+        serverId: 'server',
+        editSessionId: 'session',
+        saveBookmarks: (paths) async => savedBookmarks = paths,
+      );
+      await controller.initialize();
+
+      controller.setShowHidden(false);
+      expect(controller.entries.map((entry) => entry.name), [
+        'folder',
+        'a.txt',
+      ]);
+      controller.setFilterQuery('A.');
+      expect(controller.entries.single.name, 'a.txt');
+      controller.setFilterQuery('');
+      controller.setSort(RemoteSortField.size, RemoteSortDirection.descending);
+      expect(controller.entries.map((entry) => entry.name), [
+        'folder',
+        'a.txt',
+      ]);
+
+      controller.toggleSelection('/home/test/a.txt');
+      expect(controller.selectedEntries.single.name, 'a.txt');
+      await controller.toggleCurrentBookmark();
+      expect(savedBookmarks, ['/home/test']);
+
+      controller.dispose();
+      shellDirectory.dispose();
+    },
+  );
+
+  test(
+    'recursively uploads and downloads directories with aggregate transfer',
+    () async {
+      final remote = _FakeRemoteFileSystem();
+      remote.directories['/home/test/folder'] = [
+        const RemoteFileEntry(
+          path: '/home/test/folder/child.txt',
+          name: 'child.txt',
+          type: RemoteFileType.file,
+          size: 3,
+        ),
+      ];
+      final shellDirectory = ValueNotifier<String?>(null);
+      final controller = RemoteFilesController(
+        () async => remote,
+        shellDirectory: shellDirectory,
+        managedFileStore: _store(),
+        serverId: 'server',
+        editSessionId: 'session',
+      );
+      await controller.initialize();
+      final localRoot = await Directory.systemTemp.createTemp('seance-tree-');
+      addTearDown(() async {
+        if (await localRoot.exists()) await localRoot.delete(recursive: true);
+      });
+      final source = Directory('${localRoot.path}/source');
+      await Directory('${source.path}/nested').create(recursive: true);
+      await File('${source.path}/root.txt').writeAsBytes([1, 2]);
+      await File('${source.path}/nested/child.txt').writeAsBytes([3, 4, 5]);
+
+      await controller.uploadDirectory(source);
+      expect(remote.uploaded['/home/test/source/root.txt'], [1, 2]);
+      expect(remote.uploaded['/home/test/source/nested/child.txt'], [3, 4, 5]);
+      expect(controller.transfers.last.transferred, 5);
+
+      final destination = Directory('${localRoot.path}/downloads');
+      final folder = remote.directories['/home/test']!.singleWhere(
+        (entry) => entry.name == 'folder',
+      );
+      await controller.downloadEntries([folder], destination);
+      expect(await File('${destination.path}/folder/child.txt').readAsBytes(), [
+        1,
+        2,
+        3,
+      ]);
+
+      controller.dispose();
+      shellDirectory.dispose();
+    },
+  );
+}
+
+ManagedRemoteFileStore _store() {
+  final directory = Directory.systemTemp.createTempSync('seance-files-test-');
+  addTearDown(() async {
+    if (await directory.exists()) await directory.delete(recursive: true);
+  });
+  return ManagedRemoteFileStore(
+    indexFile: File('${directory.path}/index.json'),
+    checkoutRoot: Directory('${directory.path}/checkouts'),
+  );
 }
 
 class _FakeRemoteFileSystem implements RemoteFileSystem {
@@ -213,6 +398,16 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
   };
   final Map<String, List<int>> uploaded = {};
   RemoteFileEntry? expectedUploadTarget;
+  Future<void> Function()? duringUpload;
+
+  @override
+  Future<void> setMode(String path, int permissions) async {}
+
+  @override
+  Future<String> readSymbolicLink(String path) async => 'target';
+
+  @override
+  Future<void> createSymbolicLink(String linkPath, String targetPath) async {}
 
   @override
   Future<String> canonicalize(String path) async =>
@@ -269,12 +464,16 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
     cancellation?.throwIfCancelled();
     destination.add([1, 2, 3]);
     onProgress?.call(3, 3);
-    return RemoteFileEntry(
-      path: path,
-      name: remoteBasename(path),
-      type: RemoteFileType.file,
-      size: 3,
-    );
+    try {
+      return await stat(path, followLinks: false);
+    } on RemoteFileException {
+      return RemoteFileEntry(
+        path: path,
+        name: remoteBasename(path),
+        type: RemoteFileType.file,
+        size: 3,
+      );
+    }
   }
 
   @override
@@ -315,6 +514,7 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
       bytes.addAll(chunk);
       onProgress?.call(bytes.length, length);
     }
+    await duringUpload?.call();
     uploaded[path] = bytes;
     final entry = RemoteFileEntry(
       path: path,

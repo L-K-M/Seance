@@ -31,10 +31,14 @@ dependencies:
   # of requiring a stable filesystem path or loading the whole file into Dart.
   file_picker: ^11.0.2
   cross_file: ^0.3.5+4
+  # Hashes managed local edits without loading them into memory.
+  crypto: ^3.0.6
   # Local-file drops on desktop (and Android drag/drop where the OS provides it).
   desktop_drop: ^0.7.1
   # Opens a downloaded cache file with the platform's associated application.
   open_file: ^4.0.0
+  # Native share sheets for exported remote files.
+  share_plus: ^12.0.2
   # Opens the releases page in the browser when an update is available.
   url_launcher: ^6.3.0
 

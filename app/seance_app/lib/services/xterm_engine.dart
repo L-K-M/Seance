@@ -17,6 +17,44 @@ enum TerminalCursorKey {
   const TerminalCursorKey(this.finalByte);
 }
 
+enum TerminalPromptPhase { unknown, rendering, acceptingInput, executing, done }
+
+enum TerminalStageResult {
+  staged,
+  shellIntegrationRequired,
+  promptNotReady,
+  pendingInput,
+  invalidPath,
+}
+
+@immutable
+class ShellIntegrationState {
+  final RemoteShellKind? shell;
+  final TerminalPromptPhase phase;
+  final bool inputSincePrompt;
+  final int? lastExitCode;
+
+  const ShellIntegrationState({
+    this.shell,
+    this.phase = TerminalPromptPhase.unknown,
+    this.inputSincePrompt = true,
+    this.lastExitCode,
+  });
+
+  ShellIntegrationState copyWith({
+    RemoteShellKind? shell,
+    TerminalPromptPhase? phase,
+    bool? inputSincePrompt,
+    int? lastExitCode,
+    bool clearExitCode = false,
+  }) => ShellIntegrationState(
+    shell: shell ?? this.shell,
+    phase: phase ?? this.phase,
+    inputSincePrompt: inputSincePrompt ?? this.inputSincePrompt,
+    lastExitCode: clearExitCode ? null : lastExitCode ?? this.lastExitCode,
+  );
+}
+
 /// A [TerminalEngine] backed by xterm.dart's [Terminal]. This is the concrete
 /// v1 terminal; a future libghostty engine drops in behind the same interface
 /// (see the proposal's M10). Bytes from SSH are written to the terminal;
@@ -41,27 +79,40 @@ class XtermTerminalEngine implements TerminalEngine {
   /// here even when they do not emit OSC 7, so Files can use it as a fallback.
   final ValueNotifier<String?> terminalTitle = ValueNotifier<String?>(null);
 
+  /// Explicit OSC 133/1337 prompt and shell metadata. A guarded Files action
+  /// uses this conservative state rather than guessing from prompt text.
+  final ValueNotifier<ShellIntegrationState> shellIntegration =
+      ValueNotifier<ShellIntegrationState>(const ShellIntegrationState());
+
   // A best-effort reconstruction of the current, not-yet-submitted input line,
   // built from the keystrokes the user sends. Used to prefill the command
   // generator. It's an approximation — full readline editing (history, cursor
   // moves) isn't modelled — but covers the common "typed a partial command"
   // case.
   String _pendingInput = '';
+  bool _localInputSincePrompt = false;
+  bool _submittedSincePrompt = false;
+  bool _sawCommandCompletion = false;
+  bool _hasAcceptedPrompt = false;
 
   /// One-shot Ctrl modifier for the on-screen key row (mobile has no physical
   /// Ctrl): when armed, the next character the soft keyboard produces is sent
   /// as its control code (e.g. `c` → 0x03). Consumed after one keystroke.
   final ValueNotifier<bool> ctrlArmed = ValueNotifier<bool>(false);
 
-  XtermTerminalEngine(
-      {int maxLines = 10000, TerminalSize? initialSize, this.onCommand})
-      : terminal = Terminal(maxLines: maxLines),
-        _size = initialSize ?? const TerminalSize(80, 24) {
-    _terminalDecoder = const Utf8Decoder(allowMalformed: true)
-        .startChunkedConversion(_TerminalOutputSink(terminal));
+  XtermTerminalEngine({
+    int maxLines = 10000,
+    TerminalSize? initialSize,
+    this.onCommand,
+  }) : terminal = Terminal(maxLines: maxLines),
+       _size = initialSize ?? const TerminalSize(80, 24) {
+    _terminalDecoder = const Utf8Decoder(
+      allowMalformed: true,
+    ).startChunkedConversion(_TerminalOutputSink(terminal));
     // Keystrokes / paste / device replies produced by the terminal go to SSH.
     terminal.onOutput = (data) {
       final out = _applyCtrl(data);
+      _markInputActivity();
       _trackPending(out);
       _input.add(Uint8List.fromList(utf8.encode(out)));
     };
@@ -70,7 +121,16 @@ class XtermTerminalEngine implements TerminalEngine {
   }
 
   void _handlePrivateOsc(String code, List<String> args) {
-    if (code != '7' || args.isEmpty) return;
+    if (args.isEmpty) return;
+    if (code == '133') {
+      _handlePromptMarker(args);
+      return;
+    }
+    if (code == '1337') {
+      _handleShellIdentity(args);
+      return;
+    }
+    if (code != '7') return;
     try {
       final value = args.join(';');
       final uri = Uri.tryParse(value);
@@ -82,6 +142,61 @@ class XtermTerminalEngine implements TerminalEngine {
       workingDirectory.value = path;
     } on FormatException {
       // Ignore malformed remote metadata; it must never disrupt the terminal.
+    }
+  }
+
+  void _handlePromptMarker(List<String> args) {
+    final marker = args.first;
+    final current = shellIntegration.value;
+    switch (marker) {
+      case 'A':
+        shellIntegration.value = current.copyWith(
+          phase: TerminalPromptPhase.rendering,
+          clearExitCode: true,
+        );
+      case 'B':
+        final initialPrompt = !_hasAcceptedPrompt && !_localInputSincePrompt;
+        final completedCommand = _submittedSincePrompt && _sawCommandCompletion;
+        if (current.phase != TerminalPromptPhase.rendering ||
+            (!initialPrompt && !completedCommand)) {
+          return;
+        }
+        _hasAcceptedPrompt = true;
+        _localInputSincePrompt = false;
+        _submittedSincePrompt = false;
+        _sawCommandCompletion = false;
+        shellIntegration.value = current.copyWith(
+          phase: TerminalPromptPhase.acceptingInput,
+          inputSincePrompt: false,
+        );
+      case 'C':
+        shellIntegration.value = current.copyWith(
+          phase: TerminalPromptPhase.executing,
+          inputSincePrompt: true,
+        );
+      case 'D':
+        final status = args.length > 1 ? int.tryParse(args[1]) : null;
+        if (_submittedSincePrompt) _sawCommandCompletion = true;
+        shellIntegration.value = current.copyWith(
+          phase: TerminalPromptPhase.done,
+          inputSincePrompt: true,
+          lastExitCode: status != null && status >= 0 && status <= 255
+              ? status
+              : null,
+          clearExitCode: status == null || status < 0 || status > 255,
+        );
+    }
+  }
+
+  void _handleShellIdentity(List<String> args) {
+    if (args.length < 2 || args.first != 'ShellIntegrationVersion=1') return;
+    final shell = switch (args[1].toLowerCase()) {
+      'bash' || 'zsh' || 'sh' => RemoteShellKind.posix,
+      'fish' => RemoteShellKind.fish,
+      _ => null,
+    };
+    if (shell != null) {
+      shellIntegration.value = shellIntegration.value.copyWith(shell: shell);
     }
   }
 
@@ -119,12 +234,18 @@ class XtermTerminalEngine implements TerminalEngine {
     if (data.isEmpty || data.codeUnitAt(0) == 0x1b) return;
     for (final r in data.runes) {
       if (r == 0x0d || r == 0x0a) {
+        _submittedSincePrompt = true;
+        shellIntegration.value = shellIntegration.value.copyWith(
+          phase: TerminalPromptPhase.executing,
+          inputSincePrompt: true,
+        );
         _submitPending();
       } else if (r == 0x7f || r == 0x08) {
         if (_pendingInput.isNotEmpty) {
           _pendingInput = _pendingInput.substring(0, _pendingInput.length - 1);
         }
       } else if (r == 0x15 || r == 0x03) {
+        if (r == 0x03) _submittedSincePrompt = true;
         _pendingInput = ''; // Ctrl-U (kill line) / Ctrl-C (interrupt)
       } else if (r >= 0x20) {
         _pendingInput += String.fromCharCode(r);
@@ -143,6 +264,7 @@ class XtermTerminalEngine implements TerminalEngine {
   /// assistant's paste-to-prompt tool. The remote shell echoes it back so it
   /// appears at the prompt; because it contains no newline it is never executed.
   void injectInput(String text) {
+    _markInputActivity();
     _trackPending(text);
     _input.add(Uint8List.fromList(utf8.encode(text)));
   }
@@ -151,6 +273,7 @@ class XtermTerminalEngine implements TerminalEngine {
   /// byte inputs such as Tab, Esc, and Ctrl-C. Unlike
   /// [injectInput] this is allowed to carry control bytes such as Enter.
   void sendKey(List<int> bytes) {
+    _markInputActivity();
     _trackPending(utf8.decode(bytes, allowMalformed: true));
     _input.add(Uint8List.fromList(bytes));
   }
@@ -160,7 +283,37 @@ class XtermTerminalEngine implements TerminalEngine {
     final prefix = terminal.cursorKeysMode ? 0x4f : 0x5b; // SS3 or CSI
     // Cursor sequences are intentionally terminal controls, not command text.
     // Bypass pending-input tracking and leave one-shot Ctrl armed for typing.
+    _markInputActivity();
     _input.add(Uint8List.fromList([0x1b, prefix, key.finalByte]));
+  }
+
+  /// Stages a quoted `cd` at a verified empty prompt, without submitting it.
+  TerminalStageResult stageChangeDirectory(String absolutePath) {
+    final state = shellIntegration.value;
+    final shell = state.shell;
+    if (shell == null) return TerminalStageResult.shellIntegrationRequired;
+    if (state.phase != TerminalPromptPhase.acceptingInput) {
+      return TerminalStageResult.promptNotReady;
+    }
+    if (state.inputSincePrompt || _pendingInput.isNotEmpty) {
+      return TerminalStageResult.pendingInput;
+    }
+    late final String command;
+    try {
+      command = buildChangeDirectoryCommand(absolutePath, shell: shell);
+    } on ArgumentError {
+      return TerminalStageResult.invalidPath;
+    }
+    injectInput(command);
+    return TerminalStageResult.staged;
+  }
+
+  void _markInputActivity() {
+    _localInputSincePrompt = true;
+    final state = shellIntegration.value;
+    if (!state.inputSincePrompt) {
+      shellIntegration.value = state.copyWith(inputSincePrompt: true);
+    }
   }
 
   /// Toggle the one-shot Ctrl modifier (armed by the key row's Ctrl button).
@@ -209,6 +362,7 @@ class XtermTerminalEngine implements TerminalEngine {
     ctrlArmed.dispose();
     workingDirectory.dispose();
     terminalTitle.dispose();
+    shellIntegration.dispose();
     await _input.close();
   }
 }

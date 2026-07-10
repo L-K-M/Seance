@@ -11,8 +11,8 @@
 	<!-- Outbound connections: SSH sessions, the sync server, LLM providers. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<!-- Key files / ~/.ssh/config chosen via the file picker. -->
-	<key>com.apple.security.files.user-selected.read-only</key>
+	<!-- Key/config imports and SFTP export destinations chosen by the user. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<!-- No keychain-access-groups here on purpose: it's a RESTRICTED
 	     entitlement that macOS refuses to honor on ad-hoc ("sign to run

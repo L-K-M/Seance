@@ -3,7 +3,7 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-07-10 — initial session-scoped SFTP browser._
+_Last updated: 2026-07-10 — durable SFTP edit and file workflows._
 
 ## Done (implemented + verified)
 
@@ -48,11 +48,16 @@ _Last updated: 2026-07-10 — initial session-scoped SFTP browser._
   readable `SshConnectException` summary; agent-auth rejected pre-network.
 - `seance_core/test/http_sync_client_test.dart` — sync base-URL normalization
   (trailing slash / whitespace tolerated).
-- `seance_core/test/remote_file_system_test.dart` — remote POSIX path helpers
-  and sticky transfer cancellation.
+- `seance_core/test/remote_file_system_test.dart` — remote POSIX paths, sticky
+  cancellation, POSIX metadata, chmod, readlink, and symlink creation.
 - `app/seance_app/test/remote_files_controller_test.dart` — SFTP browser home,
-  sorting, OSC-directory follow, transfer progress, managed-copy reconnect
-  handoff, directory rename migration, and upload snapshot guard.
+  sorting/filtering/selection/bookmarks, OSC-directory follow, aggregate
+  recursive transfers, durable managed copies, concurrent checkout, and
+  save-during-upload guards.
+- `app/seance_app/test/managed_remote_file_store_test.dart` — durable index,
+  SHA-256 reconciliation, corruption quarantine, and traversal-safe cleanup.
+- `app/seance_app/test/file_export_service_test.dart` — streamed staging and
+  Android SAF method-channel contract.
 
 ## Open items (roughly prioritized)
 
@@ -113,10 +118,10 @@ _Last updated: 2026-07-10 — initial session-scoped SFTP browser._
     session's `TerminalController` exposed on `TerminalSession`). **Needs a
     macOS build to verify the native-menu path** (no Swift toolchain in the
     Linux dev container).
-12. **SFTP browser follow-up.** Initial scope is implemented; live OpenSSH and
-    Android validation remain. Persist the managed-edit index across mobile
-    process death, add Files widget/plugin fakes, improve SFTP v3 conflict
-    guarantees where server extensions allow, and validate iOS editor handoff.
+12. **SFTP browser follow-up.** The delayed edit, file-manager, shell, and
+    Android export groups are implemented. Live OpenSSH, BBEdit/macOS, Android
+    SAF/provider, and iOS editor validation remain, along with Files widget
+    platform fakes, resumable/background transfers, and promised-file drag-out.
     Full design/progress: [`docs/SFTP.md`](SFTP.md).
 
 ### Deliberately deferred (per proposal)

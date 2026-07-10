@@ -7,6 +7,8 @@ import 'package:seance_core/seance_core.dart';
 import 'app_settings.dart';
 import 'command_stats.dart';
 import 'file_stores.dart';
+import 'external_file_opener.dart';
+import 'managed_remote_file_store.dart';
 import 'secure_master_key.dart';
 
 /// Wires together the seance_core services with the app's file-backed stores
@@ -23,6 +25,7 @@ class AppServices {
   final SettingsStore settingsStore;
   final CommandStatsStore commandStatsStore;
   final CommandStats commandStats;
+  final ManagedRemoteFileStore managedRemoteFiles;
   List<int> vaultKey;
   AppSettings settings;
 
@@ -37,6 +40,7 @@ class AppServices {
     required this.settingsStore,
     required this.commandStatsStore,
     required this.commandStats,
+    required this.managedRemoteFiles,
     required this.vaultKey,
     required this.settings,
   });
@@ -54,7 +58,16 @@ class AppServices {
     final hostKeyStore = FileHostKeyStore(File(p('known_hosts.json')));
     final settingsStore = SettingsStore(File(p('settings.json')));
     final commandStatsStore = CommandStatsStore(File(p('command_stats.json')));
+    final managedRemoteFiles = ManagedRemoteFileStore(
+      indexFile: File(p('managed_remote_files.json')),
+      checkoutRoot: Directory(p('sftp-checkouts')),
+    );
     final settings = await settingsStore.load();
+    if (!Platform.isMacOS &&
+        settings.remoteFileEditor == RemoteFileEditor.bbedit) {
+      settings.remoteFileEditor = RemoteFileEditor.systemDefault;
+      await settingsStore.save(settings);
+    }
     if (settings.deviceId.isEmpty) {
       settings.deviceId = uuidV4();
       await settingsStore.save(settings);
@@ -71,6 +84,7 @@ class AppServices {
       settingsStore: settingsStore,
       commandStatsStore: commandStatsStore,
       commandStats: await commandStatsStore.load(),
+      managedRemoteFiles: managedRemoteFiles,
       vaultKey: vaultKey,
       settings: settings,
     );
@@ -248,8 +262,9 @@ class AppServices {
         // "Reference, don't store": read the key from disk at connect time.
         if (config.identityFilePath != null) {
           // Dart's File does not expand `~`, but the editor hint invites it.
-          final pem =
-              await File(_expandHome(config.identityFilePath!)).readAsString();
+          final pem = await File(
+            _expandHome(config.identityFilePath!),
+          ).readAsString();
           final storedPass = config.secretRef == null
               ? null
               : (await vault.getSecret(config.secretRef!))?.keyPassphrase;
@@ -258,8 +273,10 @@ class AppServices {
         final secret = config.secretRef == null
             ? null
             : await vault.getSecret(config.secretRef!);
-        return SshCredentials.privateKey(secret?.value ?? '',
-            keyPassphrase: secret?.keyPassphrase);
+        return SshCredentials.privateKey(
+          secret?.value ?? '',
+          keyPassphrase: secret?.keyPassphrase,
+        );
     }
   }
 
@@ -282,14 +299,16 @@ class AppServices {
     switch (settings.llmKind) {
       case LlmProviderKind.anthropic:
         return AnthropicProvider(
-            apiKey: apiKey,
-            model: settings.llmModel,
-            baseUrl: settings.llmBaseUrl);
+          apiKey: apiKey,
+          model: settings.llmModel,
+          baseUrl: settings.llmBaseUrl,
+        );
       case LlmProviderKind.openaiCompatible:
         return OpenAiCompatibleProvider(
-            baseUrl: settings.llmBaseUrl,
-            apiKey: apiKey,
-            model: settings.llmModel);
+          baseUrl: settings.llmBaseUrl,
+          apiKey: apiKey,
+          model: settings.llmModel,
+        );
     }
   }
 
@@ -298,7 +317,8 @@ class AppServices {
     if (settings.searxngUrl != null && settings.searxngUrl!.isNotEmpty) {
       return SearxngSearch(baseUrl: settings.searxngUrl!);
     }
-    if (settings.braveApiKeyRef != null && settings.braveApiKeyRef!.isNotEmpty) {
+    if (settings.braveApiKeyRef != null &&
+        settings.braveApiKeyRef!.isNotEmpty) {
       final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
       if (key != null) return BraveSearch(apiKey: key);
     }

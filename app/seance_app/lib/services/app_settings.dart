@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:seance_core/seance_core.dart';
 
 import 'atomic_file.dart';
+import 'external_file_opener.dart';
 
 /// User-configurable settings. The LLM assistant is always on (this is a
 /// personal tool), so there is no enable flag — only which provider it uses.
@@ -44,6 +46,14 @@ class AppSettings {
   /// never downloads or installs anything.
   bool checkForUpdates;
 
+  /// Preferred application for managed remote-file checkouts. Local only.
+  RemoteFileEditor remoteFileEditor;
+
+  /// Canonical SFTP paths bookmarked per server. Local navigation preference;
+  /// credentials and remote contents are never stored here.
+  Map<String, List<String>> remotePathBookmarks;
+  Map<String, bool> remoteShowHidden;
+
   /// Stable per-device id used in synced records' conflict resolution.
   String deviceId;
 
@@ -65,64 +75,116 @@ class AppSettings {
     this.autoSync = true,
     this.commandSuggestions = false,
     this.checkForUpdates = true,
+    this.remoteFileEditor = RemoteFileEditor.systemDefault,
+    Map<String, List<String>>? remotePathBookmarks,
+    Map<String, bool>? remoteShowHidden,
     this.deviceId = '',
     this.snippetsSeeded = false,
-  });
+  }) : remotePathBookmarks = remotePathBookmarks ?? {},
+       remoteShowHidden = remoteShowHidden ?? {};
 
   Map<String, dynamic> toJson() => {
-        'llmKind': llmKind.name,
-        'llmBaseUrl': llmBaseUrl,
-        'llmModel': llmModel,
-        'llmApiKeyRef': llmApiKeyRef,
-        if (searxngUrl != null) 'searxngUrl': searxngUrl,
-        if (braveApiKeyRef != null) 'braveApiKeyRef': braveApiKeyRef,
-        'redactionEnabled': redactionEnabled,
-        if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
-        if (syncUsername != null) 'syncUsername': syncUsername,
-        'syncSecrets': syncSecrets,
-        'autoSync': autoSync,
-        'commandSuggestions': commandSuggestions,
-        'checkForUpdates': checkForUpdates,
-        'deviceId': deviceId,
-        'snippetsSeeded': snippetsSeeded,
-      };
+    'llmKind': llmKind.name,
+    'llmBaseUrl': llmBaseUrl,
+    'llmModel': llmModel,
+    'llmApiKeyRef': llmApiKeyRef,
+    if (searxngUrl != null) 'searxngUrl': searxngUrl,
+    if (braveApiKeyRef != null) 'braveApiKeyRef': braveApiKeyRef,
+    'redactionEnabled': redactionEnabled,
+    if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
+    if (syncUsername != null) 'syncUsername': syncUsername,
+    'syncSecrets': syncSecrets,
+    'autoSync': autoSync,
+    'commandSuggestions': commandSuggestions,
+    'checkForUpdates': checkForUpdates,
+    'remoteFileEditor': remoteFileEditor.name,
+    'remotePathBookmarks': remotePathBookmarks,
+    'remoteShowHidden': remoteShowHidden,
+    'deviceId': deviceId,
+    'snippetsSeeded': snippetsSeeded,
+  };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
-        llmKind: LlmProviderKind.values.firstWhere(
-            (k) => k.name == json['llmKind'],
-            orElse: () => LlmProviderKind.anthropic),
-        llmBaseUrl: json['llmBaseUrl'] as String? ?? 'https://api.anthropic.com',
-        llmModel: json['llmModel'] as String? ?? 'claude-haiku-4-5-20251001',
-        llmApiKeyRef: json['llmApiKeyRef'] as String? ?? 'anthropic',
-        searxngUrl: json['searxngUrl'] as String?,
-        braveApiKeyRef: json['braveApiKeyRef'] as String?,
-        redactionEnabled: json['redactionEnabled'] as bool? ?? true,
-        syncBaseUrl: json['syncBaseUrl'] as String?,
-        syncUsername: json['syncUsername'] as String?,
-        syncSecrets: json['syncSecrets'] as bool? ?? false,
-        autoSync: json['autoSync'] as bool? ?? true,
-        commandSuggestions: json['commandSuggestions'] as bool? ?? false,
-        checkForUpdates: json['checkForUpdates'] as bool? ?? true,
-        deviceId: json['deviceId'] as String? ?? '',
-        snippetsSeeded: json['snippetsSeeded'] as bool? ?? false,
-      );
+    llmKind: LlmProviderKind.values.firstWhere(
+      (k) => k.name == json['llmKind'],
+      orElse: () => LlmProviderKind.anthropic,
+    ),
+    llmBaseUrl: json['llmBaseUrl'] as String? ?? 'https://api.anthropic.com',
+    llmModel: json['llmModel'] as String? ?? 'claude-haiku-4-5-20251001',
+    llmApiKeyRef: json['llmApiKeyRef'] as String? ?? 'anthropic',
+    searxngUrl: json['searxngUrl'] as String?,
+    braveApiKeyRef: json['braveApiKeyRef'] as String?,
+    redactionEnabled: json['redactionEnabled'] as bool? ?? true,
+    syncBaseUrl: json['syncBaseUrl'] as String?,
+    syncUsername: json['syncUsername'] as String?,
+    syncSecrets: json['syncSecrets'] as bool? ?? false,
+    autoSync: json['autoSync'] as bool? ?? true,
+    commandSuggestions: json['commandSuggestions'] as bool? ?? false,
+    checkForUpdates: json['checkForUpdates'] as bool? ?? true,
+    remoteFileEditor: RemoteFileEditor.values.firstWhere(
+      (value) => value.name == json['remoteFileEditor'],
+      orElse: () => RemoteFileEditor.systemDefault,
+    ),
+    remotePathBookmarks: _bookmarkMap(json['remotePathBookmarks']),
+    remoteShowHidden: _boolMap(json['remoteShowHidden']),
+    deviceId: json['deviceId'] as String? ?? '',
+    snippetsSeeded: json['snippetsSeeded'] as bool? ?? false,
+  );
+}
+
+Map<String, bool> _boolMap(Object? value) {
+  if (value is! Map) return {};
+  return {
+    for (final entry in value.entries)
+      if (entry.key is String && entry.value is bool)
+        entry.key as String: entry.value as bool,
+  };
+}
+
+Map<String, List<String>> _bookmarkMap(Object? value) {
+  if (value is! Map) return {};
+  final result = <String, List<String>>{};
+  for (final entry in value.entries) {
+    if (entry.key is! String || entry.value is! List) continue;
+    final paths =
+        (entry.value as List)
+            .whereType<String>()
+            .where((path) => path.startsWith('/') && !path.contains('\u0000'))
+            .toSet()
+            .toList()
+          ..sort();
+    if (paths.isNotEmpty) result[entry.key as String] = paths;
+  }
+  return result;
 }
 
 class SettingsStore {
   final File file;
+  Future<void> _saveTail = Future<void>.value();
   SettingsStore(this.file);
 
   Future<AppSettings> load() async {
     if (!await file.exists()) return AppSettings();
     try {
       return AppSettings.fromJson(
-          jsonDecode(await file.readAsString()) as Map<String, dynamic>);
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      );
     } catch (_) {
       return AppSettings();
     }
   }
 
-  Future<void> save(AppSettings settings) async {
-    await writeStringAtomically(file, jsonEncode(settings.toJson()));
+  Future<void> save(AppSettings settings) {
+    final snapshot = jsonEncode(settings.toJson());
+    final result = Completer<void>();
+    _saveTail = _saveTail.then((_) async {
+      try {
+        await writeStringAtomically(file, snapshot);
+        result.complete();
+      } catch (error, stackTrace) {
+        result.completeError(error, stackTrace);
+      }
+    });
+    return result.future;
   }
 }

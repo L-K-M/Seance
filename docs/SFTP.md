@@ -78,14 +78,15 @@ absolute path), resolving `~` against SFTP's canonical home. If neither source
 is available, Files stays at the SFTP home/current directory. A path outside an
 SFTP chroot is reported without breaking the shell.
 
-Shells do not all emit OSC 7 or a cwd title. Future shell-integration
-documentation can provide opt-in prompt hooks for bash, zsh, and fish. Séance
-must not silently inject or execute shell setup code.
+Shells do not all emit OSC 7 or a cwd title. Optional prompt hooks for bash,
+zsh, and fish are documented in [SHELL_INTEGRATION.md](SHELL_INTEGRATION.md).
+Séance never silently injects or executes shell setup code.
 
-The reverse action, **Open terminal here**, should insert a shell-escaped `cd`
-command without a newline so the user reviews and submits it. It is disabled
-when the terminal already has pending input. Future OSC 133 prompt markers can
-make prompt readiness and command boundaries authoritative.
+The reverse action, **Open terminal here**, uses OSC 133 prompt markers and an
+explicit shell identity. It inserts a shell-specific quoted `cd` without a
+newline so the user reviews and submits it. Any input since the last prompt,
+including cursor/history keys, disables the action. **Copy remote path** is
+always available as a local user action.
 
 ## Architecture
 
@@ -115,14 +116,20 @@ Where the server supports it, the original mode is preserved.
 
 Opening a remote file locally is a managed checkout:
 
-1. Download to a private cache directory with a sanitized local filename.
+1. Download to a private application-support directory with a sanitized local
+   filename.
 2. Record the remote path, size, modification time, type, and mode.
 3. Open it with the platform default app or a selected desktop editor.
 4. Keep the checkout visible in a **Local edits** section.
 5. Offer **Upload changes**; do not silently overwrite the remote file.
-6. Re-stat before and after transfer and warn if the remote snapshot changed.
+6. Re-stat and stream-hash before commit; warn if the remote snapshot changed.
 7. Upload through a temporary remote file and rename only after completion.
-8. Remove plaintext cache files on discard or confirmed tab/server deletion.
+8. Remove plaintext support files on discard or confirmed tab/server deletion.
+
+The managed-edit index is persisted atomically. Checkouts are SHA-256 hashed,
+watched by parent directory to catch atomic saves, reconciled on app resume,
+and restored into their original logical session after process death. A local
+save only prompts or marks the checkout dirty; it never uploads silently.
 
 Remote files are untrusted. Opening one is always an explicit action. Large or
 binary files are streamed as bytes and never decoded merely to transfer them.
@@ -146,23 +153,26 @@ binary files are streamed as bytes and never decoded merely to transfer them.
 
 ## Future enhancements
 
-- Configurable default editor and an explicit **Open with BBEdit** action.
-- Prompt-on-save or opt-in automatic upload for managed local edits.
-- Persist the managed-edit index so Android process death while an editor is in
-  front cannot orphan a checkout.
-- Content hashing and local file watching, including atomic-save detection.
+- [x] Configurable default editor and an explicit **Open with BBEdit** action.
+- [x] Prompt-on-save for managed local edits without silent upload.
+- [x] Persist the managed-edit index across process death.
+- [x] Local SHA-256 hashing and parent-directory watching for atomic saves.
 - Strong remote conflict checks using server-side hashes when supported.
-- Recursive directory upload/download with aggregate progress.
+- [x] Recursive desktop directory upload/download with aggregate progress.
 - Resumable and queued background transfers.
 - A dedicated transfer connection that survives shell exit/reconnect.
 - Remote-to-desktop promised-file drag-out.
 - Drop directly onto a folder row instead of only the displayed directory.
-- Multi-selection, sorting, filtering, hidden-file preferences, and bookmarks.
-- chmod/chown, symlink creation, and richer POSIX metadata editing.
-- Clipboard copy/paste for remote paths and file operations.
-- Shell-integration setup guidance for OSC 7 and OSC 133.
-- **Open terminal here** once prompt readiness can be determined safely.
-- Android export/share actions and persisted document-provider destinations.
+- [x] Multi-selection, sorting, filtering, hidden-file visibility, and
+  per-server bookmarks.
+- [x] chmod, symlink inspection/creation, and richer POSIX metadata display.
+- [x] Clipboard copy for remote paths.
+- [x] Shell-integration setup guidance for OSC 133 prompt readiness.
+- [x] Reviewed **Open terminal here** staging with no implicit execution.
+- [x] Android export/share actions and a persisted SAF destination grant.
+- Persist sort/filter view preferences across launches (hidden-file visibility
+  and bookmarks already persist per server).
+- Clipboard-backed remote file copy/move operations.
 - iOS document-provider and external-editor validation.
 - Accessibility and keyboard-navigation passes for full file-manager operation.
 
@@ -174,17 +184,18 @@ binary files are streamed as bytes and never decoded merely to transfer them.
 - Some servers disable SFTP or expose a different chroot from the shell.
 - OSC control sequences are remote input. Validate paths and display the actual
   SFTP result rather than trusting metadata blindly.
-- SFTP v3 has limited conflict and timestamp precision. Size/mtime checks reduce
-  risk but are not a transactional lock. A concurrent write in the narrow gap
-  between the final stat and rename can still win or be replaced.
+- SFTP v3 has limited timestamp precision. Managed upload-back therefore
+  re-reads and SHA-256 hashes the remote target in addition to metadata checks.
+  This is still not a transactional lock: a concurrent write in the narrow gap
+  between the final hash and rename can still win or be replaced.
 - `dartssh2` uses OpenSSH atomic replacement when the server advertises it.
   Explicit overwrite may fail on SFTP v3 servers without that extension.
 - Large transfers may compete with terminal latency on one transport and need
   real-device testing.
 - Mobile apps can be suspended while an external editor is open. Save-back must
   tolerate reconnection and revalidate the remote file.
-- Managed local copies survive session disconnect/reconnect, but their index is
-  currently in memory. Android process death can leave an untracked cache file.
+- Managed edit metadata and plaintext checkouts persist locally so interrupted
+  editor workflows can recover. Users must explicitly discard them when done.
 - Android grants external editors read/write access to the managed checkout.
   The current iOS opener generally previews or shares a copy, so iOS upload-back
   is not considered validated.
@@ -215,20 +226,26 @@ binary files are streamed as bytes and never decoded merely to transfer them.
   require an absolute document-provider path. Downloaded files use app-private
   cache paths and `open_file` content URIs.
 - Sandboxed macOS drops acquire and release the plugin's security-scoped
-  bookmark. Linux checkouts are created in app cache and chmod'd to 0700/0600.
+  bookmark. Linux checkouts are created in application support and chmod'd to
+  0700/0600.
 - Symlink entries are shown but deliberately cannot be opened/uploaded back yet,
   avoiding replacement of a link with a regular file.
+- Added durable managed-edit recovery, local hashing/watching, dirty prompts,
+  configurable editors, and explicit BBEdit launching on macOS.
+- Added sorting, filtering, hidden-file visibility, bookmarks, multi-selection,
+  recursive desktop transfers, metadata/mode editing, and symlink creation.
+- Added copy-path and guarded Open terminal here actions plus opt-in OSC 133
+  integration guidance.
+- Added streamed Save As, native sharing, and Android SAF export destinations.
 
 ## Verification log
 
 - `dart analyze packages/seance_protocol packages/seance_core
   packages/seance_sync_server` — clean.
-- `dart test packages/seance_protocol packages/seance_core` — 131 tests pass.
+- `dart test packages/seance_protocol packages/seance_core
+  packages/seance_sync_server` — 181 tests pass.
 - `flutter analyze` — clean.
-- `flutter test` — 84 tests pass.
-- Full three-package Dart run reaches 160 passing tests, but the three existing
-  SQLite storage tests cannot load `libsqlite3.so` in this container (only
-  runtime `libsqlite3.so.0` is installed).
+- `flutter test` — 107 tests pass.
 - Android compile not run: this environment has no Android SDK / `ANDROID_HOME`.
 - Linux compile not run: this environment has no CMake toolchain.
 - Live OpenSSH/SFTP and real-device Android validation remain open.

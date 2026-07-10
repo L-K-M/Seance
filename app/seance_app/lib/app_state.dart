@@ -6,6 +6,7 @@ import 'package:xterm/xterm.dart' show TerminalController;
 
 import 'services/app_services.dart';
 import 'services/default_snippets.dart';
+import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
 import 'services/xterm_engine.dart';
 
@@ -19,6 +20,10 @@ enum TerminalStatus { connecting, connected, disconnected, error }
 class TerminalSession {
   /// Unique per connection (not per server) — the tab identity.
   final String id;
+
+  /// Stable ownership identity for durable local edit checkouts. Unlike [id],
+  /// this survives reconnects that replace the terminal engine and widget.
+  final String editSessionId;
   final String serverId;
   final ServerConfig config;
   XtermTerminalEngine engine;
@@ -39,13 +44,14 @@ class TerminalSession {
 
   TerminalSession({
     required this.id,
+    String? editSessionId,
     required this.serverId,
     required this.config,
     required this.engine,
     required this.log,
     this.connecting = true,
     this.error,
-  });
+  }) : editSessionId = editSessionId ?? id;
 
   bool get isConnected => session != null && !session!.isClosed;
 
@@ -128,7 +134,7 @@ class AppState extends ChangeNotifier {
   final UpdateChecker _updateChecker;
 
   AppState(this.services, {UpdateChecker? updateChecker})
-      : _updateChecker = updateChecker ?? UpdateChecker() {
+    : _updateChecker = updateChecker ?? UpdateChecker() {
     _sessionManager = SshSessionManager(
       tofu: services.tofu,
       onHostKey: (decision) async {
@@ -184,6 +190,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> load() async {
     servers = await services.configStore.listServers();
+    await _restoreManagedEditSessions();
     await _seedDefaultSnippets();
     snippets = await services.snippetStore.listSnippets();
     await refreshLlmConfigured();
@@ -256,8 +263,9 @@ class AppState extends ChangeNotifier {
     final now = DateTime.now().millisecondsSinceEpoch;
     final hosts = SshConfigImporter.parse(text);
     for (final h in hosts) {
-      await services.configStore
-          .putServer(h.toServerConfig(id: uuidV4(), now: now));
+      await services.configStore.putServer(
+        h.toServerConfig(id: uuidV4(), now: now),
+      );
     }
     servers = await services.configStore.listServers();
     services.probe.updateServers(servers);
@@ -287,8 +295,10 @@ class AppState extends ChangeNotifier {
   /// Open an additional session (tab) for [config], adjacent to that server's
   /// existing tabs, and connect it.
   Future<void> newTab(ServerConfig config) async {
+    final id = uuidV4();
     final tab = TerminalSession(
-      id: uuidV4(),
+      id: id,
+      editSessionId: id,
       serverId: config.id,
       config: config,
       engine: XtermTerminalEngine(onCommand: _recordCommand),
@@ -322,6 +332,25 @@ class AppState extends ChangeNotifier {
       tab.files = RemoteFilesController(
         session.openRemoteFileSystem,
         shellDirectory: engine.workingDirectory,
+        managedFileStore: services.managedRemoteFiles,
+        serverId: tab.serverId,
+        editSessionId: tab.editSessionId,
+        initialBookmarks:
+            services.settings.remotePathBookmarks[tab.serverId] ?? const [],
+        saveBookmarks: (paths) async {
+          if (paths.isEmpty) {
+            services.settings.remotePathBookmarks.remove(tab.serverId);
+          } else {
+            services.settings.remotePathBookmarks[tab.serverId] = paths;
+          }
+          await services.saveSettings();
+        },
+        initialShowHidden:
+            services.settings.remoteShowHidden[tab.serverId] ?? true,
+        saveShowHidden: (value) async {
+          services.settings.remoteShowHidden[tab.serverId] = value;
+          await services.saveSettings();
+        },
         terminalTitle: engine.terminalTitle,
         initialLocalCopies: tab.retainedLocalCopies,
       );
@@ -334,6 +363,13 @@ class AppState extends ChangeNotifier {
       session.onClosed = () {
         // Remote side ended: flip to disconnected if this is still the tab.
         if (identical(sessionById(tab.id), tab)) {
+          final files = tab.files;
+          if (files != null) {
+            tab.retainedLocalCopies.addAll(files.takeLocalCopies());
+            files.dispose();
+            tab.files = null;
+          }
+          tab.session = null;
           tab.connecting = false;
           notifyListeners();
         }
@@ -361,6 +397,7 @@ class AppState extends ChangeNotifier {
 
     final replacement = TerminalSession(
       id: uuidV4(),
+      editSessionId: old.editSessionId,
       serverId: old.serverId,
       config: config,
       engine: XtermTerminalEngine(onCommand: _recordCommand),
@@ -403,9 +440,9 @@ class AppState extends ChangeNotifier {
       tab.files = null;
     }
     if (deleteLocalCopies && tab.retainedLocalCopies.isNotEmpty) {
-      await RemoteFilesController.deleteManagedCopies(
-        tab.retainedLocalCopies.values,
-      );
+      for (final copy in tab.retainedLocalCopies.values) {
+        await services.managedRemoteFiles.remove(copy.id);
+      }
       tab.retainedLocalCopies.clear();
     }
     if (tab.session != null) {
@@ -533,8 +570,10 @@ class AppState extends ChangeNotifier {
 
   void _scheduleStatsSave() {
     _statsSaveDebounce?.cancel();
-    _statsSaveDebounce =
-        Timer(const Duration(seconds: 3), services.saveCommandStats);
+    _statsSaveDebounce = Timer(
+      const Duration(seconds: 3),
+      services.saveCommandStats,
+    );
   }
 
   /// Recompute [commandSuggestions] from the local stats: frequently-run
@@ -562,13 +601,15 @@ class AppState extends ChangeNotifier {
   /// Promote a suggested command to a real (syncable) snippet.
   Future<void> addSuggestionAsSnippet(String command) async {
     final now = DateTime.now().millisecondsSinceEpoch;
-    await saveSnippet(Snippet(
-      id: uuidV4(),
-      title: _snippetTitle(command),
-      body: command,
-      createdAt: now,
-      updatedAt: now,
-    ));
+    await saveSnippet(
+      Snippet(
+        id: uuidV4(),
+        title: _snippetTitle(command),
+        body: command,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
     _recomputeSuggestions(); // it's now an existing snippet, so it drops off
   }
 
@@ -581,7 +622,9 @@ class AppState extends ChangeNotifier {
 
   static String _snippetTitle(String command) {
     final firstLine = command.split('\n').first.trim();
-    return firstLine.length <= 40 ? firstLine : '${firstLine.substring(0, 39)}…';
+    return firstLine.length <= 40
+        ? firstLine
+        : '${firstLine.substring(0, 39)}…';
   }
 
   /// Focus a server's most-recently-used tab (or its last tab).
@@ -617,9 +660,30 @@ class AppState extends ChangeNotifier {
   void setForeground(bool foreground) {
     if (foreground) {
       services.probe.resume();
+      unawaited(_reconcileRetainedLocalCopies());
+      for (final tab in sessions) {
+        final files = tab.files;
+        if (files != null) unawaited(files.reconcileLocalCopies());
+      }
     } else {
       services.probe.pause();
     }
+  }
+
+  Future<void> _reconcileRetainedLocalCopies() async {
+    final reconciled = await services.managedRemoteFiles.reconcileAll();
+    final byId = {for (final copy in reconciled) copy.id: copy};
+    var changed = false;
+    for (final tab in sessions) {
+      for (final entry in tab.retainedLocalCopies.entries.toList()) {
+        final updated = byId[entry.value.id];
+        if (updated != null && !identical(updated, entry.value)) {
+          tab.retainedLocalCopies[entry.key] = updated;
+          changed = true;
+        }
+      }
+    }
+    if (changed) notifyListeners();
   }
 
   /// Best-effort check for a newer GitHub release than [currentVersion]. If one
@@ -657,6 +721,20 @@ class AppState extends ChangeNotifier {
     tab.session = null;
     tab.connecting = false;
     tab.error = null;
+    notifyListeners();
+  }
+
+  Future<void> discardRetainedLocalCopy(
+    String sessionId,
+    ManagedRemoteFile copy,
+  ) async {
+    final tab = sessionById(sessionId);
+    if (tab == null ||
+        tab.retainedLocalCopies[copy.remotePath]?.id != copy.id) {
+      return;
+    }
+    await services.managedRemoteFiles.remove(copy.id);
+    tab.retainedLocalCopies.remove(copy.remotePath);
     notifyListeners();
   }
 
@@ -722,6 +800,38 @@ class AppState extends ChangeNotifier {
     final ids = [for (final s in sessionsForServer(serverId)) s.id];
     for (final id in ids) {
       await closeTab(id);
+    }
+  }
+
+  /// Recreate disconnected placeholder tabs for durable managed edits. The
+  /// user explicitly reconnects before upload, while Open/Discard remain tied
+  /// to the same logical tab instead of being attached to an arbitrary session.
+  Future<void> _restoreManagedEditSessions() async {
+    final copies = await services.managedRemoteFiles.reconcileAll();
+    final configs = {for (final server in servers) server.id: server};
+    final groups = <(String, String), List<ManagedRemoteFile>>{};
+    for (final copy in copies) {
+      if (!configs.containsKey(copy.serverId)) continue;
+      groups
+          .putIfAbsent((copy.serverId, copy.editSessionId), () => [])
+          .add(copy);
+    }
+    for (final group in groups.entries) {
+      final config = configs[group.key.$1]!;
+      final tab = TerminalSession(
+        id: uuidV4(),
+        editSessionId: group.key.$2,
+        serverId: config.id,
+        config: config,
+        engine: XtermTerminalEngine(onCommand: _recordCommand),
+        log: SshConnectionLog(onUpdate: notifyListeners),
+        connecting: false,
+      );
+      tab.retainedLocalCopies.addEntries(
+        group.value.map((copy) => MapEntry(copy.remotePath, copy)),
+      );
+      sessions.add(tab);
+      _lastSessionForServer[config.id] = tab.id;
     }
   }
 

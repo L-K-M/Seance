@@ -1,17 +1,21 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
-import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:open_file/open_file.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:seance_core/seance_core.dart';
+import 'package:share_plus/share_plus.dart';
 
+import '../app_state.dart';
 import '../main.dart';
+import '../services/external_file_opener.dart';
+import '../services/file_export_service.dart';
+import '../services/managed_remote_file.dart';
 import '../services/remote_files_controller.dart';
+import '../services/xterm_engine.dart';
 
 class FilesScreen extends StatelessWidget {
   const FilesScreen({super.key});
@@ -27,14 +31,19 @@ class FilesScreen extends StatelessWidget {
             'Files · ${state.activeSession?.config.label ?? 'Session'}',
           ),
         ),
-        body: const SafeArea(top: false, child: FilesPane()),
+        body: const SafeArea(
+          top: false,
+          child: FilesPane(popAfterTerminalStage: true),
+        ),
       ),
     );
   }
 }
 
 class FilesPane extends StatelessWidget {
-  const FilesPane({super.key});
+  final bool popAfterTerminalStage;
+
+  const FilesPane({super.key, this.popAfterTerminalStage = false});
 
   @override
   Widget build(BuildContext context) {
@@ -50,6 +59,9 @@ class FilesPane extends StatelessWidget {
           );
         }
         if (!session.isConnected || session.files == null) {
+          if (session.retainedLocalCopies.isNotEmpty) {
+            return _RecoveredLocalEdits(session: session, state: state);
+          }
           return const _FilesUnavailable(
             icon: Icons.link_off,
             message: 'Reconnect this session to browse remote files.',
@@ -62,7 +74,8 @@ class FilesPane extends StatelessWidget {
           key: ValueKey(session.id),
           controller: session.files!,
           identity: '${session.config.label} · Session $ordinal',
-          sessionId: session.id,
+          session: session,
+          popAfterTerminalStage: popAfterTerminalStage,
         );
       },
     );
@@ -72,13 +85,15 @@ class FilesPane extends StatelessWidget {
 class _RemoteBrowser extends StatefulWidget {
   final RemoteFilesController controller;
   final String identity;
-  final String sessionId;
+  final TerminalSession session;
+  final bool popAfterTerminalStage;
 
   const _RemoteBrowser({
     super.key,
     required this.controller,
     required this.identity,
-    required this.sessionId,
+    required this.session,
+    required this.popAfterTerminalStage,
   });
 
   @override
@@ -87,6 +102,9 @@ class _RemoteBrowser extends StatefulWidget {
 
 class _RemoteBrowserState extends State<_RemoteBrowser> {
   bool _dragging = false;
+  final ExternalFileOpener _fileOpener = const ExternalFileOpener();
+  final TextEditingController _filter = TextEditingController();
+  final Set<String> _promptedDirtyCopies = {};
 
   @override
   void initState() {
@@ -95,11 +113,18 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
   }
 
   @override
+  void dispose() {
+    _filter.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: widget.controller,
       builder: (context, _) {
         final controller = widget.controller;
+        _queueDirtyEditPrompt(controller);
         final content = Stack(
           children: [
             Column(
@@ -108,8 +133,20 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
                   identity: widget.identity,
                   controller: controller,
                   onUpload: _pickUploads,
+                  onUploadFolder: _supportsDesktopDrop
+                      ? _pickUploadFolder
+                      : null,
                   onNewFolder: _createFolder,
+                  onNewSymbolicLink: _createSymbolicLink,
                   onEnterPath: _enterPath,
+                  onCopyPath: () => _copyRemotePath(controller.currentPath),
+                  onOpenTerminalHere: _openTerminalHere,
+                  filterController: _filter,
+                  onDownloadSelected:
+                      _supportsDesktopDrop &&
+                          controller.selectedPaths.isNotEmpty
+                      ? _downloadSelected
+                      : null,
                 ),
                 if (controller.loading)
                   const LinearProgressIndicator(minHeight: 2),
@@ -123,6 +160,12 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
                   _LocalCopiesPanel(
                     copies: controller.localCopies.values.toList(),
                     onOpen: _openLocalCopy,
+                    onOpenWithBBEdit: Platform.isMacOS
+                        ? (copy) => _openLocalCopy(
+                            copy,
+                            editor: RemoteFileEditor.bbedit,
+                          )
+                        : null,
                     onUpload: _uploadLocalCopy,
                     onDiscard: _discardLocalCopy,
                   ),
@@ -199,17 +242,21 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
     if (controller.entries.isEmpty && !controller.loading) {
       return InkWell(
         onTap: _pickUploads,
-        child: const Center(
+        child: Center(
           child: Padding(
-            padding: EdgeInsets.all(24),
+            padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.folder_open_outlined, size: 40),
-                SizedBox(height: 10),
-                Text('This directory is empty'),
-                SizedBox(height: 4),
-                Text('Tap to choose files, or drop files here.'),
+                const Icon(Icons.folder_open_outlined, size: 40),
+                const SizedBox(height: 10),
+                Text(
+                  controller.filterQuery.isNotEmpty || !controller.showHidden
+                      ? 'No matching files'
+                      : 'This directory is empty',
+                ),
+                const SizedBox(height: 4),
+                const Text('Tap to choose files, or drop files here.'),
               ],
             ),
           ),
@@ -228,11 +275,34 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
               entry: entry,
               showDetails: showDetails,
               hasLocalCopy: localCopy != null,
+              selected: controller.selectedPaths.contains(entry.path),
+              selectionMode: controller.selectedPaths.isNotEmpty,
+              onSelect: () => controller.toggleSelection(entry.path),
               onOpen: () => entry.isDirectory
                   ? controller.navigate(entry.path)
                   : _openRemoteFile(entry),
               onRename: () => _rename(entry),
               onDelete: () => _delete(entry),
+              onProperties: () => _showProperties(entry),
+              onCopyPath: () => _copyRemotePath(entry.path),
+              onOpenTerminalHere: entry.isDirectory
+                  ? () => _openTerminalHere(entry.path)
+                  : null,
+              onDownload: entry.type == RemoteFileType.file
+                  ? () => _exportRemoteFile(entry)
+                  : entry.isDirectory && _supportsDesktopDrop
+                  ? () => _downloadRemoteEntries([entry])
+                  : null,
+              onShare: entry.type == RemoteFileType.file && _supportsSharing
+                  ? () => _shareRemoteFile(entry)
+                  : null,
+              onOpenWithBBEdit:
+                  Platform.isMacOS && entry.type == RemoteFileType.file
+                  ? () => _openRemoteFileWithEditor(
+                      entry,
+                      RemoteFileEditor.bbedit,
+                    )
+                  : null,
               onUploadChanges: localCopy == null
                   ? null
                   : () => _uploadLocalCopy(localCopy),
@@ -284,6 +354,30 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
     }
   }
 
+  Future<void> _pickUploadFolder() async {
+    try {
+      final path = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Choose a folder to upload',
+      );
+      if (path == null) return;
+      if (!mounted) return;
+      final replace = await _confirm(
+        title: 'Upload folder?',
+        message:
+            'The folder is merged with the remote destination. Existing files '
+            'are replaced only if you continue.',
+        confirmLabel: 'Upload and Replace',
+      );
+      if (!replace) return;
+      await widget.controller.uploadDirectory(
+        Directory(path),
+        overwriteExisting: true,
+      );
+    } catch (error) {
+      _showError(error);
+    }
+  }
+
   Future<void> _uploadDroppedFiles(Iterable<DropItem> files) async {
     final targetDirectory = widget.controller.currentPath;
     if (targetDirectory == null) return;
@@ -291,10 +385,6 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       for (final entry in widget.controller.entries) entry.name,
     };
     for (final file in files) {
-      if (file is DropItemDirectory) {
-        _showError('Folder uploads are not supported yet.');
-        continue;
-      }
       final bookmark = file.extraAppleBookmark;
       var scopedAccess = false;
       try {
@@ -302,11 +392,29 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
           scopedAccess = await DesktopDrop.instance
               .startAccessingSecurityScopedResource(bookmark: bookmark);
         }
-        await _uploadXFile(
-          file,
-          targetDirectory: targetDirectory,
-          destinationExists: existingNames.contains(file.name),
-        );
+        final type = await FileSystemEntity.type(file.path, followLinks: false);
+        if (file is DropItemDirectory ||
+            type == FileSystemEntityType.directory) {
+          final replace = await _confirm(
+            title: 'Upload ${file.name}?',
+            message:
+                'The folder is merged recursively. Existing files are replaced.',
+            confirmLabel: 'Upload and Replace',
+          );
+          if (replace) {
+            await widget.controller.uploadDirectory(
+              Directory(file.path),
+              directory: targetDirectory,
+              overwriteExisting: true,
+            );
+          }
+        } else {
+          await _uploadXFile(
+            file,
+            targetDirectory: targetDirectory,
+            destinationExists: existingNames.contains(file.name),
+          );
+        }
         existingNames.add(file.name);
       } finally {
         if (scopedAccess && bookmark != null) {
@@ -373,64 +481,53 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       return;
     }
 
-    IOSink? sink;
-    Directory? checkout;
     try {
-      final temp = await getApplicationCacheDirectory();
-      final random = Random.secure()
-          .nextInt(0x7fffffff)
-          .toRadixString(16)
-          .padLeft(8, '0');
-      checkout = Directory(
-        '${temp.path}/seance-sftp/${widget.sessionId}/'
-        '${DateTime.now().microsecondsSinceEpoch}-$random',
-      );
-      await checkout.create(recursive: true);
-      if (Platform.isLinux) {
-        await _restrictLinuxPermissions(checkout.path, '700');
-      }
-      final local = File('${checkout.path}/${_safeLocalName(entry.name)}');
-      sink = local.openWrite();
-      final snapshot = await widget.controller.download(entry, sink);
-      await sink.flush();
-      await sink.close();
-      sink = null;
-      if (Platform.isLinux) {
-        await _restrictLinuxPermissions(local.path, '600');
-      }
-      if (!widget.controller.trackLocalCopy(snapshot, local.path)) return;
+      final copy = await widget.controller.checkoutRemoteFile(entry);
+      if (!mounted) return;
+      await _openLocalCopy(copy);
     } catch (e) {
-      await sink?.close();
-      if (checkout != null && await checkout.exists()) {
-        await checkout.delete(recursive: true);
-      }
       _showError(e);
+    }
+  }
+
+  Future<void> _openRemoteFileWithEditor(
+    RemoteFileEntry entry,
+    RemoteFileEditor editor,
+  ) async {
+    final existing = widget.controller.localCopies[entry.path];
+    if (existing != null) {
+      await _openLocalCopy(existing, editor: editor);
       return;
     }
-    if (!mounted) return;
-    final copy = widget.controller.localCopies[entry.path];
-    if (copy == null) return;
     try {
-      await _openPath(copy.localPath);
+      final copy = await widget.controller.checkoutRemoteFile(entry);
+      if (!mounted) return;
+      await _openLocalCopy(copy, editor: editor);
+    } catch (error) {
+      _showError(error);
+    }
+  }
+
+  Future<void> _openLocalCopy(
+    ManagedRemoteFile copy, {
+    RemoteFileEditor? editor,
+  }) async {
+    try {
+      await _openPath(widget.controller.localFile(copy).path, editor: editor);
     } catch (e) {
       _showError(e);
     }
   }
 
-  Future<void> _openLocalCopy(ManagedRemoteFile copy) async {
-    try {
-      await _openPath(copy.localPath);
-    } catch (e) {
-      _showError(e);
-    }
-  }
-
-  Future<void> _openPath(String path) async {
-    final result = await OpenFile.open(path);
-    if (result.type != ResultType.done) {
-      throw StateError(result.message);
-    }
-  }
+  Future<void> _openPath(String path, {RemoteFileEditor? editor}) =>
+      _fileOpener.open(
+        path,
+        editor:
+            editor ??
+            (Platform.isMacOS
+                ? AppScope.of(context).services.settings.remoteFileEditor
+                : RemoteFileEditor.systemDefault),
+      );
 
   Future<void> _uploadLocalCopy(ManagedRemoteFile copy) async {
     try {
@@ -471,6 +568,208 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
     if (discard) await widget.controller.removeLocalCopy(copy.remotePath);
   }
 
+  void _queueDirtyEditPrompt(RemoteFilesController controller) {
+    final dirtyIds = {
+      for (final copy in controller.localCopies.values)
+        if (copy.dirty) copy.id,
+    };
+    _promptedDirtyCopies.removeWhere((id) => !dirtyIds.contains(id));
+    final dirty = controller.localCopies.values.where(
+      (copy) => copy.dirty && !_promptedDirtyCopies.contains(copy.id),
+    );
+    if (dirty.isEmpty) return;
+    final copy = dirty.first;
+    _promptedDirtyCopies.add(copy.id);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !controller.localCopies.containsKey(copy.remotePath)) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${remoteBasename(copy.remotePath)} changed locally. Upload it?',
+          ),
+          duration: const Duration(seconds: 12),
+          action: SnackBarAction(
+            label: 'Upload',
+            onPressed: () => unawaited(_uploadLocalCopy(copy)),
+          ),
+        ),
+      );
+    });
+  }
+
+  Future<void> _copyRemotePath(String? path) async {
+    if (path == null) return;
+    await Clipboard.setData(ClipboardData(text: path));
+    _showMessage('Copied remote path');
+  }
+
+  Future<void> _openTerminalHere([String? path]) async {
+    final target = path ?? widget.controller.currentPath;
+    if (target == null) return;
+    if (!widget.session.isConnected) {
+      _showError('Reconnect this session first.');
+      return;
+    }
+    final engine = widget.session.engine;
+    final integration = engine.shellIntegration.value;
+    final shell = integration.shell;
+    if (shell == null) {
+      _showError('Shell integration is required. Copy the path instead.');
+      return;
+    }
+    if (integration.phase != TerminalPromptPhase.acceptingInput) {
+      _showError('Wait for the shell prompt.');
+      return;
+    }
+    if (integration.inputSincePrompt || engine.pendingInput.isNotEmpty) {
+      _showError('Clear or submit the current terminal input first.');
+      return;
+    }
+    late final String preview;
+    try {
+      preview = buildChangeDirectoryCommand(target, shell: shell);
+    } on ArgumentError {
+      _showError('This path cannot be staged safely.');
+      return;
+    }
+    final insert = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Insert command into terminal?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Review the command. Séance will not press Enter.'),
+            const SizedBox(height: 12),
+            SelectableText(preview),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Insert'),
+          ),
+        ],
+      ),
+    );
+    if (insert != true || !mounted) return;
+    final result = engine.stageChangeDirectory(target);
+    final message = switch (result) {
+      TerminalStageResult.staged =>
+        'Inserted into the prompt. Press Enter in the terminal to run.',
+      TerminalStageResult.shellIntegrationRequired =>
+        'Shell integration is required. Copy the path instead.',
+      TerminalStageResult.promptNotReady => 'Wait for the shell prompt.',
+      TerminalStageResult.pendingInput =>
+        'Clear or submit the current terminal input first.',
+      TerminalStageResult.invalidPath => 'This path cannot be staged safely.',
+    };
+    if (result != TerminalStageResult.staged) {
+      _showError(message);
+      return;
+    }
+    _showMessage(message);
+    if (widget.popAfterTerminalStage && mounted) Navigator.of(context).pop();
+  }
+
+  Future<StagedExportFile> _stageRemoteFile(RemoteFileEntry entry) async {
+    if (entry.type != RemoteFileType.file) {
+      throw StateError('Only regular files can be downloaded.');
+    }
+    final root = await getTemporaryDirectory();
+    final directory = await root.createTemp('seance-export-');
+    final file = File(
+      '${directory.path}${Platform.pathSeparator}${_safeLocalName(entry.name)}',
+    );
+    IOSink? sink;
+    try {
+      sink = file.openWrite();
+      await widget.controller.download(entry, sink);
+      await sink.flush();
+      await sink.close();
+      return StagedExportFile(
+        file: file,
+        fileName: _safeLocalName(entry.name),
+        mimeType: _mimeType(entry.name),
+      );
+    } catch (_) {
+      await sink?.close();
+      if (await directory.exists()) await directory.delete(recursive: true);
+      rethrow;
+    }
+  }
+
+  Future<void> _exportRemoteFile(RemoteFileEntry entry) async {
+    StagedExportFile? staged;
+    try {
+      staged = await _stageRemoteFile(entry);
+      final service = FileExportService(
+        desktopSave: (file) async {
+          final destination = await FilePicker.saveFile(
+            fileName: file.fileName,
+          );
+          if (destination == null) return null;
+          await _copyExportAtomically(file.file, File(destination));
+          return destination;
+        },
+      );
+      if (Platform.isAndroid && !await service.hasExportDirectoryAccess()) {
+        if (!await service.pickExportDirectory()) return;
+      }
+      final destination = await service.exportFile(staged);
+      if (destination != null) _showMessage('Saved ${staged.fileName}');
+    } catch (error) {
+      _showError(error);
+    } finally {
+      await _deleteStagedExport(staged);
+    }
+  }
+
+  Future<void> _shareRemoteFile(RemoteFileEntry entry) async {
+    StagedExportFile? staged;
+    try {
+      staged = await _stageRemoteFile(entry);
+      if (!mounted) return;
+      final renderBox = context.findRenderObject() as RenderBox?;
+      final origin = renderBox == null
+          ? null
+          : renderBox.localToGlobal(Offset.zero) & renderBox.size;
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(staged.file.path, mimeType: staged.mimeType)],
+          title: staged.fileName,
+          sharePositionOrigin: origin,
+        ),
+      );
+      final retained = staged;
+      Timer(const Duration(hours: 1), () {
+        unawaited(_deleteStagedExport(retained));
+      });
+      staged = null;
+    } catch (error) {
+      _showError(error);
+    } finally {
+      await _deleteStagedExport(staged);
+    }
+  }
+
+  Future<void> _deleteStagedExport(StagedExportFile? staged) async {
+    if (staged == null) return;
+    try {
+      final parent = staged.file.parent;
+      if (await parent.exists()) await parent.delete(recursive: true);
+    } catch (_) {
+      // Temporary exports are also subject to normal OS cache eviction.
+    }
+  }
+
   Future<void> _createFolder() async {
     final name = await _askForName(title: 'New folder', action: 'Create');
     if (name == null) return;
@@ -478,6 +777,144 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       await widget.controller.createDirectory(name);
     } catch (e) {
       _showError(e);
+    }
+  }
+
+  Future<void> _createSymbolicLink() async {
+    final name = await _askForName(title: 'New symbolic link', action: 'Next');
+    if (name == null) return;
+    final target = await _askForName(
+      title: 'Link target for $name',
+      action: 'Create',
+      validateName: false,
+    );
+    if (target == null) return;
+    try {
+      await widget.controller.createSymbolicLink(name, target);
+    } catch (error) {
+      _showError(error);
+    }
+  }
+
+  Future<void> _downloadSelected() =>
+      _downloadRemoteEntries(widget.controller.selectedEntries);
+
+  Future<void> _downloadRemoteEntries(Iterable<RemoteFileEntry> entries) async {
+    try {
+      final path = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Choose a download destination',
+      );
+      if (path == null) return;
+      if (!mounted) return;
+      final replace = await _confirm(
+        title:
+            'Download ${entries.length == 1 ? entries.first.name : '${entries.length} items'}?',
+        message:
+            'Folders are copied recursively. Existing local files are replaced.',
+        confirmLabel: 'Download and Replace',
+      );
+      if (!replace) return;
+      await widget.controller.downloadEntries(
+        entries,
+        Directory(path),
+        overwriteExisting: true,
+      );
+      widget.controller.clearSelection();
+      _showMessage('Download complete');
+    } catch (error) {
+      _showError(error);
+    }
+  }
+
+  Future<void> _showProperties(RemoteFileEntry entry) async {
+    String? linkTarget;
+    if (entry.isSymbolicLink) {
+      try {
+        linkTarget = await widget.controller.readSymbolicLink(entry);
+      } catch (error) {
+        _showError(error);
+        return;
+      }
+    }
+    if (!mounted) return;
+    final mode = entry.mode == null
+        ? ''
+        : (entry.mode! & 0xFFF).toRadixString(8).padLeft(4, '0');
+    final modeController = TextEditingController(text: mode);
+    String? validationError;
+    final updatedMode = await showDialog<int>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(entry.name),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectableText(entry.path),
+                const SizedBox(height: 12),
+                Text('Type: ${entry.type.name}'),
+                if (entry.size != null)
+                  Text('Size: ${_formatBytes(entry.size!)}'),
+                if (entry.uid != null || entry.gid != null)
+                  Text('Owner: ${entry.uid ?? '?'}:${entry.gid ?? '?'}'),
+                if (entry.modifiedAt != null)
+                  Text('Modified: ${_formatDate(entry.modifiedAt!.toLocal())}'),
+                if (linkTarget != null) ...[
+                  const SizedBox(height: 8),
+                  const Text('Symbolic-link target'),
+                  SelectableText(linkTarget),
+                ],
+                if (!entry.isSymbolicLink) ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: modeController,
+                    decoration: InputDecoration(
+                      labelText: 'Permissions (octal)',
+                      hintText: '0644',
+                      errorText: validationError,
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+            if (!entry.isSymbolicLink)
+              FilledButton(
+                onPressed: () {
+                  final text = modeController.text.trim();
+                  final parsed = int.tryParse(text, radix: 8);
+                  if (parsed == null || parsed < 0 || parsed > 0xFFF) {
+                    setDialogState(() {
+                      validationError =
+                          'Enter an octal mode from 0000 to 7777.';
+                    });
+                    return;
+                  }
+                  Navigator.pop(context, parsed);
+                },
+                child: const Text('Apply mode'),
+              ),
+          ],
+        ),
+      ),
+    );
+    modeController.dispose();
+    if (updatedMode == null ||
+        (entry.mode != null && updatedMode == (entry.mode! & 0xFFF))) {
+      return;
+    }
+    try {
+      await widget.controller.setMode(entry, updatedMode);
+    } catch (error) {
+      _showError(error);
     }
   }
 
@@ -496,10 +933,14 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
   }
 
   Future<void> _delete(RemoteFileEntry entry) async {
+    final hasLocalCopy = widget.controller.localCopies.containsKey(entry.path);
     final delete = await _confirm(
       title: 'Delete ${entry.name}?',
       message: entry.isDirectory
           ? 'Only an empty directory can be deleted. This cannot be undone.'
+          : hasLocalCopy
+          ? 'The remote file will be permanently deleted. Its managed local '
+                'copy is retained until you upload or discard it.'
           : 'This remote file will be permanently deleted.',
       confirmLabel: 'Delete',
     );
@@ -624,20 +1065,78 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
   }
 
   static String _safeLocalName(String name) {
-    final safe = name.replaceAll(RegExp(r'[/\\\u0000]'), '_');
-    return safe.isEmpty ? 'remote-file' : safe;
+    var safe = name.replaceAll(RegExp(r'[/\\:*?"<>|\x00-\x1f\x7f]'), '_');
+    safe = safe.replaceFirst(RegExp(r'[. ]+$'), '_');
+    if (safe.isEmpty ||
+        RegExp(
+          r'^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$',
+          caseSensitive: false,
+        ).hasMatch(safe)) {
+      return 'remote-file';
+    }
+    return safe;
   }
 
   static final bool _supportsDesktopDrop =
       Platform.isLinux || Platform.isMacOS || Platform.isWindows;
 
-  static Future<void> _restrictLinuxPermissions(
-    String path,
-    String mode,
-  ) async {
-    final result = await Process.run('chmod', [mode, path]);
-    if (result.exitCode != 0) {
-      throw StateError('Could not secure the local checkout permissions.');
+  static final bool _supportsSharing =
+      Platform.isAndroid ||
+      Platform.isIOS ||
+      Platform.isMacOS ||
+      Platform.isWindows;
+
+  static String _mimeType(String name) {
+    final extension = name.contains('.')
+        ? name.substring(name.lastIndexOf('.') + 1).toLowerCase()
+        : '';
+    return switch (extension) {
+      'txt' || 'log' || 'conf' || 'ini' || 'md' => 'text/plain',
+      'json' => 'application/json',
+      'yaml' || 'yml' => 'application/yaml',
+      'png' => 'image/png',
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'pdf' => 'application/pdf',
+      _ => 'application/octet-stream',
+    };
+  }
+
+  static Future<void> _copyExportAtomically(File source, File target) async {
+    await target.parent.create(recursive: true);
+    final temporary = File('${target.path}.seance-${uuidV4()}.part');
+    final backup = File('${target.path}.seance-${uuidV4()}.backup');
+    try {
+      await source.copy(temporary.path);
+      final type = await FileSystemEntity.type(target.path, followLinks: false);
+      if (type == FileSystemEntityType.link ||
+          (type != FileSystemEntityType.file &&
+              type != FileSystemEntityType.notFound)) {
+        throw FileSystemException(
+          'Refusing to replace a non-regular destination',
+          target.path,
+        );
+      }
+      if (type == FileSystemEntityType.file) {
+        await target.rename(backup.path);
+      }
+      try {
+        await temporary.rename(target.path);
+      } catch (_) {
+        if (!await target.exists() && await backup.exists()) {
+          await backup.rename(target.path);
+        }
+        rethrow;
+      }
+      if (await backup.exists()) {
+        try {
+          await backup.delete();
+        } on FileSystemException {
+          // The destination is complete; a stale backup is safer than rolling
+          // back a successful export after commit.
+        }
+      }
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
     }
   }
 }
@@ -646,15 +1145,27 @@ class _BrowserHeader extends StatelessWidget {
   final String identity;
   final RemoteFilesController controller;
   final VoidCallback onUpload;
+  final VoidCallback? onUploadFolder;
   final VoidCallback onNewFolder;
+  final VoidCallback onNewSymbolicLink;
   final VoidCallback onEnterPath;
+  final VoidCallback onCopyPath;
+  final VoidCallback onOpenTerminalHere;
+  final TextEditingController filterController;
+  final VoidCallback? onDownloadSelected;
 
   const _BrowserHeader({
     required this.identity,
     required this.controller,
     required this.onUpload,
+    this.onUploadFolder,
     required this.onNewFolder,
+    required this.onNewSymbolicLink,
     required this.onEnterPath,
+    required this.onCopyPath,
+    required this.onOpenTerminalHere,
+    required this.filterController,
+    this.onDownloadSelected,
   });
 
   @override
@@ -726,14 +1237,117 @@ class _BrowserHeader extends StatelessWidget {
                   tooltip: 'File actions',
                   onSelected: (value) {
                     if (value == 'upload') onUpload();
+                    if (value == 'upload_folder') onUploadFolder?.call();
                     if (value == 'folder') onNewFolder();
+                    if (value == 'symlink') onNewSymbolicLink();
+                    if (value == 'copy_path') onCopyPath();
+                    if (value == 'terminal_here') onOpenTerminalHere();
+                    if (value == 'bookmark') {
+                      unawaited(controller.toggleCurrentBookmark());
+                    }
+                    if (value == 'hidden') {
+                      controller.setShowHidden(!controller.showHidden);
+                    }
+                    if (value.startsWith('open_bookmark:')) {
+                      unawaited(
+                        controller.navigate(
+                          value.substring('open_bookmark:'.length),
+                        ),
+                      );
+                    }
+                    if (value.startsWith('remove_bookmark:')) {
+                      unawaited(
+                        controller.removeBookmark(
+                          value.substring('remove_bookmark:'.length),
+                        ),
+                      );
+                    }
+                    if (value.startsWith('sort:')) {
+                      final field = RemoteSortField.values.firstWhere(
+                        (field) => field.name == value.substring(5),
+                      );
+                      final direction =
+                          controller.sortField == field &&
+                              controller.sortDirection ==
+                                  RemoteSortDirection.ascending
+                          ? RemoteSortDirection.descending
+                          : RemoteSortDirection.ascending;
+                      controller.setSort(field, direction);
+                    }
                   },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
                       value: 'upload',
                       child: Text('Upload files…'),
                     ),
-                    PopupMenuItem(value: 'folder', child: Text('New folder…')),
+                    if (onUploadFolder != null)
+                      const PopupMenuItem(
+                        value: 'upload_folder',
+                        child: Text('Upload folder…'),
+                      ),
+                    const PopupMenuItem(
+                      value: 'folder',
+                      child: Text('New folder…'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'symlink',
+                      child: Text('New symbolic link…'),
+                    ),
+                    const PopupMenuDivider(),
+                    const PopupMenuItem(
+                      value: 'copy_path',
+                      child: Text('Copy current path'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'terminal_here',
+                      child: Text('Open terminal here'),
+                    ),
+                    PopupMenuItem(
+                      value: 'bookmark',
+                      child: Text(
+                        controller.currentPathBookmarked
+                            ? 'Remove current bookmark'
+                            : 'Bookmark current path',
+                      ),
+                    ),
+                    for (final path in controller.bookmarks) ...[
+                      PopupMenuItem(
+                        value: 'open_bookmark:$path',
+                        child: Text(
+                          'Open $path',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'remove_bookmark:$path',
+                        child: Text(
+                          'Remove bookmark $path',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'hidden',
+                      child: Text(
+                        controller.showHidden
+                            ? 'Hide dotfiles'
+                            : 'Show dotfiles',
+                      ),
+                    ),
+                    for (final field in RemoteSortField.values)
+                      PopupMenuItem(
+                        value: 'sort:${field.name}',
+                        child: Text(
+                          'Sort by ${field.name}${controller.sortField == field
+                              ? controller.sortDirection == RemoteSortDirection.ascending
+                                    ? ' ↑'
+                                    : ' ↓'
+                              : ''}',
+                        ),
+                      ),
                   ],
                 ),
               ],
@@ -757,6 +1371,48 @@ class _BrowserHeader extends StatelessWidget {
                   ),
               ],
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 2, 4, 0),
+              child: TextField(
+                controller: filterController,
+                onChanged: controller.setFilterQuery,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: 'Filter files',
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  suffixIcon: controller.filterQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Clear filter',
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () {
+                            filterController.clear();
+                            controller.setFilterQuery('');
+                          },
+                        ),
+                ),
+              ),
+            ),
+            if (controller.selectedPaths.isNotEmpty)
+              Row(
+                children: [
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('${controller.selectedPaths.length} selected'),
+                  ),
+                  if (onDownloadSelected != null)
+                    IconButton(
+                      tooltip: 'Download selected',
+                      icon: const Icon(Icons.download),
+                      onPressed: onDownloadSelected,
+                    ),
+                  TextButton(
+                    onPressed: controller.clearSelection,
+                    child: const Text('Clear'),
+                  ),
+                ],
+              ),
           ],
         ),
       ),
@@ -789,18 +1445,36 @@ class _FileRow extends StatelessWidget {
   final RemoteFileEntry entry;
   final bool showDetails;
   final bool hasLocalCopy;
+  final bool selected;
+  final bool selectionMode;
+  final VoidCallback onSelect;
   final VoidCallback onOpen;
   final VoidCallback onRename;
   final VoidCallback onDelete;
+  final VoidCallback onProperties;
+  final VoidCallback onCopyPath;
+  final VoidCallback? onOpenTerminalHere;
+  final VoidCallback? onDownload;
+  final VoidCallback? onShare;
+  final VoidCallback? onOpenWithBBEdit;
   final VoidCallback? onUploadChanges;
 
   const _FileRow({
     required this.entry,
     required this.showDetails,
     required this.hasLocalCopy,
+    required this.selected,
+    required this.selectionMode,
+    required this.onSelect,
     required this.onOpen,
     required this.onRename,
     required this.onDelete,
+    required this.onProperties,
+    required this.onCopyPath,
+    this.onOpenTerminalHere,
+    this.onDownload,
+    this.onShare,
+    this.onOpenWithBBEdit,
     this.onUploadChanges,
   });
 
@@ -812,17 +1486,21 @@ class _FileRow extends StatelessWidget {
     ].join(' · ');
     return ListTile(
       dense: true,
-      leading: Icon(switch (entry.type) {
-        RemoteFileType.directory => Icons.folder_outlined,
-        RemoteFileType.symbolicLink => Icons.link,
-        RemoteFileType.file => Icons.insert_drive_file_outlined,
-        RemoteFileType.other => Icons.description_outlined,
-      }),
+      selected: selected,
+      leading: selectionMode
+          ? Checkbox(value: selected, onChanged: (_) => onSelect())
+          : Icon(switch (entry.type) {
+              RemoteFileType.directory => Icons.folder_outlined,
+              RemoteFileType.symbolicLink => Icons.link,
+              RemoteFileType.file => Icons.insert_drive_file_outlined,
+              RemoteFileType.other => Icons.description_outlined,
+            }),
       title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: !showDetails && details.isNotEmpty
           ? Text(details, maxLines: 1, overflow: TextOverflow.ellipsis)
           : null,
-      onTap: onOpen,
+      onTap: selectionMode ? onSelect : onOpen,
+      onLongPress: onSelect,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -846,21 +1524,54 @@ class _FileRow extends StatelessWidget {
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'open') onOpen();
+              if (value == 'select') onSelect();
               if (value == 'upload') onUploadChanges?.call();
+              if (value == 'bbedit') onOpenWithBBEdit?.call();
+              if (value == 'download') onDownload?.call();
+              if (value == 'share') onShare?.call();
+              if (value == 'copy_path') onCopyPath();
+              if (value == 'terminal_here') onOpenTerminalHere?.call();
               if (value == 'rename') onRename();
               if (value == 'delete') onDelete();
+              if (value == 'properties') onProperties();
             },
             itemBuilder: (context) => [
               PopupMenuItem(
                 value: 'open',
                 child: Text(entry.isDirectory ? 'Open' : 'Open locally'),
               ),
+              const PopupMenuItem(value: 'select', child: Text('Select')),
+              if (onOpenWithBBEdit != null)
+                const PopupMenuItem(
+                  value: 'bbedit',
+                  child: Text('Open with BBEdit'),
+                ),
               if (onUploadChanges != null)
                 const PopupMenuItem(
                   value: 'upload',
                   child: Text('Upload local changes'),
                 ),
+              if (onDownload != null)
+                const PopupMenuItem(
+                  value: 'download',
+                  child: Text('Download / Save as…'),
+                ),
+              if (onShare != null)
+                const PopupMenuItem(value: 'share', child: Text('Share…')),
+              const PopupMenuItem(
+                value: 'copy_path',
+                child: Text('Copy remote path'),
+              ),
+              if (onOpenTerminalHere != null)
+                const PopupMenuItem(
+                  value: 'terminal_here',
+                  child: Text('Open terminal here'),
+                ),
               const PopupMenuItem(value: 'rename', child: Text('Rename…')),
+              const PopupMenuItem(
+                value: 'properties',
+                child: Text('Properties…'),
+              ),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'delete', child: Text('Delete…')),
             ],
@@ -874,12 +1585,14 @@ class _FileRow extends StatelessWidget {
 class _LocalCopiesPanel extends StatelessWidget {
   final List<ManagedRemoteFile> copies;
   final ValueChanged<ManagedRemoteFile> onOpen;
+  final ValueChanged<ManagedRemoteFile>? onOpenWithBBEdit;
   final ValueChanged<ManagedRemoteFile> onUpload;
   final ValueChanged<ManagedRemoteFile> onDiscard;
 
   const _LocalCopiesPanel({
     required this.copies,
     required this.onOpen,
+    this.onOpenWithBBEdit,
     required this.onUpload,
     required this.onDiscard,
   });
@@ -895,17 +1608,29 @@ class _LocalCopiesPanel extends StatelessWidget {
           dense: true,
           title: Text(remoteBasename(copy.remotePath)),
           subtitle: Text(
-            copy.remotePath,
-            maxLines: 1,
+            '${copy.remotePath}\n${copy.missing
+                ? 'Local file is missing'
+                : copy.dirty
+                ? 'Modified locally · review before upload'
+                : 'Watching for local saves'}',
+            maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
           onTap: () => onOpen(copy),
           trailing: Wrap(
             children: [
+              if (onOpenWithBBEdit != null)
+                IconButton(
+                  tooltip: 'Open with BBEdit',
+                  icon: const Icon(Icons.edit_outlined, size: 19),
+                  onPressed: copy.missing
+                      ? null
+                      : () => onOpenWithBBEdit!(copy),
+                ),
               IconButton(
                 tooltip: 'Upload changes',
                 icon: const Icon(Icons.upload, size: 19),
-                onPressed: () => onUpload(copy),
+                onPressed: copy.missing ? null : () => onUpload(copy),
               ),
               IconButton(
                 tooltip: 'Discard local copy',
@@ -1027,6 +1752,105 @@ class _FilesUnavailable extends StatelessWidget {
       ),
     ),
   );
+}
+
+class _RecoveredLocalEdits extends StatelessWidget {
+  final TerminalSession session;
+  final AppState state;
+
+  const _RecoveredLocalEdits({required this.session, required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final copies = session.retainedLocalCopies.values.toList();
+    return Column(
+      children: [
+        MaterialBanner(
+          leading: const Icon(Icons.cloud_off_outlined),
+          content: const Text(
+            'These local edits were recovered. Reconnect before uploading; '
+            'Open and Discard remain available offline.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => state.reconnect(session.id),
+              child: const Text('Reconnect'),
+            ),
+          ],
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: copies.length,
+            itemBuilder: (context, index) {
+              final copy = copies[index];
+              return ListTile(
+                leading: Icon(
+                  copy.missing
+                      ? Icons.file_present_outlined
+                      : Icons.edit_document,
+                ),
+                title: Text(remoteBasename(copy.remotePath)),
+                subtitle: Text(
+                  copy.missing
+                      ? 'Local checkout is missing'
+                      : copy.dirty
+                      ? '${copy.remotePath}\nModified locally'
+                      : copy.remotePath,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onTap: copy.missing
+                    ? null
+                    : () async {
+                        try {
+                          await const ExternalFileOpener().open(
+                            state.services.managedRemoteFiles
+                                .checkoutFile(copy.localPath)
+                                .path,
+                            editor: state.services.settings.remoteFileEditor,
+                          );
+                        } catch (error) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(error.toString())),
+                          );
+                        }
+                      },
+                trailing: IconButton(
+                  tooltip: 'Discard local copy',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () async {
+                    final discard = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Discard local copy?'),
+                        content: const Text(
+                          'Any changes not uploaded to the server are deleted.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('Cancel'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('Discard'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (discard == true) {
+                      await state.discardRetainedLocalCopy(session.id, copy);
+                    }
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 String _formatBytes(int bytes) {

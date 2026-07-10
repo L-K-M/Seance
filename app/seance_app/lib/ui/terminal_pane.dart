@@ -134,7 +134,8 @@ class TerminalPane extends StatelessWidget {
           IconButton(
             tooltip: 'Remote files',
             icon: const Icon(Icons.folder_outlined),
-            onPressed: active.isConnected
+            onPressed:
+                active.isConnected || active.retainedLocalCopies.isNotEmpty
                 ? () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => const FilesScreen(),
@@ -311,10 +312,12 @@ class _TabChip extends StatelessWidget {
             children: [
               _TabStatusDot(status: status),
               const SizedBox(width: 6),
-              Text(label,
-                  style: TextStyle(
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                  )),
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
               const SizedBox(width: 2),
               IconButton(
                 tooltip: 'Close tab',
@@ -419,8 +422,9 @@ class _SessionViewState extends State<_SessionView> {
   /// menu routes ⌘C/⌘V/⌘A to the terminal rather than a focused text field.
   void _reportTerminalFocus() {
     if (Platform.isMacOS) {
-      const MethodChannel('seance/menu')
-          .invokeMethod('setTerminalFocused', _focus.hasFocus);
+      const MethodChannel(
+        'seance/menu',
+      ).invokeMethod('setTerminalFocused', _focus.hasFocus);
     }
   }
 
@@ -506,7 +510,9 @@ class _SessionViewState extends State<_SessionView> {
 
   /// Right-click menu: Copy (when there's a selection), Paste, Select all.
   Future<void> _showContextMenu(
-      BuildContext context, Offset globalPosition) async {
+    BuildContext context,
+    Offset globalPosition,
+  ) async {
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final hasSelection = _terminalController.selection != null;
     final choice = await showMenu<String>(
@@ -519,7 +525,10 @@ class _SessionViewState extends State<_SessionView> {
       ),
       items: [
         PopupMenuItem(
-            value: 'copy', enabled: hasSelection, child: const Text('Copy')),
+          value: 'copy',
+          enabled: hasSelection,
+          child: const Text('Copy'),
+        ),
         const PopupMenuItem(value: 'paste', child: Text('Paste')),
         const PopupMenuDivider(),
         const PopupMenuItem(value: 'selectAll', child: Text('Select all')),
@@ -555,8 +564,10 @@ class _ConnectionError extends StatelessWidget {
             children: [
               const Icon(Icons.link_off, size: 40),
               const SizedBox(height: 12),
-              Text('Connection failed',
-                  style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                'Connection failed',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 8),
               Text(tab.error!, textAlign: TextAlign.center),
               const SizedBox(height: 16),
@@ -590,8 +601,10 @@ class _Disconnected extends StatelessWidget {
           children: [
             const Icon(Icons.power_off_outlined, size: 40),
             const SizedBox(height: 12),
-            Text('Disconnected',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Disconnected',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             const Text('The session ended.', textAlign: TextAlign.center),
             const SizedBox(height: 16),
@@ -650,7 +663,10 @@ class _ConnectionLogView extends StatelessWidget {
               child: SelectableText(
                 text.isEmpty ? '(no log captured)' : text,
                 style: const TextStyle(
-                    fontFamily: 'monospace', fontSize: 12, height: 1.4),
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  height: 1.4,
+                ),
               ),
             ),
           ),
@@ -670,8 +686,10 @@ class _NoSession extends StatelessWidget {
         children: [
           const Icon(Icons.terminal, size: 48),
           const SizedBox(height: 12),
-          Text('Select a server to open a session',
-              style: Theme.of(context).textTheme.titleMedium),
+          Text(
+            'Select a server to open a session',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
         ],
       ),
     );

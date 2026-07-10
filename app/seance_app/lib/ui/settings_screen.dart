@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../services/external_file_opener.dart';
 import 'sync_enrollment_validation.dart';
 
 /// Settings: LLM provider (the assistant is always on — this only picks which
@@ -31,6 +34,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _syncSecrets;
   late bool _commandSuggestions;
   late bool _checkForUpdates;
+  late RemoteFileEditor _remoteFileEditor;
   SyncEnrollmentMode _syncMode = SyncEnrollmentMode.login;
   bool _saving = false;
   String? _syncStatus;
@@ -62,6 +66,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _syncSecrets = s.syncSecrets;
     _commandSuggestions = s.commandSuggestions;
     _checkForUpdates = s.checkForUpdates;
+    _remoteFileEditor = s.remoteFileEditor;
     _syncUrl.text = s.syncBaseUrl ?? '';
     _syncUser.text = s.syncUsername ?? '';
   }
@@ -98,11 +103,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(labelText: 'Provider'),
             items: const [
               DropdownMenuItem(
-                  value: LlmProviderKind.anthropic,
-                  child: Text('Anthropic (Claude)')),
+                value: LlmProviderKind.anthropic,
+                child: Text('Anthropic (Claude)'),
+              ),
               DropdownMenuItem(
-                  value: LlmProviderKind.openaiCompatible,
-                  child: Text('OpenAI-compatible (OpenAI, Ollama, …)')),
+                value: LlmProviderKind.openaiCompatible,
+                child: Text('OpenAI-compatible (OpenAI, Ollama, …)'),
+              ),
             ],
             onChanged: (v) => setState(() {
               _kind = v ?? LlmProviderKind.anthropic;
@@ -139,7 +146,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2))
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
                     : OutlinedButton.icon(
                         onPressed: () => _fetchModels(state),
                         icon: const Icon(Icons.playlist_add_check, size: 18),
@@ -153,14 +161,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: const EdgeInsets.only(top: 8),
               child: DropdownButtonFormField<String>(
                 isExpanded: true,
-                initialValue: _models.contains(_model.text) ? _model.text : null,
-                decoration:
-                    const InputDecoration(labelText: 'Available models'),
+                initialValue: _models.contains(_model.text)
+                    ? _model.text
+                    : null,
+                decoration: const InputDecoration(
+                  labelText: 'Available models',
+                ),
                 items: [
                   for (final m in _models)
                     DropdownMenuItem(
-                        value: m,
-                        child: Text(m, overflow: TextOverflow.ellipsis)),
+                      value: m,
+                      child: Text(m, overflow: TextOverflow.ellipsis),
+                    ),
                 ],
                 onChanged: (v) {
                   if (v != null) setState(() => _model.text = v);
@@ -170,8 +182,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           if (_modelsError != null)
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text(_modelsError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              child: Text(
+                _modelsError!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           TextField(
             controller: _apiKey,
@@ -195,9 +209,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             title: const Text('Redact secrets before sending'),
             subtitle: const Text(
-                'Masks keys, tokens, and private keys in outbound context.'),
+              'Masks keys, tokens, and private keys in outbound context.',
+            ),
             value: _redaction,
             onChanged: (v) => setState(() => _redaction = v),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<RemoteFileEditor>(
+            initialValue: _remoteFileEditor,
+            decoration: const InputDecoration(labelText: 'Remote file editor'),
+            items: [
+              const DropdownMenuItem(
+                value: RemoteFileEditor.systemDefault,
+                child: Text('System default'),
+              ),
+              if (Platform.isMacOS)
+                const DropdownMenuItem(
+                  value: RemoteFileEditor.bbedit,
+                  child: Text('BBEdit'),
+                ),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() => _remoteFileEditor = value);
+              _persistFileEditor(state);
+            },
           ),
           const SizedBox(height: 8),
           FilledButton(
@@ -210,9 +246,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             title: const Text('Check for updates'),
             subtitle: const Text(
-                'On launch, check GitHub for a newer release and show a '
-                'notification. Only ever links to the releases page — never '
-                'downloads or installs anything.'),
+              'On launch, check GitHub for a newer release and show a '
+              'notification. Only ever links to the releases page — never '
+              'downloads or installs anything.',
+            ),
             isThreeLine: true,
             value: _checkForUpdates,
             onChanged: (v) {
@@ -226,10 +263,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             title: const Text('Suggest frequently-used commands'),
             subtitle: const Text(
-                'Tracks commands you run (on this device only) and offers the '
-                'ones you repeat as snippets. Off by default — capture is '
-                "keystroke-based and can't distinguish a command from a "
-                'password typed at a prompt.'),
+              'Tracks commands you run (on this device only) and offers the '
+              'ones you repeat as snippets. Off by default — capture is '
+              "keystroke-based and can't distinguish a command from a "
+              'password typed at a prompt.',
+            ),
             isThreeLine: true,
             value: _commandSuggestions,
             onChanged: (v) {
@@ -279,8 +317,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             title: const Text('Sync automatically'),
             subtitle: const Text(
-                'On startup, after you add/edit/remove a server, and every few '
-                'minutes.'),
+              'On startup, after you add/edit/remove a server, and every few '
+              'minutes.',
+            ),
             value: _autoSync,
             onChanged: (v) {
               setState(() => _autoSync = v);
@@ -291,8 +330,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             title: const Text('Sync saved passwords & keys'),
             subtitle: const Text(
-                'End-to-end encrypted. Only servers where you enable '
-                '"Allow this credential to sync" are included.'),
+              'End-to-end encrypted. Only servers where you enable '
+              '"Allow this credential to sync" are included.',
+            ),
             isThreeLine: true,
             value: _syncSecrets,
             onChanged: (v) {
@@ -384,9 +424,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _section(String title) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(title, style: Theme.of(context).textTheme.titleMedium),
-      );
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(title, style: Theme.of(context).textTheme.titleMedium),
+  );
 
   /// Ask the configured endpoint which models it offers. Uses the key typed in
   /// the form if present, otherwise the stored one; keyless local endpoints
@@ -405,9 +445,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final baseUrl = _baseUrl.text.trim();
       final LlmProvider provider = _kind == LlmProviderKind.anthropic
           ? AnthropicProvider(
-              apiKey: key, baseUrl: baseUrl, model: _model.text.trim())
+              apiKey: key,
+              baseUrl: baseUrl,
+              model: _model.text.trim(),
+            )
           : OpenAiCompatibleProvider(
-              baseUrl: baseUrl, apiKey: key, model: _model.text.trim());
+              baseUrl: baseUrl,
+              apiKey: key,
+              model: _model.text.trim(),
+            );
       final models = await provider.listModels();
       models.sort();
       setState(() {
@@ -442,8 +488,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await state.reloadLlmProvider();
     if (mounted) {
       setState(() => _saving = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Saved')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Saved')));
     }
   }
 
@@ -469,6 +516,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     state.services.settings.checkForUpdates = _checkForUpdates;
     await state.services.saveSettings();
     if (!_checkForUpdates) state.dismissUpdateNotice();
+  }
+
+  Future<void> _persistFileEditor(AppState state) async {
+    state.services.settings.remoteFileEditor = _remoteFileEditor;
+    await state.services.saveSettings();
   }
 
   Future<void> _sync(AppState state, {required SyncEnrollmentMode mode}) async {
@@ -529,8 +581,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final outcome = await state.syncNow();
       if (mounted) {
-        setState(() => _syncStatus =
-            'Synced: pulled ${outcome.pulled}, pushed ${outcome.pushed}.');
+        setState(
+          () => _syncStatus =
+              'Synced: pulled ${outcome.pulled}, pushed ${outcome.pushed}.',
+        );
       }
     } catch (e) {
       if (mounted) setState(() => _syncStatus = 'Failed: $e');
@@ -610,15 +664,20 @@ class _SyncStatusLine extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(
-              width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
           const SizedBox(width: 8),
           Text('Syncing…', style: style),
         ],
       );
     }
     if (state.lastSyncError != null) {
-      return Text('Last sync failed: ${state.lastSyncError}',
-          style: style?.copyWith(color: scheme.error));
+      return Text(
+        'Last sync failed: ${state.lastSyncError}',
+        style: style?.copyWith(color: scheme.error),
+      );
     }
     if (state.lastSyncAt != null) {
       return Text('Last synced ${_ago(state.lastSyncAt!)}.', style: style);
