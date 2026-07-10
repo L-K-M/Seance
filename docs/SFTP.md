@@ -72,12 +72,15 @@ ESC ] 7 ; file://hostname/path ESC \
 
 The cwd is stored per terminal session. When **Follow terminal** is enabled and
 a valid absolute path arrives, the browser navigates to it. The browser falls
-back to SFTP's canonical home/current directory when OSC 7 is unavailable. A
-path that is outside an SFTP chroot is reported without breaking the shell.
+back to a conservative OSC 0/2 title parser when OSC 7 is unavailable. This
+covers the default Ubuntu/Debian Bash title form (`user@host: ~/path` or an
+absolute path), resolving `~` against SFTP's canonical home. If neither source
+is available, Files stays at the SFTP home/current directory. A path outside an
+SFTP chroot is reported without breaking the shell.
 
-Shells do not all emit OSC 7 by default. Future shell-integration documentation
-can provide opt-in prompt hooks for bash, zsh, and fish. Séance must not silently
-inject or execute shell setup code.
+Shells do not all emit OSC 7 or a cwd title. Future shell-integration
+documentation can provide opt-in prompt hooks for bash, zsh, and fish. Séance
+must not silently inject or execute shell setup code.
 
 The reverse action, **Open terminal here**, should insert a shell-escaped `cd`
 command without a newline so the user reviews and submits it. It is disabled
@@ -201,6 +204,8 @@ binary files are streamed as bytes and never decoded merely to transfer them.
   checkouts, upload-back conflict prompts, and checkout retention across normal
   disconnect/reconnect.
 - Added standard OSC 7 cwd extraction with URI validation and percent-decoding.
+- Added an OSC 0/2 title fallback for the cwd titles emitted by default Ubuntu
+  and Debian Bash configurations when OSC 7 is absent.
 - Added a lazy Files utility tab for wide layouts and a full-screen route from
   the terminal app bar for Android/narrow layouts.
 - Added navigation, responsive file rows, path entry, follow mode, upload,
@@ -220,7 +225,7 @@ binary files are streamed as bytes and never decoded merely to transfer them.
   packages/seance_sync_server` — clean.
 - `dart test packages/seance_protocol packages/seance_core` — 131 tests pass.
 - `flutter analyze` — clean.
-- `flutter test` — 82 tests pass.
+- `flutter test` — 84 tests pass.
 - Full three-package Dart run reaches 160 passing tests, but the three existing
   SQLite storage tests cannot load `libsqlite3.so` in this container (only
   runtime `libsqlite3.so.0` is installed).

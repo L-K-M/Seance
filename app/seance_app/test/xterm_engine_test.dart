@@ -150,4 +150,15 @@ void main() {
     expect(e.workingDirectory.value, isNull);
     await e.dispose();
   });
+
+  test('OSC 0 preserves the shell title for cwd fallback', () async {
+    final e = XtermTerminalEngine();
+
+    e.feed(Uint8List.fromList(
+      utf8.encode('\x1b]0;root@server: ~/docker\x07'),
+    ));
+
+    expect(e.terminalTitle.value, 'root@server: ~/docker');
+    await e.dispose();
+  });
 }

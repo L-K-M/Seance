@@ -37,6 +37,10 @@ class XtermTerminalEngine implements TerminalEngine {
   /// until the remote shell emits it; never inferred from prompt text.
   final ValueNotifier<String?> workingDirectory = ValueNotifier<String?>(null);
 
+  /// Last OSC 0/2 terminal title. Common Bash configurations include the cwd
+  /// here even when they do not emit OSC 7, so Files can use it as a fallback.
+  final ValueNotifier<String?> terminalTitle = ValueNotifier<String?>(null);
+
   // A best-effort reconstruction of the current, not-yet-submitted input line,
   // built from the keystrokes the user sends. Used to prefill the command
   // generator. It's an approximation — full readline editing (history, cursor
@@ -61,6 +65,7 @@ class XtermTerminalEngine implements TerminalEngine {
       _trackPending(out);
       _input.add(Uint8List.fromList(utf8.encode(out)));
     };
+    terminal.onTitleChange = (title) => terminalTitle.value = title;
     terminal.onPrivateOSC = _handlePrivateOsc;
   }
 
@@ -203,6 +208,7 @@ class XtermTerminalEngine implements TerminalEngine {
     _terminalDecoder.close();
     ctrlArmed.dispose();
     workingDirectory.dispose();
+    terminalTitle.dispose();
     await _input.close();
   }
 }

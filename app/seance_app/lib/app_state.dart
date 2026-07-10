@@ -322,6 +322,7 @@ class AppState extends ChangeNotifier {
       tab.files = RemoteFilesController(
         session.openRemoteFileSystem,
         shellDirectory: engine.workingDirectory,
+        terminalTitle: engine.terminalTitle,
         initialLocalCopies: tab.retainedLocalCopies,
       );
       tab.retainedLocalCopies.clear();

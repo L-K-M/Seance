@@ -49,14 +49,17 @@ class ManagedRemoteFile {
 class RemoteFilesController extends ChangeNotifier {
   final Future<RemoteFileSystem> Function() _openRemoteFileSystem;
   final ValueListenable<String?> shellDirectory;
+  final ValueListenable<String?> terminalTitle;
 
   RemoteFilesController(
     this._openRemoteFileSystem, {
     required this.shellDirectory,
+    ValueListenable<String?>? terminalTitle,
     Map<String, ManagedRemoteFile>? initialLocalCopies,
-  }) {
+  }) : terminalTitle = terminalTitle ?? const _EmptyStringListenable() {
     if (initialLocalCopies != null) localCopies.addAll(initialLocalCopies);
     shellDirectory.addListener(_followShellDirectory);
+    this.terminalTitle.addListener(_followShellDirectory);
   }
 
   RemoteFileSystem? _remoteFileSystem;
@@ -93,7 +96,7 @@ class RemoteFilesController extends ChangeNotifier {
       homePath = await remote.canonicalize('.');
       if (_disposed) return;
       initialized = true;
-      final shellPath = shellDirectory.value;
+      final shellPath = reportedShellDirectory;
       await navigate(
         followTerminal && _isAbsolutePath(shellPath) ? shellPath! : homePath!,
       );
@@ -156,6 +159,29 @@ class RemoteFilesController extends ChangeNotifier {
     followTerminal = value;
     _notify();
     if (value) _followShellDirectory();
+  }
+
+  /// OSC 7 is authoritative. Ubuntu/Debian's default Bash setup commonly emits
+  /// only an OSC 0 title such as `root@host: ~/docker`, so resolve that against
+  /// the SFTP home as a conservative fallback.
+  String? get reportedShellDirectory {
+    final oscDirectory = shellDirectory.value;
+    if (_isAbsolutePath(oscDirectory)) return oscDirectory;
+
+    final home = homePath;
+    final title = terminalTitle.value?.trim();
+    if (home == null || title == null) return null;
+    final separator = title.indexOf(': ');
+    if (separator < 1 || !title.substring(0, separator).contains('@')) {
+      return null;
+    }
+    final location = title.substring(separator + 2).trim();
+    if (location == '~' || location == '~/') return home;
+    if (location.startsWith('~/')) {
+      final relative = location.substring(2);
+      return relative.isEmpty ? home : remoteJoin(home, relative);
+    }
+    return _isAbsolutePath(location) ? location : null;
   }
 
   Future<void> createDirectory(String name) async {
@@ -390,7 +416,7 @@ class RemoteFilesController extends ChangeNotifier {
   }
 
   void _followShellDirectory() {
-    final path = shellDirectory.value;
+    final path = reportedShellDirectory;
     if (!initialized || !followTerminal || !_isAbsolutePath(path)) return;
     if (path == currentPath) return;
     unawaited(navigate(path!));
@@ -488,9 +514,23 @@ class RemoteFilesController extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     shellDirectory.removeListener(_followShellDirectory);
+    terminalTitle.removeListener(_followShellDirectory);
     for (final transfer in transfers) {
       transfer.cancellation.cancel();
     }
     super.dispose();
   }
+}
+
+class _EmptyStringListenable implements ValueListenable<String?> {
+  const _EmptyStringListenable();
+
+  @override
+  String? get value => null;
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
 }

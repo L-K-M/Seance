@@ -52,6 +52,35 @@ void main() {
     shellDirectory.dispose();
   });
 
+  test('falls back to a common Bash cwd title when OSC 7 is absent', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final terminalTitle = ValueNotifier<String?>('root@server: ~/docker');
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      terminalTitle: terminalTitle,
+    );
+
+    await controller.initialize();
+    expect(controller.currentPath, '/home/test/docker');
+
+    terminalTitle.value = 'root@server: /var/log';
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.currentPath, '/var/log');
+
+    shellDirectory.value = '/home/test';
+    terminalTitle.value = 'root@server: /var/log';
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.currentPath, '/home/test', reason: 'OSC 7 must win');
+
+    controller.dispose();
+    shellDirectory.dispose();
+    terminalTitle.dispose();
+  });
+
   test('records upload progress and refreshes the directory', () async {
     final remote = _FakeRemoteFileSystem();
     final shellDirectory = ValueNotifier<String?>(null);
@@ -180,6 +209,7 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
         size: 20,
       ),
     ],
+    '/home/test/docker': [],
   };
   final Map<String, List<int>> uploaded = {};
   RemoteFileEntry? expectedUploadTarget;

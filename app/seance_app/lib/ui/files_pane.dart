@@ -746,12 +746,12 @@ class _BrowserHeader extends StatelessWidget {
                 ),
                 const Flexible(child: Text('Follow terminal directory')),
                 if (controller.followTerminal &&
-                    controller.shellDirectory.value == null)
+                    controller.reportedShellDirectory == null)
                   const Padding(
                     padding: EdgeInsets.only(left: 6),
                     child: Tooltip(
                       message:
-                          'Waiting for OSC 7 metadata from the remote shell',
+                          'Waiting for directory metadata from the remote shell',
                       child: Icon(Icons.info_outline, size: 16),
                     ),
                   ),
