@@ -47,8 +47,9 @@ void main() {
     expect(terminal.buffer.getText(controller.selection), isNot(contains('line 0')));
   });
 
-  // Guards the double-click path: we reach the render object through a
-  // GlobalKey<TerminalViewState> and call selectWord (xterm's public API).
+  // Guards the render-object selection API the app's menus and the fork's
+  // double-click path build on (the gesture wiring itself is regression-
+  // tested inside third_party/xterm - see selection_gesture_test.dart).
   testWidgets('selectWord via the render object selects a single word',
       (tester) async {
     final terminal = Terminal(maxLines: 100);

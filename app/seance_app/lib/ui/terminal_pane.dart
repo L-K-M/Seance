@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
@@ -150,17 +149,6 @@ class _SessionViewState extends State<_SessionView> {
   final FocusNode _focus = FocusNode();
   // Our own controller so the copy/paste menu can read (and set) the selection.
   final TerminalController _terminalController = TerminalController();
-  // Reaches the render object to convert a click into a word/line selection.
-  final GlobalKey<TerminalViewState> _terminalViewKey =
-      GlobalKey<TerminalViewState>();
-
-  // Desktop multi-click selection: xterm's own double-tap word-select is
-  // preempted by its mouse drag recognizer, and it has no triple-tap, so we
-  // detect double/triple clicks ourselves (see [_onPointerDown]).
-  int _tapCount = 0;
-  Offset? _lastTapDown;
-  Timer? _multiTapTimer;
-
   @override
   void initState() {
     super.initState();
@@ -194,7 +182,6 @@ class _SessionViewState extends State<_SessionView> {
 
   @override
   void dispose() {
-    _multiTapTimer?.cancel();
     _focus.removeListener(_reportTerminalFocus);
     if (identical(widget.tab.controller, _terminalController)) {
       widget.tab.controller = null;
@@ -225,78 +212,25 @@ class _SessionViewState extends State<_SessionView> {
     if (!tab.isConnected) {
       return _Disconnected(tab: tab, state: widget.state);
     }
-    // Listener observes pointer-downs without joining the gesture arena, so it
-    // can add double/triple-click selection on top of xterm's own gestures.
-    return Listener(
-      onPointerDown: _onPointerDown,
-      child: TerminalView(
-        tab.engine.terminal,
-        key: _terminalViewKey,
-        controller: _terminalController,
-        focusNode: _focus,
-        autofocus: widget.isActive,
-        onKeyEvent: _handleKeyEvent,
-        onSecondaryTapDown: (details, _) =>
-            _showContextMenu(context, details.globalPosition),
-        padding: const EdgeInsets.all(6),
-      ),
+    // Click semantics (single/double/triple, shift-click extension, drag
+    // anchoring, edge autoscroll) live in the vendored xterm fork — one owner
+    // in the gesture arena. The old app-side Listener machine raced xterm's
+    // recognizers: its selections were force-cleared ~100ms later.
+    return TerminalView(
+      tab.engine.terminal,
+      controller: _terminalController,
+      focusNode: _focus,
+      autofocus: widget.isActive,
+      onKeyEvent: _handleKeyEvent,
+      // No default shortcut layer: _handleKeyEvent and the menus already
+      // cover copy/paste/select-all, and xterm's defaults hijacked plain
+      // Ctrl+A (readline line-home) into a select-all and ate Ctrl+V before
+      // the shell ever saw it.
+      shortcuts: const <ShortcutActivator, Intent>{},
+      onSecondaryTapDown: (details, _) =>
+          _showContextMenu(context, details.globalPosition),
+      padding: const EdgeInsets.all(6),
     );
-  }
-
-  /// Detect double/triple mouse clicks and select the word / line under the
-  /// cursor. Touch keeps xterm's built-in double-tap-to-select-word.
-  void _onPointerDown(PointerDownEvent event) {
-    if (event.kind != PointerDeviceKind.mouse &&
-        event.kind != PointerDeviceKind.trackpad) {
-      return;
-    }
-    if (event.buttons != kPrimaryButton) {
-      _tapCount = 0;
-      return;
-    }
-    final continues = _lastTapDown != null &&
-        (_multiTapTimer?.isActive ?? false) &&
-        (event.position - _lastTapDown!).distance <= 8;
-    _tapCount = continues ? _tapCount + 1 : 1;
-    _lastTapDown = event.position;
-    _multiTapTimer?.cancel();
-    _multiTapTimer =
-        Timer(const Duration(milliseconds: 400), () => _tapCount = 0);
-
-    if (_tapCount == 2) {
-      _selectWordAt(event.position);
-    } else if (_tapCount >= 3) {
-      _selectLineAt(event.position);
-      _tapCount = 0;
-    }
-  }
-
-  void _selectWordAt(Offset globalPosition) {
-    final state = _terminalViewKey.currentState;
-    if (state == null) return;
-    try {
-      final render = state.renderTerminal;
-      render.selectWord(render.globalToLocal(globalPosition));
-    } catch (_) {
-      // Render object not laid out yet — ignore.
-    }
-  }
-
-  void _selectLineAt(Offset globalPosition) {
-    final state = _terminalViewKey.currentState;
-    if (state == null) return;
-    try {
-      final render = state.renderTerminal;
-      final cell = render.getCellOffset(render.globalToLocal(globalPosition));
-      final terminal = widget.tab.engine.terminal;
-      final buffer = terminal.buffer;
-      _terminalController.setSelection(
-        buffer.createAnchor(0, cell.y),
-        buffer.createAnchor(terminal.viewWidth, cell.y),
-      );
-    } catch (_) {
-      // Render object not laid out yet — ignore.
-    }
   }
 
   /// Intercept a few shortcuts before the terminal consumes the keystroke: the
@@ -318,7 +252,11 @@ class _SessionViewState extends State<_SessionView> {
       return KeyEventResult.handled;
     }
 
-    final clip = Platform.isMacOS
+    // Apple platforms use ⌘ (on iPad this is the only hardware-keyboard
+    // path — there is no native menu to fall back to); elsewhere
+    // Ctrl+Shift leaves plain Ctrl+C/A for the shell.
+    final apple = Platform.isMacOS || Platform.isIOS;
+    final clip = apple
         ? keys.isMetaPressed
         : (keys.isControlPressed && keys.isShiftPressed);
     if (clip && event.logicalKey == LogicalKeyboardKey.keyC) {
@@ -328,6 +266,10 @@ class _SessionViewState extends State<_SessionView> {
     }
     if (clip && event.logicalKey == LogicalKeyboardKey.keyV) {
       terminalPaste(widget.tab);
+      return KeyEventResult.handled;
+    }
+    if (clip && event.logicalKey == LogicalKeyboardKey.keyA) {
+      terminalSelectAll(widget.tab);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
