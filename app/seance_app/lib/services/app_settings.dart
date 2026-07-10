@@ -39,6 +39,11 @@ class AppSettings {
   /// shell command from text typed at a no-echo prompt, so the user opts in.
   bool commandSuggestions;
 
+  /// On launch, check GitHub for a newer release and show a notification if
+  /// one exists. On by default; only ever offers a link to the releases page —
+  /// never downloads or installs anything.
+  bool checkForUpdates;
+
   /// Stable per-device id used in synced records' conflict resolution.
   String deviceId;
 
@@ -59,6 +64,7 @@ class AppSettings {
     this.syncSecrets = false,
     this.autoSync = true,
     this.commandSuggestions = false,
+    this.checkForUpdates = true,
     this.deviceId = '',
     this.snippetsSeeded = false,
   });
@@ -76,6 +82,7 @@ class AppSettings {
         'syncSecrets': syncSecrets,
         'autoSync': autoSync,
         'commandSuggestions': commandSuggestions,
+        'checkForUpdates': checkForUpdates,
         'deviceId': deviceId,
         'snippetsSeeded': snippetsSeeded,
       };
@@ -95,6 +102,7 @@ class AppSettings {
         syncSecrets: json['syncSecrets'] as bool? ?? false,
         autoSync: json['autoSync'] as bool? ?? true,
         commandSuggestions: json['commandSuggestions'] as bool? ?? false,
+        checkForUpdates: json['checkForUpdates'] as bool? ?? true,
         deviceId: json['deviceId'] as String? ?? '',
         snippetsSeeded: json['snippetsSeeded'] as bool? ?? false,
       );

@@ -117,7 +117,15 @@ class AppState extends ChangeNotifier {
   HostKeyPrompter? hostKeyPrompter;
   KeyboardInteractiveResponder? keyboardInteractiveResponder;
 
-  AppState(this.services) {
+  // --- Update check ---
+
+  /// Set when a newer release exists on GitHub; drives the "update available"
+  /// affordance. The app never downloads or installs — it only links out.
+  UpdateInfo? updateInfo;
+  final UpdateChecker _updateChecker;
+
+  AppState(this.services, {UpdateChecker? updateChecker})
+      : _updateChecker = updateChecker ?? UpdateChecker() {
     _sessionManager = SshSessionManager(
       tofu: services.tofu,
       onHostKey: (decision) async {
@@ -581,6 +589,26 @@ class AppState extends ChangeNotifier {
     } else {
       services.probe.pause();
     }
+  }
+
+  /// Best-effort check for a newer GitHub release than [currentVersion]. If one
+  /// exists (and the user hasn't opted out), [updateInfo] is set so the UI can
+  /// offer a link to the releases page. Never downloads or installs; any error
+  /// (offline, rate-limited) is swallowed silently.
+  Future<void> checkForUpdate(String currentVersion) async {
+    if (!services.settings.checkForUpdates) return;
+    final info = await _updateChecker.check(currentVersion);
+    if (info != null) {
+      updateInfo = info;
+      notifyListeners();
+    }
+  }
+
+  /// Dismiss the update affordance for this session (a fresh launch re-checks).
+  void dismissUpdateNotice() {
+    if (updateInfo == null) return;
+    updateInfo = null;
+    notifyListeners();
   }
 
   /// Close a session's SSH connection but keep the tab: its dot goes grey

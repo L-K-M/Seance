@@ -24,6 +24,9 @@ export 'src/sync/sync_engine.dart';
 export 'src/sync/sync_coordinator.dart';
 export 'src/sync/http_sync_client.dart';
 
+export 'src/update/version.dart';
+export 'src/update/update_checker.dart';
+
 export 'src/llm/provider.dart';
 export 'src/llm/anthropic_provider.dart';
 export 'src/llm/openai_provider.dart';

@@ -1,7 +1,9 @@
+import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_state.dart';
 import 'services/app_services.dart';
@@ -106,7 +108,20 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
 
     await state.load();
     _installMacMenu(state);
+    // Fire-and-forget: don't let a slow/offline update check hold up startup.
+    unawaited(_checkForUpdate(state));
     return state;
+  }
+
+  /// Look up the running version and ask AppState to check GitHub for a newer
+  /// release. Best-effort; a failure here must never affect startup.
+  Future<void> _checkForUpdate(AppState state) async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      await state.checkForUpdate(info.version);
+    } catch (_) {
+      // No version info / platform channel unavailable — skip silently.
+    }
   }
 
   /// Wire the native macOS menu items (MainFlutterWindow.swift) to app actions.

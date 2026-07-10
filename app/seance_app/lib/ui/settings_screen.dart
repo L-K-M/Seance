@@ -29,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _autoSync;
   late bool _syncSecrets;
   late bool _commandSuggestions;
+  late bool _checkForUpdates;
   bool _saving = false;
   String? _syncStatus;
 
@@ -58,6 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;
     _commandSuggestions = s.commandSuggestions;
+    _checkForUpdates = s.checkForUpdates;
     _syncUrl.text = s.syncBaseUrl ?? '';
     _syncUser.text = s.syncUsername ?? '';
   }
@@ -198,6 +200,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
           FilledButton(
             onPressed: _saving ? null : () => _save(state),
             child: const Text('Save assistant settings'),
+          ),
+          const Divider(height: 40),
+          _section('General'),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Check for updates'),
+            subtitle: const Text(
+                'On launch, check GitHub for a newer release and show a '
+                'notification. Only ever links to the releases page — never '
+                'downloads or installs anything.'),
+            isThreeLine: true,
+            value: _checkForUpdates,
+            onChanged: (v) {
+              setState(() => _checkForUpdates = v);
+              _persistCheckForUpdates(state);
+            },
           ),
           const Divider(height: 40),
           _section('Snippets'),
@@ -412,6 +430,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     state.services.settings.commandSuggestions = _commandSuggestions;
     await state.services.saveSettings();
     state.refreshSuggestions();
+  }
+
+  /// Persist the update-check toggle; turning it off also clears any banner
+  /// already showing this session.
+  Future<void> _persistCheckForUpdates(AppState state) async {
+    state.services.settings.checkForUpdates = _checkForUpdates;
+    await state.services.saveSettings();
+    if (!_checkForUpdates) state.dismissUpdateNotice();
   }
 
   Future<void> _sync(AppState state, {required bool register}) async {
