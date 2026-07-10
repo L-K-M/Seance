@@ -11,6 +11,7 @@ import '../main.dart';
 import '../theme.dart';
 import 'app_menus.dart';
 import 'command_generator.dart';
+import 'files_pane.dart';
 import 'sidebar_panel.dart';
 import 'terminal_keyboard_bar.dart';
 
@@ -56,9 +57,12 @@ class TerminalPane extends StatelessWidget {
           // Reflow the terminal (and the key row) above the soft keyboard.
           resizeToAvoidBottomInset: true,
           endDrawer: showAssistantAffordance
-              ? const Drawer(width: 380, child: SidebarPanel())
+              ? const Drawer(
+                  width: 380,
+                  child: SidebarPanel(includeFiles: false),
+                )
               : null,
-          appBar: showAppBar ? _appBar(state) : null,
+          appBar: showAppBar ? _appBar(context, state) : null,
           body: Column(
             children: [
               if (active != null)
@@ -66,7 +70,7 @@ class TerminalPane extends StatelessWidget {
                   tabs: state.sessionsForServer(active.serverId),
                   activeSessionId: state.activeSessionId,
                   onFocus: state.focusSession,
-                  onClose: state.closeTab,
+                  onClose: (id) => _closeTab(context, state, id),
                   onNewTab: () => state.newTab(active.config),
                   onGenerateCommand: () => openCommandGenerator(state),
                 ),
@@ -79,7 +83,45 @@ class TerminalPane extends StatelessWidget {
     );
   }
 
-  PreferredSizeWidget _appBar(AppState state) {
+  Future<void> _closeTab(
+    BuildContext context,
+    AppState state,
+    String sessionId,
+  ) async {
+    final session = state.sessionById(sessionId);
+    if (session == null) return;
+    final localCopyCount =
+        (session.files?.localCopies.length ?? 0) +
+        session.retainedLocalCopies.length;
+    if (localCopyCount > 0) {
+      final close = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Close session and local edits?'),
+          content: Text(
+            '$localCopyCount downloaded ${localCopyCount == 1 ? 'file has' : 'files have'} '
+            'a managed local copy. Closing this tab deletes '
+            '${localCopyCount == 1 ? 'it' : 'them'}, including changes that '
+            'have not been uploaded.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Close and Delete'),
+            ),
+          ],
+        ),
+      );
+      if (close != true) return;
+    }
+    await state.closeTab(sessionId);
+  }
+
+  PreferredSizeWidget _appBar(BuildContext context, AppState state) {
     final active = state.activeSession;
     final status = active?.status;
     return AppBar(
@@ -88,6 +130,18 @@ class TerminalPane extends StatelessWidget {
           : null,
       title: Text(active?.config.label ?? 'Terminal'),
       actions: [
+        if (active != null)
+          IconButton(
+            tooltip: 'Remote files',
+            icon: const Icon(Icons.folder_outlined),
+            onPressed: active.isConnected
+                ? () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const FilesScreen(),
+                    ),
+                  )
+                : null,
+          ),
         if (status == TerminalStatus.connected)
           IconButton(
             tooltip: 'Disconnect',

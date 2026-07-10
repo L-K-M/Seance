@@ -6,6 +6,7 @@ import 'package:xterm/xterm.dart' show TerminalController;
 
 import 'services/app_services.dart';
 import 'services/default_snippets.dart';
+import 'services/remote_files_controller.dart';
 import 'services/xterm_engine.dart';
 
 /// Connection state of a server's terminal, mirrored by the status dot in the
@@ -22,6 +23,8 @@ class TerminalSession {
   final ServerConfig config;
   XtermTerminalEngine engine;
   SshSession? session;
+  RemoteFilesController? files;
+  final Map<String, ManagedRemoteFile> retainedLocalCopies = {};
   bool connecting;
   String? error;
 
@@ -316,6 +319,12 @@ class AppState extends ChangeNotifier {
         return;
       }
       tab.session = session;
+      tab.files = RemoteFilesController(
+        session.openRemoteFileSystem,
+        shellDirectory: engine.workingDirectory,
+        initialLocalCopies: tab.retainedLocalCopies,
+      );
+      tab.retainedLocalCopies.clear();
       tab.connecting = false;
       // The connection is up: stop the connection log from capturing dartssh2's
       // per-packet trace, which would otherwise fire notifyListeners (rebuilding
@@ -359,6 +368,8 @@ class AppState extends ChangeNotifier {
     sessions[index] = replacement;
     if (activeSessionId == old.id) _setActive(replacement.id);
     await _disposeSession(old);
+    replacement.retainedLocalCopies.addAll(old.retainedLocalCopies);
+    old.retainedLocalCopies.clear();
     notifyListeners();
     await _connect(replacement);
   }
@@ -376,7 +387,26 @@ class AppState extends ChangeNotifier {
   /// Close a session's SSH connection AND dispose its engine. For a session
   /// that never connected (still connecting, or errored) there is no session
   /// to close the engine for us, so dispose it directly.
-  Future<void> _disposeSession(TerminalSession tab) async {
+  Future<void> _disposeSession(
+    TerminalSession tab, {
+    bool deleteLocalCopies = false,
+  }) async {
+    final files = tab.files;
+    if (files != null) {
+      if (deleteLocalCopies) {
+        await files.deleteAllLocalCopies();
+      } else {
+        tab.retainedLocalCopies.addAll(files.takeLocalCopies());
+      }
+      files.dispose();
+      tab.files = null;
+    }
+    if (deleteLocalCopies && tab.retainedLocalCopies.isNotEmpty) {
+      await RemoteFilesController.deleteManagedCopies(
+        tab.retainedLocalCopies.values,
+      );
+      tab.retainedLocalCopies.clear();
+    }
     if (tab.session != null) {
       await tab.session!.close(); // SshSession.close disposes the engine
     } else {
@@ -616,6 +646,12 @@ class AppState extends ChangeNotifier {
   Future<void> disconnect(String sessionId) async {
     final tab = sessionById(sessionId);
     if (tab == null) return;
+    final files = tab.files;
+    if (files != null) {
+      tab.retainedLocalCopies.addAll(files.takeLocalCopies());
+      files.dispose();
+      tab.files = null;
+    }
     await tab.session?.close();
     tab.session = null;
     tab.connecting = false;
@@ -636,7 +672,7 @@ class AppState extends ChangeNotifier {
     if (_lastSessionForServer[tab.serverId] == tab.id) {
       _lastSessionForServer.remove(tab.serverId);
     }
-    await _disposeSession(tab);
+    await _disposeSession(tab, deleteLocalCopies: true);
 
     if (wasActive) {
       _setActive(

@@ -14,6 +14,18 @@ export 'src/terminal/terminal_engine.dart';
 export 'src/terminal/paste_sanitizer.dart';
 
 export 'src/ssh/ssh_session.dart';
+export 'src/ssh/remote_file_system.dart'
+    show
+        RemoteFileType,
+        RemoteFileErrorKind,
+        RemoteFileException,
+        RemoteFileEntry,
+        RemoteTransferProgress,
+        RemoteTransferCancellation,
+        RemoteFileSystem,
+        remoteJoin,
+        remoteBasename,
+        remoteParent;
 
 export 'src/probe/probe_service.dart';
 

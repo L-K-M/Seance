@@ -126,4 +126,28 @@ void main() {
     await e.dispose();
     await e.dispose(); // no throw
   });
+
+  test('OSC 7 reports a decoded absolute working directory', () async {
+    final e = XtermTerminalEngine();
+
+    e.feed(
+      Uint8List.fromList(
+        utf8.encode('\x1b]7;file://server/home/test/My%20Files\x07'),
+      ),
+    );
+
+    expect(e.workingDirectory.value, '/home/test/My Files');
+    await e.dispose();
+  });
+
+  test('malformed and relative OSC 7 paths are ignored', () async {
+    final e = XtermTerminalEngine();
+
+    e.feed(Uint8List.fromList(utf8.encode('\x1b]7;not-a-file-uri\x07')));
+    expect(e.workingDirectory.value, isNull);
+
+    e.feed(Uint8List.fromList(utf8.encode('\x1b]7;file:relative\x07')));
+    expect(e.workingDirectory.value, isNull);
+    await e.dispose();
+  });
 }

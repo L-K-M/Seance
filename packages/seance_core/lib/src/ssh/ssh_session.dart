@@ -9,6 +9,7 @@ import 'package:seance_protocol/seance_protocol.dart';
 
 import '../hostkey/tofu.dart';
 import '../terminal/terminal_engine.dart';
+import 'remote_file_system.dart';
 
 /// Resolved credentials for one connection. The vault produces these just
 /// before connect; nothing here is persisted.
@@ -107,29 +108,97 @@ class SshSession {
   final SSHSession shell;
   final TerminalEngine engine;
   final List<StreamSubscription<dynamic>> _subs = [];
+  final Completer<void> _stdoutDone = Completer<void>();
+  final Completer<void> _stderrDone = Completer<void>();
   bool _closed = false;
+  SftpClient? _sftpClient;
+  Future<RemoteFileSystem>? _remoteFileSystem;
+  bool _endedRemotely = false;
+  bool _closedNotified = false;
+  void Function()? _onClosed;
 
   /// Fired once when the remote shell ends (server-side exit, dropped
   /// connection). Lets the app flip the session's status dot to "disconnected".
-  void Function()? onClosed;
+  set onClosed(void Function()? callback) {
+    _onClosed = callback;
+    if (_endedRemotely && callback != null) scheduleMicrotask(_notifyClosed);
+  }
+
+  void Function()? get onClosed => _onClosed;
 
   SshSession._(this.client, this.shell, this.engine);
 
   /// Pipe SSH stdout/stderr into the engine and the engine's user input back
   /// into the shell; forward resize events.
   void _wire() {
-    _subs.add(shell.stdout.listen(engine.feed));
-    _subs.add(shell.stderr.listen(engine.feed));
-    _subs.add(engine.userInput.listen((data) {
-      if (!_closed) shell.write(Uint8List.fromList(data));
-    }));
+    _subs.add(
+      shell.stdout.listen(
+        engine.feed,
+        onDone: () => _complete(_stdoutDone),
+        onError: (_) => _complete(_stdoutDone),
+      ),
+    );
+    _subs.add(
+      shell.stderr.listen(
+        engine.feed,
+        onDone: () => _complete(_stderrDone),
+        onError: (_) => _complete(_stderrDone),
+      ),
+    );
+    _subs.add(
+      engine.userInput.listen((data) {
+        if (!_closed) shell.write(Uint8List.fromList(data));
+      }),
+    );
     // The remote side closing the channel (logout, kill, network drop) should
     // mark the session disconnected in the UI.
-    shell.done.then((_) {
-      if (!_closed) onClosed?.call();
-    }).catchError((_) {
-      if (!_closed) onClosed?.call();
-    });
+    shell.done.then((_) => _remoteClosed()).catchError((_) => _remoteClosed());
+  }
+
+  /// Opens one SFTP subsystem beside this session's shell and reuses it for the
+  /// life of the authenticated transport.
+  Future<RemoteFileSystem> openRemoteFileSystem({
+    Duration timeout = const Duration(seconds: 15),
+  }) {
+    if (_closed || client.isClosed) {
+      throw const RemoteFileException(
+        kind: RemoteFileErrorKind.disconnected,
+        operation: 'open SFTP',
+        message: 'The SSH session is disconnected.',
+      );
+    }
+    return _remoteFileSystem ??= _openRemoteFileSystem(timeout);
+  }
+
+  Future<RemoteFileSystem> _openRemoteFileSystem(Duration timeout) async {
+    SftpClient? opening;
+    try {
+      opening = await client.sftp().timeout(timeout);
+      final sftp = opening;
+      await sftp.handshake.timeout(timeout);
+      if (_closed || client.isClosed) {
+        throw const RemoteFileException(
+          kind: RemoteFileErrorKind.disconnected,
+          operation: 'open SFTP',
+          message: 'The SSH session disconnected while SFTP was opening.',
+        );
+      }
+      _sftpClient = sftp;
+      return DartSshRemoteFileSystem(sftp);
+    } on RemoteFileException {
+      opening?.close();
+      _remoteFileSystem = null;
+      rethrow;
+    } catch (e) {
+      opening?.close();
+      _remoteFileSystem = null;
+      throw RemoteFileException(
+        kind: RemoteFileErrorKind.unsupported,
+        operation: 'open SFTP',
+        message: 'Could not open SFTP on this server: $e',
+        cause: e,
+      );
+    }
   }
 
   void resize(TerminalSize size) {
@@ -137,12 +206,45 @@ class SshSession {
     shell.resizeTerminal(size.cols, size.rows);
   }
 
-  Future<void> close() async {
+  Future<void> _remoteClosed() async {
+    if (_closed) return;
+    _endedRemotely = true;
+    // dartssh2 can complete SSHSession.done before the final stdout/stderr
+    // packets have drained. Give those streams a short window before teardown.
+    try {
+      await Future.wait([
+        _stdoutDone.future,
+        _stderrDone.future,
+      ]).timeout(const Duration(seconds: 2));
+    } on TimeoutException {
+      // A dropped transport may never deliver stream-done; teardown must still
+      // complete and mark the session disconnected.
+    }
+    await _finish();
+    _notifyClosed();
+  }
+
+  static void _complete(Completer<void> completer) {
+    if (!completer.isCompleted) completer.complete();
+  }
+
+  void _notifyClosed() {
+    if (_closedNotified) return;
+    final callback = _onClosed;
+    if (callback == null) return;
+    _closedNotified = true;
+    callback();
+  }
+
+  Future<void> close() => _finish();
+
+  Future<void> _finish() async {
     if (_closed) return;
     _closed = true;
     for (final s in _subs) {
       await s.cancel();
     }
+    _sftpClient?.close();
     shell.close();
     client.close();
     await engine.dispose();

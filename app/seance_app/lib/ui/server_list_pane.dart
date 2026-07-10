@@ -113,11 +113,27 @@ class ServerListPane extends StatelessWidget {
 
   Future<void> _deleteServer(
       BuildContext context, AppState state, ServerConfig server) async {
+    final localCopyCount = state
+        .sessionsForServer(server.id)
+        .fold<int>(
+          0,
+          (count, session) =>
+              count +
+              (session.files?.localCopies.length ?? 0) +
+              session.retainedLocalCopies.length,
+        );
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: Text('Delete "${server.label}"?'),
-        content: const Text('This removes the server and any stored secret.'),
+        content: Text(
+          localCopyCount == 0
+              ? 'This removes the server and any stored secret.'
+              : 'This removes the server, its stored secret, and '
+                  '$localCopyCount managed local '
+                  '${localCopyCount == 1 ? 'edit' : 'edits'}. Any changes not '
+                  'uploaded to the server will be deleted.',
+        ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),

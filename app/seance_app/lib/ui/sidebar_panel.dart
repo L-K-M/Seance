@@ -3,13 +3,50 @@ import 'package:flutter/material.dart';
 import '../main.dart';
 import 'app_menus.dart';
 import 'chat_sidebar.dart';
+import 'files_pane.dart';
 import 'snippets_pane.dart';
 
 /// The right-hand utility panel: an Assistant tab (the LLM chat, when a provider
 /// is configured) and a Snippets tab (always available). Used both as a tiled
 /// pane on wide layouts and inside the end-drawer on narrow ones.
-class SidebarPanel extends StatelessWidget {
-  const SidebarPanel({super.key});
+class SidebarPanel extends StatefulWidget {
+  final bool includeFiles;
+
+  const SidebarPanel({super.key, this.includeFiles = true});
+
+  @override
+  State<SidebarPanel> createState() => _SidebarPanelState();
+}
+
+class _SidebarPanelState extends State<SidebarPanel>
+    with SingleTickerProviderStateMixin {
+  TabController? _tabs;
+  bool _filesVisited = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_tabs != null) return;
+    final state = AppScope.of(context);
+    _tabs = TabController(
+      length: widget.includeFiles ? 3 : 2,
+      initialIndex: state.llmConfigured ? 0 : 1,
+      vsync: this,
+    )..addListener(_tabChanged);
+  }
+
+  void _tabChanged() {
+    if (widget.includeFiles && _tabs?.index == 2 && !_filesVisited) {
+      setState(() => _filesVisited = true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabs?.removeListener(_tabChanged);
+    _tabs?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -17,31 +54,33 @@ class SidebarPanel extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
-        return DefaultTabController(
-          length: 2,
-          // Land on Snippets if the assistant isn't set up yet.
-          initialIndex: state.llmConfigured ? 0 : 1,
-          child: SafeArea(
-            child: Column(
-              children: [
-                const TabBar(
-                  tabs: [
-                    Tab(text: 'Assistant'),
-                    Tab(text: 'Snippets'),
+        return SafeArea(
+          child: Column(
+            children: [
+              TabBar(
+                controller: _tabs,
+                tabs: [
+                  const Tab(text: 'Assistant'),
+                  const Tab(text: 'Snippets'),
+                  if (widget.includeFiles) const Tab(text: 'Files'),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  controller: _tabs,
+                  children: [
+                    state.llmConfigured
+                        ? const ChatSidebar()
+                        : const _AssistantSetupPrompt(),
+                    const SnippetsPane(),
+                    if (widget.includeFiles)
+                      _filesVisited
+                          ? const FilesPane()
+                          : const SizedBox.shrink(),
                   ],
                 ),
-                Expanded(
-                  child: TabBarView(
-                    children: [
-                      state.llmConfigured
-                          ? const ChatSidebar()
-                          : const _AssistantSetupPrompt(),
-                      const SnippetsPane(),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         );
       },

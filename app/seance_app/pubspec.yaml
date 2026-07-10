@@ -27,6 +27,14 @@ dependencies:
   # The running app version (compared against the latest GitHub release to
   # offer an update notification — never to download or install anything).
   package_info_plus: ^8.0.0
+  # Streams Android document-provider selections through a cached file instead
+  # of requiring a stable filesystem path or loading the whole file into Dart.
+  file_picker: ^11.0.2
+  cross_file: ^0.3.5+4
+  # Local-file drops on desktop (and Android drag/drop where the OS provides it).
+  desktop_drop: ^0.7.1
+  # Opens a downloaded cache file with the platform's associated application.
+  open_file: ^4.0.0
   # Opens the releases page in the browser when an update is available.
   url_launcher: ^6.3.0
 

@@ -33,6 +33,10 @@ class XtermTerminalEngine implements TerminalEngine {
   /// commands as snippets. Never leaves the device on its own.
   final void Function(String command)? onCommand;
 
+  /// Current shell directory reported through standard OSC 7 metadata. Null
+  /// until the remote shell emits it; never inferred from prompt text.
+  final ValueNotifier<String?> workingDirectory = ValueNotifier<String?>(null);
+
   // A best-effort reconstruction of the current, not-yet-submitted input line,
   // built from the keystrokes the user sends. Used to prefill the command
   // generator. It's an approximation — full readline editing (history, cursor
@@ -57,6 +61,23 @@ class XtermTerminalEngine implements TerminalEngine {
       _trackPending(out);
       _input.add(Uint8List.fromList(utf8.encode(out)));
     };
+    terminal.onPrivateOSC = _handlePrivateOsc;
+  }
+
+  void _handlePrivateOsc(String code, List<String> args) {
+    if (code != '7' || args.isEmpty) return;
+    try {
+      final value = args.join(';');
+      final uri = Uri.tryParse(value);
+      if (uri == null || uri.scheme != 'file' || !value.startsWith('file://')) {
+        return;
+      }
+      final path = Uri.decodeComponent(uri.path);
+      if (!path.startsWith('/') || path.contains('\u0000')) return;
+      workingDirectory.value = path;
+    } on FormatException {
+      // Ignore malformed remote metadata; it must never disrupt the terminal.
+    }
   }
 
   /// The current, not-yet-submitted input line (best effort).
@@ -181,6 +202,7 @@ class XtermTerminalEngine implements TerminalEngine {
     _disposed = true;
     _terminalDecoder.close();
     ctrlArmed.dispose();
+    workingDirectory.dispose();
     await _input.close();
   }
 }
