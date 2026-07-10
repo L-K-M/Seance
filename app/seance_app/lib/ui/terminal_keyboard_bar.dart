@@ -19,12 +19,6 @@ class TerminalKeyboardBar extends StatelessWidget {
   static const List<int> _esc = [0x1b];
   static const List<int> _tab = [0x09];
   static const List<int> _ctrlC = [0x03];
-  static const List<int> _up = [0x1b, 0x5b, 0x41];
-  static const List<int> _down = [0x1b, 0x5b, 0x42];
-  static const List<int> _right = [0x1b, 0x5b, 0x43];
-  static const List<int> _left = [0x1b, 0x5b, 0x44];
-  static const List<int> _home = [0x1b, 0x5b, 0x48];
-  static const List<int> _end = [0x1b, 0x5b, 0x46];
   static const List<int> _pgUp = [0x1b, 0x5b, 0x35, 0x7e];
   static const List<int> _pgDn = [0x1b, 0x5b, 0x36, 0x7e];
 
@@ -46,30 +40,50 @@ class TerminalKeyboardBar extends StatelessWidget {
                   child: ListView(
                     scrollDirection: Axis.horizontal,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 6),
+                      horizontal: 6,
+                      vertical: 6,
+                    ),
                     children: [
-                      _label(context, 'esc', _esc),
-                      _label(context, 'tab', _tab),
+                      _label('esc', _esc, 'Escape'),
+                      _label('tab', _tab, 'Tab'),
                       _ctrlKey(context),
-                      _label(context, '^C', _ctrlC),
-                      _icon(context, Icons.keyboard_arrow_left, _left),
-                      _icon(context, Icons.keyboard_arrow_up, _up),
-                      _icon(context, Icons.keyboard_arrow_down, _down),
-                      _icon(context, Icons.keyboard_arrow_right, _right),
-                      _label(context, 'home', _home),
-                      _label(context, 'end', _end),
-                      _label(context, 'pgup', _pgUp),
-                      _label(context, 'pgdn', _pgDn),
-                      _char(context, '|'),
-                      _char(context, '/'),
-                      _char(context, '-'),
-                      _char(context, '~'),
+                      _label('^C', _ctrlC, 'Control C'),
+                      _icon(
+                        Icons.keyboard_arrow_left,
+                        TerminalCursorKey.arrowLeft,
+                        'Left arrow',
+                      ),
+                      _icon(
+                        Icons.keyboard_arrow_up,
+                        TerminalCursorKey.arrowUp,
+                        'Up arrow',
+                      ),
+                      _icon(
+                        Icons.keyboard_arrow_down,
+                        TerminalCursorKey.arrowDown,
+                        'Down arrow',
+                      ),
+                      _icon(
+                        Icons.keyboard_arrow_right,
+                        TerminalCursorKey.arrowRight,
+                        'Right arrow',
+                      ),
+                      _cursorKey('home', TerminalCursorKey.home, 'Home'),
+                      _cursorKey('end', TerminalCursorKey.end, 'End'),
+                      _label('pgup', _pgUp, 'Page up'),
+                      _label('pgdn', _pgDn, 'Page down'),
+                      _char('|', 'Pipe'),
+                      _char('/', 'Slash'),
+                      _char('-', 'Hyphen'),
+                      _char('~', 'Tilde'),
                     ],
                   ),
                 ),
                 const VerticalDivider(width: 1),
                 _KeyButton(
                   onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+                  semanticLabel: 'Hide keyboard',
+                  tooltip: 'Hide keyboard',
                   child: const Icon(Icons.keyboard_hide_outlined, size: 20),
                 ),
               ],
@@ -80,24 +94,42 @@ class TerminalKeyboardBar extends StatelessWidget {
     );
   }
 
-  Widget _label(BuildContext context, String text, List<int> bytes) =>
+  Widget _label(String text, List<int> bytes, String semanticLabel) =>
       _KeyButton(
         onTap: () => engine.sendKey(bytes),
-        child: Text(text,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13)),
+        semanticLabel: semanticLabel,
+        child: Text(
+          text,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+        ),
       );
 
-  Widget _icon(BuildContext context, IconData icon, List<int> bytes) =>
+  Widget _icon(IconData icon, TerminalCursorKey key, String semanticLabel) =>
       _KeyButton(
-        onTap: () => engine.sendKey(bytes),
+        onTap: () => engine.sendCursorKey(key),
+        semanticLabel: semanticLabel,
+        tooltip: semanticLabel,
         child: Icon(icon, size: 20),
       );
 
-  Widget _char(BuildContext context, String ch) => _KeyButton(
-        onTap: () => engine.sendKey(utf8.encode(ch)),
-        child: Text(ch,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 15)),
+  Widget _cursorKey(String text, TerminalCursorKey key, String semanticLabel) =>
+      _KeyButton(
+        onTap: () => engine.sendCursorKey(key),
+        semanticLabel: semanticLabel,
+        child: Text(
+          text,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+        ),
       );
+
+  Widget _char(String ch, String semanticLabel) => _KeyButton(
+    onTap: () => engine.sendKey(utf8.encode(ch)),
+    semanticLabel: semanticLabel,
+    child: Text(
+      ch,
+      style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
+    ),
+  );
 
   /// The sticky Ctrl modifier, highlighted while armed.
   Widget _ctrlKey(BuildContext context) {
@@ -106,6 +138,8 @@ class TerminalKeyboardBar extends StatelessWidget {
       valueListenable: engine.ctrlArmed,
       builder: (context, armed, _) => _KeyButton(
         onTap: engine.toggleCtrl,
+        semanticLabel: 'Control modifier',
+        toggled: armed,
         background: armed ? scheme.primary : null,
         child: Text(
           'ctrl',
@@ -125,13 +159,23 @@ class TerminalKeyboardBar extends StatelessWidget {
 class _KeyButton extends StatelessWidget {
   final Widget child;
   final VoidCallback onTap;
+  final String semanticLabel;
+  final String? tooltip;
+  final bool? toggled;
   final Color? background;
-  const _KeyButton({required this.child, required this.onTap, this.background});
+  const _KeyButton({
+    required this.child,
+    required this.onTap,
+    required this.semanticLabel,
+    this.tooltip,
+    this.toggled,
+    this.background,
+  });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
+    Widget keyCap = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3),
       child: Material(
         color: background ?? scheme.surfaceContainerHighest,
@@ -147,6 +191,21 @@ class _KeyButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+    if (tooltip != null) {
+      keyCap = Tooltip(
+        message: tooltip!,
+        excludeFromSemantics: true,
+        child: keyCap,
+      );
+    }
+    return Semantics(
+      button: true,
+      label: semanticLabel,
+      toggled: toggled,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: keyCap,
     );
   }
 }
