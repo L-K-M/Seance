@@ -4,19 +4,22 @@ import 'package:seance_app/ui/sync_enrollment_validation.dart';
 void main() {
   const validUrl = 'https://sync.example.com';
   const username = 'alice';
-  const passphrase = 'correct horse battery staple';
+  const password = 'server account password';
+  const encryptionPassphrase = 'correct horse battery staple';
 
   String? validate({
     SyncEnrollmentMode mode = SyncEnrollmentMode.register,
     String baseUrl = validUrl,
     String user = username,
-    String pass = passphrase,
-    String confirmation = passphrase,
+    String accountPassword = password,
+    String vaultPassphrase = encryptionPassphrase,
+    String confirmation = encryptionPassphrase,
   }) => validateSyncEnrollment(
     mode: mode,
     baseUrl: baseUrl,
     username: user,
-    passphrase: pass,
+    password: accountPassword,
+    encryptionPassphrase: vaultPassphrase,
     confirmationPassphrase: confirmation,
   );
 
@@ -32,27 +35,31 @@ void main() {
     );
   });
 
-  test('rejects blank username and passphrase', () {
+  test('rejects blank username, password, and encryption passphrase', () {
     expect(validate(user: '  '), 'Enter a username.');
-    expect(validate(pass: '\t'), 'Enter a vault passphrase.');
+    expect(validate(accountPassword: '\t'), 'Enter the sync account password.');
+    expect(
+      validate(vaultPassphrase: '\t'),
+      'Enter the vault encryption passphrase.',
+    );
   });
 
   test('registration rejects blank or mismatched confirmation', () {
     expect(
       validate(confirmation: ''),
-      'Confirm the vault passphrase before registering.',
+      'Confirm the vault encryption passphrase before registering.',
     );
     expect(
       validate(confirmation: '  \t'),
-      'Confirm the vault passphrase before registering.',
+      'Confirm the vault encryption passphrase before registering.',
     );
     expect(
       validate(confirmation: 'different'),
-      'Vault passphrases do not match.',
+      'Vault encryption passphrases do not match.',
     );
     expect(
-      validate(confirmation: '$passphrase '),
-      'Vault passphrases do not match.',
+      validate(confirmation: '$encryptionPassphrase '),
+      'Vault encryption passphrases do not match.',
       reason: 'nonblank confirmation must still match exactly',
     );
   });

@@ -14,7 +14,7 @@ import 'secure_master_key.dart';
 class AppServices {
   final ConfigStore configStore;
   final SnippetStore snippetStore;
-  // Mutable so sync enrolment can re-key the vault to the shared passphrase key.
+  // Mutable so sync enrolment can re-key the vault to the shared encryption key.
   SecretVault vault;
   final HostKeyStore hostKeyStore;
   final TofuVerifier tofu;
@@ -88,7 +88,7 @@ class AppServices {
 
   /// Re-key the vault to [newKey], re-encrypting secrets referenced by current
   /// configs so nothing is lost. Used by sync enrolment to adopt the shared,
-  /// passphrase-derived key.
+  /// encryption-passphrase-derived key.
   Future<void> _rekeyVault(List<int> newKey) async {
     final newVault = SecretVault(vault.store, newKey);
     for (final cfg in await configStore.listServers()) {
@@ -102,21 +102,56 @@ class AppServices {
     await masterKeys.setKeystoreKey(newKey);
   }
 
-  /// Create a sync account and adopt its passphrase-derived vault key.
+  Future<({List<int> authVerifier, List<int> vaultKey})> _deriveSyncKeys({
+    required String password,
+    required String encryptionPassphrase,
+    required List<int> salt,
+    required Argon2Params params,
+  }) async {
+    final authKeys = await VaultCrypto.deriveKeys(
+      passphrase: password,
+      salt: salt,
+      params: params,
+    );
+    // Existing accounts used one passphrase for both purposes. Reusing that
+    // derivation preserves their keys and avoids a second expensive KDF run.
+    if (password == encryptionPassphrase) {
+      return (authVerifier: authKeys.authVerifier, vaultKey: authKeys.vaultKey);
+    }
+    final encryptionKeys = await VaultCrypto.deriveKeys(
+      passphrase: encryptionPassphrase,
+      salt: salt,
+      params: params,
+    );
+    return (
+      authVerifier: authKeys.authVerifier,
+      vaultKey: encryptionKeys.vaultKey,
+    );
+  }
+
+  /// Create a sync account and adopt its separately protected vault key.
   Future<void> registerSync({
     required String baseUrl,
     required String username,
-    required String passphrase,
+    required String password,
+    required String encryptionPassphrase,
   }) async {
     final salt = secureRandomBytes(16);
-    final keys = await VaultCrypto.deriveKeys(passphrase: passphrase, salt: salt);
+    final keys = await _deriveSyncKeys(
+      password: password,
+      encryptionPassphrase: encryptionPassphrase,
+      salt: salt,
+      params: const Argon2Params(),
+    );
     final client = HttpSyncClient(baseUrl: baseUrl);
-    await client.register(RegisterRequest(
-      username: username,
-      authVerifier: base64.encode(keys.authVerifier),
-      argonSalt: base64.encode(salt),
-      argonParams: const Argon2Params(),
-    ));
+    await client.register(
+      RegisterRequest(
+        username: username,
+        authVerifier: base64.encode(keys.authVerifier),
+        argonSalt: base64.encode(salt),
+        argonParams: const Argon2Params(),
+      ),
+    );
     settings.syncBaseUrl = baseUrl;
     settings.syncUsername = username;
     await saveSettings();
@@ -124,12 +159,12 @@ class AppServices {
     await _rekeyVault(keys.vaultKey);
   }
 
-  /// Enrol this device against an existing account (prelogin -> derive -> login)
-  /// and adopt the shared vault key.
+  /// Enrol this device against an existing account and adopt its vault key.
   Future<void> loginSync({
     required String baseUrl,
     required String username,
-    required String passphrase,
+    required String password,
+    required String encryptionPassphrase,
   }) async {
     final client = HttpSyncClient(baseUrl: baseUrl);
     final pre = await client.prelogin(username);
@@ -143,13 +178,34 @@ class AppServices {
         'attack).',
       );
     }
-    final keys = await VaultCrypto.deriveKeys(
-      passphrase: passphrase,
+    final keys = await _deriveSyncKeys(
+      password: password,
+      encryptionPassphrase: encryptionPassphrase,
       salt: base64.decode(pre.argonSalt),
       params: pre.argonParams,
     );
-    await client.login(LoginRequest(
-        username: username, authVerifier: base64.encode(keys.authVerifier)));
+    await client.login(
+      LoginRequest(
+        username: username,
+        authVerifier: base64.encode(keys.authVerifier),
+      ),
+    );
+    // Authentication cannot prove that the separate encryption passphrase is
+    // correct. Verify it against one remote payload before changing the local
+    // vault or persisting enrollment, so a typo cannot overwrite synced data.
+    final remote = await client.pull(since: 0);
+    for (final record in remote.records) {
+      if (record.deleted || record.blob.isEmpty) continue;
+      try {
+        await RecordCodec(keys.vaultKey).decrypt(record);
+      } catch (_) {
+        throw StateError(
+          'The vault encryption passphrase could not decrypt this account. '
+          'Check it and try again.',
+        );
+      }
+      break;
+    }
     settings.syncBaseUrl = baseUrl;
     settings.syncUsername = username;
     await saveSettings();

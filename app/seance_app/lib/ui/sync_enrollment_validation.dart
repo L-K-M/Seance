@@ -6,7 +6,8 @@ String? validateSyncEnrollment({
   required SyncEnrollmentMode mode,
   required String baseUrl,
   required String username,
-  required String passphrase,
+  required String password,
+  required String encryptionPassphrase,
   String confirmationPassphrase = '',
 }) {
   final uri = Uri.tryParse(baseUrl.trim());
@@ -22,13 +23,16 @@ String? validateSyncEnrollment({
     return 'Server URL must not include embedded credentials.';
   }
   if (username.trim().isEmpty) return 'Enter a username.';
-  if (passphrase.trim().isEmpty) return 'Enter a vault passphrase.';
+  if (password.trim().isEmpty) return 'Enter the sync account password.';
+  if (encryptionPassphrase.trim().isEmpty) {
+    return 'Enter the vault encryption passphrase.';
+  }
   if (mode == SyncEnrollmentMode.register) {
     if (confirmationPassphrase.trim().isEmpty) {
-      return 'Confirm the vault passphrase before registering.';
+      return 'Confirm the vault encryption passphrase before registering.';
     }
-    if (confirmationPassphrase != passphrase) {
-      return 'Vault passphrases do not match.';
+    if (confirmationPassphrase != encryptionPassphrase) {
+      return 'Vault encryption passphrases do not match.';
     }
   }
   return null;

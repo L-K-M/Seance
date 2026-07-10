@@ -196,11 +196,11 @@ Before any server exists: **encrypted vault export/import** — one file (Argon2
   - `PUT /v1/records` — batch upsert of encrypted blobs + `{id, updated_at, deleted}`
   - `DELETE /v1/account`
   - `GET /healthz`
-- **Login hardening:** rate limiting + Argon2id cost on the server-side verifier check — the login endpoint is an online oracle for brute-forcing the master passphrase and must be treated as such.
+- **Login hardening:** rate limiting + Argon2id cost on the server-side verifier check — the login endpoint is an online oracle for brute-forcing the account password and must be treated as such.
 
 ### 5.3 Crypto and conflict model
 
-- Passphrase → **Argon2id** (≥ OWASP m=19456, t=2, p=1) → 32-byte vault key → **XChaCha20-Poly1305** per record with random 24-byte nonce. A **separate HKDF-domain-separated auth verifier** goes to the server (Bitwarden pattern) so the server never learns the vault key. Key shown as a mnemonic for enrolling new devices (Atuin UX).
+- Account password and vault encryption passphrase → independent **Argon2id** derivations (≥ OWASP m=19456, t=2, p=1). A **HKDF-domain-separated auth verifier** goes to the server (Bitwarden pattern), while the 32-byte vault key remains on devices and encrypts each record with **XChaCha20-Poly1305** and a random 24-byte nonce. Key shown as a mnemonic for enrolling new devices (Atuin UX).
 - No invented crypto: consider adopting Atuin's exact PASETO v4.local + PASERK key-wrapping construction verbatim — it shrinks hand-assembled crypto to zero and buys cheap key rotation. Decide during M5; either way, all crypto lives in one shared package with published test vectors, and that package gets an **external review before sync GA**.
 - **Conflicts: per-record last-write-wins** keyed by UUID, `(updated_at, device_id)` tiebreak, tombstones for deletes, server-assigned monotonic per-account `seq` for delta sync. SSH configs are small, rarely edited, and almost never edited concurrently — CRDTs and vector clocks are unjustified complexity here.
 - **Policy:** non-secret config (host, port, user, auth type, key fingerprint) and pinned host keys sync by default; passwords and private keys sync **opt-in per item** inside the encrypted blob. Per-device keypairs remain the encouraged default — they never need to sync.

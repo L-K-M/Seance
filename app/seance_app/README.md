@@ -53,10 +53,11 @@ flutter run -d linux     # or macos / windows / a device
   `seance_core` interfaces — chosen to avoid `build_runner` codegen for v1.
 - **ssh-agent auth** is modelled but not yet wired through the dartssh2 backend
   (see `SshSessionManager.connect`); use password or private-key auth for now.
-- **Sync & the vault key**: enrolling in sync derives the end-to-end key from
-  your passphrase and re-keys the local vault (re-encrypting secrets referenced
-  by current servers). Set sync up early; a second device enrols with the same
-  passphrase (or the recovery code) so both derive the same key.
+- **Sync & the vault key**: the account password authenticates with the sync
+  server; a separate encryption passphrase derives the end-to-end key and
+  re-keys the local vault (re-encrypting secrets referenced by current servers).
+  Set sync up early, and use the same encryption passphrase on every device.
+  Existing accounts created with one passphrase enter it in both fields.
 - The assistant is always on (this is a personal tool). Secret redaction of
   outbound context defaults on; run against local Ollama for a fully-offline
   setup.

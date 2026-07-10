@@ -21,8 +21,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final _searxng = TextEditingController();
   late final _syncUrl = TextEditingController();
   late final _syncUser = TextEditingController();
-  final _syncPass = TextEditingController();
-  final _syncPassConfirm = TextEditingController();
+  final _syncPassword = TextEditingController();
+  final _syncEncryptionPassphrase = TextEditingController();
+  final _syncEncryptionPassphraseConfirm = TextEditingController();
 
   late LlmProviderKind _kind;
   late bool _redaction;
@@ -30,6 +31,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _syncSecrets;
   late bool _commandSuggestions;
   late bool _checkForUpdates;
+  SyncEnrollmentMode _syncMode = SyncEnrollmentMode.login;
   bool _saving = false;
   String? _syncStatus;
 
@@ -73,8 +75,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _searxng,
       _syncUrl,
       _syncUser,
-      _syncPass,
-      _syncPassConfirm,
+      _syncPassword,
+      _syncEncryptionPassphrase,
+      _syncEncryptionPassphraseConfirm,
     ]) {
       c.dispose();
     }
@@ -238,8 +241,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _section('Sync (optional)'),
           const Text(
             'Sync server configs across devices via your self-hosted server. '
-            'The passphrase derives the end-to-end key — set it up before '
-            'storing secrets you want synced.',
+            'Your account password signs in to the server. A separate vault '
+            'encryption passphrase protects synced credentials end to end.',
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Existing account? Enter your old vault passphrase in both fields.',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 8),
           Container(
@@ -255,8 +263,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'The vault passphrase cannot be reset or recovered through '
-                    'the sync server. Store it safely before registering.',
+                    'The vault encryption passphrase cannot be recovered '
+                    'through the sync server. Store it safely and use the same '
+                    'one on every device.',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onErrorContainer,
                     ),
@@ -295,24 +304,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextField(
             controller: _syncUrl,
             decoration: const InputDecoration(
-                labelText: 'Server URL', hintText: 'https://sync.example.com'),
+              labelText: 'Server URL',
+              hintText: 'https://sync.example.com',
+            ),
           ),
           TextField(
             controller: _syncUser,
             decoration: const InputDecoration(labelText: 'Username'),
           ),
-          TextField(
-            controller: _syncPass,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'Vault passphrase'),
-          ),
-          TextField(
-            controller: _syncPassConfirm,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Confirm vault passphrase',
-              helperText: 'Required for registration only; login ignores it.',
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<SyncEnrollmentMode>(
+              segments: const [
+                ButtonSegment(
+                  value: SyncEnrollmentMode.login,
+                  icon: Icon(Icons.login),
+                  label: Text('Log in'),
+                ),
+                ButtonSegment(
+                  value: SyncEnrollmentMode.register,
+                  icon: Icon(Icons.person_add_alt_1),
+                  label: Text('Register'),
+                ),
+              ],
+              selected: {_syncMode},
+              showSelectedIcon: false,
+              onSelectionChanged: _saving
+                  ? null
+                  : (selection) => setState(() {
+                      _syncMode = selection.first;
+                      _syncStatus = null;
+                    }),
             ),
+          ),
+          const SizedBox(height: 4),
+          SyncEnrollmentFields(
+            mode: _syncMode,
+            passwordController: _syncPassword,
+            encryptionPassphraseController: _syncEncryptionPassphrase,
+            confirmationController: _syncEncryptionPassphraseConfirm,
           ),
           const SizedBox(height: 8),
           // Wrap (not Row) so the buttons flow onto multiple lines on narrow
@@ -321,13 +352,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              OutlinedButton(
-                onPressed: _saving ? null : () => _sync(state, register: true),
-                child: const Text('Register'),
-              ),
-              OutlinedButton(
-                onPressed: _saving ? null : () => _sync(state, register: false),
-                child: const Text('Log in on this device'),
+              FilledButton(
+                onPressed: _saving ? null : () => _sync(state, mode: _syncMode),
+                child: Text(
+                  _syncMode == SyncEnrollmentMode.register
+                      ? 'Create sync account'
+                      : 'Log in on this device',
+                ),
               ),
               FilledButton.tonal(
                 onPressed: _saving ? null : () => _syncNow(state),
@@ -440,13 +471,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!_checkForUpdates) state.dismissUpdateNotice();
   }
 
-  Future<void> _sync(AppState state, {required bool register}) async {
+  Future<void> _sync(AppState state, {required SyncEnrollmentMode mode}) async {
+    final register = mode == SyncEnrollmentMode.register;
     final validationError = validateSyncEnrollment(
-      mode: register ? SyncEnrollmentMode.register : SyncEnrollmentMode.login,
+      mode: mode,
       baseUrl: _syncUrl.text,
       username: _syncUser.text,
-      passphrase: _syncPass.text,
-      confirmationPassphrase: _syncPassConfirm.text,
+      password: _syncPassword.text,
+      encryptionPassphrase: _syncEncryptionPassphrase.text,
+      confirmationPassphrase: _syncEncryptionPassphraseConfirm.text,
     );
     if (validationError != null) {
       setState(() => _syncStatus = validationError);
@@ -462,13 +495,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await state.services.registerSync(
           baseUrl: _syncUrl.text.trim(),
           username: _syncUser.text.trim(),
-          passphrase: _syncPass.text,
+          password: _syncPassword.text,
+          encryptionPassphrase: _syncEncryptionPassphrase.text,
         );
       } else {
         await state.services.loginSync(
           baseUrl: _syncUrl.text.trim(),
           username: _syncUser.text.trim(),
-          passphrase: _syncPass.text,
+          password: _syncPassword.text,
+          encryptionPassphrase: _syncEncryptionPassphrase.text,
         );
       }
       // Schedule periodic sync if enabled, then always verify enrollment with
@@ -503,6 +538,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) setState(() => _saving = false);
     }
   }
+}
+
+/// The mode-specific secret fields for sync enrollment.
+@visibleForTesting
+class SyncEnrollmentFields extends StatelessWidget {
+  const SyncEnrollmentFields({
+    super.key,
+    required this.mode,
+    required this.passwordController,
+    required this.encryptionPassphraseController,
+    required this.confirmationController,
+  });
+
+  final SyncEnrollmentMode mode;
+  final TextEditingController passwordController;
+  final TextEditingController encryptionPassphraseController;
+  final TextEditingController confirmationController;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      TextField(
+        key: const ValueKey('sync-account-password'),
+        controller: passwordController,
+        obscureText: true,
+        autofillHints: [
+          mode == SyncEnrollmentMode.register
+              ? AutofillHints.newPassword
+              : AutofillHints.password,
+        ],
+        decoration: const InputDecoration(
+          labelText: 'Account password',
+          helperText: 'Authenticates with the sync server.',
+        ),
+      ),
+      TextField(
+        key: const ValueKey('sync-encryption-passphrase'),
+        controller: encryptionPassphraseController,
+        obscureText: true,
+        decoration: const InputDecoration(
+          labelText: 'Vault encryption passphrase',
+          helperText: 'Encrypts synced credentials; use it on every device.',
+        ),
+      ),
+      if (mode == SyncEnrollmentMode.register)
+        TextField(
+          key: const ValueKey('sync-encryption-passphrase-confirmation'),
+          controller: confirmationController,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Confirm vault encryption passphrase',
+          ),
+        ),
+    ],
+  );
 }
 
 /// A live, one-line reflection of the app-wide sync state (also updated by

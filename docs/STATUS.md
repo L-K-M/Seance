@@ -67,9 +67,9 @@ _Last updated: 2026-07-08 — automatic sync, opt-in credential sync, mobile key
 
 ### Known limitations to revisit
 4. **Sync re-key UX.** Enrolling in sync re-keys the vault to the
-   passphrase-derived key and re-encrypts only secrets referenced by *current*
-   configs. Document/enforce "set up sync before storing lots of secrets", or
-   generalize re-encryption (needs a `VaultStore.listIds`).
+   encryption-passphrase-derived key and re-encrypts only secrets referenced by
+   *current* configs. Document/enforce "set up sync before storing lots of
+   secrets", or generalize re-encryption (needs a `VaultStore.listIds`).
 5. **UTF-8 across packets.** `XtermTerminalEngine.feed` uses lenient UTF-8
    decode; a multibyte sequence split across SSH packets can mangle a glyph.
    A byte-accumulating decoder (or the libghostty engine) fixes it.
