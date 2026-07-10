@@ -35,6 +35,12 @@ void openCommandGenerator(AppState state) {
   showCommandGenerator(ctx, state);
 }
 
+/// Open another terminal session for the currently selected server.
+void openNewTab(AppState state) {
+  final active = state.activeSession;
+  if (active != null) state.newTab(active.config);
+}
+
 /// Copy the active terminal's selection to the clipboard. Returns false when
 /// nothing is selected (so a keypress can fall through). Shared by the terminal
 /// right-click menu, the keyboard shortcut, and the native macOS Edit ▸ Copy.
@@ -75,17 +81,22 @@ void terminalSelectAll(TerminalSession tab) {
 }
 
 /// Cross-platform keyboard shortcuts for the menu commands. On macOS the native
-/// menu (wired in MainFlutterWindow.swift) owns ⌘, and ⌘K; this covers
+/// menu (wired in MainFlutterWindow.swift) owns ⌘T, ⌘, and ⌘K; this also covers
 /// Linux/Windows, where there is no system menu bar. The native menu and these
-/// shortcuts share [openSettings]'s dedupe guard.
+/// shortcuts share the same Dart actions.
 class AppMenus extends StatelessWidget {
   final Widget child;
   const AppMenus({super.key, required this.child});
 
   @override
   Widget build(BuildContext context) {
+    final state = AppScope.of(context);
     return CallbackShortcuts(
       bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyT, meta: true): () =>
+            openNewTab(state),
+        const SingleActivator(LogicalKeyboardKey.keyT, control: true): () =>
+            openNewTab(state),
         const SingleActivator(LogicalKeyboardKey.comma, meta: true):
             openSettings,
         const SingleActivator(LogicalKeyboardKey.comma, control: true):

@@ -130,6 +130,8 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
     const channel = MethodChannel('seance/menu');
     channel.setMethodCallHandler((call) async {
       switch (call.method) {
+        case 'newTab':
+          openNewTab(state);
         case 'openSettings':
           openSettings();
         case 'generateCommand':

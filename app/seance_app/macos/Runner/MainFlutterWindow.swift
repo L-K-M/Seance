@@ -46,9 +46,10 @@ class MainFlutterWindow: NSWindow {
   }
 
   /// Keep the storyboard's standard menus (Edit, Window, Help, …) and add our
-  /// own: rewire the app menu's Preferences item to open Settings, add a
-  /// Terminal ▸ Generate Command… item (⌘K), and route Edit ▸ Copy/Paste/Select
-  /// All through us so they can reach the terminal — all fire back into Dart.
+  /// own: rewire the app menu's Preferences item to open Settings, add Terminal
+  /// items for New Tab (⌘T) and Generate Command… (⌘K), and route Edit ▸
+  /// Copy/Paste/Select All through us so they can reach the terminal — all fire
+  /// back into Dart.
   private func installMenuItems() {
     guard let mainMenu = NSApp.mainMenu else { return }
 
@@ -64,6 +65,14 @@ class MainFlutterWindow: NSWindow {
     }
 
     let terminalSubmenu = NSMenu(title: "Terminal")
+    let newTab = NSMenuItem(
+      title: "New Tab",
+      action: #selector(didSelectNewTab),
+      keyEquivalent: "t")
+    newTab.target = self
+    terminalSubmenu.addItem(newTab)
+    terminalSubmenu.addItem(.separator())
+
     let generate = NSMenuItem(
       title: "Generate Command…",
       action: #selector(didSelectGenerateCommand),
@@ -134,6 +143,10 @@ class MainFlutterWindow: NSWindow {
 
   @objc private func didSelectSettings() {
     menuChannel?.invokeMethod("openSettings", arguments: nil)
+  }
+
+  @objc private func didSelectNewTab() {
+    menuChannel?.invokeMethod("newTab", arguments: nil)
   }
 
   @objc private func didSelectGenerateCommand() {

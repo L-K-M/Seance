@@ -21,10 +21,8 @@ final bool _isTouchPlatform = Platform.isAndroid || Platform.isIOS;
 /// Right pane / second screen: the active server's terminal.
 ///
 /// A server can have several sessions, shown as a tab strip at the top of the
-/// pane (only when that server has more than one — a single-tab server looks
-/// exactly as before). Tabs are one level *below* the server list: the strip
-/// only ever shows the active server's sessions, so adjacent tabs are always
-/// the same server.
+/// pane. Tabs are one level *below* the server list: the strip only ever shows
+/// the active server's sessions, so adjacent tabs are always the same server.
 ///
 /// Every open session stays mounted in an [IndexedStack] so switching tabs (or
 /// servers) is instant — the previously-rendered terminal is shown immediately
@@ -54,9 +52,6 @@ class TerminalPane extends StatelessWidget {
         final active = state.activeSession;
         final showKeyRow =
             _isTouchPlatform && active != null && active.isConnected;
-        final serverTabs = active == null
-            ? const <TerminalSession>[]
-            : state.sessionsForServer(active.serverId);
         return Scaffold(
           // Reflow the terminal (and the key row) above the soft keyboard.
           resizeToAvoidBottomInset: true,
@@ -66,10 +61,14 @@ class TerminalPane extends StatelessWidget {
           appBar: showAppBar ? _appBar(context, state) : null,
           body: Column(
             children: [
-              // The strip appears only once a server has 2+ tabs, so the
-              // single-session case is visually unchanged.
-              if (active != null && serverTabs.length > 1)
-                _TabStrip(state: state, active: active),
+              if (active != null)
+                TerminalTabStrip(
+                  tabs: state.sessionsForServer(active.serverId),
+                  activeSessionId: state.activeSessionId,
+                  onFocus: state.focusSession,
+                  onClose: state.closeTab,
+                  onNewTab: () => state.newTab(active.config),
+                ),
               Expanded(child: _body(state)),
               if (showKeyRow) TerminalKeyboardBar(engine: active.engine),
             ],
@@ -93,12 +92,6 @@ class TerminalPane extends StatelessWidget {
             tooltip: 'Generate command',
             icon: const Icon(Icons.auto_fix_high),
             onPressed: () => showCommandGenerator(context, state),
-          ),
-        if (active != null)
-          IconButton(
-            tooltip: 'New tab',
-            icon: const Icon(Icons.add),
-            onPressed: () => state.newTab(active.config),
           ),
         if (status == TerminalStatus.connected)
           IconButton(
@@ -149,17 +142,27 @@ class TerminalPane extends StatelessWidget {
   }
 }
 
-/// The per-server tab strip, shown above the terminal when a server has more
-/// than one open session. Renders only the active server's sessions, so
-/// adjacent tabs are always the same server.
-class _TabStrip extends StatelessWidget {
-  final AppState state;
-  final TerminalSession active;
-  const _TabStrip({required this.state, required this.active});
+/// The active server's tab strip, including the affordance that opens another
+/// session. It remains visible for a single session so that affordance is never
+/// hidden behind the action it triggers.
+class TerminalTabStrip extends StatelessWidget {
+  final List<TerminalSession> tabs;
+  final String? activeSessionId;
+  final ValueChanged<String> onFocus;
+  final ValueChanged<String> onClose;
+  final VoidCallback onNewTab;
+
+  const TerminalTabStrip({
+    super.key,
+    required this.tabs,
+    required this.activeSessionId,
+    required this.onFocus,
+    required this.onClose,
+    required this.onNewTab,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final tabs = state.sessionsForServer(active.serverId);
     final scheme = Theme.of(context).colorScheme;
     return Container(
       height: 38,
@@ -179,9 +182,9 @@ class _TabStrip extends StatelessWidget {
                       // 1-based ordinal within the server; no OSC title yet.
                       label: 'Session ${i + 1}',
                       status: tabs[i].status,
-                      selected: tabs[i].id == state.activeSessionId,
-                      onTap: () => state.focusSession(tabs[i].id),
-                      onClose: () => state.closeTab(tabs[i].id),
+                      selected: tabs[i].id == activeSessionId,
+                      onTap: () => onFocus(tabs[i].id),
+                      onClose: () => onClose(tabs[i].id),
                     ),
                 ],
               ),
@@ -192,7 +195,7 @@ class _TabStrip extends StatelessWidget {
             iconSize: 18,
             visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.add),
-            onPressed: () => state.newTab(active.config),
+            onPressed: onNewTab,
           ),
         ],
       ),
