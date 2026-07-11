@@ -1,7 +1,6 @@
 # Séance
 
-A cross-platform SSH client for personal use for Mac and Android with an
-optional self-hostable sync server, and a built-in LLM assistant.
+A cross-platform SSH client for Mac and Android with an optional self-hostable sync server, a file browser, and a built-in LLM assistant.
 
 *You summon remote machines and talk to them.*
 
