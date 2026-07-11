@@ -638,14 +638,14 @@ packages:
       path: "../../packages/seance_core"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.0"
   seance_protocol:
     dependency: transitive
     description:
       path: "../../packages/seance_protocol"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.0"
   share_plus:
     dependency: "direct main"
     description:
