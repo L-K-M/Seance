@@ -738,6 +738,21 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> reconcileRetainedLocalCopy(
+    String sessionId,
+    ManagedRemoteFile copy,
+  ) async {
+    final tab = sessionById(sessionId);
+    if (tab == null) return;
+    final updated = await services.managedRemoteFiles.reconcile(copy.id);
+    if (updated == null ||
+        tab.retainedLocalCopies[copy.remotePath]?.id != copy.id) {
+      return;
+    }
+    tab.retainedLocalCopies[copy.remotePath] = updated;
+    notifyListeners();
+  }
+
   /// Close a single tab and drop it. The active session falls back to the next
   /// tab of the same server, then the previous, then any other server's
   /// most-recent tab, then null (which returns the UI to the server list).

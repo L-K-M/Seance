@@ -4,7 +4,7 @@ Living design and implementation record for Séance's session-scoped SFTP file
 browser. Update the progress section as work lands so this document remains the
 starting point for future sessions.
 
-_Last updated: 2026-07-10_
+_Last updated: 2026-07-11_
 
 ## Goal
 
@@ -119,7 +119,8 @@ Opening a remote file locally is a managed checkout:
 1. Download to a private application-support directory with a sanitized local
    filename.
 2. Record the remote path, size, modification time, type, and mode.
-3. Open it with the platform default app or a selected desktop editor.
+3. Open UTF-8 text up to 4 MB in Séance's built-in editor, or use the platform
+   default app or a configured desktop editor.
 4. Keep the checkout visible in a **Local edits** section.
 5. Offer **Upload changes**; do not silently overwrite the remote file.
 6. Re-stat and stream-hash before commit; warn if the remote snapshot changed.
@@ -133,6 +134,10 @@ save only prompts or marks the checkout dirty; it never uploads silently.
 
 Remote files are untrusted. Opening one is always an explicit action. Large or
 binary files are streamed as bytes and never decoded merely to transfer them.
+The built-in editor rejects malformed UTF-8 and NUL-containing content,
+preserves UTF-8 BOM and CRLF conventions, and saves atomically to the managed
+checkout. Mobile defaults to this editor because mobile open/share APIs do not
+reliably edit app-private checkouts in place.
 
 ## Initial scope
 
@@ -153,7 +158,8 @@ binary files are streamed as bytes and never decoded merely to transfer them.
 
 ## Future enhancements
 
-- [x] Configurable default editor and an explicit **Open with BBEdit** action.
+- [x] Built-in mobile/desktop text editor plus a configurable registry of
+  extension-filtered desktop editors.
 - [x] Prompt-on-save for managed local edits without silent upload.
 - [x] Persist the managed-edit index across process death.
 - [x] Local SHA-256 hashing and parent-directory watching for atomic saves.
@@ -237,6 +243,8 @@ binary files are streamed as bytes and never decoded merely to transfer them.
 - Added copy-path and guarded Open terminal here actions plus opt-in OSC 133
   integration guidance.
 - Added streamed Save As, native sharing, and Android SAF export destinations.
+- Added a built-in conflict-aware UTF-8 text editor and configurable external
+  editor registry. The built-in editor is the mobile default.
 
 ## Verification log
 
@@ -245,7 +253,7 @@ binary files are streamed as bytes and never decoded merely to transfer them.
 - `dart test packages/seance_protocol packages/seance_core
   packages/seance_sync_server` — 181 tests pass.
 - `flutter analyze` — clean.
-- `flutter test` — 107 tests pass.
+- `flutter test` — 125 tests pass.
 - Android compile not run: this environment has no Android SDK / `ANDROID_HOME`.
 - Linux compile not run: this environment has no CMake toolchain.
 - Live OpenSSH/SFTP and real-device Android validation remain open.

@@ -6,8 +6,8 @@ import 'package:seance_core/seance_core.dart';
 
 import 'app_settings.dart';
 import 'command_stats.dart';
-import 'file_stores.dart';
 import 'external_file_opener.dart';
+import 'file_stores.dart';
 import 'managed_remote_file_store.dart';
 import 'secure_master_key.dart';
 
@@ -63,15 +63,18 @@ class AppServices {
       checkoutRoot: Directory(p('sftp-checkouts')),
     );
     final settings = await settingsStore.load();
-    if (!Platform.isMacOS &&
-        settings.remoteFileEditor == RemoteFileEditor.bbedit) {
-      settings.remoteFileEditor = RemoteFileEditor.systemDefault;
-      await settingsStore.save(settings);
-    }
+    var settingsChanged = false;
     if (settings.deviceId.isEmpty) {
       settings.deviceId = uuidV4();
-      await settingsStore.save(settings);
+      settingsChanged = true;
     }
+    if ((Platform.isAndroid || Platform.isIOS) &&
+        settings.editorRegistry.defaultEditorId ==
+            EditorRegistry.systemDefaultId) {
+      settings.editorRegistry.defaultEditorId = EditorRegistry.builtInId;
+      settingsChanged = true;
+    }
+    if (settingsChanged) await settingsStore.save(settings);
 
     return AppServices._(
       configStore: configStore,

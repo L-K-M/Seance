@@ -46,8 +46,9 @@ class AppSettings {
   /// never downloads or installs anything.
   bool checkForUpdates;
 
-  /// Preferred application for managed remote-file checkouts. Local only.
-  RemoteFileEditor remoteFileEditor;
+  /// Built-in/system/custom editors for managed remote-file checkouts. Local
+  /// only: installed applications and executable paths are never synced.
+  EditorRegistry editorRegistry;
 
   /// Canonical SFTP paths bookmarked per server. Local navigation preference;
   /// credentials and remote contents are never stored here.
@@ -75,12 +76,13 @@ class AppSettings {
     this.autoSync = true,
     this.commandSuggestions = false,
     this.checkForUpdates = true,
-    this.remoteFileEditor = RemoteFileEditor.systemDefault,
+    EditorRegistry? editorRegistry,
     Map<String, List<String>>? remotePathBookmarks,
     Map<String, bool>? remoteShowHidden,
     this.deviceId = '',
     this.snippetsSeeded = false,
-  }) : remotePathBookmarks = remotePathBookmarks ?? {},
+  }) : editorRegistry = editorRegistry ?? EditorRegistry(),
+       remotePathBookmarks = remotePathBookmarks ?? {},
        remoteShowHidden = remoteShowHidden ?? {};
 
   Map<String, dynamic> toJson() => {
@@ -97,7 +99,12 @@ class AppSettings {
     'autoSync': autoSync,
     'commandSuggestions': commandSuggestions,
     'checkForUpdates': checkForUpdates,
-    'remoteFileEditor': remoteFileEditor.name,
+    'editorRegistry': editorRegistry.toJson(),
+    // Keep old versions on a safe supported default if settings are downgraded.
+    'remoteFileEditor':
+        editorRegistry.defaultEditorId == EditorRegistry.migratedBbeditId
+        ? 'bbedit'
+        : 'systemDefault',
     'remotePathBookmarks': remotePathBookmarks,
     'remoteShowHidden': remoteShowHidden,
     'deviceId': deviceId,
@@ -121,9 +128,9 @@ class AppSettings {
     autoSync: json['autoSync'] as bool? ?? true,
     commandSuggestions: json['commandSuggestions'] as bool? ?? false,
     checkForUpdates: json['checkForUpdates'] as bool? ?? true,
-    remoteFileEditor: RemoteFileEditor.values.firstWhere(
-      (value) => value.name == json['remoteFileEditor'],
-      orElse: () => RemoteFileEditor.systemDefault,
+    editorRegistry: EditorRegistry.fromJson(
+      json['editorRegistry'],
+      legacyEditor: json['remoteFileEditor'],
     ),
     remotePathBookmarks: _bookmarkMap(json['remotePathBookmarks']),
     remoteShowHidden: _boolMap(json['remoteShowHidden']),

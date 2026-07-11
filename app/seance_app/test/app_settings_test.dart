@@ -23,7 +23,18 @@ void main() {
 
   test('remote editor and path bookmarks round-trip safely', () {
     final settings = AppSettings(
-      remoteFileEditor: RemoteFileEditor.bbedit,
+      editorRegistry: EditorRegistry(
+        defaultEditorId: 'editor.code',
+        editors: const [
+          ExternalEditorDefinition(
+            id: 'editor.code',
+            displayName: 'Code',
+            platform: EditorHostPlatform.linux,
+            launchTarget: '/usr/bin/code',
+            acceptedExtensions: ['dart', 'json'],
+          ),
+        ],
+      ),
       remotePathBookmarks: {
         'server': ['/var/log', '/home/test'],
       },
@@ -32,14 +43,21 @@ void main() {
 
     final restored = AppSettings.fromJson(settings.toJson());
 
-    expect(restored.remoteFileEditor, RemoteFileEditor.bbedit);
+    expect(restored.editorRegistry.defaultEditorId, 'editor.code');
+    expect(restored.editorRegistry.editors.single.displayName, 'Code');
     expect(restored.remotePathBookmarks['server'], ['/home/test', '/var/log']);
     expect(restored.remoteShowHidden['server'], isFalse);
   });
 
   test('unknown editor and malformed bookmarks fall back safely', () {
     final json = AppSettings().toJson()
-      ..['remoteFileEditor'] = 'missing'
+      ..['editorRegistry'] = {
+        'version': 1,
+        'defaultEditorId': 'missing',
+        'editors': [
+          {'id': 7},
+        ],
+      }
       ..['remotePathBookmarks'] = {
         'server': ['relative', '/valid', 7],
         8: ['/ignored'],
@@ -48,11 +66,54 @@ void main() {
 
     final restored = AppSettings.fromJson(json);
 
-    expect(restored.remoteFileEditor, RemoteFileEditor.systemDefault);
+    expect(
+      restored.editorRegistry.defaultEditorId,
+      EditorRegistry.systemDefaultId,
+    );
     expect(restored.remotePathBookmarks, {
       'server': ['/valid'],
     });
     expect(restored.remoteShowHidden, {'server': true});
+  });
+
+  test('malformed registry metadata does not discard other settings', () {
+    final json =
+        AppSettings(
+            checkForUpdates: false,
+            remotePathBookmarks: {
+              'server': ['/srv'],
+            },
+          ).toJson()
+          ..['editorRegistry'] = {
+            'version': 1,
+            'defaultEditorId': 42,
+            'editors': const [],
+          };
+
+    final restored = AppSettings.fromJson(json);
+
+    expect(restored.checkForUpdates, isFalse);
+    expect(restored.remotePathBookmarks, {
+      'server': ['/srv'],
+    });
+    expect(
+      restored.editorRegistry.defaultEditorId,
+      EditorRegistry.systemDefaultId,
+    );
+  });
+
+  test('legacy BBEdit setting migrates into the editor registry', () {
+    final json = AppSettings().toJson()
+      ..remove('editorRegistry')
+      ..['remoteFileEditor'] = 'bbedit';
+
+    final restored = AppSettings.fromJson(json);
+
+    expect(
+      restored.editorRegistry.defaultEditorId,
+      EditorRegistry.migratedBbeditId,
+    );
+    expect(restored.editorRegistry.editors.single.displayName, 'BBEdit');
   });
 
   test(

@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'app_menus.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_editor.dart';
+import 'settings_screen.dart';
 
 /// Left pane / first screen: the configured servers with a reachability dot.
 /// Tapping one opens a terminal (via [onOpen]).
@@ -24,8 +25,10 @@ class ServerListPane extends StatelessWidget {
         actions: [
           ListenableBuilder(
             listenable: state,
-            builder: (context, _) =>
-                _SyncIndicator(state: state, onTap: () => _openSettings(context)),
+            builder: (context, _) => _SyncIndicator(
+              state: state,
+              onTap: () => _openSettings(context, SettingsTab.sync),
+            ),
           ),
           IconButton(
             tooltip: 'Import ~/.ssh/config',
@@ -50,10 +53,7 @@ class ServerListPane extends StatelessWidget {
           // A newer release exists: show a dismissible banner above the list.
           return Column(
             children: [
-              _UpdateBanner(
-                info: update,
-                onDismiss: state.dismissUpdateNotice,
-              ),
+              _UpdateBanner(info: update, onDismiss: state.dismissUpdateNotice),
               Expanded(child: list),
             ],
           );
@@ -104,15 +104,24 @@ class ServerListPane extends StatelessWidget {
     );
   }
 
-  static void _openSettings(BuildContext context) => openSettings();
+  static void _openSettings(
+    BuildContext context, [
+    SettingsTab tab = SettingsTab.general,
+  ]) => openSettings(tab);
 
   Future<void> _editServer(
-      BuildContext context, AppState state, ServerConfig? server) async {
+    BuildContext context,
+    AppState state,
+    ServerConfig? server,
+  ) async {
     await showServerEditor(context, state, server);
   }
 
   Future<void> _deleteServer(
-      BuildContext context, AppState state, ServerConfig server) async {
+    BuildContext context,
+    AppState state,
+    ServerConfig server,
+  ) async {
     final localCopyCount = state
         .sessionsForServer(server.id)
         .fold<int>(
@@ -130,17 +139,19 @@ class ServerListPane extends StatelessWidget {
           localCopyCount == 0
               ? 'This removes the server and any stored secret.'
               : 'This removes the server, its stored secret, and '
-                  '$localCopyCount managed local '
-                  '${localCopyCount == 1 ? 'edit' : 'edits'}. Any changes not '
-                  'uploaded to the server will be deleted.',
+                    '$localCopyCount managed local '
+                    '${localCopyCount == 1 ? 'edit' : 'edits'}. Any changes not '
+                    'uploaded to the server will be deleted.',
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete')),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
@@ -167,20 +178,22 @@ class ServerListPane extends StatelessWidget {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, controller.text),
-              child: const Text('Import')),
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Import'),
+          ),
         ],
       ),
     );
     if (text != null && text.trim().isNotEmpty) {
       final n = await state.importSshConfig(text);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Imported $n host(s)')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Imported $n host(s)')));
       }
     }
   }
@@ -201,15 +214,20 @@ class _SyncIndicator extends StatelessWidget {
         padding: EdgeInsets.symmetric(horizontal: 14),
         child: Center(
           child: SizedBox(
-              width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
         ),
       );
     }
     if (state.lastSyncError != null) {
       return IconButton(
         tooltip: 'Last sync failed — open settings',
-        icon: Icon(Icons.cloud_off_outlined,
-            color: Theme.of(context).colorScheme.error),
+        icon: Icon(
+          Icons.cloud_off_outlined,
+          color: Theme.of(context).colorScheme.error,
+        ),
         onPressed: onTap,
       );
     }
@@ -234,8 +252,11 @@ class _UpdateBanner extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
         child: Row(
           children: [
-            Icon(Icons.system_update_outlined,
-                size: 20, color: scheme.onSecondaryContainer),
+            Icon(
+              Icons.system_update_outlined,
+              size: 20,
+              color: scheme.onSecondaryContainer,
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -244,8 +265,10 @@ class _UpdateBanner extends StatelessWidget {
               ),
             ),
             TextButton(
-              onPressed: () => launchUrl(info.releasesUrl,
-                  mode: LaunchMode.externalApplication),
+              onPressed: () => launchUrl(
+                info.releasesUrl,
+                mode: LaunchMode.externalApplication,
+              ),
               child: const Text('View release'),
             ),
             IconButton(
@@ -325,14 +348,19 @@ class _ServerTile extends StatelessWidget {
           if (tabCount > 1)
             Padding(
               padding: const EdgeInsets.only(left: 4),
-              child: Text('×$tabCount',
-                  style: Theme.of(context).textTheme.labelSmall),
+              child: Text(
+                '×$tabCount',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
             ),
         ],
       ),
       title: MiddleEllipsisText(server.label),
-      subtitle: Text('${server.username}@${server.host}:${server.port}',
-          maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        '${server.username}@${server.host}:${server.port}',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       onTap: onTap,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -357,11 +385,14 @@ class _ServerTile extends StatelessWidget {
               const PopupMenuItem(value: 'newTab', child: Text('New tab')),
               if (connected)
                 PopupMenuItem(
-                    value: 'disconnect',
-                    child: Text(tabCount > 1 ? 'Disconnect all' : 'Disconnect')),
+                  value: 'disconnect',
+                  child: Text(tabCount > 1 ? 'Disconnect all' : 'Disconnect'),
+                ),
               if (hasSession && !connected && onReconnect != null)
                 const PopupMenuItem(
-                    value: 'reconnect', child: Text('Reconnect')),
+                  value: 'reconnect',
+                  child: Text('Reconnect'),
+                ),
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
               const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
@@ -391,11 +422,18 @@ class _ConnectionDot extends StatelessWidget {
     }
     final (color, label) = switch (status) {
       TerminalStatus.connected => (StatusColors.online(context), 'connected'),
-      TerminalStatus.error => (StatusColors.offline(context), 'connection error'),
-      TerminalStatus.disconnected =>
-        (StatusColors.unknown(context), 'disconnected'),
-      TerminalStatus.connecting =>
-        (StatusColors.unknown(context), 'connecting'),
+      TerminalStatus.error => (
+        StatusColors.offline(context),
+        'connection error',
+      ),
+      TerminalStatus.disconnected => (
+        StatusColors.unknown(context),
+        'disconnected',
+      ),
+      TerminalStatus.connecting => (
+        StatusColors.unknown(context),
+        'connecting',
+      ),
     };
     return Tooltip(
       message: label,
@@ -415,7 +453,10 @@ class _ReachabilityDot extends StatelessWidget {
     final (color, label) = switch (status) {
       ProbeStatus.online => (StatusColors.online(context), 'reachable'),
       ProbeStatus.offline => (StatusColors.offline(context), 'unreachable'),
-      ProbeStatus.unknown => (StatusColors.unknown(context), 'reachability unknown'),
+      ProbeStatus.unknown => (
+        StatusColors.unknown(context),
+        'reachability unknown',
+      ),
     };
     return Tooltip(
       message: 'Host $label',
@@ -436,11 +477,15 @@ class _EmptyState extends StatelessWidget {
           children: [
             const Icon(Icons.dns_outlined, size: 48),
             const SizedBox(height: 12),
-            Text('No servers yet',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'No servers yet',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 4),
-            const Text('Add one, or import your ~/.ssh/config.',
-                textAlign: TextAlign.center),
+            const Text(
+              'Add one, or import your ~/.ssh/config.',
+              textAlign: TextAlign.center,
+            ),
             const SizedBox(height: 16),
             // The tooltip-only gear above is invisible on touch; a fresh
             // install (especially on a phone) needs a visible path to the

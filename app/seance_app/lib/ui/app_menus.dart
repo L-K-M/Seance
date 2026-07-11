@@ -11,13 +11,17 @@ bool _settingsRouteOpen = false;
 /// Open Settings as a route on the root navigator. Safe to call from menu
 /// callbacks and shortcuts (needs no [BuildContext]); guards against stacking
 /// duplicate Settings routes when triggered repeatedly.
-void openSettings() {
+void openSettings([SettingsTab initialTab = SettingsTab.general]) {
   if (_settingsRouteOpen) return;
   final nav = navigatorKey.currentState;
   if (nav == null) return;
   _settingsRouteOpen = true;
   nav
-      .push(MaterialPageRoute(builder: (_) => const SettingsScreen()))
+      .push(
+        MaterialPageRoute(
+          builder: (_) => SettingsScreen(initialTab: initialTab),
+        ),
+      )
       .whenComplete(() => _settingsRouteOpen = false);
 }
 
@@ -28,7 +32,9 @@ void openCommandGenerator(AppState state) {
   if (ctx == null) return;
   if (!state.llmConfigured) {
     ScaffoldMessenger.of(ctx).showSnackBar(
-      const SnackBar(content: Text('Configure the assistant in Settings first.')),
+      const SnackBar(
+        content: Text('Configure the assistant in Settings first.'),
+      ),
     );
     return;
   }

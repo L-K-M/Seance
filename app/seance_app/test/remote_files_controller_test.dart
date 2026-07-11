@@ -261,6 +261,36 @@ void main() {
   });
 
   test(
+    'a capped checkout aborts and removes an oversized partial file',
+    () async {
+      final remote = _FakeRemoteFileSystem();
+      final shellDirectory = ValueNotifier<String?>(null);
+      final store = _store();
+      final controller = RemoteFilesController(
+        () async => remote,
+        shellDirectory: shellDirectory,
+        managedFileStore: store,
+        serverId: 'server',
+        editSessionId: 'session',
+      );
+      await controller.initialize();
+      final entry = controller.entries.singleWhere(
+        (item) => item.name == 'a.txt',
+      );
+
+      await expectLater(
+        controller.checkoutRemoteFile(entry, maximumBytes: 2),
+        throwsStateError,
+      );
+
+      expect(controller.localCopies, isEmpty);
+      expect(await store.listForSession('session'), isEmpty);
+      controller.dispose();
+      shellDirectory.dispose();
+    },
+  );
+
+  test(
     'filters, sorts, selects, hides dotfiles, and saves bookmarks',
     () async {
       final remote = _FakeRemoteFileSystem();

@@ -16,6 +16,7 @@ import '../services/file_export_service.dart';
 import '../services/managed_remote_file.dart';
 import '../services/remote_files_controller.dart';
 import '../services/xterm_engine.dart';
+import 'built_in_text_editor.dart';
 
 class FilesScreen extends StatelessWidget {
   const FilesScreen({super.key});
@@ -160,12 +161,9 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
                   _LocalCopiesPanel(
                     copies: controller.localCopies.values.toList(),
                     onOpen: _openLocalCopy,
-                    onOpenWithBBEdit: Platform.isMacOS
-                        ? (copy) => _openLocalCopy(
-                            copy,
-                            editor: RemoteFileEditor.bbedit,
-                          )
-                        : null,
+                    editorChoices: (copy) => _editorChoices(copy.remotePath),
+                    onOpenWith: (copy, editorId) =>
+                        _openLocalCopy(copy, editorId: editorId),
                     onUpload: _uploadLocalCopy,
                     onDiscard: _discardLocalCopy,
                   ),
@@ -296,13 +294,11 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
               onShare: entry.type == RemoteFileType.file && _supportsSharing
                   ? () => _shareRemoteFile(entry)
                   : null,
-              onOpenWithBBEdit:
-                  Platform.isMacOS && entry.type == RemoteFileType.file
-                  ? () => _openRemoteFileWithEditor(
-                      entry,
-                      RemoteFileEditor.bbedit,
-                    )
-                  : null,
+              editorChoices: entry.type == RemoteFileType.file
+                  ? _editorChoices(entry.path)
+                  : const [],
+              onOpenWith: (editorId) =>
+                  _openRemoteFileWithEditor(entry, editorId),
               onUploadChanges: localCopy == null
                   ? null
                   : () => _uploadLocalCopy(localCopy),
@@ -475,16 +471,29 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       _showError('Opening symbolic links locally is not supported yet.');
       return;
     }
+    final registry = AppScope.of(context).services.settings.editorRegistry;
+    final editorId = registry.effectiveDefaultFor(entry.path);
+    if (editorId == EditorRegistry.builtInId &&
+        entry.size != null &&
+        entry.size! > builtInEditorMaximumBytes) {
+      _showError('The built-in editor supports text files up to 4 MB.');
+      return;
+    }
     final existing = widget.controller.localCopies[entry.path];
     if (existing != null) {
-      await _openLocalCopy(existing);
+      await _openLocalCopy(existing, editorId: editorId);
       return;
     }
 
     try {
-      final copy = await widget.controller.checkoutRemoteFile(entry);
+      final copy = await widget.controller.checkoutRemoteFile(
+        entry,
+        maximumBytes: editorId == EditorRegistry.builtInId
+            ? builtInEditorMaximumBytes
+            : null,
+      );
       if (!mounted) return;
-      await _openLocalCopy(copy);
+      await _openLocalCopy(copy, editorId: editorId);
     } catch (e) {
       _showError(e);
     }
@@ -492,17 +501,28 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
 
   Future<void> _openRemoteFileWithEditor(
     RemoteFileEntry entry,
-    RemoteFileEditor editor,
+    String editorId,
   ) async {
+    if (editorId == EditorRegistry.builtInId &&
+        entry.size != null &&
+        entry.size! > builtInEditorMaximumBytes) {
+      _showError('The built-in editor supports text files up to 4 MB.');
+      return;
+    }
     final existing = widget.controller.localCopies[entry.path];
     if (existing != null) {
-      await _openLocalCopy(existing, editor: editor);
+      await _openLocalCopy(existing, editorId: editorId);
       return;
     }
     try {
-      final copy = await widget.controller.checkoutRemoteFile(entry);
+      final copy = await widget.controller.checkoutRemoteFile(
+        entry,
+        maximumBytes: editorId == EditorRegistry.builtInId
+            ? builtInEditorMaximumBytes
+            : null,
+      );
       if (!mounted) return;
-      await _openLocalCopy(copy, editor: editor);
+      await _openLocalCopy(copy, editorId: editorId);
     } catch (error) {
       _showError(error);
     }
@@ -510,52 +530,81 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
 
   Future<void> _openLocalCopy(
     ManagedRemoteFile copy, {
-    RemoteFileEditor? editor,
+    String? editorId,
   }) async {
     try {
-      await _openPath(widget.controller.localFile(copy).path, editor: editor);
+      final file = widget.controller.localFile(copy);
+      final registry = AppScope.of(context).services.settings.editorRegistry;
+      final selected =
+          editorId ?? registry.effectiveDefaultFor(copy.remotePath);
+      if (selected == EditorRegistry.builtInId) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => BuiltInTextEditorScreen(
+              file: file,
+              remotePath: copy.remotePath,
+              onSaved: widget.controller.reconcileLocalCopies,
+              onUpload: () => _uploadLocalCopy(copy),
+            ),
+          ),
+        );
+      } else if (selected == EditorRegistry.systemDefaultId) {
+        await _fileOpener.openSystemDefault(file.path);
+      } else {
+        final editor = registry.byId(selected);
+        if (editor == null) {
+          throw StateError('The selected editor no longer exists.');
+        }
+        await _fileOpener.openWith(file.path, editor);
+      }
     } catch (e) {
       _showError(e);
     }
   }
 
-  Future<void> _openPath(String path, {RemoteFileEditor? editor}) =>
-      _fileOpener.open(
-        path,
-        editor:
-            editor ??
-            (Platform.isMacOS
-                ? AppScope.of(context).services.settings.remoteFileEditor
-                : RemoteFileEditor.systemDefault),
-      );
+  List<_EditorChoice> _editorChoices(String path) {
+    final registry = AppScope.of(context).services.settings.editorRegistry;
+    return [
+      const _EditorChoice(EditorRegistry.builtInId, 'Built-in text editor'),
+      if (currentEditorHostPlatform != null)
+        const _EditorChoice(EditorRegistry.systemDefaultId, 'System default'),
+      for (final editor in registry.compatibleEditors(path))
+        _EditorChoice(editor.id, editor.displayName),
+    ];
+  }
 
-  Future<void> _uploadLocalCopy(ManagedRemoteFile copy) async {
+  Future<bool> _uploadLocalCopy(ManagedRemoteFile copy) async {
+    copy = widget.controller.localCopies[copy.remotePath] ?? copy;
     try {
       await widget.controller.uploadLocalCopy(copy);
       _showMessage('Uploaded ${remoteBasename(copy.remotePath)}');
+      return true;
     } on RemoteFileException catch (e) {
       if (e.kind != RemoteFileErrorKind.conflict) {
         _showError(e);
-        return;
+        return false;
       }
-      if (!mounted) return;
+      if (!mounted) return false;
       final overwrite = await _confirm(
         title: 'Remote file changed',
         message: '${e.message}\n\nOverwrite the newer remote version?',
         confirmLabel: 'Overwrite',
       );
-      if (!overwrite) return;
+      if (!overwrite) return false;
       try {
         await widget.controller.uploadLocalCopy(
           copy,
           overwriteRemoteChanges: true,
         );
         _showMessage('Uploaded ${remoteBasename(copy.remotePath)}');
+        return true;
       } catch (failure) {
         _showError(failure);
+        return false;
       }
     } catch (e) {
       _showError(e);
+      return false;
     }
   }
 
@@ -1441,6 +1490,13 @@ class _HeaderButton extends StatelessWidget {
   );
 }
 
+class _EditorChoice {
+  final String id;
+  final String label;
+
+  const _EditorChoice(this.id, this.label);
+}
+
 class _FileRow extends StatelessWidget {
   final RemoteFileEntry entry;
   final bool showDetails;
@@ -1456,7 +1512,8 @@ class _FileRow extends StatelessWidget {
   final VoidCallback? onOpenTerminalHere;
   final VoidCallback? onDownload;
   final VoidCallback? onShare;
-  final VoidCallback? onOpenWithBBEdit;
+  final List<_EditorChoice> editorChoices;
+  final ValueChanged<String> onOpenWith;
   final VoidCallback? onUploadChanges;
 
   const _FileRow({
@@ -1474,7 +1531,8 @@ class _FileRow extends StatelessWidget {
     this.onOpenTerminalHere,
     this.onDownload,
     this.onShare,
-    this.onOpenWithBBEdit,
+    required this.editorChoices,
+    required this.onOpenWith,
     this.onUploadChanges,
   });
 
@@ -1526,7 +1584,9 @@ class _FileRow extends StatelessWidget {
               if (value == 'open') onOpen();
               if (value == 'select') onSelect();
               if (value == 'upload') onUploadChanges?.call();
-              if (value == 'bbedit') onOpenWithBBEdit?.call();
+              if (value.startsWith('open_with:')) {
+                onOpenWith(value.substring('open_with:'.length));
+              }
               if (value == 'download') onDownload?.call();
               if (value == 'share') onShare?.call();
               if (value == 'copy_path') onCopyPath();
@@ -1541,10 +1601,10 @@ class _FileRow extends StatelessWidget {
                 child: Text(entry.isDirectory ? 'Open' : 'Open locally'),
               ),
               const PopupMenuItem(value: 'select', child: Text('Select')),
-              if (onOpenWithBBEdit != null)
-                const PopupMenuItem(
-                  value: 'bbedit',
-                  child: Text('Open with BBEdit'),
+              for (final editor in editorChoices)
+                PopupMenuItem(
+                  value: 'open_with:${editor.id}',
+                  child: Text('Open with ${editor.label}'),
                 ),
               if (onUploadChanges != null)
                 const PopupMenuItem(
@@ -1585,14 +1645,16 @@ class _FileRow extends StatelessWidget {
 class _LocalCopiesPanel extends StatelessWidget {
   final List<ManagedRemoteFile> copies;
   final ValueChanged<ManagedRemoteFile> onOpen;
-  final ValueChanged<ManagedRemoteFile>? onOpenWithBBEdit;
+  final List<_EditorChoice> Function(ManagedRemoteFile) editorChoices;
+  final void Function(ManagedRemoteFile, String) onOpenWith;
   final ValueChanged<ManagedRemoteFile> onUpload;
   final ValueChanged<ManagedRemoteFile> onDiscard;
 
   const _LocalCopiesPanel({
     required this.copies,
     required this.onOpen,
-    this.onOpenWithBBEdit,
+    required this.editorChoices,
+    required this.onOpenWith,
     required this.onUpload,
     required this.onDiscard,
   });
@@ -1619,14 +1681,16 @@ class _LocalCopiesPanel extends StatelessWidget {
           onTap: () => onOpen(copy),
           trailing: Wrap(
             children: [
-              if (onOpenWithBBEdit != null)
-                IconButton(
-                  tooltip: 'Open with BBEdit',
-                  icon: const Icon(Icons.edit_outlined, size: 19),
-                  onPressed: copy.missing
-                      ? null
-                      : () => onOpenWithBBEdit!(copy),
-                ),
+              PopupMenuButton<String>(
+                tooltip: 'Open with',
+                enabled: !copy.missing,
+                icon: const Icon(Icons.edit_outlined, size: 19),
+                onSelected: (editorId) => onOpenWith(copy, editorId),
+                itemBuilder: (context) => [
+                  for (final editor in editorChoices(copy))
+                    PopupMenuItem(value: editor.id, child: Text(editor.label)),
+                ],
+              ),
               IconButton(
                 tooltip: 'Upload changes',
                 icon: const Icon(Icons.upload, size: 19),
@@ -1801,48 +1865,44 @@ class _RecoveredLocalEdits extends StatelessWidget {
                 ),
                 onTap: copy.missing
                     ? null
-                    : () async {
-                        try {
-                          await const ExternalFileOpener().open(
-                            state.services.managedRemoteFiles
-                                .checkoutFile(copy.localPath)
-                                .path,
-                            editor: state.services.settings.remoteFileEditor,
-                          );
-                        } catch (error) {
-                          if (!context.mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(error.toString())),
-                          );
-                        }
-                      },
-                trailing: IconButton(
-                  tooltip: 'Discard local copy',
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () async {
-                    final discard = await showDialog<bool>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('Discard local copy?'),
-                        content: const Text(
-                          'Any changes not uploaded to the server are deleted.',
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('Cancel'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('Discard'),
-                          ),
-                        ],
+                    : () => _open(
+                        context,
+                        copy,
+                        state.services.settings.editorRegistry
+                            .effectiveDefaultFor(copy.remotePath),
                       ),
-                    );
-                    if (discard == true) {
-                      await state.discardRetainedLocalCopy(session.id, copy);
-                    }
-                  },
+                trailing: Wrap(
+                  children: [
+                    PopupMenuButton<String>(
+                      tooltip: 'Open with',
+                      enabled: !copy.missing,
+                      icon: const Icon(Icons.edit_outlined),
+                      onSelected: (editorId) => _open(context, copy, editorId),
+                      itemBuilder: (context) => [
+                        const PopupMenuItem(
+                          value: EditorRegistry.builtInId,
+                          child: Text('Built-in text editor'),
+                        ),
+                        if (currentEditorHostPlatform != null)
+                          const PopupMenuItem(
+                            value: EditorRegistry.systemDefaultId,
+                            child: Text('System default'),
+                          ),
+                        for (final editor
+                            in state.services.settings.editorRegistry
+                                .compatibleEditors(copy.remotePath))
+                          PopupMenuItem(
+                            value: editor.id,
+                            child: Text(editor.displayName),
+                          ),
+                      ],
+                    ),
+                    IconButton(
+                      tooltip: 'Discard local copy',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => _discard(context, copy),
+                    ),
+                  ],
                 ),
               );
             },
@@ -1850,6 +1910,65 @@ class _RecoveredLocalEdits extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _open(
+    BuildContext context,
+    ManagedRemoteFile copy,
+    String editorId,
+  ) async {
+    final file = state.services.managedRemoteFiles.checkoutFile(copy.localPath);
+    try {
+      if (editorId == EditorRegistry.builtInId) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => BuiltInTextEditorScreen(
+              file: file,
+              remotePath: copy.remotePath,
+              onSaved: () => state.reconcileRetainedLocalCopy(session.id, copy),
+            ),
+          ),
+        );
+      } else if (editorId == EditorRegistry.systemDefaultId) {
+        await const ExternalFileOpener().openSystemDefault(file.path);
+      } else {
+        final editor = state.services.settings.editorRegistry.byId(editorId);
+        if (editor == null) {
+          throw StateError('The selected editor no longer exists.');
+        }
+        await const ExternalFileOpener().openWith(file.path, editor);
+      }
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  Future<void> _discard(BuildContext context, ManagedRemoteFile copy) async {
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard local copy?'),
+        content: const Text(
+          'Any changes not uploaded to the server are deleted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    if (discard == true) {
+      await state.discardRetainedLocalCopy(session.id, copy);
+    }
   }
 }
 

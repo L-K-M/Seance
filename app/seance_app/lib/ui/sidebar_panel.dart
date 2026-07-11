@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../main.dart';
 import 'app_menus.dart';
+import 'settings_screen.dart';
 import 'chat_sidebar.dart';
 import 'files_pane.dart';
 import 'snippets_pane.dart';
@@ -101,8 +102,10 @@ class _AssistantSetupPrompt extends StatelessWidget {
           children: [
             const Icon(Icons.auto_awesome_outlined, size: 36),
             const SizedBox(height: 12),
-            Text('Assistant not set up',
-                style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              'Assistant not set up',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
             const SizedBox(height: 6),
             Text(
               'Add an LLM provider (Anthropic, or a local OpenAI-compatible '
@@ -113,7 +116,7 @@ class _AssistantSetupPrompt extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             OutlinedButton.icon(
-              onPressed: openSettings,
+              onPressed: () => openSettings(SettingsTab.assistant),
               icon: const Icon(Icons.settings_outlined),
               label: const Text('Open Settings'),
             ),

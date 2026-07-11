@@ -639,19 +639,25 @@ class RemoteFilesController extends ChangeNotifier {
   /// Downloads [entry] into the durable app-support checkout area and starts
   /// watching its parent directory so editors that save by atomic replacement
   /// are detected as well as in-place writes.
-  Future<ManagedRemoteFile> checkoutRemoteFile(RemoteFileEntry entry) async {
+  Future<ManagedRemoteFile> checkoutRemoteFile(
+    RemoteFileEntry entry, {
+    int? maximumBytes,
+  }) async {
     final existing = localCopies[entry.path];
     if (existing != null) return existing;
     return _checkoutFlights.putIfAbsent(entry.path, () async {
       try {
-        return await _checkoutRemoteFile(entry);
+        return await _checkoutRemoteFile(entry, maximumBytes: maximumBytes);
       } finally {
         _checkoutFlights.remove(entry.path);
       }
     });
   }
 
-  Future<ManagedRemoteFile> _checkoutRemoteFile(RemoteFileEntry entry) async {
+  Future<ManagedRemoteFile> _checkoutRemoteFile(
+    RemoteFileEntry entry, {
+    int? maximumBytes,
+  }) async {
     if (entry.type != RemoteFileType.file) {
       throw StateError('Only regular remote files can be opened for editing.');
     }
@@ -667,7 +673,10 @@ class RemoteFilesController extends ChangeNotifier {
     IOSink? sink;
     try {
       sink = local.openWrite();
-      final snapshot = await download(entry, sink);
+      final destination = maximumBytes == null
+          ? sink
+          : _MaximumByteSink(sink, maximumBytes);
+      final snapshot = await download(entry, destination);
       await sink.flush();
       await sink.close();
       sink = null;
@@ -1164,4 +1173,37 @@ class _RemoteDownloadPlan {
   final String relativePath;
 
   const _RemoteDownloadPlan(this.entry, this.relativePath);
+}
+
+class _MaximumByteSink implements StreamSink<List<int>> {
+  final StreamSink<List<int>> _delegate;
+  final int maximumBytes;
+  int _received = 0;
+
+  _MaximumByteSink(this._delegate, this.maximumBytes);
+
+  List<int> _check(List<int> bytes) {
+    _received += bytes.length;
+    if (_received > maximumBytes) {
+      throw StateError('The built-in editor supports text files up to 4 MB.');
+    }
+    return bytes;
+  }
+
+  @override
+  void add(List<int> data) => _delegate.add(_check(data));
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) =>
+      _delegate.addStream(stream.map(_check));
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      _delegate.addError(error, stackTrace);
+
+  @override
+  Future<void> close() => _delegate.close();
+
+  @override
+  Future<void> get done => _delegate.done;
 }

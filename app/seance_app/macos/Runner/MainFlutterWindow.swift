@@ -40,6 +40,39 @@ class MainFlutterWindow: NSWindow {
       name: "seance/files",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
     filesChannel?.setMethodCallHandler { call, result in
+      if call.method == "pickApplication" {
+        let panel = NSOpenPanel()
+        panel.title = "Choose an editor application"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = true
+        panel.allowedFileTypes = ["app"]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.begin { response in
+          guard response == .OK, let url = panel.url else {
+            result(nil)
+            return
+          }
+          guard let bundle = Bundle(url: url),
+                let bundleIdentifier = bundle.bundleIdentifier else {
+            result(FlutterError(
+              code: "INVALID_APPLICATION",
+              message: "The selected item is not an application bundle.",
+              details: nil))
+            return
+          }
+          let info = bundle.infoDictionary
+          let displayName = (info?["CFBundleDisplayName"] as? String)
+            ?? (info?["CFBundleName"] as? String)
+            ?? url.deletingPathExtension().lastPathComponent
+          result([
+            "displayName": displayName,
+            "bundleIdentifier": bundleIdentifier,
+          ])
+        }
+        return
+      }
       guard call.method == "openWithApplication",
             let arguments = call.arguments as? [String: Any],
             let path = arguments["path"] as? String,
@@ -51,7 +84,7 @@ class MainFlutterWindow: NSWindow {
         withBundleIdentifier: bundleIdentifier) else {
         result(FlutterError(
           code: "APPLICATION_NOT_FOUND",
-          message: "BBEdit is not installed.",
+          message: "The configured editor application is not installed.",
           details: nil))
         return
       }
