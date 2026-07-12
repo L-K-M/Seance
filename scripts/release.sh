@@ -3,7 +3,8 @@
 # the app, in lockstep), keeps the app lockfile and the README version line in
 # step, commits, tags "v<version>", and with --push pushes branch + tag — which
 # triggers .github/workflows/release.yml to test, build the sync-server
-# binaries + Docker image, and publish the GitHub Release.
+# binaries + Docker image + the app clients (Android APK, Linux/macOS/Windows
+# desktop bundles, unsigned iOS IPA), and publish the GitHub Release.
 #
 #   scripts/release.sh 0.2.0          # bump pubspecs + README, commit, tag v0.2.0
 #   scripts/release.sh 0.2.0 --push   # …also push the commit + tag (CI then publishes)
@@ -26,7 +27,7 @@ export RELEASE_POST_BUMP='sed -i "" -E \
   -e "/^  seance_core:/,/^    version:/ s/^(    version: \")[^\"]*(\")/\1${RELEASE_NEW_VERSION}\2/" \
   -e "/^  seance_protocol:/,/^    version:/ s/^(    version: \")[^\"]*(\")/\1${RELEASE_NEW_VERSION}\2/" \
   app/seance_app/pubspec.lock'
-export RELEASE_CI_NOTE="CI (release.yml) will now test, build the sync-server binaries + Docker image, and publish the GitHub Release for <tag>."
+export RELEASE_CI_NOTE="CI (release.yml) will now test, build the sync-server binaries + Docker image + the app clients (APK, Linux/macOS/Windows, iOS IPA), and publish the GitHub Release for <tag>."
 export RELEASE_INVOKED_AS="scripts/release.sh"
 
 BIN="${LKM_RELEASE_BIN:-lkm-release}"
