@@ -4,7 +4,7 @@ description: >-
   terminal engine abstraction, host-key TOFU store, ~/.ssh/config import,
   last-write-wins sync client, and the LLM provider layer. Pure Dart so it is
   shared unchanged by the Flutter app across every platform.
-version: 0.3.0
+version: 0.3.1
 publish_to: none
 resolution: workspace
 

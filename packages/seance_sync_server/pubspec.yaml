@@ -3,7 +3,7 @@ description: >-
   Séance sync server: a single static binary that stores end-to-end encrypted
   record blobs and resolves conflicts by last-write-wins. Knows nothing it can
   decrypt. Ships as a scratch Docker image.
-version: 0.3.0
+version: 0.3.1
 publish_to: none
 resolution: workspace
 
