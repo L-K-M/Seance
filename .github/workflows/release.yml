@@ -10,13 +10,26 @@ name: Release
 # Windows: SmartScreen ▸ Run anyway), and the iOS IPA must be re-signed to
 # install (AltStore / Sideloadly / Xcode with a free Apple ID).
 # scripts/build.sh stays the local build path for a signed-for-this-Mac app.
+# No tag handy? The workflow_dispatch trigger below cuts the same release from
+# a chosen commit and creates the tag for you (see its comment).
 
 on:
   push:
     tags: ['v*']        # e.g. v0.2.0
+  # Cut a release without pushing a tag — for environments whose credential
+  # can push branches but not tag refs (e.g. remote agent sessions). The tag
+  # is created at the dispatched commit by the first gh-release step; the
+  # input must match the pubspec `version:` (the scripts/release.sh lockstep
+  # contract), since the APK/bundles bake that version in.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.3.1 (created here if it doesn't exist)"
+        required: true
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -93,6 +106,11 @@ jobs:
         run: tar -czf seance-sync-${{ matrix.platform }}.tar.gz -C dist .
       - uses: softprops/action-gh-release@v2
         with:
+          # On a tag push these two resolve to the pushed tag (and the
+          # commitish is ignored); on workflow_dispatch they make the first
+          # job to get here create the tag at the dispatched commit.
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: seance-sync-${{ matrix.platform }}.tar.gz
 
   # The app, once per client platform. `flutter build` is host-locked the same
@@ -221,6 +239,8 @@ jobs:
           esac
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: ${{ matrix.artifact }}
 
   # Container image to GitHub Container Registry. Deployments build from source
@@ -243,9 +263,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # `value` feeds the semver parser the tag on workflow_dispatch runs
+          # (where the git ref is a branch, not the tag); on tag pushes it is
+          # the pushed tag itself, same as deriving from the ref.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},value=${{ inputs.tag || github.ref_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag || github.ref_name }}
             type=raw,value=latest
       - uses: docker/build-push-action@v6
         with:
