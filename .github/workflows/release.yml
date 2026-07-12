@@ -2,10 +2,14 @@ name: Release
 
 # Tag a version (scripts/release.sh X.Y.Z --push) to test, build, and publish
 # Séance's release artifacts: sync-server binaries for each desktop platform, a
-# Docker image on GHCR, and the Android APK for the Flutter app. The desktop
-# Flutter apps stay a personal build (scripts/build.sh) — they're host-native
-# and unsigned; only the Android APK cross-builds on Linux, so it's the one app
-# target published here.
+# Docker image on GHCR, and the app client for every platform folder the repo
+# carries — Android APK, Linux/macOS/Windows desktop bundles, and an unsigned
+# iOS IPA. No signing identity is involved beyond the committed Android
+# keystore: the desktop bundles are unsigned (macOS: ad-hoc), so first launch
+# needs the usual unidentified-developer step (macOS: right-click ▸ Open;
+# Windows: SmartScreen ▸ Run anyway), and the iOS IPA must be re-signed to
+# install (AltStore / Sideloadly / Xcode with a free Apple ID).
+# scripts/build.sh stays the local build path for a signed-for-this-Mac app.
 
 on:
   push:
@@ -22,9 +26,10 @@ permissions:
 jobs:
   # Gate the release on the pure-Dart suite — it covers the protocol, core, and
   # server that this workflow's binaries and image ship. A tag on a broken
-  # commit must not publish a release. (The Flutter app's analyze+test run in
-  # CI on main/PRs, so the tagged commit is already green there; the APK job
-  # below still re-compiles the app, which fails the release if it won't build.)
+  # commit must not publish a release. (The Flutter app's analyze+test and a
+  # per-platform compile of every client run in CI on main/PRs, so the tagged
+  # commit is already green there; the client jobs below still re-compile each
+  # platform, which fails that platform's asset if it won't build.)
   test:
     name: Test (release gate)
     runs-on: ubuntu-latest
@@ -90,43 +95,133 @@ jobs:
         with:
           files: seance-sync-${{ matrix.platform }}.tar.gz
 
-  # Android APK for the Flutter app. The platform folders are committed (they
-  # carry the app name, icons, and bundle id — AGENTS.md §3) and the release
-  # build signs with the keystore committed at android/app/ci-release.jks —
-  # deliberately public, debug-grade trust (personal tool, no Play Store), but
-  # STABLE, so each release's APK upgrades the installed app in place instead
-  # of demanding an uninstall. No signing secrets needed — just the Flutter +
-  # Android toolchain, and the Android SDK ships on ubuntu-latest. Version
-  # comes from the app pubspec (lockstep with the tag via scripts/release.sh).
-  android:
-    name: Android APK
+  # The app, once per client platform. `flutter build` is host-locked the same
+  # way `dart compile exe` is (linux/windows only build on their own OS,
+  # macos/ios only on a Mac) — hence a matrix over runners. fail-fast stays off
+  # so one platform's breakage doesn't cancel the others: each job attaches its
+  # own asset to the release independently. CI compiles the same matrix on
+  # main/PRs (ci.yml `client` job — keep the two in step), so a tag should
+  # never be the first time a client platform builds.
+  client:
+    name: Client (${{ matrix.target }})
     needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45   # first run downloads the Flutter toolchain
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The APK signs with the keystore committed at
+          # android/app/ci-release.jks — deliberately public, debug-grade trust
+          # (personal tool, no Play Store), but STABLE, so each release's APK
+          # upgrades the installed app in place instead of demanding an
+          # uninstall. No signing secrets needed — the Android SDK ships on
+          # ubuntu-latest.
+          - os: ubuntu-latest
+            target: android
+            build: apk --release
+            artifact: seance-android.apk
+          - os: ubuntu-latest
+            target: linux
+            build: linux --release
+            artifact: seance-linux-x64.tar.gz
+          # Flutter release builds of the macOS app are universal
+          # (arm64 + x86_64), so one asset covers both Mac generations.
+          - os: macos-latest
+            target: macos
+            build: macos --release
+            artifact: seance-macos-universal.zip
+          # No Apple Developer account: built unsigned (--no-codesign) and
+          # shipped as an IPA for users who re-sign and sideload.
+          - os: macos-latest
+            target: ios
+            build: ios --release --no-codesign
+            artifact: seance-ios-unsigned.ipa
+          - os: windows-latest
+            target: windows
+            build: windows --release
+            artifact: seance-windows-x64.zip
     steps:
       - uses: actions/checkout@v4
       # Match the app's compileOptions (JavaVersion.VERSION_17) so the Gradle
       # build is deterministic rather than tracking the runner's default JDK.
       - uses: actions/setup-java@v4
+        if: matrix.target == 'android'
         with:
           distribution: temurin
           java-version: '17'
+      # GTK toolchain for the Flutter Linux embedder, plus libsecret/jsoncpp
+      # for flutter_secure_storage's keyring backend.
+      - name: Install Linux desktop toolchain
+        if: matrix.target == 'linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          libsecret-1-dev libjsoncpp-dev
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
+      # The committed project signs Release with the owner's "Apple
+      # Development" identity (the scripts/build.sh local path). The runner has
+      # no such certificate, so point the build at ad-hoc signing instead — the
+      # signing class AGENTS.md §3 documents the app supports (entitlements and
+      # keychain use are chosen to work ad-hoc-signed).
+      - name: Switch macOS signing to ad-hoc (runner has no certificate)
+        if: matrix.target == 'macos'
+        run: |
+          sed -i '' \
+            -e 's/"CODE_SIGN_IDENTITY\[sdk=macosx\*\]" = "Apple Development";/"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";/' \
+            -e 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/' \
+            -e 's/DEVELOPMENT_TEAM = [^;]*;/DEVELOPMENT_TEAM = "";/' \
+            app/seance_app/macos/Runner.xcodeproj/project.pbxproj
       - name: Resolve app dependencies
         working-directory: app/seance_app
         run: flutter pub get
-      - name: Build APK
+      - name: Build
         working-directory: app/seance_app
-        run: flutter build apk --release
-      # Name the asset like the sync-server tarballs (product, no version — the
+        run: flutter build ${{ matrix.build }}
+      # Stage each platform's product under its release asset name. Names
+      # match the sync-server tarballs: product + platform, no version (the
       # release page already carries the version).
-      - name: Stage artifact
-        run: cp app/seance_app/build/app/outputs/flutter-apk/app-release.apk seance-android.apk
+      - name: Package
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            android)
+              cp app/seance_app/build/app/outputs/flutter-apk/app-release.apk \
+                 seance-android.apk
+              ;;
+            linux)
+              mv "$(ls -d app/seance_app/build/linux/*/release/bundle)" seance-linux-x64
+              tar -czf seance-linux-x64.tar.gz seance-linux-x64
+              ;;
+            macos)
+              # Xcode builds the ASCII "Seance.app" (codesign rejects accented
+              # file names); rename the wrapper for users — same move as
+              # scripts/build.sh, and the wrapper name isn't part of the
+              # signature seal. ditto keeps the bundle's symlinks and metadata
+              # intact inside the zip.
+              cd app/seance_app/build/macos/Build/Products/Release
+              mv "$(ls -d *.app | head -1)" "Séance.app"
+              ditto -c -k --keepParent "Séance.app" \
+                "$GITHUB_WORKSPACE/seance-macos-universal.zip"
+              ;;
+            ios)
+              # An IPA is Payload/<app>.app zipped. Unsigned — installing it
+              # means re-signing (AltStore / Sideloadly / Xcode free account).
+              mkdir Payload
+              mv app/seance_app/build/ios/iphoneos/Runner.app Payload/
+              zip -qry seance-ios-unsigned.ipa Payload
+              ;;
+            windows)
+              mv "$(ls -d app/seance_app/build/windows/*/runner/Release)" seance-windows-x64
+              7z a -bd seance-windows-x64.zip seance-windows-x64
+              ;;
+          esac
       - uses: softprops/action-gh-release@v2
         with:
-          files: seance-android.apk
+          files: ${{ matrix.artifact }}
 
   # Container image to GitHub Container Registry. Deployments build from source
   # (./update.sh / docker compose --build); this image is the release artifact

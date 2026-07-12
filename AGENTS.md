@@ -88,8 +88,12 @@ docker compose -f packages/seance_sync_server/docker-compose.yml up -d --build
 `version:` in all four pubspecs in lockstep, keeps the app lockfile and the
 version line at the top of this README in step, commits, and tags `v<version>`
 — pushing that tag triggers `.github/workflows/release.yml`, which tests, then
-publishes the sync-server binaries and the
-`ghcr.io/l-k-m/seance` Docker image as the GitHub Release.
+publishes the sync-server binaries, the `ghcr.io/l-k-m/seance` Docker image,
+and the app for every client platform — Android APK, Linux/macOS/Windows
+desktop bundles, and an unsigned iOS IPA (re-sign to sideload) — as the
+GitHub Release. The desktop bundles are unsigned (macOS: ad-hoc), so first
+launch needs the usual unidentified-developer step; `scripts/build.sh` stays
+the local path for a signed-for-this-Mac build.
 
 ```bash
 scripts/release.sh 0.2.0          # bump + commit, tag v0.2.0
@@ -235,7 +239,9 @@ docker build -f packages/seance_sync_server/Dockerfile -t seance-sync .
 ```
 
 CI runs all of the above (`.github/workflows/ci.yml`): dart analyze+test,
-flutter analyze+test, and the Docker build.
+flutter analyze+test, the Docker build, and a client build matrix that
+compiles the app for android/linux/macos/ios/windows on their native runners
+(the same matrix release.yml packages and publishes — keep the two in step).
 
 **Helper scripts** (family conventions shared with the sibling repos):
 
@@ -249,8 +255,9 @@ flutter analyze+test, and the Docker build.
   [release-tool](https://github.com/L-K-M/release-tool) engine (`lkm-release`):
   bumps all four pubspecs in lockstep (+ app lockfile + README version line),
   commits, tags `v<version>`; the pushed tag triggers
-  `.github/workflows/release.yml` (tests gate; publishes sync-server binaries
-  and the GHCR Docker image). Runs on macOS (BSD sed), like the engine.
+  `.github/workflows/release.yml` (tests gate; publishes sync-server binaries,
+  the GHCR Docker image, and all five app clients). Runs on macOS (BSD sed),
+  like the engine.
 - `./update.sh` — on a deployment host: pull the latest code, then
   `docker compose up -d --build` the sync server.
 

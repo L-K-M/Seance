@@ -65,6 +65,72 @@ jobs:
         working-directory: app/seance_app
         run: flutter test
 
+  # Compile every client the release workflow ships (android / linux / macos /
+  # ios / windows) so a platform-breaking change is caught here, not when a tag
+  # tries to publish. Mirrors release.yml's `client` job minus the packaging
+  # and publishing — keep the two matrices in step.
+  client:
+    name: Client build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45   # first run downloads the Flutter toolchain
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: android
+            build: apk --release
+          - os: ubuntu-latest
+            target: linux
+            build: linux --release
+          - os: macos-latest
+            target: macos
+            build: macos --release
+          - os: macos-latest
+            target: ios
+            build: ios --release --no-codesign
+          - os: windows-latest
+            target: windows
+            build: windows --release
+    steps:
+      - uses: actions/checkout@v4
+      # Match the app's compileOptions (JavaVersion.VERSION_17) so the Gradle
+      # build is deterministic rather than tracking the runner's default JDK.
+      - uses: actions/setup-java@v4
+        if: matrix.target == 'android'
+        with:
+          distribution: temurin
+          java-version: '17'
+      # GTK toolchain for the Flutter Linux embedder, plus libsecret/jsoncpp
+      # for flutter_secure_storage's keyring backend.
+      - name: Install Linux desktop toolchain
+        if: matrix.target == 'linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          libsecret-1-dev libjsoncpp-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      # Same ad-hoc switch as the release build: the committed project signs
+      # Release with the owner's "Apple Development" identity, which no runner
+      # has — and CI must exercise the exact signing path the release uses.
+      - name: Switch macOS signing to ad-hoc (runner has no certificate)
+        if: matrix.target == 'macos'
+        run: |
+          sed -i '' \
+            -e 's/"CODE_SIGN_IDENTITY\[sdk=macosx\*\]" = "Apple Development";/"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";/' \
+            -e 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/' \
+            -e 's/DEVELOPMENT_TEAM = [^;]*;/DEVELOPMENT_TEAM = "";/' \
+            app/seance_app/macos/Runner.xcodeproj/project.pbxproj
+      - name: Resolve app dependencies
+        working-directory: app/seance_app
+        run: flutter pub get
+      - name: Build
+        working-directory: app/seance_app
+        run: flutter build ${{ matrix.build }}
+
   docker:
     name: Sync server Docker image
     runs-on: ubuntu-latest
