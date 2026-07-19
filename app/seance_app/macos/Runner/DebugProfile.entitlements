@@ -14,6 +14,14 @@
 	<!-- Key/config imports and SFTP export destinations chosen by the user. -->
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!-- "Reference, don't store" identity files (~/.ssh/id_ed25519 …) are read
+	     at connect time, long after any user-selected grant has expired, so the
+	     sandbox needs a standing read-only exception for ~/.ssh. Home-relative
+	     exception paths resolve against the REAL home, not the app container. -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/.ssh/</string>
+	</array>
 	<!-- No keychain-access-groups here on purpose: it's a RESTRICTED
 	     entitlement that macOS refuses to honor on ad-hoc ("sign to run
 	     locally") builds — the app then won't launch at all. The keystore

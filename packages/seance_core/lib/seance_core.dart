@@ -14,6 +14,7 @@ export 'src/terminal/terminal_engine.dart';
 export 'src/terminal/paste_sanitizer.dart';
 export 'src/terminal/shell_command.dart';
 
+export 'src/ssh/home_path.dart';
 export 'src/ssh/ssh_session.dart';
 export 'src/ssh/remote_file_system.dart'
     show

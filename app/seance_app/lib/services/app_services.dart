@@ -11,6 +11,30 @@ import 'file_stores.dart';
 import 'managed_remote_file_store.dart';
 import 'secure_master_key.dart';
 
+/// A "reference, don't store" identity file couldn't be read at connect time.
+/// [toString] is the user-facing connection-failure message, so it names the
+/// resolved path (after `~` expansion) and, when the macOS sandbox denied the
+/// read, says how to get a readable key instead of surfacing a bare EPERM.
+class IdentityFileException implements Exception {
+  final String path;
+  final FileSystemException cause;
+  IdentityFileException(this.path, this.cause);
+
+  @override
+  String toString() {
+    final os = cause.osError?.message;
+    final detail = (os == null || os.isEmpty) ? cause.message : os;
+    // errno 1 = EPERM: the app sandbox blocked the read (entitlements cover
+    // only ~/.ssh), which no amount of retrying or path-fixing will change.
+    final sandboxHint = Platform.isMacOS && cause.osError?.errorCode == 1
+        ? ' macOS lets Séance read keys from ~/.ssh only — move the key '
+            'there, or paste it into the server settings instead of '
+            'referencing a file.'
+        : '';
+    return 'Could not read identity file $path — $detail.$sandboxHint';
+  }
+}
+
 /// Wires together the seance_core services with the app's file-backed stores
 /// and the OS keystore. Created once at startup.
 class AppServices {
@@ -265,9 +289,13 @@ class AppServices {
         // "Reference, don't store": read the key from disk at connect time.
         if (config.identityFilePath != null) {
           // Dart's File does not expand `~`, but the editor hint invites it.
-          final pem = await File(
-            _expandHome(config.identityFilePath!),
-          ).readAsString();
+          final resolved = _expandHome(config.identityFilePath!);
+          final String pem;
+          try {
+            pem = await File(resolved).readAsString();
+          } on FileSystemException catch (e) {
+            throw IdentityFileException(resolved, e);
+          }
           final storedPass = config.secretRef == null
               ? null
               : (await vault.getSecret(config.secretRef!))?.keyPassphrase;
@@ -285,14 +313,13 @@ class AppServices {
 
   /// Expand a leading `~` to the user's home directory (Dart's [File] treats it
   /// as a literal path segment, so an identity path like `~/.ssh/id_ed25519`
-  /// would otherwise never be found).
-  static String _expandHome(String path) {
-    if (path != '~' && !path.startsWith('~/')) return path;
-    final home =
-        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
-    if (home == null || home.isEmpty) return path;
-    return path == '~' ? home : '$home/${path.substring(2)}';
-  }
+  /// would otherwise never be found). [expandHomePath] also undoes the macOS
+  /// sandbox's container `$HOME`, so `~` means the real home directory.
+  static String _expandHome(String path) => expandHomePath(
+        path,
+        environment: Platform.environment,
+        isMacOS: Platform.isMacOS,
+      );
 
   /// Build the configured LLM provider, resolving its API key from the keystore.
   Future<LlmProvider> buildLlmProvider() async {
