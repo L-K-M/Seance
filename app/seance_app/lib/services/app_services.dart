@@ -27,12 +27,15 @@ class IdentityFileException implements Exception {
   String toString() {
     final os = cause.osError?.message;
     final detail = (os == null || os.isEmpty) ? cause.message : os;
-    // errno 1 = EPERM: the app sandbox blocked the read (entitlements cover
-    // only ~/.ssh), which no amount of retrying or path-fixing will change.
+    // errno 1 = EPERM: the app sandbox blocked the read. The entitlements
+    // cover only files physically under ~/.ssh, so this also fires for a
+    // ~/.ssh entry that is a symlink elsewhere (the sandbox checks the
+    // resolved path) — the wording below has to fit that case too.
     final sandboxHint = isMacOS && cause.osError?.errorCode == 1
-        ? ' macOS lets Séance read keys from ~/.ssh only — move the key '
-            'there, or paste it into the server settings instead of '
-            'referencing a file.'
+        ? ' The macOS sandbox lets Séance read keys only from ~/.ssh — '
+            'store the key there as a real file (a symlink to another '
+            'folder won\'t open), or paste it into the server settings '
+            'instead of referencing a file.'
         : '';
     return 'Could not read identity file $path — $detail.$sandboxHint';
   }
