@@ -4,6 +4,13 @@ import FlutterMacOS
 class MainFlutterWindow: NSWindow {
   private var menuChannel: FlutterMethodChannel?
   private var filesChannel: FlutterMethodChannel?
+  private var bookmarksChannel: FlutterMethodChannel?
+
+  /// URLs currently inside a startAccessingSecurityScopedResource grant,
+  /// keyed by an opaque per-grant token (NOT by path: two overlapping grants
+  /// on the same file must each balance their own start with a stop).
+  private var activeScopedUrls: [String: URL] = [:]
+  private var nextGrantToken = 0
 
   /// Whether a terminal (rather than a text field) currently has focus. Pushed
   /// from Dart so the Edit menu can route Copy/Paste/Select All to the active
@@ -104,6 +111,17 @@ class MainFlutterWindow: NSWindow {
             DispatchQueue.main.async { result(nil) }
           }
         }
+    }
+
+    // Identity files ("reference, don't store" SSH keys): a native open panel
+    // that can show dot-directories like ~/.ssh, plus security-scoped
+    // bookmarks so a key picked outside ~/.ssh stays readable at connect time
+    // across relaunches (the sandbox forgets plain picker grants on quit).
+    bookmarksChannel = FlutterMethodChannel(
+      name: "seance/secure_bookmarks",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    bookmarksChannel?.setMethodCallHandler { [weak self] call, result in
+      self?.handleBookmarkCall(call, result: result)
     }
 
     RegisterGeneratedPlugins(registry: flutterViewController)
@@ -209,6 +227,108 @@ class MainFlutterWindow: NSWindow {
       menuChannel?.invokeMethod("editSelectAll", arguments: nil)
     } else {
       _ = NSApp.sendAction(NSSelectorFromString("selectAll:"), to: nil, from: sender)
+    }
+  }
+
+  /// The user's real home directory. The sandbox's $HOME is the app
+  /// container, so the open panel would otherwise start in the wrong place.
+  private func realHomeDirectory() -> URL? {
+    guard let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir else {
+      return nil
+    }
+    return URL(fileURLWithPath: String(cString: dir), isDirectory: true)
+  }
+
+  private func handleBookmarkCall(
+    _ call: FlutterMethodCall, result: @escaping FlutterResult
+  ) {
+    switch call.method {
+    case "pickIdentityFile":
+      let panel = NSOpenPanel()
+      panel.title = "Choose an SSH identity file"
+      panel.canChooseFiles = true
+      panel.canChooseDirectories = false
+      panel.allowsMultipleSelection = false
+      panel.resolvesAliases = true
+      // Identity files live in dot-directories; without this the panel shows
+      // an apparently empty home.
+      panel.showsHiddenFiles = true
+      if let home = realHomeDirectory() {
+        let ssh = home.appendingPathComponent(".ssh", isDirectory: true)
+        panel.directoryURL =
+          FileManager.default.fileExists(atPath: ssh.path) ? ssh : home
+      }
+      panel.begin { response in
+        guard response == .OK, let url = panel.url else {
+          result(nil)
+          return
+        }
+        // Mint the bookmark while the picker's grant is live. Read-only: the
+        // app only ever reads identity files, so the standing grant must not
+        // be able to modify them. If minting fails the path alone still
+        // helps: ~/.ssh works via the entitlement, and the picker grant
+        // covers this process for anything else.
+        let bookmark = try? url.bookmarkData(
+          options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+          includingResourceValuesForKeys: nil,
+          relativeTo: nil)
+        var payload: [String: Any] = ["path": url.path]
+        if let bookmark = bookmark {
+          payload["bookmark"] = bookmark.base64EncodedString()
+        }
+        result(payload)
+      }
+    case "resolveBookmark":
+      guard let arguments = call.arguments as? [String: Any],
+            let encoded = arguments["bookmark"] as? String,
+            let data = Data(base64Encoded: encoded) else {
+        result(FlutterError(
+          code: "BAD_BOOKMARK", message: "Malformed bookmark data.",
+          details: nil))
+        return
+      }
+      var isStale = false
+      guard let url = try? URL(
+        resolvingBookmarkData: data,
+        options: .withSecurityScope,
+        relativeTo: nil,
+        bookmarkDataIsStale: &isStale) else {
+        result(FlutterError(
+          code: "RESOLVE_FAILED",
+          message: "The saved file grant could not be resolved.",
+          details: nil))
+        return
+      }
+      guard url.startAccessingSecurityScopedResource() else {
+        result(FlutterError(
+          code: "ACCESS_DENIED",
+          message: "The saved file grant was not honored.",
+          details: nil))
+        return
+      }
+      nextGrantToken += 1
+      let token = String(nextGrantToken)
+      activeScopedUrls[token] = url
+      var payload: [String: Any] = ["path": url.path, "token": token]
+      // A stale bookmark still resolves once; re-mint it now, while access is
+      // live, so the caller can persist a fresh grant.
+      if isStale,
+         let refreshed = try? url.bookmarkData(
+           options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+           includingResourceValuesForKeys: nil,
+           relativeTo: nil) {
+        payload["refreshedBookmark"] = refreshed.base64EncodedString()
+      }
+      result(payload)
+    case "stopAccess":
+      if let arguments = call.arguments as? [String: Any],
+         let token = arguments["token"] as? String,
+         let url = activeScopedUrls.removeValue(forKey: token) {
+        url.stopAccessingSecurityScopedResource()
+      }
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
     }
   }
 

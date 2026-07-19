@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
+import '../services/app_settings.dart';
 
 /// Add or edit a server. Password / private-key material is written to the
 /// encrypted vault; the config stores only a reference.
@@ -43,6 +44,13 @@ class _ServerEditorState extends State<_ServerEditor> {
   late bool _syncSecret;
   bool _busy = false;
 
+  /// The security-scoped bookmark backing [_keyPath]'s current text, and the
+  /// path it was minted for. Set by Browse… (or loaded for an existing
+  /// server); dropped at save when the user hand-edits the path afterwards,
+  /// since a bookmark only opens the exact file it was created from.
+  String? _keyBookmark;
+  String? _keyBookmarkPath;
+
   @override
   void initState() {
     super.initState();
@@ -57,6 +65,15 @@ class _ServerEditorState extends State<_ServerEditor> {
     _auth = e?.authMethod ?? AuthMethod.password;
     _keyPath.text = e?.identityFilePath ?? '';
     _referenceKeyFile = e?.identityFilePath != null;
+    if (e != null) {
+      // Load the stored grant with the path it was actually minted for (which
+      // a synced edit may have diverged from), so re-saving can't re-bless a
+      // bookmark under a path it doesn't open.
+      final stored =
+          widget.state.services.settings.identityFileBookmarks[e.id];
+      _keyBookmark = stored?.bookmark;
+      _keyBookmarkPath = stored?.path;
+    }
     // New credentials default to syncable (a no-op until the global "sync saved
     // passwords & keys" is on); existing servers keep their stored choice.
     _syncSecret = e?.syncSecret ?? true;
@@ -190,11 +207,23 @@ class _ServerEditorState extends State<_ServerEditor> {
             onChanged: (v) => setState(() => _referenceKeyFile = v),
           ),
           if (_referenceKeyFile)
-            TextFormField(
-              controller: _keyPath,
-              decoration: const InputDecoration(
-                  labelText: 'Identity file path',
-                  hintText: '~/.ssh/id_ed25519'),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _keyPath,
+                    decoration: const InputDecoration(
+                        labelText: 'Identity file path',
+                        hintText: '~/.ssh/id_ed25519'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: _busy ? null : _browseForKey,
+                  child: const Text('Browse…'),
+                ),
+              ],
             )
           else
             TextFormField(
@@ -229,6 +258,18 @@ class _ServerEditorState extends State<_ServerEditor> {
         value: _syncSecret,
         onChanged: (v) => setState(() => _syncSecret = v),
       );
+
+  /// Pick an identity file. On macOS this also mints the security-scoped
+  /// bookmark that keeps a key outside ~/.ssh readable across relaunches.
+  Future<void> _browseForKey() async {
+    final picked = await widget.state.services.identityBookmarks.pick();
+    if (picked == null || !mounted) return;
+    setState(() {
+      _keyPath.text = picked.path;
+      _keyBookmark = picked.bookmark;
+      _keyBookmarkPath = picked.bookmark == null ? null : picked.path;
+    });
+  }
 
   static String? _required(String? v) =>
       (v == null || v.trim().isEmpty) ? 'Required' : null;
@@ -269,6 +310,10 @@ class _ServerEditorState extends State<_ServerEditor> {
       );
     }
 
+    final identityFilePath =
+        (_auth == AuthMethod.privateKey && _referenceKeyFile)
+            ? _keyPath.text.trim()
+            : null;
     final config = ServerConfig(
       id: id,
       label: _label.text.trim(),
@@ -277,15 +322,25 @@ class _ServerEditorState extends State<_ServerEditor> {
       username: _user.text.trim(),
       authMethod: _auth,
       secretRef: secret != null ? secretRef : (existing?.secretRef),
-      identityFilePath: (_auth == AuthMethod.privateKey && _referenceKeyFile)
-          ? _keyPath.text.trim()
-          : null,
+      identityFilePath: identityFilePath,
       syncSecret: _syncSecret,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     );
 
-    await widget.state.saveServer(config, secret: secret);
+    // Trim-insensitively: the saved path is trimmed, while a Browse…-picked
+    // path is verbatim (macOS filenames may carry edge whitespace — the
+    // bookmark, which opens by file identity, still works there).
+    final bookmarkMatchesPath = identityFilePath != null &&
+        _keyBookmark != null &&
+        identityFilePath == _keyBookmarkPath?.trim();
+    await widget.state.saveServer(
+      config,
+      secret: secret,
+      identityFileBookmark: bookmarkMatchesPath
+          ? IdentityFileBookmark(path: identityFilePath, bookmark: _keyBookmark!)
+          : null,
+    );
     if (mounted) Navigator.of(context).pop();
   }
 }

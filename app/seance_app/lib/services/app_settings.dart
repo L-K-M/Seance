@@ -7,6 +7,39 @@ import 'package:seance_core/seance_core.dart';
 import 'atomic_file.dart';
 import 'external_file_opener.dart';
 
+/// A macOS security-scoped bookmark for a Browse…-picked identity file,
+/// together with the identity-file [path] it was minted for. The path pins
+/// the grant to the config it belongs to: when a server's identityFilePath
+/// changes without going through this device's editor (a synced edit — e.g.
+/// a key rotation on another device), the mismatch disqualifies the bookmark
+/// so the configured path wins over the stale grant.
+class IdentityFileBookmark {
+  final String path;
+  final String bookmark; // base64 security-scoped bookmark data
+  const IdentityFileBookmark({required this.path, required this.bookmark});
+
+  Map<String, dynamic> toJson() => {'path': path, 'bookmark': bookmark};
+
+  static IdentityFileBookmark? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final path = json['path'];
+    final bookmark = json['bookmark'];
+    if (path is! String || bookmark is! String || bookmark.isEmpty) {
+      return null;
+    }
+    return IdentityFileBookmark(path: path, bookmark: bookmark);
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is IdentityFileBookmark &&
+      other.path == path &&
+      other.bookmark == bookmark;
+
+  @override
+  int get hashCode => Object.hash(path, bookmark);
+}
+
 /// User-configurable settings. The LLM assistant is always on (this is a
 /// personal tool), so there is no enable flag — only which provider it uses.
 /// Secret redaction defaults on and is a single global toggle.
@@ -55,6 +88,12 @@ class AppSettings {
   Map<String, List<String>> remotePathBookmarks;
   Map<String, bool> remoteShowHidden;
 
+  /// macOS security-scoped bookmarks for Browse…-picked identity files, keyed
+  /// by server id. Deliberately device-local (settings never sync): a bookmark
+  /// only means anything to the app + machine that minted it — other devices
+  /// fall back to the server's identity file *path*.
+  Map<String, IdentityFileBookmark> identityFileBookmarks;
+
   /// Stable per-device id used in synced records' conflict resolution.
   String deviceId;
 
@@ -79,11 +118,13 @@ class AppSettings {
     EditorRegistry? editorRegistry,
     Map<String, List<String>>? remotePathBookmarks,
     Map<String, bool>? remoteShowHidden,
+    Map<String, IdentityFileBookmark>? identityFileBookmarks,
     this.deviceId = '',
     this.snippetsSeeded = false,
   }) : editorRegistry = editorRegistry ?? EditorRegistry(),
        remotePathBookmarks = remotePathBookmarks ?? {},
-       remoteShowHidden = remoteShowHidden ?? {};
+       remoteShowHidden = remoteShowHidden ?? {},
+       identityFileBookmarks = identityFileBookmarks ?? {};
 
   Map<String, dynamic> toJson() => {
     'llmKind': llmKind.name,
@@ -107,6 +148,8 @@ class AppSettings {
         : 'systemDefault',
     'remotePathBookmarks': remotePathBookmarks,
     'remoteShowHidden': remoteShowHidden,
+    'identityFileBookmarks': identityFileBookmarks
+        .map((id, entry) => MapEntry(id, entry.toJson())),
     'deviceId': deviceId,
     'snippetsSeeded': snippetsSeeded,
   };
@@ -134,9 +177,21 @@ class AppSettings {
     ),
     remotePathBookmarks: _bookmarkMap(json['remotePathBookmarks']),
     remoteShowHidden: _boolMap(json['remoteShowHidden']),
+    identityFileBookmarks: _identityBookmarkMap(json['identityFileBookmarks']),
     deviceId: json['deviceId'] as String? ?? '',
     snippetsSeeded: json['snippetsSeeded'] as bool? ?? false,
   );
+}
+
+Map<String, IdentityFileBookmark> _identityBookmarkMap(Object? value) {
+  if (value is! Map) return {};
+  final result = <String, IdentityFileBookmark>{};
+  for (final entry in value.entries) {
+    if (entry.key is! String) continue;
+    final bookmark = IdentityFileBookmark.fromJson(entry.value);
+    if (bookmark != null) result[entry.key as String] = bookmark;
+  }
+  return result;
 }
 
 Map<String, bool> _boolMap(Object? value) {

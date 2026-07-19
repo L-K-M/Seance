@@ -155,3 +155,15 @@ release).
   at `/`.
 - SQLite storage in the server needs `libsqlite3` at runtime; the Docker image
   installs `libsqlite3-0` and `bin/` sets a loader override for `.so.0`.
+- Identity files referenced by path (`~/.ssh/…`) resolve against the *real*
+  home on macOS: the sandbox points `$HOME` at the app container, so `~`
+  expansion strips the container suffix (`expandHomePath` in seance_core), and
+  the entitlements carry a read-only temporary exception for `~/.ssh` so the
+  connect-time read is permitted. Unreadable key files now fail with an
+  actionable message instead of a raw `PathNotFoundException`. Keys outside
+  `~/.ssh` work via the server editor's Browse… button: a native panel (shows
+  dot-directories) mints a security-scoped bookmark (`seance/secure_bookmarks`
+  channel + `files.bookmarks.app-scope` entitlement), stored device-locally in
+  settings — never synced; other devices fall back to the path. Every
+  identity-file read (path or bookmark, success or failure) is appended to a
+  device-local audit trail, `identity_reads.jsonl` in the app-support dir.
