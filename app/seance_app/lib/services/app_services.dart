@@ -8,6 +8,8 @@ import 'app_settings.dart';
 import 'command_stats.dart';
 import 'external_file_opener.dart';
 import 'file_stores.dart';
+import 'identity_audit_log.dart';
+import 'identity_bookmarks.dart';
 import 'managed_remote_file_store.dart';
 import 'secure_master_key.dart';
 
@@ -32,10 +34,11 @@ class IdentityFileException implements Exception {
     // ~/.ssh entry that is a symlink elsewhere (the sandbox checks the
     // resolved path) — the wording below has to fit that case too.
     final sandboxHint = isMacOS && cause.osError?.errorCode == 1
-        ? ' The macOS sandbox lets Séance read keys only from ~/.ssh — '
-            'store the key there as a real file (a symlink to another '
-            'folder won\'t open), or paste it into the server settings '
-            'instead of referencing a file.'
+        ? ' The macOS sandbox lets Séance read keys only from ~/.ssh or '
+            'files granted via Browse… — store the key in ~/.ssh as a real '
+            'file (a symlink to another folder won\'t open), re-pick it with '
+            'Browse…, or paste it into the server settings instead of '
+            'referencing a file.'
         : '';
     return 'Could not read identity file $path — $detail.$sandboxHint';
   }
@@ -56,6 +59,8 @@ class AppServices {
   final CommandStatsStore commandStatsStore;
   final CommandStats commandStats;
   final ManagedRemoteFileStore managedRemoteFiles;
+  final IdentityFileBookmarks identityBookmarks;
+  final IdentityAuditLog identityAudit;
   List<int> vaultKey;
   AppSettings settings;
 
@@ -71,6 +76,8 @@ class AppServices {
     required this.commandStatsStore,
     required this.commandStats,
     required this.managedRemoteFiles,
+    required this.identityBookmarks,
+    required this.identityAudit,
     required this.vaultKey,
     required this.settings,
   });
@@ -118,6 +125,8 @@ class AppServices {
       commandStatsStore: commandStatsStore,
       commandStats: await commandStatsStore.load(),
       managedRemoteFiles: managedRemoteFiles,
+      identityBookmarks: IdentityFileBookmarks(),
+      identityAudit: IdentityAuditLog(File(p('identity_reads.jsonl'))),
       vaultKey: vaultKey,
       settings: settings,
     );
@@ -294,18 +303,7 @@ class AppServices {
       case AuthMethod.privateKey:
         // "Reference, don't store": read the key from disk at connect time.
         if (config.identityFilePath != null) {
-          // Dart's File does not expand `~`, but the editor hint invites it.
-          final resolved = _expandHome(config.identityFilePath!);
-          final String pem;
-          try {
-            pem = await File(resolved).readAsString();
-          } on FileSystemException catch (e, stackTrace) {
-            // Keep the original I/O stack visible to crash reports/logs.
-            Error.throwWithStackTrace(
-              IdentityFileException(resolved, e),
-              stackTrace,
-            );
-          }
+          final pem = await _readIdentityFile(config);
           final storedPass = config.secretRef == null
               ? null
               : (await vault.getSecret(config.secretRef!))?.keyPassphrase;
@@ -318,6 +316,78 @@ class AppServices {
           secret?.value ?? '',
           keyPassphrase: secret?.keyPassphrase,
         );
+    }
+  }
+
+  /// Read a "reference, don't store" identity file for [config], through the
+  /// server's security-scoped bookmark when one exists (a Browse…-picked key
+  /// outside ~/.ssh is only readable inside that grant), falling back to the
+  /// plain expanded path. Every attempt lands in the audit log; audit failures
+  /// never block connecting.
+  Future<String> _readIdentityFile(ServerConfig config) async {
+    // Dart's File does not expand `~`, but the editor hint invites it.
+    var readPath = _expandHome(config.identityFilePath!);
+    ResolvedIdentityFile? scoped;
+    final entry = settings.identityFileBookmarks[config.id];
+    // The grant counts only while it was minted for the configured path: a
+    // synced edit (say, a key rotation on another device) changes the path
+    // without touching this device's bookmark map, and the new path must win
+    // over the stale grant to the old file.
+    if (entry != null && entry.path == config.identityFilePath) {
+      scoped = await identityBookmarks.resolveAndStart(entry.bookmark);
+      if (scoped != null) {
+        readPath = scoped.path;
+        if (scoped.refreshedBookmark != null) {
+          // The stored bookmark went stale (key moved/replaced); persist the
+          // re-minted one so the grant keeps surviving relaunches.
+          settings.identityFileBookmarks[config.id] = IdentityFileBookmark(
+            path: entry.path,
+            bookmark: scoped.refreshedBookmark!,
+          );
+          try {
+            await saveSettings();
+          } catch (_) {
+            // Best-effort: the connect must not fail (nor the live grant go
+            // unbalanced) over a settings write; the stale bookmark still
+            // resolves on the next attempt.
+          }
+        }
+      }
+    }
+    try {
+      final pem = await File(readPath).readAsString();
+      await _auditIdentityRead(config, readPath,
+          viaBookmark: scoped != null, ok: true);
+      return pem;
+    } on FileSystemException catch (e, stackTrace) {
+      await _auditIdentityRead(config, readPath,
+          viaBookmark: scoped != null, ok: false, error: e.toString());
+      // Keep the original I/O stack visible to crash reports/logs.
+      Error.throwWithStackTrace(IdentityFileException(readPath, e), stackTrace);
+    } finally {
+      if (scoped != null) await identityBookmarks.stopAccess(scoped.token);
+    }
+  }
+
+  Future<void> _auditIdentityRead(
+    ServerConfig config,
+    String path, {
+    required bool viaBookmark,
+    required bool ok,
+    String? error,
+  }) async {
+    try {
+      await identityAudit.record(IdentityReadEvent(
+        at: DateTime.now().toUtc().toIso8601String(),
+        serverId: config.id,
+        serverLabel: config.label,
+        path: path,
+        viaBookmark: viaBookmark,
+        ok: ok,
+        error: error,
+      ));
+    } catch (_) {
+      // The audit trail is best-effort; a full disk must not break connecting.
     }
   }
 

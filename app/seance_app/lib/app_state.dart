@@ -5,6 +5,7 @@ import 'package:seance_core/seance_core.dart';
 import 'package:xterm/xterm.dart' show TerminalController;
 
 import 'services/app_services.dart';
+import 'services/app_settings.dart';
 import 'services/default_snippets.dart';
 import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
@@ -236,9 +237,25 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> saveServer(ServerConfig config, {Secret? secret}) async {
+  /// [identityFileBookmark] is the final, device-local security-scope grant
+  /// for the server's identity file: a value stores it, null clears any stored
+  /// one (the editor owns the keep-or-drop decision, so this always applies).
+  Future<void> saveServer(
+    ServerConfig config, {
+    Secret? secret,
+    IdentityFileBookmark? identityFileBookmark,
+  }) async {
     if (secret != null) await services.vault.putSecret(secret);
     await services.configStore.putServer(config);
+    final bookmarks = services.settings.identityFileBookmarks;
+    if (identityFileBookmark != null) {
+      if (bookmarks[config.id] != identityFileBookmark) {
+        bookmarks[config.id] = identityFileBookmark;
+        await services.saveSettings();
+      }
+    } else if (bookmarks.remove(config.id) != null) {
+      await services.saveSettings();
+    }
     servers = await services.configStore.listServers();
     services.probe.updateServers(servers);
     notifyListeners();
@@ -250,6 +267,9 @@ class AppState extends ChangeNotifier {
     final server = await services.configStore.getServer(id);
     if (server?.secretRef != null) {
       await services.vault.deleteSecret(server!.secretRef!);
+    }
+    if (services.settings.identityFileBookmarks.remove(id) != null) {
+      await services.saveSettings();
     }
     await services.configStore.deleteServer(id);
     servers = await services.configStore.listServers();

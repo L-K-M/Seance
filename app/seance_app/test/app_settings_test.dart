@@ -49,6 +49,30 @@ void main() {
     expect(restored.remoteShowHidden['server'], isFalse);
   });
 
+  test('identity file bookmarks round-trip and drop malformed entries', () {
+    const entry = IdentityFileBookmark(
+      path: '/Users/ada/keys/id_ed25519',
+      bookmark: 'Ym9va21hcms=',
+    );
+    final settings = AppSettings(identityFileBookmarks: {'server': entry});
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.identityFileBookmarks, {'server': entry});
+
+    final json = AppSettings().toJson()
+      ..['identityFileBookmarks'] = {
+        'server': {'path': '/k', 'bookmark': 'Ym9va21hcms='},
+        'legacyString': 'Ym9va21hcms=',
+        'emptyBookmark': {'path': '/k', 'bookmark': ''},
+        'missingPath': {'bookmark': 'Ym9va21hcms='},
+        8: {'path': '/k', 'bookmark': 'Ym9va21hcms='},
+      };
+    expect(AppSettings.fromJson(json).identityFileBookmarks, {
+      'server': const IdentityFileBookmark(path: '/k', bookmark: 'Ym9va21hcms='),
+    });
+    expect(AppSettings.fromJson(json..remove('identityFileBookmarks'))
+        .identityFileBookmarks, isEmpty);
+  });
+
   test('unknown editor and malformed bookmarks fall back safely', () {
     final json = AppSettings().toJson()
       ..['editorRegistry'] = {

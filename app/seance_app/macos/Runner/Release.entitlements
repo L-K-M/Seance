@@ -18,6 +18,10 @@
 	<array>
 		<string>/.ssh/</string>
 	</array>
+	<!-- Security-scoped bookmarks keep Browse…-picked identity files outside
+	     ~/.ssh readable at connect time across relaunches. -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
 	<!-- No keychain-access-groups here on purpose: it's a RESTRICTED
 	     entitlement that macOS refuses to honor on ad-hoc ("sign to run
 	     locally") builds — the app then won't launch at all. The keystore
