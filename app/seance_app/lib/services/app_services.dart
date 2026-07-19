@@ -18,7 +18,10 @@ import 'secure_master_key.dart';
 class IdentityFileException implements Exception {
   final String path;
   final FileSystemException cause;
-  IdentityFileException(this.path, this.cause);
+  // Injectable so the hint branch is unit-testable off-macOS (CI runs Linux).
+  final bool isMacOS;
+  IdentityFileException(this.path, this.cause, {bool? isMacOS})
+      : isMacOS = isMacOS ?? Platform.isMacOS;
 
   @override
   String toString() {
@@ -26,7 +29,7 @@ class IdentityFileException implements Exception {
     final detail = (os == null || os.isEmpty) ? cause.message : os;
     // errno 1 = EPERM: the app sandbox blocked the read (entitlements cover
     // only ~/.ssh), which no amount of retrying or path-fixing will change.
-    final sandboxHint = Platform.isMacOS && cause.osError?.errorCode == 1
+    final sandboxHint = isMacOS && cause.osError?.errorCode == 1
         ? ' macOS lets Séance read keys from ~/.ssh only — move the key '
             'there, or paste it into the server settings instead of '
             'referencing a file.'
