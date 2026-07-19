@@ -296,8 +296,12 @@ class AppServices {
           final String pem;
           try {
             pem = await File(resolved).readAsString();
-          } on FileSystemException catch (e) {
-            throw IdentityFileException(resolved, e);
+          } on FileSystemException catch (e, stackTrace) {
+            // Keep the original I/O stack visible to crash reports/logs.
+            Error.throwWithStackTrace(
+              IdentityFileException(resolved, e),
+              stackTrace,
+            );
           }
           final storedPass = config.secretRef == null
               ? null
