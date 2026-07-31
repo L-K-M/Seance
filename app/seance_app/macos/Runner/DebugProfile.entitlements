@@ -2,35 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<!-- Not sandboxed — see Release.entitlements for why, and for what it
+	     costs. Every sandbox-only key that used to be here went with it.
+
+	     allow-jit stays: it is a Hardened Runtime entitlement, nothing to do
+	     with the sandbox, and Flutter's debug build needs a JIT-capable Dart
+	     VM. Without it a debug build dies at launch. -->
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
-	<key>com.apple.security.network.server</key>
-	<true/>
-	<!-- Outbound connections: SSH sessions, the sync server, LLM providers. -->
-	<key>com.apple.security.network.client</key>
-	<true/>
-	<!-- Key/config imports and SFTP export destinations chosen by the user. -->
-	<key>com.apple.security.files.user-selected.read-write</key>
-	<true/>
-	<!-- "Reference, don't store" identity files (~/.ssh/id_ed25519 …) are read
-	     at connect time, long after any user-selected grant has expired, so the
-	     sandbox needs a standing read-only exception for ~/.ssh. Home-relative
-	     exception paths resolve against the REAL home, not the app container. -->
-	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
-	<array>
-		<string>/.ssh/</string>
-	</array>
-	<!-- Security-scoped bookmarks keep Browse…-picked identity files outside
-	     ~/.ssh readable at connect time across relaunches. -->
-	<key>com.apple.security.files.bookmarks.app-scope</key>
-	<true/>
-	<!-- No keychain-access-groups here on purpose: it's a RESTRICTED
-	     entitlement that macOS refuses to honor on ad-hoc ("sign to run
-	     locally") builds — the app then won't launch at all. The keystore
-	     plugin instead targets the legacy login keychain
-	     (MacOsOptions(usesDataProtectionKeychain: false) in
-	     secure_master_key.dart), which needs no entitlement. -->
 </dict>
 </plist>

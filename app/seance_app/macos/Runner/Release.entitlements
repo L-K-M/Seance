@@ -2,30 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
-	<true/>
-	<!-- Outbound connections: SSH sessions, the sync server, LLM providers. -->
-	<key>com.apple.security.network.client</key>
-	<true/>
-	<!-- Key/config imports and SFTP export destinations chosen by the user. -->
-	<key>com.apple.security.files.user-selected.read-write</key>
-	<true/>
-	<!-- "Reference, don't store" identity files (~/.ssh/id_ed25519 …) are read
-	     at connect time, long after any user-selected grant has expired, so the
-	     sandbox needs a standing read-only exception for ~/.ssh. Home-relative
-	     exception paths resolve against the REAL home, not the app container. -->
-	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
-	<array>
-		<string>/.ssh/</string>
-	</array>
-	<!-- Security-scoped bookmarks keep Browse…-picked identity files outside
-	     ~/.ssh readable at connect time across relaunches. -->
-	<key>com.apple.security.files.bookmarks.app-scope</key>
-	<true/>
-	<!-- No keychain-access-groups here on purpose: it's a RESTRICTED
-	     entitlement that macOS refuses to honor on ad-hoc ("sign to run
-	     locally") builds — the app then won't launch at all. The keystore
-	     plugin instead targets the legacy login keychain
+	<!-- Deliberately NOT sandboxed, and deliberately empty.
+
+	     The App Sandbox is inherited by child processes, so with it on the
+	     local shell opens inside Séance's own container: $HOME is the
+	     container, everything outside it is unreadable, and zsh cannot take
+	     control of the terminal ("can't set tty pgrp") — which costs job
+	     control, so ^C reaches the shell instead of the command it is
+	     running. A terminal that can neither see your files nor interrupt a
+	     command is not a terminal. Séance ships as an unsigned/ad-hoc GitHub
+	     release and never goes through App Review, so nothing requires the
+	     sandbox.
+
+	     What that costs, stated plainly: a compromise of Séance — or of any
+	     dependency it pulls in — now reaches everything the user can reach
+	     rather than one container, and the SSH keys and vault this app holds
+	     are exactly what such a compromise would be after. Putting
+	     com.apple.security.app-sandbox back is a one-line change, and
+	     SandboxMigration keeps working either way.
+
+	     Everything that used to be here went with it, because all of it is
+	     sandbox-only and inert without it: network.client, network.server,
+	     files.user-selected.read-write, files.bookmarks.app-scope, and the
+	     ~/.ssh read-only temporary exception. Identity files are simply read
+	     now; IdentityFileBookmarks already falls back to the plain path when
+	     a security-scoped bookmark won't resolve, so it needed no change and
+	     the native ~/.ssh-visible file picker still works.
+
+	     Still no keychain-access-groups, for the original reason: it is a
+	     RESTRICTED entitlement macOS refuses to honor on ad-hoc ("sign to run
+	     locally") builds, and the app then won't launch at all. The keystore
+	     plugin targets the legacy login keychain instead
 	     (MacOsOptions(usesDataProtectionKeychain: false) in
 	     secure_master_key.dart), which needs no entitlement. -->
 </dict>

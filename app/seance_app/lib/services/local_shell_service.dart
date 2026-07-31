@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:seance_core/seance_core.dart';
 
+import 'macos_sandbox.dart';
+
 /// Opens local shells for the app: decides whether this platform can host one,
 /// resolves which shell to run, and binds `flutter_pty` to `seance_core`'s
 /// [LocalPty] seam.
@@ -58,15 +60,16 @@ class LocalShellService {
   /// True when the shell would run inside macOS's App Sandbox — which the
   /// child inherits, so `$HOME` is Séance's container, anything outside it is
   /// unreadable, and the shell cannot take control of the terminal for job
-  /// control. The user is told before they turn the setting on, and again in
-  /// the session itself.
+  /// control.
   ///
-  /// `APP_SANDBOX_CONTAINER_ID` is set in the environment of every sandboxed
-  /// macOS process; its absence is the only signal available from inside, so
-  /// treat this as a strong hint rather than a guarantee.
-  bool get sandboxed =>
-      platform == LocalShellPlatform.macos &&
-      (environment['APP_SANDBOX_CONTAINER_ID'] ?? '').isNotEmpty;
+  /// Normally false: Séance's macOS entitlements drop the sandbox precisely so
+  /// this shell is a real one. The detection stays because it is cheap, it is
+  /// the honest answer for anyone who puts the entitlement back, and a warning
+  /// that only appears when it is true costs nothing when it is not.
+  bool get sandboxed => macOsSandboxed(
+    environment: environment,
+    isMacOS: platform == LocalShellPlatform.macos,
+  );
 
   /// What a fresh local shell should run here.
   ///

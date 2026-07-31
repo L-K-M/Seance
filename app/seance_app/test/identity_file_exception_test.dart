@@ -9,12 +9,13 @@ void main() {
     // A stable fragment of the sandbox hint, present iff the hint is shown.
     const hint = 'paste it into the server settings';
 
-    test('macOS EPERM gets the sandbox hint', () {
+    test('macOS EPERM inside the sandbox gets the sandbox hint', () {
       final e = IdentityFileException(
         '/Users/ada/Documents/key.pem',
         const FileSystemException('Cannot open file', path,
             OSError('Operation not permitted', 1)),
         isMacOS: true,
+        isSandboxed: true,
       );
       expect('$e', contains('/Users/ada/Documents/key.pem'));
       expect('$e', contains('Operation not permitted'));
@@ -30,6 +31,7 @@ void main() {
         const FileSystemException(
             'Cannot open file', path, OSError('Operation not permitted', 1)),
         isMacOS: true,
+        isSandboxed: true,
       );
       expect('$e', contains(hint));
       expect('$e', contains('real file'));
@@ -41,6 +43,7 @@ void main() {
         const FileSystemException(
             'Cannot open file', path, OSError('No such file or directory', 2)),
         isMacOS: true,
+        isSandboxed: true,
       );
       expect('$e', contains('No such file or directory'));
       expect('$e', isNot(contains(hint)));
@@ -56,18 +59,35 @@ void main() {
       expect('$e', isNot(contains(hint)));
     });
 
+    test('EPERM on an unsandboxed macOS build gets no sandbox hint', () {
+      // The shipping configuration: with no sandbox, an EPERM is ordinary
+      // filesystem permissions, and blaming the sandbox would send the user to
+      // fix something that is not wrong.
+      final e = IdentityFileException(
+        path,
+        const FileSystemException(
+            'Cannot open file', path, OSError('Operation not permitted', 1)),
+        isMacOS: true,
+        isSandboxed: false,
+      );
+      expect('$e', contains('Operation not permitted'));
+      expect('$e', isNot(contains(hint)));
+    });
+
     test('falls back to the exception message when the OS detail is absent',
         () {
       final withoutOsError = IdentityFileException(
         path,
         const FileSystemException('Cannot open file', path),
         isMacOS: true,
+        isSandboxed: true,
       );
       expect('$withoutOsError', contains('Cannot open file'));
       final emptyOsMessage = IdentityFileException(
         path,
         const FileSystemException('Cannot open file', path, OSError('', 2)),
         isMacOS: true,
+        isSandboxed: true,
       );
       expect('$emptyOsMessage', contains('Cannot open file'));
     });

@@ -3,6 +3,31 @@ import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:seance_core/seance_core.dart';
 
+/// Thrown when the OS keystore reports no master key but an encrypted vault is
+/// already on disk.
+///
+/// The two situations are indistinguishable from the keystore alone — a first
+/// run and a keystore that will not hand the key over both read as "nothing
+/// there" — and the difference is total: minting a fresh key in the second
+/// case makes every stored password and private key permanently
+/// undecryptable. So the vault itself is the tiebreaker, and this refuses to
+/// start rather than guess.
+///
+/// On macOS the realistic cause is the login-keychain prompt being dismissed
+/// or denied. Séance is ad-hoc signed, so its keychain ACL is bound to an
+/// exact code hash and every rebuild you install asks again.
+class MasterKeyUnavailableException implements Exception {
+  const MasterKeyUnavailableException();
+
+  @override
+  String toString() =>
+      'The vault master key could not be read from the system keystore, but '
+      'an encrypted vault already exists. Séance stopped rather than create a '
+      'new key, which would make your saved passwords and private keys '
+      'unreadable. On macOS this is usually a keychain prompt that was '
+      'dismissed or denied — relaunch and choose "Always Allow".';
+}
+
 /// Obtains the 32-byte vault master key using the layered model from the
 /// proposal:
 ///   1. a random key stored in the OS keystore (macOS/iOS Keychain, Windows
@@ -29,10 +54,21 @@ class MasterKeyManager {
   Future<bool> hasKeystoreKey() async =>
       (await _storage.read(key: _keyName)) != null;
 
-  /// Load the device master key from the OS keystore, creating one on first run.
-  Future<List<int>> loadOrCreateFromKeystore() async {
+  /// Load the device master key from the OS keystore, creating one on first
+  /// run.
+  ///
+  /// [hasExistingVault] is what makes "first run" distinguishable from "the
+  /// keystore said no": pass true when an encrypted vault is already on disk,
+  /// and a missing key becomes a [MasterKeyUnavailableException] instead of a
+  /// brand-new key that would strand it. Depending on the platform a refused
+  /// read may throw instead of returning null — this guard holds either way,
+  /// which is why it does not try to tell those apart.
+  Future<List<int>> loadOrCreateFromKeystore({
+    bool hasExistingVault = false,
+  }) async {
     final existing = await _storage.read(key: _keyName);
     if (existing != null) return base64.decode(existing);
+    if (hasExistingVault) throw const MasterKeyUnavailableException();
     final key = secureRandomBytes(32);
     await _storage.write(key: _keyName, value: base64.encode(key));
     return key;
