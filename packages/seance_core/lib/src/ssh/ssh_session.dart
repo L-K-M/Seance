@@ -8,6 +8,7 @@ import 'package:meta/meta.dart';
 import 'package:seance_protocol/seance_protocol.dart';
 
 import '../hostkey/tofu.dart';
+import '../terminal/session_transport.dart';
 import '../terminal/terminal_engine.dart';
 import 'remote_file_system.dart';
 
@@ -103,7 +104,7 @@ class SshConnectException implements Exception {
 }
 
 /// A live SSH shell session wired to a [TerminalEngine].
-class SshSession {
+class SshSession implements SessionTransport {
   final SSHClient client;
   final SSHSession shell;
   final TerminalEngine engine;
@@ -119,11 +120,13 @@ class SshSession {
 
   /// Fired once when the remote shell ends (server-side exit, dropped
   /// connection). Lets the app flip the session's status dot to "disconnected".
+  @override
   set onClosed(void Function()? callback) {
     _onClosed = callback;
     if (_endedRemotely && callback != null) scheduleMicrotask(_notifyClosed);
   }
 
+  @override
   void Function()? get onClosed => _onClosed;
 
   SshSession._(this.client, this.shell, this.engine);
@@ -201,6 +204,7 @@ class SshSession {
     }
   }
 
+  @override
   void resize(TerminalSize size) {
     engine.resize(size);
     shell.resizeTerminal(size.cols, size.rows);
@@ -236,6 +240,7 @@ class SshSession {
     callback();
   }
 
+  @override
   Future<void> close() => _finish();
 
   Future<void> _finish() async {
@@ -250,6 +255,7 @@ class SshSession {
     await engine.dispose();
   }
 
+  @override
   bool get isClosed => _closed || client.isClosed;
 }
 

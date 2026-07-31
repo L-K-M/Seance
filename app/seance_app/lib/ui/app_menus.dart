@@ -44,7 +44,7 @@ void openCommandGenerator(AppState state) {
 /// Open another terminal session for the currently selected server.
 void openNewTab(AppState state) {
   final active = state.activeSession;
-  if (active != null) state.newTab(active.config);
+  if (active != null) state.duplicateTab(active);
 }
 
 /// Copy the active terminal's selection to the clipboard. Returns false when

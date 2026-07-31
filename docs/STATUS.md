@@ -3,17 +3,28 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-07-31 — server groups, colours and icons._
+_Last updated: 2026-07-31 — server groups, colours and icons; optional local
+shell (Linux/macOS)._
 
 ## Done (implemented + verified)
 
 | Area | State |
 |---|---|
 | `seance_protocol` | Complete. Models (incl. Snippet with `{{placeholder}}` parsing/fill, and `ServerConfig`'s optional `group`/`color`/`icon` — named accents and icons rather than raw values, so they render per theme and an unknown name decodes to "none"), E2E crypto, records (serverConfig/hostKey/secret/snippet), LWW, sync DTOs. |
-| `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores. |
+| `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores. A session's bytes now travel over a named `SessionTransport` — `SshSession` or `LocalShellSession` (a local pty behind the `LocalPty` seam). |
 | `seance_sync_server` | Complete. 7 endpoints, in-memory + SQLite storage, rate limiting, Dockerfile + compose. |
-| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the top-level list; each server can hold several sessions shown as a per-server tab strip (a strip appears only at 2+ tabs, so a single session looks title-bar-less as before), with ⌘T/Ctrl+Shift+T + a "New tab" affordance, status dot: green/grey/red + connecting spinner; resizable tiled panes); right-hand utility panel with Assistant + Snippets + **Files** tabs. Files is session-scoped SFTP over the existing SSH transport: responsive navigation, OSC 7 follow mode, picker/desktop-drop upload, local open + conflict-checked upload-back, mkdir/rename/delete, progress/cancel; narrow/Android gets a full-screen route. See [`docs/SFTP.md`](SFTP.md) for implementation state and remaining real-device work. Snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends; inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. **Automatic sync** runs at startup, after any server/snippet add/edit/delete (debounced), and every 5 min, with a live header/settings status; the "Sync now" button remains. **Credential sync** is opt-in (global toggle × per-server "allow this credential to sync"; E2E-encrypted). On **touch platforms** the terminal shows an on-screen key row (Esc/Tab/Ctrl [sticky]/^C/arrows/Home/End/PgUp/PgDn/`|` `/` `-` `~` + hide-keyboard) and reflows above the soft keyboard. **Command suggestions** (opt-in, local only) surface frequently-run commands in the Snippets tab to save as snippets. **Server groups, colours and icons** are per-server and synced: the list files servers into collapsible sections (alphabetical, ungrouped last; no headers at all until something is grouped, and a live filter overrides collapsed sections so it can never hide a match), each row carries a badge of the server's icon on its accent with the connection dot in the corner, and the accent also rules the terminal's tab strip. Folded sections are device-local (settings), the grouping itself syncs. Default desktop window 1800×1600. Platform folders committed. |
+| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the top-level list; each server can hold several sessions shown as a per-server tab strip (a strip appears only at 2+ tabs, so a single session looks title-bar-less as before), with ⌘T/Ctrl+Shift+T + a "New tab" affordance, status dot: green/grey/red + connecting spinner; resizable tiled panes); right-hand utility panel with Assistant + Snippets + **Files** tabs. Files is session-scoped SFTP over the existing SSH transport: responsive navigation, OSC 7 follow mode, picker/desktop-drop upload, local open + conflict-checked upload-back, mkdir/rename/delete, progress/cancel; narrow/Android gets a full-screen route. See [`docs/SFTP.md`](SFTP.md) for implementation state and remaining real-device work. Snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends; inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. **Automatic sync** runs at startup, after any server/snippet add/edit/delete (debounced), and every 5 min, with a live header/settings status; the "Sync now" button remains. **Credential sync** is opt-in (global toggle × per-server "allow this credential to sync"; E2E-encrypted). On **touch platforms** the terminal shows an on-screen key row (Esc/Tab/Ctrl [sticky]/^C/arrows/Home/End/PgUp/PgDn/`|` `/` `-` `~` + hide-keyboard) and reflows above the soft keyboard. **Command suggestions** (opt-in, local only) surface frequently-run commands in the Snippets tab to save as snippets. **Local shell** (opt-in, off by default, Settings ▸ General) pins a "Local shell" row above the servers that opens a real pty on this machine, with the same tabs, naming, status dot and assistant/snippets as any session — Linux and macOS only (see the platform matrix below); Files is hidden for it, and nothing about it is stored or synced. **Server groups, colours and icons** are per-server and synced: the list files servers into collapsible sections (alphabetical, ungrouped last; no headers at all until something is grouped, and a live filter overrides collapsed sections so it can never hide a match), each row carries a badge of the server's icon on its accent with the connection dot in the corner, and the accent also rules the terminal's tab strip. Folded sections are device-local (settings), the grouping itself syncs. Default desktop window 1800×1600. Platform folders committed. |
 | CI | `.github/workflows/ci.yml`: dart analyze+test, flutter analyze+test, docker build, and a client build matrix (android/linux/macos/ios/windows on native runners — the same matrix `release.yml` publishes). |
+
+## Local shell — platform matrix
+
+| Platform | Offered | Why |
+|---|---|---|
+| Linux | yes | Verified end to end against a real pty: echo, `stty size` before/after resize, `^C`, exit status, teardown. |
+| macOS | yes, sandbox-limited | Works, but the child inherits the App Sandbox: `$HOME` is Séance's container, files outside it are unreadable, and job control is unavailable (`can't set tty pgrp`). Said in Settings *before* the switch is flipped, and again as a banner in the session's own scrollback. Removing `com.apple.security.app-sandbox` would lift this — a deliberate, separate decision, since it also moves `NSHomeDirectory()` (where every store lives) and changes the signing identity the vault key's keychain ACL is bound to. |
+| Windows | no | `flutter_pty` 0.4.2 builds a malformed command line there (see AGENTS.md §5). Vendoring the package fixes it in ~6 lines; until then the setting says so rather than shipping a broken shell. |
+| Android | no | Only toybox's `/system/bin/sh` inside the app's own sandbox, with no way to install tools. |
+| iOS/iPadOS | never | iOS apps may not spawn child processes at all. |
 
 ## Test inventory (what proves what)
 
@@ -31,6 +42,14 @@ _Last updated: 2026-07-31 — server groups, colours and icons._
   concurrent-edit LWW, tombstones.
 - `seance_core/test/sync_coordinator_test.dart` — domain⇄record mapping converges
   across two devices; edit propagation.
+- `seance_core/test/local_shell_test.dart` — shell/argument/environment
+  resolution per platform (incl. the whole-environment rule and the dropped
+  `LINES`/`COLUMNS`), the support matrix, and `LocalShellSession` against a
+  fake pty: bytes both ways, resize, exit → `onClosed` once, late `onClosed`,
+  idempotent close, spawn failure.
+- `seance_app/test/local_shell_test.dart` — the availability double gate,
+  macOS sandbox detection, a session with no server (never renders `@:0`),
+  local tabs grouping/fallback, the pinned row, and the setting's round-trip.
 - `seance_core/test/stores_probe_ssh_test.dart` — SecretVault, ConfigStore,
   ProbeService orchestration, `SshSessionManager.verifyHostKey` (TOFU), headless
   engine.

@@ -10,6 +10,7 @@ import 'external_file_opener.dart';
 import 'file_stores.dart';
 import 'identity_audit_log.dart';
 import 'identity_bookmarks.dart';
+import 'local_shell_service.dart';
 import 'managed_remote_file_store.dart';
 import 'secure_master_key.dart';
 
@@ -61,6 +62,7 @@ class AppServices {
   final ManagedRemoteFileStore managedRemoteFiles;
   final IdentityFileBookmarks identityBookmarks;
   final IdentityAuditLog identityAudit;
+  final LocalShellService localShell;
   List<int> vaultKey;
   AppSettings settings;
 
@@ -78,6 +80,7 @@ class AppServices {
     required this.managedRemoteFiles,
     required this.identityBookmarks,
     required this.identityAudit,
+    required this.localShell,
     required this.vaultKey,
     required this.settings,
   });
@@ -127,6 +130,7 @@ class AppServices {
       managedRemoteFiles: managedRemoteFiles,
       identityBookmarks: IdentityFileBookmarks(),
       identityAudit: IdentityAuditLog(File(p('identity_reads.jsonl'))),
+      localShell: LocalShellService(),
       vaultKey: vaultKey,
       settings: settings,
     );

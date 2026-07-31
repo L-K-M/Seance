@@ -4,18 +4,6 @@ import 'package:seance_app/app_state.dart';
 import 'package:seance_app/ui/server_appearance.dart';
 import 'package:seance_core/seance_core.dart';
 
-ServerConfig _server({ServerColor? color, ServerIcon? icon}) => ServerConfig(
-  id: 's1',
-  label: 'prod web',
-  host: 'web.example.com',
-  username: 'deploy',
-  authMethod: AuthMethod.password,
-  color: color,
-  icon: icon,
-  createdAt: 0,
-  updatedAt: 0,
-);
-
 /// The brightness is applied with an explicit [Theme] rather than
 /// `MaterialApp.theme`, which is only *a candidate* — MaterialApp still picks
 /// between it and `darkTheme` using the platform brightness, and would have
@@ -106,8 +94,9 @@ void main() {
     ) async {
       await tester.pumpWidget(
         _wrap(
-          ServerAvatar(
-            server: _server(color: ServerColor.red, icon: ServerIcon.rocket),
+          const ServerAvatar(
+            color: ServerColor.red,
+            icon: ServerIcon.rocket,
             connection: TerminalStatus.connected,
           ),
         ),
@@ -124,10 +113,7 @@ void main() {
     testWidgets('shows a spinner while connecting', (tester) async {
       await tester.pumpWidget(
         _wrap(
-          ServerAvatar(
-            server: _server(),
-            connection: TerminalStatus.connecting,
-          ),
+          const ServerAvatar(connection: TerminalStatus.connecting),
         ),
       );
       expect(find.byType(CircularProgressIndicator), findsOneWidget);

@@ -158,7 +158,7 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
               ),
               const SizedBox(height: 4),
               Text(
-                'for ${widget.session.config.label}',
+                'for ${widget.session.displayLabel}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 16),

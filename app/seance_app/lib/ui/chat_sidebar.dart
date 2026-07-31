@@ -76,7 +76,16 @@ class _ChatSidebarState extends State<ChatSidebar> {
           : null;
       chat.addReply(
         turn,
-        await controller.send(text, terminalContext: context),
+        await controller.send(
+          text,
+          terminalContext: context,
+          // Which machine a pasted command would land on.
+          sessionTarget: targetSession == null
+              ? null
+              : targetSession.isLocal
+              ? 'a local shell — ${targetSession.displayTarget}'
+              : targetSession.displayTarget,
+        ),
       );
     } catch (e) {
       chat.failed(turn, e);

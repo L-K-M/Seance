@@ -18,7 +18,15 @@ import 'settings_screen.dart';
 /// Tapping one opens a terminal (via [onOpen]).
 class ServerListPane extends StatefulWidget {
   final void Function(ServerConfig server) onOpen;
-  const ServerListPane({super.key, required this.onOpen});
+
+  /// Open the local shell.
+  final VoidCallback onOpenLocal;
+
+  const ServerListPane({
+    super.key,
+    required this.onOpen,
+    required this.onOpenLocal,
+  });
 
   /// Below this many servers the list is short enough to read at a glance and
   /// the filter would just be chrome. Matches the Snippets pane's threshold.
@@ -122,6 +130,7 @@ class _ServerListPaneState extends State<ServerListPane> {
             list = _serverList(context, state, matches);
           }
           final update = state.updateInfo;
+          final localTabs = state.sessionsForServer(kLocalShellServerId);
           return Column(
             children: [
               // A newer release exists: a dismissible banner above the list.
@@ -130,6 +139,24 @@ class _ServerListPaneState extends State<ServerListPane> {
                   info: update,
                   onDismiss: state.dismissUpdateNotice,
                 ),
+              // This machine, above the servers and outside the filter: it is
+              // not a server, so it is not a search result either, and it must
+              // not vanish behind a query the way a filtered-out host does.
+              // Also above the onboarding empty state — with no servers yet it
+              // is the one thing here that can actually be opened.
+              if (state.localShellAvailable) ...[
+                LocalShellTile(
+                  connection: _aggregateStatus(localTabs),
+                  tabCount: localTabs.length,
+                  shellName: state.services.localShell.shellName,
+                  selected: state.activeServerId == kLocalShellServerId,
+                  onTap: widget.onOpenLocal,
+                  onNewTab: state.newLocalTab,
+                  onCloseAll: () =>
+                      state.closeAllTabsForServer(kLocalShellServerId),
+                ),
+                const Divider(height: 1, thickness: 2),
+              ],
               if (showFilter)
                 _filterField(matches, state.servers.length),
               Expanded(child: list),
@@ -360,6 +387,93 @@ class _ServerListPaneState extends State<ServerListPane> {
   }
 }
 
+/// The pinned "this machine" row above the servers.
+///
+/// Deliberately shaped like a [_ServerTile] — same status dot, same `×N` tab
+/// count, same overflow menu — because it opens into the same terminal pane
+/// and behaves the same way once it does. What it drops is what a local shell
+/// has no answer for: there is no reachability probe (this machine is here),
+/// nothing to edit, and nothing to delete.
+class LocalShellTile extends StatelessWidget {
+  final TerminalStatus connection;
+  final int tabCount;
+  final String shellName;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onNewTab;
+  final VoidCallback onCloseAll;
+
+  const LocalShellTile({
+    super.key,
+    required this.connection,
+    required this.tabCount,
+    required this.shellName,
+    required this.selected,
+    required this.onTap,
+    required this.onNewTab,
+    required this.onCloseAll,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      selected: selected,
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // The same badge-and-corner-dot the servers below wear, so the row
+          // reads as another place to open a terminal rather than as a
+          // different kind of thing. No accent — it is not a server — and the
+          // terminal glyph says what it is.
+          ServerAvatar(
+            icon: ServerIcon.terminal,
+            connection: connection,
+          ),
+          if (tabCount > 1)
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Text(
+                '\u00d7$tabCount',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+        ],
+      ),
+      title: const Text('Local shell'),
+      subtitle: Text(
+        '$shellName \u00b7 this machine',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      onTap: onTap,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.terminal_outlined, size: 18),
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              switch (v) {
+                case 'newTab':
+                  onNewTab();
+                case 'closeAll':
+                  onCloseAll();
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'newTab', child: Text('New shell')),
+              if (tabCount > 0)
+                PopupMenuItem(
+                  value: 'closeAll',
+                  child: Text(tabCount > 1 ? 'Close all shells' : 'Close'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// A compact header affordance that shows background-sync activity: a spinner
 /// while a round runs, an error badge if the last one failed. Hidden when idle
 /// and healthy (the gear icon already leads to sync). Tapping opens settings.
@@ -505,7 +619,11 @@ class _ServerTile extends StatelessWidget {
       leading: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          ServerAvatar(server: server, connection: connection),
+          ServerAvatar(
+            color: server.color,
+            icon: server.icon,
+            connection: connection,
+          ),
           if (tabCount > 1)
             Padding(
               padding: const EdgeInsets.only(left: 4),

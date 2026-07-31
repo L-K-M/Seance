@@ -108,7 +108,7 @@ the latest code and rebuilds + recreates the stack in one step.
 Everything security- or correctness-critical is covered by tests that run in CI
 (`.github/workflows/ci.yml`):
 
-- **181 Dart tests** across the three packages — crypto round-trips and
+- **228 Dart tests** across the three packages — crypto round-trips and
   wrong-key/tamper rejection, verifier independence, recovery-code corruption
   detection, TOFU decisions, the danger linter, paste sanitization, secret
   redaction, LLM request/response handling and the chat tool loop, **two-device
@@ -265,7 +265,25 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 181 Dart tests + 107 Flutter tests, all analyze clean.
+- 228 Dart tests + 283 Flutter tests, all analyze clean.
+- The local shell's *wiring* is covered by fakes; the pty itself cannot be in
+  CI (no native library under `flutter test`). To re-verify it for real on
+  Linux, build the plugin's unity target and run a throwaway test against it:
+
+  ```bash
+  # unpack flutter_pty 0.4.2 somewhere, then:
+  clang -shared -fPIC -DDART_SHARED_LIB -o /tmp/libflutter_pty.so \
+    src/flutter_pty.c -I src -I src/include
+  # a test that drives LocalShellSession with the real launcher:
+  LD_LIBRARY_PATH=/tmp flutter test test/<scratch>_test.dart
+  ```
+
+  What was checked this way (Linux, `/bin/sh`): the shell starts and echoes
+  (so the line discipline is real, not a pipe); `stty size` reports `24 80`
+  and, after `session.resize(TerminalSize(132, 43))`, `43 132` — the pty API
+  takes **rows first** while `TerminalSize` is columns-first, and this is the
+  test that catches the transposition; `^C` kills a `sleep 30` and the shell
+  survives it; `exit` fires `onClosed` with status 0; `close()` tears down.
 - Sync correctness is proven two ways: `seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and
   `seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +
@@ -302,6 +320,22 @@ compiles the app for android/linux/macos/ios/windows on their native runners
   [issue #1973](https://github.com/miguelpruivo/flutter_file_picker/issues/1973)
   or Flutter enables built-in Kotlin.
 
+- **`flutter_pty` does not inherit the process environment.** `Pty.start`
+  builds a fresh one from `TERM`, `LANG`, and exactly six copied names
+  (`LOGNAME`, `USER`, `DISPLAY`, `LC_TYPE` — its own typo for `LC_CTYPE` —
+  `HOME`, `PATH`), then merges the caller's map over it. `LocalShellCommand`
+  therefore returns the **whole** environment, not a delta; passing a delta
+  silently drops `SSH_AUTH_SOCK`, `XDG_*`, and everything else.
+- **`flutter_pty` is broken on Windows** (0.4.2). `build_command` in
+  `src/flutter_pty_win.c` writes `options->executable` *and* every element of
+  `argv` — whose first element the Dart side already set to `executable` — so
+  `Pty.start('cmd.exe')` becomes the command line `cmd.exe cmd.exe`. The same
+  function byte-casts to `WCHAR`, mangling any non-ASCII path. That is why
+  `localShellSupportedOn` refuses Windows; enabling it means vendoring the
+  package under `third_party/` (as xterm is) and deleting six lines.
+- **`Pty.start` is a synchronous constructor that throws `StateError`** — not
+  a future. `await Pty.start(...)` is a type error.
+
 ---
 
 ## 6. Library API constraints that shaped the code
@@ -334,6 +368,17 @@ Do not "simplify" these away — they are load-bearing:
 - `TerminalEngine` (`seance_core`) — bytes in (`feed`), user input stream out,
   `resize`. xterm backend in the app (`XtermTerminalEngine`); libghostty is the
   intended future backend (proposal M10). `HeadlessTerminalEngine` is for tests.
+- `SessionTransport` (`seance_core`) — what carries a session's bytes:
+  `SshSession` (dartssh2) or `LocalShellSession` (a local pty). Four members —
+  `resize`, `close`, `isClosed`, `onClosed` — and `close()` **owns disposing
+  the engine**; `AppState._disposeSession` relies on that. A `TerminalSession`
+  with a null `config` is a local shell; keep display reads going through
+  `displayLabel` / `displayTarget` rather than reintroducing `config!`.
+- `LocalPty` (`seance_core`) — one pseudo-terminal. `seance_core` is pure Dart
+  and a pty needs native code, so the only implementation
+  (`FlutterPtyLocalPty`, over `flutter_pty`) lives in the app and the launcher
+  is injectable — `flutter test` runs on the host VM where the plugin's native
+  library cannot be opened at all.
 - `ConfigStore` / `VaultStore` / `HostKeyStore` — in-memory (tests) and JSON-file
   (app) impls; SQLite/drift is the documented future swap.
 - `SyncApi` (pull/push) — `HttpSyncClient` in prod, `FakeServer` in tests.

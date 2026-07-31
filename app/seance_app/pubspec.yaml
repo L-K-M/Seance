@@ -21,6 +21,11 @@ dependencies:
   # seance_core's TerminalEngine seam when it tags a release.
   xterm:
     path: ../../third_party/xterm
+  # Pseudo-terminals for the optional local shell, from the same publisher as
+  # xterm.dart. An FFI plugin: it adds a small native target to every platform
+  # it declares, but Séance only opens a local shell on Linux and macOS (see
+  # `localShellSupportedOn` in seance_core for why the others are refused).
+  flutter_pty: ^0.4.2
   # OS keystore for the vault master key and LLM API keys.
   flutter_secure_storage: ^10.0.0
   path_provider: ^2.1.0

@@ -43,7 +43,10 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
       listenable: state,
       builder: (context, _) {
         return AdaptivePaneLayout(
-          listPane: ServerListPane(onOpen: (s) => _open(state, s)),
+          listPane: ServerListPane(
+            onOpen: (s) => _open(state, s),
+            onOpenLocal: () => _openLocal(state),
+          ),
           terminalPane: const TerminalPane(showAppBar: false),
           // The utility panel (Assistant + Snippets) is always available;
           // Snippets works without an LLM configured.
@@ -55,6 +58,8 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
   }
 
   Widget _buildNarrow(AppState state) {
+    // activeServerId is the reserved local id for a local shell, so this guard
+    // needs no local-specific branch — it only asks "is anything open".
     final showTerminal = _viewingTerminal && state.activeServerId != null;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
@@ -67,6 +72,7 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
           : ServerListPane(
               key: const ValueKey('list'),
               onOpen: (s) => _open(state, s),
+              onOpenLocal: () => _openLocal(state),
             ),
     );
   }
@@ -74,6 +80,11 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
   Future<void> _open(AppState state, ServerConfig server) async {
     if (mounted) setState(() => _viewingTerminal = true);
     await state.openTerminal(server);
+  }
+
+  Future<void> _openLocal(AppState state) async {
+    if (mounted) setState(() => _viewingTerminal = true);
+    await state.openLocalShell();
   }
 }
 

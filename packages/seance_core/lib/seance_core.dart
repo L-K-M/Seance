@@ -11,6 +11,8 @@ export 'src/ssh_config/ssh_config_import.dart';
 export 'src/hostkey/tofu.dart';
 
 export 'src/terminal/terminal_engine.dart';
+export 'src/terminal/session_transport.dart';
+export 'src/terminal/local_shell.dart';
 export 'src/terminal/paste_sanitizer.dart';
 export 'src/terminal/shell_command.dart';
 

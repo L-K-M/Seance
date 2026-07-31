@@ -63,8 +63,18 @@ class HeadlessTerminalEngine implements TerminalEngine {
   @override
   void resize(TerminalSize size) => _size = size;
 
+  /// Whether [dispose] has run.
+  ///
+  /// Exposed so a test can *ask* rather than probe by writing — a diagnostic
+  /// that pushes bytes into a possibly-live engine would perturb the very
+  /// ordering it is there to check.
+  bool get isDisposed => _disposed;
+  bool _disposed = false;
+
   @override
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
     await _input.close();
   }
 }

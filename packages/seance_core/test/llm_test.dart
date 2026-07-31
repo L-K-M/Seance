@@ -445,6 +445,47 @@ void main() {
       expect(result.reply, 'Tools were not needed.');
     });
 
+    test('names the focused session so advice knows where it lands', () async {
+      final provider = FakeProvider([const ChatTurn(text: 'ok')]);
+      final chat = ChatController(provider: provider, onPaste: (_) {});
+
+      await chat.send('clean up disk space',
+          sessionTarget: 'this machine (a local shell — zsh · this machine)');
+
+      final sent = provider.received.single.last.content;
+      expect(sent, contains('Focused session: this machine'));
+      // Séance's own line, not something the terminal claimed.
+      expect(sent.indexOf('Focused session:'), 0);
+    });
+
+    test('the focused session survives alongside terminal context', () async {
+      final provider = FakeProvider([const ChatTurn(text: 'ok')]);
+      final chat = ChatController(provider: provider, onPaste: (_) {});
+
+      await chat.send(
+        'what is running?',
+        terminalContext: 'load average: 0.4',
+        sessionTarget: 'ops@example.com:22',
+      );
+
+      final sent = provider.received.single.last.content;
+      expect(sent, contains('Focused session: ops@example.com:22'));
+      // Outside the untrusted markers, which start after it.
+      expect(
+        sent.indexOf('Focused session:'),
+        lessThan(sent.indexOf('<<<CONTEXT')),
+      );
+    });
+
+    test('an absent focused session adds nothing to the turn', () async {
+      final provider = FakeProvider([const ChatTurn(text: 'ok')]);
+      final chat = ChatController(provider: provider, onPaste: (_) {});
+
+      await chat.send('hello');
+
+      expect(provider.received.single.last.content, 'hello');
+    });
+
     test('returns a nonblank fallback for an empty provider turn', () async {
       final provider = FakeProvider([
         const ChatTurn(text: ''),

@@ -166,7 +166,13 @@ class ServerBadge extends StatelessWidget {
 /// answer one question between them — *which* box, and is it up. The status
 /// dot keeps its own tooltip, so nothing is lost by the arrangement.
 class ServerAvatar extends StatelessWidget {
-  final ServerConfig server;
+  /// Taken as the accent and glyph rather than as a whole [ServerConfig], so
+  /// the pinned local-shell row can wear the same mark as the servers below
+  /// it. It has no config — and a row that looked structurally different
+  /// would read as a different kind of thing rather than as another place to
+  /// open a terminal.
+  final ServerColor? color;
+  final ServerIcon? icon;
   final TerminalStatus connection;
 
   static const double _badgeSize = 32;
@@ -177,7 +183,8 @@ class ServerAvatar extends StatelessWidget {
 
   const ServerAvatar({
     super.key,
-    required this.server,
+    this.color,
+    this.icon,
     required this.connection,
   });
 
@@ -189,11 +196,7 @@ class ServerAvatar extends StatelessWidget {
       height: _extent,
       child: Stack(
         children: [
-          ServerBadge(
-            color: server.color,
-            icon: server.icon,
-            size: _badgeSize,
-          ),
+          ServerBadge(color: color, icon: icon, size: _badgeSize),
           // Directional so the dot tucks into the badge's trailing corner
           // rather than its leading one under a right-to-left locale.
           PositionedDirectional(
