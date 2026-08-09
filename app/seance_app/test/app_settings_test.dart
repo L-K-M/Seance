@@ -169,6 +169,31 @@ void main() {
     expect(AppSettings.fromJson(wrongShape).collapsedServerGroups, isEmpty);
   });
 
+  test('pane widths round-trip and default to unset', () {
+    expect(AppSettings().paneListWidth, isNull);
+    expect(AppSettings().paneUtilityWidth, isNull);
+    // Unset widths stay out of the JSON entirely, so an older version's
+    // settings file is byte-identical until a handle is actually dragged.
+    expect(AppSettings().toJson().containsKey('paneListWidth'), isFalse);
+    expect(AppSettings().toJson().containsKey('paneUtilityWidth'), isFalse);
+
+    final settings = AppSettings(paneListWidth: 420, paneUtilityWidth: 512.5);
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.paneListWidth, 420);
+    expect(restored.paneUtilityWidth, 512.5);
+  });
+
+  test('malformed pane widths read as unset', () {
+    for (final bad in <Object?>['wide', -1, 0, double.nan, double.infinity]) {
+      final json = AppSettings().toJson()
+        ..['paneListWidth'] = bad
+        ..['paneUtilityWidth'] = bad;
+      final restored = AppSettings.fromJson(json);
+      expect(restored.paneListWidth, isNull, reason: '$bad');
+      expect(restored.paneUtilityWidth, isNull, reason: '$bad');
+    }
+  });
+
   test(
     'concurrent saves are serialized without corrupting the index',
     () async {

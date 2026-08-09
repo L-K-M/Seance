@@ -330,6 +330,18 @@ Do not "simplify" these away — they are load-bearing:
 - **xterm 4.0**: `Terminal(maxLines:)`, settable `onOutput`/`onResize`,
   `write(String)`, `buffer.getText()`, `TerminalView(terminal, ...)`. SSH is
   bytes; the engine decodes UTF-8 leniently (`allowMalformed: true`).
+- **window_manager hidden-at-launch (macOS)**: `MainFlutterWindow.order(_:relativeTo:)`
+  calls `hiddenWindowAtLaunch()`, so the window stays invisible until Dart calls
+  `windowManager.show()` — which `WindowStateService.restoreAndTrack()` (run in
+  `main()` before `runApp`) always does, even when restoring fails. Don't remove
+  either side without the other. The Windows runner shows the window on the
+  first frame with `SW_SHOWNORMAL`, which cancels a pre-show maximize — that's
+  why maximize/full-screen restore waits for the plugin's `show` event
+  (WM_SHOWWINDOW, timer backstop) there. Windows geometry is also stored in
+  *physical* pixels: window_manager scales bounds by the current monitor's
+  ratio while screen_retriever scales each display by its own, so on mixed-DPI
+  setups their "logical" spaces disagree — physical is the one space both map
+  into exactly (`WindowStateSnapshot` doc has the details).
 
 ---
 

@@ -103,6 +103,14 @@ class AppSettings {
   /// does sync.
   Set<String> collapsedServerGroups;
 
+  /// Widths of the wide layout's server-list and utility panes, from the last
+  /// drag of their resize handles. Device-local like everything else here:
+  /// the right pane split is a property of the window in front of you. Null
+  /// until a handle is first dragged (the layout's defaults apply); the layout
+  /// clamps to its own min/max on use.
+  double? paneListWidth;
+  double? paneUtilityWidth;
+
   /// Terminal appearance. Device-local by design: the right font size depends
   /// on the screen in front of you, not on the account, so these never sync.
   double terminalFontSize;
@@ -138,6 +146,8 @@ class AppSettings {
     Map<String, bool>? remoteShowHidden,
     Map<String, IdentityFileBookmark>? identityFileBookmarks,
     Set<String>? collapsedServerGroups,
+    this.paneListWidth,
+    this.paneUtilityWidth,
     this.terminalFontSize = kDefaultTerminalFontSize,
     this.terminalFontFamily = '',
     this.terminalPalette = TerminalPalette.followApp,
@@ -177,6 +187,8 @@ class AppSettings {
     // file is rewritten on every save, and a set's iteration order would
     // otherwise make each one look like a change.
     'collapsedServerGroups': collapsedServerGroups.toList()..sort(),
+    if (paneListWidth != null) 'paneListWidth': paneListWidth,
+    if (paneUtilityWidth != null) 'paneUtilityWidth': paneUtilityWidth,
     'terminalFontSize': terminalFontSize,
     'terminalFontFamily': terminalFontFamily,
     'terminalPalette': terminalPalette.name,
@@ -209,6 +221,8 @@ class AppSettings {
     remoteShowHidden: _boolMap(json['remoteShowHidden']),
     identityFileBookmarks: _identityBookmarkMap(json['identityFileBookmarks']),
     collapsedServerGroups: _stringSet(json['collapsedServerGroups']),
+    paneListWidth: _paneWidth(json['paneListWidth']),
+    paneUtilityWidth: _paneWidth(json['paneUtilityWidth']),
     // Clamped on read: a hand-edited or downgraded settings file must never be
     // able to render the terminal at an unusable size.
     terminalFontSize: clampTerminalFontSize(
@@ -290,6 +304,15 @@ Map<String, IdentityFileBookmark> _identityBookmarkMap(Object? value) {
 Set<String> _stringSet(Object? value) {
   if (value is! List) return {};
   return value.whereType<String>().toSet();
+}
+
+/// A pane width from disk: only a finite positive number is usable — anything
+/// else reads as "never dragged" (null) rather than poisoning layout math with
+/// a NaN or negative width.
+double? _paneWidth(Object? value) {
+  if (value is! num) return null;
+  final width = value.toDouble();
+  return (width.isFinite && width > 0) ? width : null;
 }
 
 Map<String, bool> _boolMap(Object? value) {

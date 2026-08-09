@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_state.dart';
 import 'services/app_services.dart';
+import 'services/window_state.dart';
 import 'theme.dart';
 import 'ui/adaptive_shell.dart';
 import 'ui/app_menus.dart';
@@ -16,8 +17,12 @@ import 'ui/top_toast.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Put the desktop window back where it was closed (size, monitor,
+  // maximized/full-screen) before the first frame, and keep tracking it.
+  // On macOS this is also what makes the hidden-at-launch window visible.
+  await WindowStateService.restoreAndTrack();
   runApp(const SeanceApp());
 }
 

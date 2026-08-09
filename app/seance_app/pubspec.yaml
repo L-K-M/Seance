@@ -41,6 +41,12 @@ dependencies:
   share_plus: ^12.0.2
   # Opens the releases page in the browser when an update is available.
   url_launcher: ^6.3.0
+  # Persists/restores the desktop window's frame, monitor, and maximized/
+  # full-screen state across launches (lib/services/window_state.dart).
+  window_manager: ^0.5.2
+  # Enumerates connected displays so a frame saved on a now-disconnected
+  # monitor falls back to the default placement instead of opening off-screen.
+  screen_retriever: ^0.2.2
 
 dev_dependencies:
   flutter_lints: ^5.0.0

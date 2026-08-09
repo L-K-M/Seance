@@ -478,6 +478,22 @@ class AppState extends ChangeNotifier {
     await services.saveSettings();
   }
 
+  /// Persist the tiled panes' widths after a resize drag. No notifyListeners:
+  /// the layout already renders these — the save is only for the next launch.
+  Future<void> setPaneWidths({
+    required double listWidth,
+    required double utilityWidth,
+  }) async {
+    final settings = services.settings;
+    if (settings.paneListWidth == listWidth &&
+        settings.paneUtilityWidth == utilityWidth) {
+      return;
+    }
+    settings.paneListWidth = listWidth;
+    settings.paneUtilityWidth = utilityWidth;
+    await services.saveSettings();
+  }
+
   /// Import hosts from an OpenSSH config file's text.
   Future<int> importSshConfig(String text) async {
     final now = DateTime.now().millisecondsSinceEpoch;
