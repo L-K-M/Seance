@@ -236,6 +236,44 @@ what must be preserved.
     first survivor, detaches the trimmed slots, and advances
     `absoluteStartIndex` — exactly like a ring-buffer eviction.
 
+### Robustness (regressions: `app/seance_app/test/terminal_runaway_sequence_test.dart`,
+`test/src/core/escape/parser_test.dart`)
+
+26. **An unfinished escape sequence is no longer unbounded**
+    (`core/escape/parser.dart#_process`, `kMaxPendingSequenceLength`):
+    upstream parks an incomplete sequence by rolling the whole run back onto
+    the `ByteConsumer` and waiting for the rest on a later `write`. That is
+    right for a sequence split across a chunk boundary and catastrophic for
+    one that never finishes: every later `write` re-parses the entire pending
+    run from the top, so the cost is **quadratic** in the output that follows,
+    and the queue pins all of it in memory at ~26x (`ByteConsumer` stores one
+    `int` per rune, and `_consumeOsc` rebuilds a `StringBuffer` over the whole
+    run each pass). OSC closes only on BEL or ESC, so a single stray `ESC ]`
+    — a log with captured escapes, a binary, a program killed mid-title — was
+    enough. Measured on the real parser at 4 KiB chunks: 1 MiB of following
+    output took 2.1 s, 4 MiB took 31 s, 8 MiB took 120 s, 32 MiB did not
+    finish in 10 minutes, and **nothing was ever rendered** — the terminal was
+    wedged for the rest of the session at 100% CPU with the heap climbing. A
+    well-formed but large payload (an `imgcat` OSC 1337, a big OSC 52
+    clipboard) hit the same wall without being malformed at all.
+
+    The parser now only parks a run while it is still short enough to be a
+    real sequence; past `kMaxPendingSequenceLength` (64 KiB — every supported
+    sequence is orders of magnitude shorter) it drops what it has consumed and
+    resumes parsing, so the payload reverts to ordinary text and a later
+    terminator lands normally. Same measurements after: 8 MiB in 148 ms and
+    32 MiB in 555 ms, both linear and level with plain output, RSS flat. At
+    most one cap's worth plus the current write is lost, once per runaway
+    sequence. The cap is injectable on the constructor so tests can drive the
+    abandon path without generating 64 KiB.
+
+    Note this is a *bound*, not a fix for the underlying design: the parser is
+    documented as having "no internal state", which is exactly why it must
+    re-parse. Making OSC/CSI parsing resumable across writes would make it
+    O(n) and support arbitrarily large legitimate payloads — worth doing if
+    inline images or large OSC 52 clipboard traffic ever matter here, and
+    unnecessary until then.
+
 ### App-layer notes (outside this package)
 
 - The app passes `shortcuts: {}` and instead routes ⌘C/⌘V/⌘A on

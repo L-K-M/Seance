@@ -6,6 +6,13 @@ import 'package:xterm/src/utils/byte_consumer.dart';
 import 'package:xterm/src/utils/char_code.dart';
 import 'package:xterm/src/utils/lookup_table.dart';
 
+/// [seance fork] The default cap on how many bytes an unfinished escape
+/// sequence may hold before the parser abandons it. Every supported sequence
+/// is orders of magnitude shorter than this: titles and OSC 7 working
+/// directories run to hundreds of bytes, and the longest CSI is a handful.
+/// The cap only ever fires on a sequence that is never going to close.
+const kMaxPendingSequenceLength = 64 * 1024;
+
 /// [EscapeParser] translates control characters and escape sequences into
 /// function calls that the terminal can handle.
 ///
@@ -15,7 +22,14 @@ import 'package:xterm/src/utils/lookup_table.dart';
 class EscapeParser {
   final EscapeHandler handler;
 
-  EscapeParser(this.handler);
+  /// [seance fork] See [kMaxPendingSequenceLength]. Injectable so tests can
+  /// drive the abandon path without generating 64 KiB of input.
+  final int maxPendingSequenceLength;
+
+  EscapeParser(
+    this.handler, {
+    this.maxPendingSequenceLength = kMaxPendingSequenceLength,
+  });
 
   final _queue = ByteConsumer();
 
@@ -39,8 +53,25 @@ class EscapeParser {
       if (char == Ascii.ESC) {
         final processed = _processEscape();
         if (!processed) {
-          _queue.rollback(tokenEnd - tokenBegin);
-          return;
+          // An unfinished sequence goes back on the queue so the rest of it can
+          // arrive on a later write. That rollback is what makes a sequence
+          // that NEVER finishes catastrophic: every subsequent write re-parses
+          // the whole pending run from the top, so cost is quadratic in the
+          // output that follows and the queue pins all of it in memory (~26x,
+          // since ByteConsumer stores one int per rune). A stray `ESC ]` — OSC
+          // closes only on BEL or ESC — used to wedge the terminal for the rest
+          // of the session at 100% CPU. See PATCHES.md.
+          //
+          // [seance fork] So: only wait for the rest while the pending run is
+          // still short enough to be a real sequence. Past that, drop what has
+          // been consumed and resume parsing, which turns the payload back into
+          // ordinary text and lets a later terminator land normally.
+          final pending = tokenEnd - tokenBegin;
+          if (pending <= maxPendingSequenceLength) {
+            _queue.rollback(pending);
+            return;
+          }
+          continue;
         }
       } else {
         _processChar(char);
