@@ -13,6 +13,7 @@ import 'remote_file_system.dart';
 import 'sequential_cleanup.dart';
 
 const _cleanupActionTimeout = Duration(seconds: 5);
+const _sshAuthenticationTimeout = Duration(minutes: 5);
 
 Future<void> _discardCleanup(CleanupAction action) => runSequentialCleanup(
       [action],
@@ -313,6 +314,8 @@ SSHUserInfoRequestHandler? _keyboardInteractiveHandler(
   // import dartssh2's (unexported) SSHUserInfoRequest class directly.
   return (request) async {
     final prompts = request.prompts.map((p) => p.promptText).toList();
+    // This is a prompt-text heuristic; it may not reflect whether the UI
+    // actually asked the user for a password.
     final promptedPassword = prompts.any(
         (prompt) => prompt.toLowerCase().contains('password'));
     onAuthKind(promptedPassword
@@ -423,8 +426,13 @@ Future<(SSHClient, AuthKind)> openAuthenticatedClient({
   );
 
   try {
-    await client.authenticated;
-    note('Authenticated.');
+    // Leave room for host-key approval and slow keyboard-interactive replies.
+    await client.authenticated.timeout(
+      _sshAuthenticationTimeout,
+      onTimeout: () => throw TimeoutException(
+        'SSH handshake/authentication with $target timed out',
+      ),
+    );
     return (client, authKind);
   } catch (e) {
     final summary = SshSessionManager._summarizeFailure(
@@ -540,19 +548,11 @@ class SshSessionManager {
     );
     final target = '${config.username}@${config.host}:${config.port}';
     void note(String message) => log?.add(message);
-    void removeAuthenticatedNote() {
-      final lines = log?.lines;
-      if (lines == null) return;
-      final index = lines.lastIndexOf('Authenticated.');
-      if (index >= 0) lines.removeAt(index);
-    }
 
     try {
       final shell = await client.shell(
         pty: SSHPtyConfig(width: engine.size.cols, height: engine.size.rows),
       );
-      // Keep connect()'s historical single success line after shell setup.
-      removeAuthenticatedNote();
       note('Authenticated. Shell session opened.');
       final session = SshSession._(client, shell, engine).._wire();
       // After _wire(), so the script's echo and output are captured by the
@@ -560,7 +560,6 @@ class SshSessionManager {
       _runLoginScript(shell, config, note);
       return session;
     } catch (e) {
-      removeAuthenticatedNote();
       final summary = _summarizeFailure(e, config, target, credentials, log);
       note('');
       note(summary);

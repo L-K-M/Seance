@@ -202,6 +202,25 @@ void main() {
   });
 
   group('SshSessionManager.openAuthenticatedClient diagnostics', () {
+    test('agent auth is rejected before opening a socket', () async {
+      final log = SshConnectionLog();
+
+      await expectLater(
+        () => openAuthenticatedClient(
+          config: _server(),
+          credentials: const SshCredentials.agent(),
+          tofu: TofuVerifier(InMemoryHostKeyStore()),
+          onHostKey: (_) async => true,
+          connect: (host, port, timeout) async =>
+              throw StateError('should not connect'),
+          log: log,
+        ),
+        throwsA(isA<UnsupportedError>()),
+      );
+
+      expect(log.toString(), isNot(contains('Connecting to')));
+    });
+
     test('opens authentication without requiring a terminal engine', () async {
       final log = SshConnectionLog();
 
