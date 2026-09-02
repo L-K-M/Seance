@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # CLAUDE.md
 
 Start with **[AGENTS.md](AGENTS.md)** — it's the full working guide (toolchain
