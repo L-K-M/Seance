@@ -327,6 +327,9 @@ SSHUserInfoRequestHandler? _keyboardInteractiveHandler(
 
 /// Opens and authenticates an SSH transport without opening a shell channel.
 /// The returned client can open SFTP or other channels directly.
+///
+/// The caller owns the returned [SSHClient] and must close it when finished.
+/// On any error the client is closed before the exception is thrown.
 Future<(SSHClient, AuthKind)> openAuthenticatedClient({
   required ServerConfig config,
   required SshCredentials credentials,
