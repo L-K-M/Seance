@@ -44,6 +44,9 @@ class SshCredentials {
         keyPassphrase = null;
 }
 
+/// How an authenticated SSH client completed user authentication.
+enum AuthKind { key, storedPassword, keyboardInteractive, promptedPassword }
+
 /// Asks the user to approve a host key on first use or after a change. Returns
 /// true to trust (and pin) the presented key. The app wires this to a dialog
 /// (a plain confirm on first use, a hard "HOST KEY CHANGED" block otherwise).
@@ -53,6 +56,30 @@ typedef HostKeyPrompter = Future<bool> Function(HostKeyDecision decision);
 /// prompts, returns one response per prompt.
 typedef KeyboardInteractiveResponder = Future<List<String>> Function(
     List<String> prompts, String name, String instruction);
+
+Future<bool> _verifyHostKey({
+  required TofuVerifier tofu,
+  required HostKeyPrompter onHostKey,
+  required String host,
+  required int port,
+  required String type,
+  required Uint8List fingerprintBytes,
+}) async {
+  final presented = HostKey(
+    host: host,
+    port: port,
+    type: type,
+    fingerprintSha256: utf8.decode(fingerprintBytes),
+    pinnedAt: DateTime.now().millisecondsSinceEpoch,
+  );
+  final decision = await tofu.check(presented);
+  if (decision.isTrusted) return true;
+
+  // First use or changed key: the user must explicitly approve.
+  final approved = await onHostKey(decision);
+  if (approved) await tofu.pin(presented);
+  return approved;
+}
 
 /// A running transcript of one connection attempt: the human-readable steps we
 /// log plus dartssh2's own debug/trace output. The UI shows this so a failed
@@ -278,6 +305,137 @@ class SshSession {
   bool get isClosed => _closed || client.isClosed;
 }
 
+SSHUserInfoRequestHandler? _keyboardInteractiveHandler(
+    KeyboardInteractiveResponder? responder,
+    void Function(AuthKind kind) onAuthKind) {
+  if (responder == null) return null;
+  // Parameter type is inferred from SSHUserInfoRequestHandler so we needn't
+  // import dartssh2's (unexported) SSHUserInfoRequest class directly.
+  return (request) async {
+    final prompts = request.prompts.map((p) => p.promptText).toList();
+    final promptedPassword = prompts.any(
+        (prompt) => prompt.toLowerCase().contains('password'));
+    onAuthKind(promptedPassword
+        ? AuthKind.promptedPassword
+        : AuthKind.keyboardInteractive);
+    return responder(prompts, request.name, request.instruction);
+  };
+}
+
+/// Opens and authenticates an SSH transport without opening a shell channel.
+/// The returned client can open SFTP or other channels directly.
+Future<(SSHClient, AuthKind)> openAuthenticatedClient({
+  required ServerConfig config,
+  required SshCredentials credentials,
+  required TofuVerifier tofu,
+  required HostKeyPrompter onHostKey,
+  KeyboardInteractiveResponder? onKeyboardInteractive,
+  Future<SSHSocket> Function(String, int, Duration)? connect,
+  Duration timeout = const Duration(seconds: 15),
+  SshConnectionLog? log,
+}) async {
+  void note(String message) => log?.add(message);
+
+  if (credentials.method == AuthMethod.agent) {
+    // dartssh2 has no local ssh-agent auth path; the app must resolve agent
+    // keys via a platform bridge and pass them as privateKey credentials.
+    throw UnsupportedError(
+      'Agent auth is not available through the dartssh2 backend yet; '
+      'resolve the key via the platform ssh-agent and connect with a '
+      'privateKey credential.',
+    );
+  }
+
+  final target = '${config.username}@${config.host}:${config.port}';
+  note('Auth method: ${SshSessionManager._methodLabel(credentials.method)}');
+
+  List<SSHKeyPair>? identities;
+  if (credentials.method == AuthMethod.privateKey) {
+    try {
+      identities = SSHKeyPair.fromPem(
+          credentials.privateKeyPem ?? '', credentials.keyPassphrase);
+    } catch (e) {
+      note('Could not load the private key: $e');
+      final hint = credentials.keyPassphrase == null
+          ? ' (is it passphrase-protected? add the passphrase to this server)'
+          : ' (wrong key passphrase?)';
+      throw SshConnectException(
+        'Could not load the private key for $target — $e$hint',
+        e,
+        log ?? SshConnectionLog(),
+      );
+    }
+    if (identities.isEmpty) {
+      note('The configured identity contained no usable key.');
+    }
+    // Record offered fingerprints so rejected keys can be diagnosed.
+    for (final kp in identities) {
+      note('Offering key: ${kp.name} '
+          '${SshSessionManager._fingerprint(kp.toPublicKey().encode())}');
+    }
+  }
+
+  final socketConnector = connect ??
+      ((host, port, socketTimeout) =>
+          SSHSocket.connect(host, port, timeout: socketTimeout));
+  SSHSocket socket;
+  try {
+    note('Connecting to $target …');
+    socket = await socketConnector(config.host, config.port, timeout);
+  } catch (e) {
+    note('Could not open a TCP connection: $e');
+    throw SshConnectException(
+      'Could not reach ${config.host}:${config.port} — $e',
+      e,
+      log ?? SshConnectionLog(),
+    );
+  }
+  note('TCP connection established; starting SSH handshake.');
+
+  var authKind = credentials.method == AuthMethod.privateKey
+      ? AuthKind.key
+      : AuthKind.storedPassword;
+  final client = SSHClient(
+    socket,
+    username: config.username,
+    onVerifyHostKey: (type, fingerprint) => _verifyHostKey(
+      tofu: tofu,
+      onHostKey: onHostKey,
+      host: config.host,
+      port: config.port,
+      type: type,
+      fingerprintBytes: fingerprint,
+    ),
+    identities: identities,
+    onPasswordRequest: credentials.method == AuthMethod.password
+        ? () {
+            authKind = AuthKind.storedPassword;
+            return credentials.password;
+          }
+        : null,
+    onUserInfoRequest: _keyboardInteractiveHandler(
+      onKeyboardInteractive,
+      (kind) => authKind = kind,
+    ),
+    // dartssh2's trace carries the server's accepted-methods detail.
+    printDebug: log == null ? null : (m) => log.add('· ${m ?? ''}'),
+    printTrace: log == null ? null : (m) => log.add('  ${m ?? ''}'),
+  );
+
+  try {
+    await client.authenticated;
+    note('Authenticated.');
+    return (client, authKind);
+  } catch (e) {
+    final summary = SshSessionManager._summarizeFailure(
+        e, config, target, credentials, log);
+    note('');
+    note(summary);
+    await _discardCleanup(client.close);
+    throw SshConnectException(summary, e, log ?? SshConnectionLog());
+  }
+}
+
 /// Opens SSH connections for [ServerConfig]s, enforcing trust-on-first-use host
 /// key verification and wiring the byte streams to a terminal engine.
 class SshSessionManager {
@@ -309,22 +467,14 @@ class SshSessionManager {
     required String type,
     required Uint8List fingerprintBytes,
   }) async {
-    final presented = HostKey(
+    return _verifyHostKey(
+      tofu: tofu,
+      onHostKey: onHostKey,
       host: host,
       port: port,
       type: type,
-      fingerprintSha256: utf8.decode(fingerprintBytes),
-      pinnedAt: DateTime.now().millisecondsSinceEpoch,
+      fingerprintBytes: fingerprintBytes,
     );
-    final decision = await tofu.check(presented);
-    if (decision.isTrusted) return true;
-
-    // First use or changed key: the user must explicitly approve.
-    final approved = await onHostKey(decision);
-    if (approved) {
-      await tofu.pin(presented);
-    }
-    return approved;
   }
 
   /// What running [script] at a prompt looks like on the wire: its bytes
@@ -378,87 +528,31 @@ class SshSessionManager {
     Duration timeout = const Duration(seconds: 15),
     SshConnectionLog? log,
   }) async {
-    void note(String m) => log?.add(m);
-
-    if (credentials.method == AuthMethod.agent) {
-      // dartssh2 has no local ssh-agent auth path; the app must resolve agent
-      // keys via a platform bridge and pass them as privateKey credentials.
-      throw UnsupportedError(
-        'Agent auth is not available through the dartssh2 backend yet; '
-        'resolve the key via the platform ssh-agent and connect with a '
-        'privateKey credential.',
-      );
-    }
-
-    final target = '${config.username}@${config.host}:${config.port}';
-    note('Auth method: ${_methodLabel(credentials.method)}');
-
-    List<SSHKeyPair>? identities;
-    if (credentials.method == AuthMethod.privateKey) {
-      try {
-        identities = SSHKeyPair.fromPem(
-            credentials.privateKeyPem ?? '', credentials.keyPassphrase);
-      } catch (e) {
-        note('Could not load the private key: $e');
-        final hint = credentials.keyPassphrase == null
-            ? ' (is it passphrase-protected? add the passphrase to this server)'
-            : ' (wrong key passphrase?)';
-        throw SshConnectException(
-          'Could not load the private key for $target — $e$hint',
-          e,
-          log ?? SshConnectionLog(),
-        );
-      }
-      if (identities.isEmpty) {
-        note('The configured identity contained no usable key.');
-      }
-      // Record which key we present so the user can compare it against the
-      // server's authorized_keys (a rejected key is almost always "not the one
-      // the host trusts").
-      for (final kp in identities) {
-        note('Offering key: ${kp.name} '
-            '${_fingerprint(kp.toPublicKey().encode())}');
-      }
-    }
-
-    SSHSocket socket;
-    try {
-      note('Connecting to $target …');
-      socket = await _connect(config.host, config.port, timeout);
-    } catch (e) {
-      note('Could not open a TCP connection: $e');
-      throw SshConnectException(
-        'Could not reach ${config.host}:${config.port} — $e',
-        e,
-        log ?? SshConnectionLog(),
-      );
-    }
-    note('TCP connection established; starting SSH handshake.');
-
-    final client = SSHClient(
-      socket,
-      username: config.username,
-      onVerifyHostKey: (type, fingerprint) => verifyHostKey(
-        host: config.host,
-        port: config.port,
-        type: type,
-        fingerprintBytes: fingerprint,
-      ),
-      identities: identities,
-      onPasswordRequest:
-          credentials.method == AuthMethod.password ? () => credentials.password : null,
-      onUserInfoRequest: _wrapKeyboardInteractive(),
-      // dartssh2's own tracing. Trace lines carry the decisive detail — e.g.
-      // `SSH_Message_Userauth_Failure(methodsLeft: [publickey], ...)` tells us
-      // exactly which methods the server will accept.
-      printDebug: log == null ? null : (m) => log.add('· ${m ?? ''}'),
-      printTrace: log == null ? null : (m) => log.add('  ${m ?? ''}'),
+    final (client, _) = await openAuthenticatedClient(
+      config: config,
+      credentials: credentials,
+      tofu: tofu,
+      onHostKey: onHostKey,
+      onKeyboardInteractive: onKeyboardInteractive,
+      connect: _connect,
+      timeout: timeout,
+      log: log,
     );
+    final target = '${config.username}@${config.host}:${config.port}';
+    void note(String message) => log?.add(message);
+    void removeAuthenticatedNote() {
+      final lines = log?.lines;
+      if (lines == null) return;
+      final index = lines.lastIndexOf('Authenticated.');
+      if (index >= 0) lines.removeAt(index);
+    }
 
     try {
       final shell = await client.shell(
         pty: SSHPtyConfig(width: engine.size.cols, height: engine.size.rows),
       );
+      // Keep connect()'s historical single success line after shell setup.
+      removeAuthenticatedNote();
       note('Authenticated. Shell session opened.');
       final session = SshSession._(client, shell, engine).._wire();
       // After _wire(), so the script's echo and output are captured by the
@@ -466,6 +560,7 @@ class SshSessionManager {
       _runLoginScript(shell, config, note);
       return session;
     } catch (e) {
+      removeAuthenticatedNote();
       final summary = _summarizeFailure(e, config, target, credentials, log);
       note('');
       note(summary);
@@ -575,14 +670,4 @@ class SshSessionManager {
         .toList();
   }
 
-  SSHUserInfoRequestHandler? _wrapKeyboardInteractive() {
-    final responder = onKeyboardInteractive;
-    if (responder == null) return null;
-    // Parameter type is inferred from SSHUserInfoRequestHandler so we needn't
-    // import dartssh2's (unexported) SSHUserInfoRequest class directly.
-    return (request) async {
-      final prompts = request.prompts.map((p) => p.promptText).toList();
-      return responder(prompts, request.name, request.instruction);
-    };
-  }
 }
