@@ -651,11 +651,17 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
     return attrs;
   }
 
-  /// SFTP v3 stores whole seconds. Floor rather than truncate toward zero so
-  /// a fractional pre-epoch timestamp rounds down instead of up.
+  /// SFTP v3 stores whole seconds as an unsigned 32-bit count, so a
+  /// pre-1970 or post-2106 timestamp cannot survive the wire — dartssh2
+  /// writes the two's-complement bytes without complaining, and the server
+  /// would read a wrapped far-future value. Floor fractional seconds, then
+  /// reject anything out of range, mirroring the early checks in setMode
+  /// and setOwner.
   static int _secondsFromTime(DateTime time) {
     final millis = time.millisecondsSinceEpoch;
-    return millis >= 0 ? millis ~/ 1000 : -((-millis + 999) ~/ 1000);
+    final seconds = millis >= 0 ? millis ~/ 1000 : -((-millis + 999) ~/ 1000);
+    RangeError.checkValueInInterval(seconds, 0, _maxUint32, 'timestamp');
+    return seconds;
   }
 
   static const int _maxUint32 = 0xFFFFFFFF;

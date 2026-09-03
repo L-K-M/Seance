@@ -288,23 +288,58 @@ void main() {
         expect(client.lastSetStat?.modifyTime, 1700000100);
       });
 
-      test('floors sub-second precision including pre-epoch times', () async {
+      test('floors sub-second precision to whole seconds', () async {
         final client = _FakeSftpClient();
         final fileSystem = DartSshRemoteFileSystem(client);
 
         await fileSystem.setTimes(
           '/srv/file.txt',
           modifiedAt: DateTime.utc(2025, 1, 2, 3, 4, 5, 900),
-          accessedAt: DateTime.utc(1969, 12, 31, 23, 59, 59, 500),
+          accessedAt: DateTime.utc(2025, 1, 2, 3, 4, 5, 100),
         );
 
         // SFTP v3 stores whole seconds; a fractional second always rounds
-        // down, so a pre-epoch .5 s timestamp becomes -1, not 0.
+        // down.
         expect(
           client.lastSetStat?.modifyTime,
-          DateTime.utc(2025, 1, 2, 3, 4, 5, 900).millisecondsSinceEpoch ~/ 1000,
+          DateTime.utc(2025, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000,
         );
-        expect(client.lastSetStat?.accessTime, -1);
+        expect(
+          client.lastSetStat?.accessTime,
+          DateTime.utc(2025, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000,
+        );
+      });
+
+      test('rejects timestamps the SFTP wire cannot represent', () async {
+        final client = _FakeSftpClient();
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        // SFTP v3 carries timestamps as unsigned 32-bit seconds; anything
+        // else would silently wrap into a far-future server-side value.
+        expect(
+          () => fileSystem.setTimes(
+            '/srv/file.txt',
+            modifiedAt: DateTime.utc(1969, 12, 31, 23, 59, 59, 999),
+          ),
+          throwsRangeError,
+        );
+        expect(
+          () => fileSystem.setTimes(
+            '/srv/file.txt',
+            modifiedAt: DateTime.utc(2106, 2, 7, 6, 28, 16),
+          ),
+          throwsRangeError,
+        );
+        expect(client.statCalls, 0);
+
+        // Both boundaries themselves stay representable.
+        await fileSystem.setTimes(
+          '/srv/file.txt',
+          accessedAt: DateTime.utc(1970),
+          modifiedAt: DateTime.utc(2106, 2, 7, 6, 28, 15),
+        );
+        expect(client.lastSetStat?.accessTime, 0);
+        expect(client.lastSetStat?.modifyTime, 0xFFFFFFFF);
       });
 
       test('does not change timestamps through a symbolic link', () async {
