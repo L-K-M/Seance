@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:seance_core/seance_core.dart';
 import 'package:seance_core/src/ssh/remote_file_system.dart'
@@ -93,6 +94,74 @@ void main() {
       await Future<void>.delayed(Duration.zero);
     });
 
+    test('hashes downloaded content by default', () async {
+      final content = Uint8List.fromList([4, 5, 6]);
+      final attrs = SftpFileAttrs(
+        size: 3,
+        mode: const SftpFileMode.value(0x81A4),
+      );
+      final client = _FakeSftpClient(statResult: attrs);
+      client.openedFile = _FakeSftpFile(client, attrs, Stream.value(content));
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      final entry = await fileSystem.download(
+        '/srv/file.txt',
+        _DiscardingSink(),
+      );
+
+      expect(entry.contentSha256, sha256.convert(content).toString());
+    });
+
+    test('skips the download digest when computeHash is false', () async {
+      final content = Uint8List.fromList([4, 5, 6]);
+      final attrs = SftpFileAttrs(
+        size: 3,
+        mode: const SftpFileMode.value(0x81A4),
+      );
+      final client = _FakeSftpClient(statResult: attrs);
+      client.openedFile = _FakeSftpFile(client, attrs, Stream.value(content));
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      final entry = await fileSystem.download(
+        '/srv/file.txt',
+        _DiscardingSink(),
+        computeHash: false,
+      );
+
+      expect(entry.contentSha256, isNull);
+    });
+
+    test('hashes uploaded content by default', () async {
+      final client = _FakeSftpClient();
+      client.openedFile = _FakeWritableSftpFile(client);
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      final entry = await fileSystem.upload(
+        '/srv/file.txt',
+        Stream.value(Uint8List.fromList([1, 2, 3])),
+        length: 3,
+        overwrite: true,
+      );
+
+      expect(entry.contentSha256, sha256.convert([1, 2, 3]).toString());
+    });
+
+    test('skips the upload digest when computeHash is false', () async {
+      final client = _FakeSftpClient();
+      client.openedFile = _FakeWritableSftpFile(client);
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      final entry = await fileSystem.upload(
+        '/srv/file.txt',
+        Stream.value(Uint8List.fromList([1, 2, 3])),
+        length: 3,
+        overwrite: true,
+        computeHash: false,
+      );
+
+      expect(entry.contentSha256, isNull);
+    });
+
     test('maps SFTP ownership and timestamps into entries', () async {
       final client = _FakeSftpClient(
         statResult: SftpFileAttrs(
@@ -162,6 +231,289 @@ void main() {
       expect(client.lastSetStat, isNull);
     });
 
+    group('setTimes', () {
+      test('sets both timestamps as whole seconds', () async {
+        final client = _FakeSftpClient();
+        final fileSystem = DartSshRemoteFileSystem(client);
+        final accessedAt = DateTime.utc(2025, 1, 2, 3, 4, 5);
+        final modifiedAt = DateTime.utc(2025, 2, 3, 4, 5, 6);
+
+        await fileSystem.setTimes(
+          '/srv/file.txt',
+          accessedAt: accessedAt,
+          modifiedAt: modifiedAt,
+        );
+
+        expect(
+          client.lastSetStat?.accessTime,
+          accessedAt.millisecondsSinceEpoch ~/ 1000,
+        );
+        expect(
+          client.lastSetStat?.modifyTime,
+          modifiedAt.millisecondsSinceEpoch ~/ 1000,
+        );
+      });
+
+      test('fills the unspecified timestamp from the server', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(
+            mode: const SftpFileMode.value(0x81A4),
+            accessTime: 1700000000,
+            modifyTime: 1700000100,
+          ),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await fileSystem.setTimes(
+          '/srv/file.txt',
+          modifiedAt: DateTime.utc(2025, 2, 3, 4, 5, 6),
+        );
+
+        expect(client.lastSetStat?.accessTime, 1700000000);
+        expect(
+          client.lastSetStat?.modifyTime,
+          DateTime.utc(2025, 2, 3, 4, 5, 6).millisecondsSinceEpoch ~/ 1000,
+        );
+
+        client.lastSetStat = null;
+        await fileSystem.setTimes(
+          '/srv/file.txt',
+          accessedAt: DateTime.utc(2025, 1, 2, 3, 4, 5),
+        );
+
+        expect(
+          client.lastSetStat?.accessTime,
+          DateTime.utc(2025, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000,
+        );
+        expect(client.lastSetStat?.modifyTime, 1700000100);
+      });
+
+      test('floors sub-second precision including pre-epoch times', () async {
+        final client = _FakeSftpClient();
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await fileSystem.setTimes(
+          '/srv/file.txt',
+          modifiedAt: DateTime.utc(2025, 1, 2, 3, 4, 5, 900),
+          accessedAt: DateTime.utc(1969, 12, 31, 23, 59, 59, 500),
+        );
+
+        // SFTP v3 stores whole seconds; a fractional second always rounds
+        // down, so a pre-epoch .5 s timestamp becomes -1, not 0.
+        expect(
+          client.lastSetStat?.modifyTime,
+          DateTime.utc(2025, 1, 2, 3, 4, 5, 900).millisecondsSinceEpoch ~/ 1000,
+        );
+        expect(client.lastSetStat?.accessTime, -1);
+      });
+
+      test('does not change timestamps through a symbolic link', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(mode: const SftpFileMode.value(0xA1FF)),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await expectLater(
+          fileSystem.setTimes('/srv/link', modifiedAt: DateTime.utc(2025)),
+          throwsA(
+            isA<RemoteFileException>().having(
+              (error) => error.kind,
+              'kind',
+              RemoteFileErrorKind.unsupported,
+            ),
+          ),
+        );
+        expect(client.lastSetStat, isNull);
+      });
+
+      test('rejects a setTimes call without any timestamp', () async {
+        final client = _FakeSftpClient();
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        expect(() => fileSystem.setTimes('/srv/file.txt'), throwsArgumentError);
+        expect(client.statCalls, 0);
+      });
+
+      test('fails closed when the server hides the current times', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(mode: const SftpFileMode.value(0x81A4)),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await expectLater(
+          fileSystem.setTimes(
+            '/srv/file.txt',
+            modifiedAt: DateTime.utc(2025, 2, 3, 4, 5, 6),
+          ),
+          throwsA(
+            isA<RemoteFileException>().having(
+              (error) => error.kind,
+              'kind',
+              RemoteFileErrorKind.unsupported,
+            ),
+          ),
+        );
+        expect(client.lastSetStat, isNull);
+      });
+
+      test('maps a server rejection to the standard message', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(
+            mode: const SftpFileMode.value(0x81A4),
+            accessTime: 1700000000,
+            modifyTime: 1700000100,
+          ),
+          setStatError: SftpStatusError(
+            SftpStatusCode.opUnsupported,
+            'operation unsupported',
+          ),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await expectLater(
+          fileSystem.setTimes(
+            '/srv/file.txt',
+            modifiedAt: DateTime.utc(2025, 2, 3, 4, 5, 6),
+          ),
+          throwsA(
+            isA<RemoteFileException>()
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  RemoteFileErrorKind.unsupported,
+                )
+                .having(
+                  (error) => error.message,
+                  'message',
+                  'Could not change timestamps for "/srv/file.txt": '
+                      'operation unsupported',
+                ),
+          ),
+        );
+      });
+    });
+
+    group('setOwner', () {
+      test('sets both uid and gid', () async {
+        final client = _FakeSftpClient();
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await fileSystem.setOwner('/srv/file.txt', uid: 0, gid: 0);
+
+        expect(client.lastSetStat?.userID, 0);
+        expect(client.lastSetStat?.groupID, 0);
+      });
+
+      test('fills the unspecified owner field from the server', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(
+            mode: const SftpFileMode.value(0x81A4),
+            userID: 1000,
+            groupID: 1001,
+          ),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await fileSystem.setOwner('/srv/file.txt', uid: 0);
+
+        expect(client.lastSetStat?.userID, 0);
+        expect(client.lastSetStat?.groupID, 1001);
+
+        client.lastSetStat = null;
+        await fileSystem.setOwner('/srv/file.txt', gid: 100);
+
+        expect(client.lastSetStat?.userID, 1000);
+        expect(client.lastSetStat?.groupID, 100);
+      });
+
+      test('does not change ownership through a symbolic link', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(mode: const SftpFileMode.value(0xA1FF)),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await expectLater(
+          fileSystem.setOwner('/srv/link', uid: 0),
+          throwsA(
+            isA<RemoteFileException>().having(
+              (error) => error.kind,
+              'kind',
+              RemoteFileErrorKind.unsupported,
+            ),
+          ),
+        );
+        expect(client.lastSetStat, isNull);
+      });
+
+      test('validates owner ids before contacting SFTP', () async {
+        final client = _FakeSftpClient();
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        expect(
+          () => fileSystem.setOwner('/srv/file.txt', uid: -1),
+          throwsRangeError,
+        );
+        expect(
+          () => fileSystem.setOwner('/srv/file.txt', gid: 0x100000000),
+          throwsRangeError,
+        );
+        expect(() => fileSystem.setOwner('/srv/file.txt'), throwsArgumentError);
+        expect(client.statCalls, 0);
+      });
+
+      test('fails closed when the server hides the current owner', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(mode: const SftpFileMode.value(0x81A4)),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await expectLater(
+          fileSystem.setOwner('/srv/file.txt', uid: 0),
+          throwsA(
+            isA<RemoteFileException>().having(
+              (error) => error.kind,
+              'kind',
+              RemoteFileErrorKind.unsupported,
+            ),
+          ),
+        );
+        expect(client.lastSetStat, isNull);
+      });
+
+      test('maps a server rejection to the standard message', () async {
+        final client = _FakeSftpClient(
+          statResult: SftpFileAttrs(
+            mode: const SftpFileMode.value(0x81A4),
+            userID: 1000,
+            groupID: 1001,
+          ),
+          setStatError: SftpStatusError(
+            SftpStatusCode.opUnsupported,
+            'operation unsupported',
+          ),
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        await expectLater(
+          fileSystem.setOwner('/srv/file.txt', uid: 0),
+          throwsA(
+            isA<RemoteFileException>()
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  RemoteFileErrorKind.unsupported,
+                )
+                .having(
+                  (error) => error.message,
+                  'message',
+                  'Could not change owner for "/srv/file.txt": '
+                      'operation unsupported',
+                ),
+          ),
+        );
+      });
+    });
+
     test('reads a symbolic link target without resolving it', () async {
       final client = _FakeSftpClient(readlinkResult: '../target');
       final fileSystem = DartSshRemoteFileSystem(client);
@@ -229,6 +581,7 @@ class _FakeSftpClient implements SftpClient {
   _FakeSftpClient({
     SftpFileAttrs? statResult,
     this.statError,
+    this.setStatError,
     this.readlinkResult = 'target',
     this.readlinkError,
   }) : statResult =
@@ -236,6 +589,7 @@ class _FakeSftpClient implements SftpClient {
 
   final SftpFileAttrs statResult;
   final Object? statError;
+  final Object? setStatError;
   final String readlinkResult;
   final Object? readlinkError;
 
@@ -244,6 +598,7 @@ class _FakeSftpClient implements SftpClient {
   String? lastReadlinkPath;
   String? lastLinkFirstArgument;
   String? lastLinkSecondArgument;
+  String? lastRenameOldPath;
   SftpFile? openedFile;
 
   @override
@@ -261,7 +616,13 @@ class _FakeSftpClient implements SftpClient {
 
   @override
   Future<void> setStat(String path, SftpFileAttrs attrs) async {
+    if (setStatError case final error?) throw error;
     lastSetStat = attrs;
+  }
+
+  @override
+  Future<void> rename(String oldPath, String newPath) async {
+    lastRenameOldPath = oldPath;
   }
 
   @override
@@ -298,7 +659,28 @@ class _FakeSftpFile extends SftpFile {
     void Function(int bytesRead)? onProgress,
     int chunkSize = 1,
     int maxPendingRequests = 1,
-  }) => source;
+  }) async* {
+    var total = 0;
+    await for (final chunk in source) {
+      total += chunk.length;
+      yield chunk;
+    }
+    onProgress?.call(total);
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+class _FakeWritableSftpFile extends SftpFile {
+  _FakeWritableSftpFile(SftpClient client) : super(client, Uint8List(0));
+
+  final List<Uint8List> writes = [];
+
+  @override
+  Future<void> writeBytes(Uint8List data, {int offset = 0}) async {
+    writes.add(data);
+  }
 
   @override
   Future<void> close() async {}
