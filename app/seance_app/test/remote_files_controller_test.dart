@@ -434,6 +434,16 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
   Future<void> setMode(String path, int permissions) async {}
 
   @override
+  Future<void> setTimes(
+    String path, {
+    DateTime? accessedAt,
+    DateTime? modifiedAt,
+  }) async {}
+
+  @override
+  Future<void> setOwner(String path, {int? uid, int? gid}) async {}
+
+  @override
   Future<String> readSymbolicLink(String path) async => 'target';
 
   @override
@@ -490,6 +500,7 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
     StreamSink<List<int>> destination, {
     RemoteTransferProgress? onProgress,
     RemoteTransferCancellation? cancellation,
+    bool computeHash = true,
   }) async {
     cancellation?.throwIfCancelled();
     destination.add([1, 2, 3]);
@@ -536,6 +547,7 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
     RemoteFileEntry? expectedTarget,
     RemoteTransferProgress? onProgress,
     RemoteTransferCancellation? cancellation,
+    bool computeHash = true,
   }) async {
     expectedUploadTarget = expectedTarget;
     final bytes = <int>[];
