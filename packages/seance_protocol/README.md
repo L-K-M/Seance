@@ -31,7 +31,7 @@ integral floating-point values such as `19456.0`. Parsing and derivation reject
 memory above 64 MiB, more than 10 iterations or 4 lanes, memory below eight
 blocks per lane, and output lengths other than 32 bytes. The app registers with
 the default factors and checks `Argon2Params.minimum` before login derivation.
-The server enforces resource validity, not that client-side strength policy;
+The server enforces resource validity, not the client-side strength floor;
 `Argon2Params.fast()` remains test-only. Repository producers emit JSON integers.
 These ceilings bound resource use, not execution time on every device.
 

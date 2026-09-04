@@ -50,7 +50,7 @@ void main() {
     });
 
     test('direct derivation cannot bypass the output-length policy', () async {
-      // Small valid work factors keep the unfixed regression safe to execute.
+      // Small work factors keep this safe even if the guard regresses.
       await expectLater(
         VaultCrypto.deriveKeys(
           passphrase: 'test',
