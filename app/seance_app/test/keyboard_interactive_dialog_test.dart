@@ -44,6 +44,26 @@ void main() {
     }
   });
 
+  testWidgets('reveals only the chosen answer and can hide it again', (
+    tester,
+  ) async {
+    await openDialog(tester);
+    await tester.enterText(find.byType(TextField).first, 'operator');
+    await tester.tap(find.byTooltip('Show answer').first);
+    await tester.pump();
+
+    final fields = tester.widgetList<TextField>(find.byType(TextField)).toList();
+    expect(fields.first.obscureText, isFalse);
+    expect(fields.first.controller!.text, 'operator');
+    expect(fields.last.obscureText, isTrue);
+    expect(fields.first.enableIMEPersonalizedLearning, isFalse);
+
+    await tester.tap(find.byTooltip('Hide answer'));
+    await tester.pump();
+    expect(tester.widget<TextField>(find.byType(TextField).first).obscureText,
+        isTrue);
+  });
+
   testWidgets('submits every answer in prompt order', (tester) async {
     List<String>? result;
     await openDialog(tester, onResult: (value) => result = value);
@@ -69,6 +89,10 @@ void main() {
       ),
     );
     await tester.pump();
+    final controller =
+        tester.widget<TextField>(find.byType(TextField).first).controller!;
+    expect(controller.text, 'secret');
+    expect(controller.value.composing, const TextRange(start: 0, end: 6));
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(result, isEmpty);

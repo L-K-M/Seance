@@ -50,6 +50,8 @@ class _KeyboardInteractiveDialogState
     for (final _ in widget.prompts) TextEditingController(),
   ];
 
+  final Set<int> _revealed = {};
+
   @override
   void dispose() {
     for (final c in _controllers) {
@@ -78,12 +80,23 @@ class _KeyboardInteractiveDialogState
               child: TextField(
                 controller: _controllers[i],
                 autofocus: i == 0,
-                // The core API lacks echo metadata; treat every answer as secret.
-                obscureText: true,
+                // Echo metadata is absent; reveal only on explicit user request.
+                obscureText: !_revealed.contains(i),
                 autocorrect: false,
                 enableSuggestions: false,
                 enableIMEPersonalizedLearning: false,
-                decoration: InputDecoration(labelText: widget.prompts[i]),
+                decoration: InputDecoration(
+                  labelText: widget.prompts[i],
+                  suffixIcon: IconButton(
+                    tooltip: _revealed.contains(i) ? 'Hide answer' : 'Show answer',
+                    icon: Icon(_revealed.contains(i)
+                        ? Icons.visibility_off
+                        : Icons.visibility),
+                    onPressed: () => setState(() {
+                      if (!_revealed.remove(i)) _revealed.add(i);
+                    }),
+                  ),
+                ),
               ),
             ),
         ],
