@@ -1,6 +1,7 @@
 # Séance: engineering and product backlog
 
 Consolidated: 2026-09-04. Review base: `2f99f4e` (`origin/main`).
+Implementation PRs #64–70 are merged; integrated source verified at `9583f1e`.
 
 This is the **unfinished-work list**. Each entry gives a starting point, a bounded
 next step, and verification criteria. Completed work belongs in the ledger, not
@@ -46,7 +47,19 @@ dart test packages/seance_protocol packages/seance_core packages/seance_sync_ser
 (cd third_party/xterm && flutter pub get && flutter test)
 ```
 
-Final integrated verification is recorded after the implementation PRs merge.
+After all seven merges, at `9583f1e`:
+
+| Check | Result |
+|---|---|
+| Package analysis / tests | Clean / 299 passed |
+| App analysis / tests | Clean / 339 passed |
+| Terminal fork tests | 137 passed; 2 existing macOS goldens skipped |
+| Every implementation PR | Reviewed; package/app, Android/Linux/macOS/iOS/Windows and Docker CI passed |
+
+The footer regression matrix includes short-host/wide-pane space reclamation;
+auth tests cover ordered answers, cancellation, reveal/focus and keyboard-safe
+action geometry. KDF tests include hostile prelogin and the separate strength
+floor; HTTP cleanup is exercised through real AppServices operations with fakes.
 Platform compilation is not equivalent to real-device validation.
 
 ### Priority and execution
@@ -316,9 +329,9 @@ client/engine, late state commit or unhandled completion error.
 
 ### Typed keyboard-interactive challenges — SOL-021 / AST-002 residual
 
-**Start:** `SshSessionManager._keyboardInteractiveHandler` and
+**Start:** `ssh_session.dart` (`_keyboardInteractiveHandler`) and
 `ui/keyboard_interactive_dialog.dart`. Answers now default private, support
-per-answer reveal, disable keyboard learning/suggestions and scroll above the IME.
+per-answer reveal, request keyboard privacy and scroll above the IME.
 
 **Next:** add a compatible typed challenge carrying prompt text, echo policy and
 identity, plus explicit cancellation distinct from an empty valid challenge.
@@ -327,8 +340,10 @@ fields without landing on reveal buttons, and deliberate password/OTP autofill
 policy rather than guessing from remote prompt text.
 
 **Gate:** echo/no-echo, multiple challenge rounds, answer count/order, cancellation,
-active composition, small screens and hardware/software keyboard traversal.
-Never infer that a server-provided echo flag proves an answer is non-sensitive.
+small screens and hardware/software keyboard traversal. On native IMEs, verify
+reveal mid-composition preserves text, selection and focus; do not clear composing
+ranges without a reproduced failure. Never infer that a server-provided echo flag
+proves an answer is non-sensitive.
 
 ### SSH config parity and import — SOL-022; SEA-007, SEA-027
 
@@ -745,18 +760,19 @@ parser PRs (#44/#45/#47/#49) visible so future agents do not duplicate them.
 
 ## Completion ledger
 
-Implementation PRs #64–70 are awaiting final CI/review. Do not mark residuals
-complete merely because a smaller patch landed.
+All seven implementation PRs are merged. Review feedback was implemented or
+resolved against source/tests; no in-scope blocker remained. Residuals below are
+still open. No reviewer timeout exemption was needed.
 
 | Entry | Implementation PR | Proven scope / residual |
 |---|---|---|
 | AST-001 / SOL-014 part | [#64](https://github.com/L-K-M/Seance/pull/64) | KDF ceilings, strict integer typing and direct-call validation. Salt/verifier shape, device profiling and independent vectors remain. |
 | AST-002 / SOL-021 part | [#65](https://github.com/L-K-M/Seance/pull/65) | Masked/revealable, scrollable auth fields with IME privacy hints. Typed echo, cancellation model and Next/Done remain. |
-| AST-003 | [#66](https://github.com/L-K-M/Seance/pull/66) | Long footer labels and scaled text fit; full identity stays accessible. |
+| AST-003 | [#66](https://github.com/L-K-M/Seance/pull/66) | Long/scaled labels fit; short targets release cwd space; full identity stays accessible. |
 | AST-004 / SEA-019 | [#68](https://github.com/L-K-M/Seance/pull/68) | Light/dark indicator contrast tests against real surfaces/overlays. Non-color cues remain. |
 | AST-005 | [#69](https://github.com/L-K-M/Seance/pull/69) | Fork tests in CI; app/fork gate before client publishing. Other release hardening remains. |
 | AST-006 / SOL-058 part | [#70](https://github.com/L-K-M/Seance/pull/70) | Owned sync HTTP cleanup; borrowed-client ownership preserved. Cancellation/LLM/search lifetimes remain. |
-| AST-007 / SOL-046 part | [#67](https://github.com/L-K-M/Seance/pull/67) | Recognizable-secret filtering and legacy cleanup. Unmarked passwords, failed disk scrubs, backups and retention limits remain. |
+| AST-007 / SOL-046 part | [#67](https://github.com/L-K-M/Seance/pull/67) | Recognizable-secret filtering and parsed legacy cleanup. Unmarked passwords, failed/corrupt-file scrubs, backups and retention limits remain. |
 
 Earlier completed work, removed from active instructions:
 
