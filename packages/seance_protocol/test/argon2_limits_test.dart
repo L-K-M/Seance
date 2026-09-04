@@ -49,6 +49,14 @@ void main() {
       );
     });
 
+    test('weakest valid factors remain below the enrollment minimum', () {
+      const minimumBlocksPerLane = 8; // Argon2 requirement
+      final params = Argon2Params.fromJson(
+        const Argon2Params(memory: minimumBlocksPerLane, iterations: 1).toJson(),
+      );
+      expect(params.meetsMinimum(Argon2Params.minimum), isFalse);
+    });
+
     test('direct derivation cannot bypass the output-length policy', () async {
       // Small work factors keep this safe even if the guard regresses.
       await expectLater(

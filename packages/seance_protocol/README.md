@@ -26,8 +26,10 @@ can never drift. Pure Dart, no Flutter.
 
 ## KDF resource policy
 
-Prelogin is untrusted. Parsing rejects non-integer JSON encodings, including
-integral floating-point values such as `19456.0`. Parsing and derivation reject
+Prelogin is untrusted. On supported native Dart targets, parsing rejects
+non-integer JSON encodings, including integral floating-point values such as
+`19456.0`. Dart compiled to JavaScript cannot distinguish integral doubles;
+web is not an app target. Resource ceilings still apply. Parsing and derivation reject
 memory above 64 MiB, more than 10 iterations or 4 lanes, memory below eight
 blocks per lane, and output lengths other than 32 bytes. The app registers with
 the default factors and checks `Argon2Params.minimum` before login derivation.
