@@ -1,4 +1,6 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +8,7 @@ import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 
 import 'package:xterm/src/core/input/keys.dart';
+import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -14,6 +17,7 @@ import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
+import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
@@ -37,6 +41,7 @@ class TerminalView extends StatefulWidget {
     this.focusNode,
     this.autofocus = false,
     this.onTapUp,
+    this.onLinkTap,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.mouseCursor = SystemMouseCursors.text,
@@ -88,6 +93,10 @@ class TerminalView extends StatefulWidget {
 
   /// Callback for when the user taps on the terminal.
   final void Function(TapUpDetails, CellOffset)? onTapUp;
+
+  /// [seance fork] Opens visible HTTP(S) links on Ctrl-click (Cmd-click on
+  /// Apple platforms) or touch tap. Plain mouse clicks retain selection behavior.
+  final ValueChanged<Uri>? onLinkTap;
 
   /// Function called when the user taps on the terminal with a secondary
   /// button.
@@ -160,6 +169,10 @@ class TerminalViewState extends State<TerminalView> {
 
   String? _composingText;
 
+  int _tapCount = 0;
+  Uri? _hoveredLink;
+  bool _hoverInvalidationPending = false;
+
   /// [seance fork] The cell of the last plain primary click, kept as a
   /// content-glued buffer anchor so a later shift-click can select the range
   /// between the two points (even across scrolling or trimming in between).
@@ -177,6 +190,9 @@ class TerminalViewState extends State<TerminalView> {
     _focusNode = widget.focusNode ?? FocusNode();
     _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
+    widget.terminal.addListener(_invalidateLinkHover);
+    _scrollController.addListener(_invalidateLinkHover);
+    _controller.addListener(_invalidateLinkHover);
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
@@ -192,30 +208,40 @@ class TerminalViewState extends State<TerminalView> {
       _focusNode = widget.focusNode ?? FocusNode();
     }
     if (oldWidget.controller != widget.controller) {
+      _controller.removeListener(_invalidateLinkHover);
       if (oldWidget.controller == null) {
         _controller.dispose();
       }
       _controller = widget.controller ?? TerminalController();
+      _controller.addListener(_invalidateLinkHover);
     }
     if (oldWidget.scrollController != widget.scrollController) {
+      _scrollController.removeListener(_invalidateLinkHover);
       if (oldWidget.scrollController == null) {
         _scrollController.dispose();
       }
       _scrollController = widget.scrollController ?? ScrollController();
+      _scrollController.addListener(_invalidateLinkHover);
     }
     if (oldWidget.terminal != widget.terminal) {
+      oldWidget.terminal.removeListener(_invalidateLinkHover);
+      widget.terminal.addListener(_invalidateLinkHover);
       // [seance fork] The recorded click belongs to the old terminal's
       // buffer; resolving it against the new one would mix coordinate
       // spaces (and can throw — the new buffer may be far shorter).
       _lastTapAnchor?.dispose();
       _lastTapAnchor = null;
     }
+    _hoveredLink = null;
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
   }
 
   @override
   void dispose() {
+    widget.terminal.removeListener(_invalidateLinkHover);
+    _scrollController.removeListener(_invalidateLinkHover);
+    _controller.removeListener(_invalidateLinkHover);
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
@@ -328,7 +354,11 @@ class TerminalViewState extends State<TerminalView> {
     );
 
     child = MouseRegion(
-      cursor: widget.mouseCursor,
+      cursor: widget.onLinkTap != null && _hoveredLink != null
+          ? SystemMouseCursors.click
+          : widget.mouseCursor,
+      onHover: widget.onLinkTap == null ? null : _onLinkHover,
+      onExit: (_) => _setHoveredLink(null),
       child: child,
     );
 
@@ -358,12 +388,64 @@ class TerminalViewState extends State<TerminalView> {
         renderTerminal.cellSize;
   }
 
+  void _onLinkHover(PointerHoverEvent event) {
+    final offset = renderTerminal.getCellOffset(
+      renderTerminal.globalToLocal(event.position),
+    );
+    _setHoveredLink(_remoteOwnsTapAt(offset)
+        ? null
+        : widget.terminal.buffer.getLinkAt(offset));
+  }
+
+  bool _remoteOwnsTapAt(CellOffset offset) =>
+      !widget.readOnly &&
+      _controller.shouldSendPointerInput(PointerInput.tap) &&
+      widget.terminal.mouseMode != MouseMode.none &&
+      offset.y >= widget.terminal.buffer.scrollBack;
+
+  void _invalidateLinkHover() {
+    if (_hoveredLink == null || _hoverInvalidationPending) return;
+    _hoverInvalidationPending = true;
+    // Resize and scroll notifications can arrive during layout. Defer the
+    // cursor rebuild rather than dirtying an ancestor mid-frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _hoverInvalidationPending = false;
+      if (mounted) _setHoveredLink(null);
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _setHoveredLink(Uri? link) {
+    if (_hoveredLink == link) return;
+    setState(() => _hoveredLink = link);
+  }
+
   void _onTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
+    final keys = HardwareKeyboard.instance;
+    final apple =
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    final linkGesture =
+        details.kind == PointerDeviceKind.touch ||
+        (apple ? keys.isMetaPressed : keys.isControlPressed);
+
+    // Click-only mouse reporting consumes DOWN but not UP. Keep that release
+    // from opening a browser even when the gesture handler passes it through.
+    if (widget.onLinkTap != null &&
+        _tapCount == 1 &&
+        linkGesture &&
+        !keys.isShiftPressed &&
+        !keys.isAltPressed &&
+        !_remoteOwnsTapAt(offset)) {
+      final link = widget.terminal.buffer.getLinkAt(offset);
+      if (link != null) widget.onLinkTap!(link);
+    }
     widget.onTapUp?.call(details, offset);
   }
 
   void _onTapDown(TapDownDetails details, int tapCount) {
+    _tapCount = tapCount;
     // [seance fork] Shift-click extends instead of clearing: from the live
     // selection's base if one exists, else from the last plain click.
     if (HardwareKeyboard.instance.isShiftPressed &&

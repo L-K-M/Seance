@@ -16,6 +16,8 @@ that for the full rationale, alternatives considered, and roadmap).
 - **Two-pane / two-screen UI** — servers with online/offline/**unknown**
   indicators on the left, terminal sessions on the right; collapses to
   back/forward screens on narrow layouts.
+- **Clickable shell URLs** — Ctrl-click (⌘-click on Mac) or tap on touch
+  screens to open HTTP(S) links in your browser. Wrapped URLs work too.
 - **SSH** via [dartssh2](https://pub.dev/packages/dartssh2): password,
   private-key (stored or referenced-on-disk), and keyboard-interactive (2FA).
 - **Trust-on-first-use host keys** with a hard, un-dismissable block when a
