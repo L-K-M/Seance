@@ -244,7 +244,9 @@ what must be preserved.
     skipped to bound hover work. Links show a hand cursor and activate on
     Ctrl-click (Cmd-click on Apple platforms) or touch tap. Plain clicks,
     shift-clicks, drags, and remote mouse reporting keep their existing behavior.
-    The app launches links externally and reports browser failures.
+    Hover hints clear on output, scrolling, or controller changes and stay
+    hidden where remote mouse reporting owns the tap. The app launches links
+    externally and reports browser failures.
 
 ### App-layer notes (outside this package)
 

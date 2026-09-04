@@ -8,6 +8,7 @@ import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 
 import 'package:xterm/src/core/input/keys.dart';
+import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -16,6 +17,7 @@ import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
+import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
@@ -169,6 +171,7 @@ class TerminalViewState extends State<TerminalView> {
 
   int _tapCount = 0;
   Uri? _hoveredLink;
+  bool _hoverInvalidationPending = false;
 
   /// [seance fork] The cell of the last plain primary click, kept as a
   /// content-glued buffer anchor so a later shift-click can select the range
@@ -187,6 +190,9 @@ class TerminalViewState extends State<TerminalView> {
     _focusNode = widget.focusNode ?? FocusNode();
     _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
+    widget.terminal.addListener(_invalidateLinkHover);
+    _scrollController.addListener(_invalidateLinkHover);
+    _controller.addListener(_invalidateLinkHover);
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
@@ -202,30 +208,40 @@ class TerminalViewState extends State<TerminalView> {
       _focusNode = widget.focusNode ?? FocusNode();
     }
     if (oldWidget.controller != widget.controller) {
+      _controller.removeListener(_invalidateLinkHover);
       if (oldWidget.controller == null) {
         _controller.dispose();
       }
       _controller = widget.controller ?? TerminalController();
+      _controller.addListener(_invalidateLinkHover);
     }
     if (oldWidget.scrollController != widget.scrollController) {
+      _scrollController.removeListener(_invalidateLinkHover);
       if (oldWidget.scrollController == null) {
         _scrollController.dispose();
       }
       _scrollController = widget.scrollController ?? ScrollController();
+      _scrollController.addListener(_invalidateLinkHover);
     }
     if (oldWidget.terminal != widget.terminal) {
+      oldWidget.terminal.removeListener(_invalidateLinkHover);
+      widget.terminal.addListener(_invalidateLinkHover);
       // [seance fork] The recorded click belongs to the old terminal's
       // buffer; resolving it against the new one would mix coordinate
       // spaces (and can throw — the new buffer may be far shorter).
       _lastTapAnchor?.dispose();
       _lastTapAnchor = null;
     }
+    _hoveredLink = null;
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
   }
 
   @override
   void dispose() {
+    widget.terminal.removeListener(_invalidateLinkHover);
+    _scrollController.removeListener(_invalidateLinkHover);
+    _controller.removeListener(_invalidateLinkHover);
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
@@ -376,7 +392,24 @@ class TerminalViewState extends State<TerminalView> {
     final offset = renderTerminal.getCellOffset(
       renderTerminal.globalToLocal(event.position),
     );
-    _setHoveredLink(widget.terminal.buffer.getLinkAt(offset));
+    final terminal = widget.terminal;
+    final remoteOwnsTap = !widget.readOnly &&
+        _controller.shouldSendPointerInput(PointerInput.tap) &&
+        terminal.mouseMode != MouseMode.none &&
+        offset.y >= terminal.buffer.scrollBack;
+    _setHoveredLink(remoteOwnsTap ? null : terminal.buffer.getLinkAt(offset));
+  }
+
+  void _invalidateLinkHover() {
+    if (_hoveredLink == null || _hoverInvalidationPending) return;
+    _hoverInvalidationPending = true;
+    // Resize and scroll notifications can arrive during layout. Defer the
+    // cursor rebuild rather than dirtying an ancestor mid-frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _hoverInvalidationPending = false;
+      if (mounted) _setHoveredLink(null);
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _setHoveredLink(Uri? link) {

@@ -63,6 +63,23 @@ void main() {
     );
   });
 
+  test('finds visible links after more than a screen of scrollback', () {
+    final terminal = terminalWith('${'\r\n' * 10}see https://example.com now');
+    expect(terminal.buffer.height, terminal.buffer.lines.length);
+    expect(terminal.buffer.scrollBack, greaterThan(terminal.viewHeight));
+    expect(terminal.buffer.getLinkAt(const CellOffset(7, 10)),
+        Uri.parse('https://example.com'));
+  });
+
+  test('joins wrapped URLs at absolute rows beyond the viewport height', () {
+    final terminal =
+        terminalWith('${'\r\n' * 10}https://example.com/long/path', width: 12);
+    for (final row in [10, 11, 12]) {
+      expect(terminal.buffer.getLinkAt(CellOffset(2, row)),
+          Uri.parse('https://example.com/long/path'));
+    }
+  });
+
   test('bounds scanning of unbroken remote output', () {
     final terminal = terminalWith('https://example.com/${'a' * 20000}');
     expect(terminal.buffer.getLinkAt(const CellOffset(2, 0)), isNull);

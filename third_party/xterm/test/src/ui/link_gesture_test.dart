@@ -121,6 +121,43 @@ void main() {
     expect(output, hasLength(2));
   });
 
+  for (final update in {
+    'mouse reporting': '\x1b[?1000h',
+    'rewritten output': '\r\x1b[2Kplain text',
+  }.entries) {
+    testWidgets('hover clears after ${update.key}', (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      addTearDown(controller.dispose);
+      final opened = <Uri>[];
+      final point = await pumpTerminal(tester, terminal, controller, opened);
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(point);
+      await tester.pump();
+
+      terminal.write(update.value);
+      await tester.pump();
+      await tester.pump();
+      expect(
+        tester
+            .widgetList<MouseRegion>(find.byType(MouseRegion))
+            .any((region) => region.cursor == SystemMouseCursors.click),
+        isFalse,
+      );
+      // Moving again must not advertise an inactive or erased link either.
+      await mouse.moveTo(point + const Offset(1, 0));
+      await tester.pump();
+      expect(
+        tester
+            .widgetList<MouseRegion>(find.byType(MouseRegion))
+            .any((region) => region.cursor == SystemMouseCursors.click),
+        isFalse,
+      );
+      await mouse.removePointer();
+    });
+  }
+
   testWidgets('hover signals links without opening them', (tester) async {
     final terminal = Terminal();
     final controller = TerminalController();
