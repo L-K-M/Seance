@@ -6,6 +6,31 @@ import 'package:seance_app/ui/terminal_pane.dart';
 import 'package:seance_core/seance_core.dart';
 
 void main() {
+  testWidgets('short targets leave the remaining width for cwd', (tester) async {
+    final engine = XtermTerminalEngine();
+    addTearDown(engine.dispose);
+    final cwd = '/srv/${'segment/' * 8}application';
+    final config = ServerConfig(
+      id: 'server', label: 'Database', host: 'db01', username: 'ops',
+      createdAt: 0, updatedAt: 0,
+    );
+    final session = TerminalSession(
+      id: 'session', serverId: config.id, config: config, engine: engine,
+      connecting: false,
+      initialMetadata: SessionMetadata(workingDirectory: cwd),
+    );
+    addTearDown(session.dispose);
+    await tester.binding.setSurfaceSize(const Size(1200, 600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(home: Scaffold(
+      body: Center(child: SessionStatusBar(session: session)),
+    )));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('ops@db01:22'), findsOneWidget);
+    expect(find.text(cwd), findsOneWidget);
+  });
+
   for (final width in [240.0, 320.0]) {
     for (final scale in [1.0, 2.0]) {
       for (final cwd in <String?>[null, '/srv/production/application/logs']) {
@@ -57,7 +82,11 @@ void main() {
             matching: find.byType(Text),
           ));
           expect(visibleTarget.data, contains('…'));
-          expect(visibleTarget.data!.replaceAll('…', ''), isNotEmpty);
+          final parts = visibleTarget.data!.split('…');
+          expect(parts, hasLength(2));
+          expect(parts.every((part) => part.isNotEmpty), isTrue);
+          expect(target, startsWith(parts.first));
+          expect(target, endsWith(parts.last));
           expect(find.bySemanticsLabel(target), findsOneWidget);
           if (scale > 1) {
             expect(
