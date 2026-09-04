@@ -1,1450 +1,810 @@
-# Seance Engineering And Product Analysis
+# Séance: engineering and product backlog
 
-Last consolidated: 2026-07-25
+Consolidated: 2026-09-04. Review base: `2f99f4e` (`origin/main`).
 
-Review base: `origin/main` at `10edf74`
+This is the **unfinished-work list**. Each entry gives a starting point, a bounded
+next step, and verification criteria. Completed work belongs in the ledger, not
+in implementation instructions.
 
-The durable backlog for Séance. It consolidates two full review passes:
+Sources: [review-first snapshot](astra.md),
+[unaltered July analysis](docs/reviews/analysis-2026-07-25.md),
+[proposal](PROPOSAL.md), [status](docs/STATUS.md), and current source/tests.
+SOL/SEA/AST identifiers remain stable; grouped identifiers denote consolidated
+findings, not independent duplicate tasks. The archive preserves original wording,
+line references, PR history and ideas; its relative paths refer to the repo root.
 
-- **2026-07-09** — protocol, cryptography, SSH/core, sync client and server,
-  Flutter application, platform configuration, tests, release tooling,
-  performance, accessibility, visual design, and product experience. Its
-  findings are numbered `SOL-nnn`.
-- **2026-07-25** — a second, independent pass over the whole repository after
-  PRs #1–#31 landed, focused on bugs, performance, interface and layout,
-  missing features, and product ideas. Its findings are numbered `SEA-nnn`.
+## Assessment and evidence
 
-Both temporary review documents (`sol.md`, `claude.md`) were deliberately kept
-out of `main`; everything in them lives here. Completed work is recorded in the
-pull-request ledger and in [Resolved And Retired](#resolved-and-retired) rather
-than deleted, so no context is lost.
+The largest risks are sync correctness, trust reconciliation and credential
+recovery. Encryption primitives do not make the current sync envelope or account
+lifecycle breach-safe. Do not call sync production-ready until the P0 gates pass.
 
-## Baseline Verification
+Terminal selection has substantial fork coverage; it is not an unimplemented
+feature. However, scrollback search, complete keyboard navigation and mobile
+interaction validation remain missing. Parser hangs must be distinguished from
+raster/layout stutter before changing renderers.
+
+The committed screenshot is historical: it predates tabs, server groups, Files
+and the editor. Visual recommendations combine that screenshot with source
+inspection, **not current native-device testing**. No frame-time measurements
+were collected. Signed Apple keystore behavior, physical mobile keyboards/Back,
+real SSH/SFTP latency, monitor geometry, battery use and Docker runtime still need
+validation.
+
+### Verification
+
+Baseline at the review base: 263 package tests, 309 app tests, 137 terminal-fork
+tests passed; two existing macOS-only goldens skipped on Linux. Package and app
+analysis were clean. Continuation used Flutter 3.47.2 / Dart 3.13.2. SQLite tests
+needed an environment-only `libsqlite3.so` symlink to the installed `.so.0`.
 
 ```bash
+dart pub get
 dart analyze packages/seance_protocol packages/seance_core packages/seance_sync_server
-dart test    packages/seance_protocol packages/seance_core packages/seance_sync_server
-
-cd app/seance_app
-flutter analyze
-flutter test
+dart test packages/seance_protocol packages/seance_core packages/seance_sync_server
+(cd app/seance_app && flutter pub get && flutter analyze && flutter test)
+(cd third_party/xterm && flutter pub get && flutter test)
 ```
 
-Results at the 2026-07-25 pass (Dart 3.12.2, Flutter 3.44.8):
+Final integrated verification is recorded after the implementation PRs merge.
+Platform compilation is not equivalent to real-device validation.
 
-| Check | 2026-07-09 | 2026-07-25 |
-|---|---|---|
-| Pure-Dart analysis | clean | clean |
-| Pure-Dart tests | 106 passed | **187 passed** |
-| Flutter analysis | clean | clean |
-| Flutter tests | 20 passed | **136 passed** |
+### Priority and execution
 
-`libsqlite3` no longer needs a manual symlink on this container.
+- **P0:** security boundary, data loss or permanent divergence.
+- **P1:** common workflow, privacy or reliability failure.
+- **P2:** performance risk, accessibility or substantial polish.
+- **P3:** optional product work or lower-risk maintenance.
 
-The project has strong foundations: clear packages and interfaces, shared wire
-models, strict TOFU behavior, sensible cryptographic primitives, an explicit
-review-before-run assistant invariant, and meaningful regression tests for
-terminal resize and trace storms. The highest risks remain in synchronization
-semantics and durable credential ownership rather than the primitive choices.
-The second pass found no new defects in the protocol or the server; the weakest
-area is now terminal presentation and navigation ergonomics.
+Pull first. For a bug, reproduce with a failing test before fixing it. One bounded
+change per branch/PR; review and merge before marking it complete. Keep public
+protocol/core compatibility with Poltergeist. UI → service → core abstraction →
+transport/storage; never bypass a layer to make a patch smaller.
 
-## Priority Legend
+Recommended sequence:
 
-| Priority | Meaning |
+```text
+versioned/authenticated records -> durable ledger + exact revisions -> deletes
+                               -> durable host-key conflict resolution
+storage transactions -> snapshot pagination -> quotas + honest convergence
+recoverable vault migration -> credential transactions -> recovery onboarding
+terminal benchmarks -> bounded parser/output work -> ergonomic shell actions
+```
+
+The migration entries below are plans, not permission to rewrite existing vaults
+or change wire semantics without fixtures, compatibility policy and rollback.
+Independent ergonomic work can proceed alongside them.
+
+## P0: trust, sync and credentials
+
+### Authenticate routing and conflict metadata — SOL-011
+
+**Evidence:** `seance_protocol/lib/src/records/{record,record_codec}.dart` and
+`crypto/vault.dart` authenticate `{kind,data}`, not ID, timestamp, device or
+deleted flag. Empty tombstone blobs have no authentication. A breached server can
+transplant ciphertext, forge deletions or replay old keys with winning metadata.
+
+**Next:** specify a versioned canonical envelope binding purpose, schema, key
+epoch, kind, identity, client revision/time, device and deletion inside AEAD.
+Encrypt typed tombstones; exclude server-owned sequence from authentication.
+Ship compatibility readers and migration fixtures before changing writers.
+
+**Gate:** field-by-field tamper, transplant, replay and forged-tombstone tests;
+old/new client interoperability, interrupted migration and rollback. Opaque IDs
+(SOL-012) should use the same migration, not a second destructive rewrite.
+
+### Durable ledger, typed deletes and exact acknowledgements — SOL-001, SOL-005, SOL-006, SOL-010, SOL-037, SOL-059
+
+**Evidence:** `AppState.deleteServer/deleteSnippet`, `AppServices.runSync`,
+`SyncCoordinator.collectLocal/applyToStores`, `LocalRecordStore.markSynced`,
+`SyncEngine`. Hard deletes emit no tombstone; every run rebuilds an in-memory
+mirror from sequence zero. Deleted items return ([#54](https://github.com/L-K-M/Seance/issues/54)).
+Unchanged records are re-encrypted and attributed to this device. An old push
+acknowledgement can clear a newer edit; secrets borrow server timestamps.
+Manual sync bypasses the automatic run guard. Applying records rewrites whole
+JSON collections repeatedly.
+
+**Next, in separate slices:**
+
+1. Persist record origin, cursor, dirty operations and independent revisions at
+   initialization. Use one account-scoped queue for manual/automatic sync.
+2. Acknowledge the exact sent operation/revision; leave newer edits dirty. Merge
+   pulls against current domain state, not an earlier collection.
+3. Record authenticated typed tombstones before domain deletion. Add delete APIs
+   for every synced kind; tombstone opted-out credentials, including global
+   opt-out, rather than merely stopping future uploads.
+4. Give each secret its own identity/revision regardless of shared references.
+5. Batch domain application into one transaction/write; preserve origin metadata
+   until content changes. Reconcile remotely changed/deleted configs with live
+   sessions as explicit orphans, not hidden live connections.
+
+**Gate:** A deletes → both restart → alternating sync never resurrects any kind;
+unchanged resync sends nothing; blocked push plus local edit retains the edit;
+blocked apply plus domain edit cannot overwrite it; startup/manual/timer sync
+serialize; crash/offline recovery and credential opt-out converge.
+
+### Atomic server writes and pull snapshots — SOL-002, SOL-007
+
+**Evidence:** `seance_sync_server/lib/src/{server,storage,sqlite_storage}.dart`
+separates LWW comparison, sequence allocation, upsert, and pull/watermark reads.
+Concurrent requests can overwrite a winner or expose inconsistent snapshots.
+Batches can partially commit before returning an error.
+
+**Next:** move compare/resolve/sequence/upsert into a storage batch transaction
+(`BEGIN IMMEDIATE` for SQLite); serialize the memory backend equivalently.
+Define atomic-batch versus explicit durable partial-result semantics. Add a
+storage pull operation capturing watermark W and records `since < seq <= W`
+in one snapshot; paginate against W, not a moving latest sequence.
+
+**Gate:** barrier-controlled real HTTP/SQLite tests force a stale loser to write
+after a winner; concurrent watermark capture, crashes mid-batch, lock contention
+and separate processes cannot violate ordering/durability. PR #17's observed
+client cursor remains necessary; it did not make the server transactional.
+
+### Never silently re-trust synced host keys — AST-008 / SOL-023
+
+**Evidence:** `SyncCoordinator.applyToStores` unconditionally overwrites pins,
+bypassing local changed-key review ([#56](https://github.com/L-K-M/Seance/issues/56)).
+`TofuVerifier` also lacks endpoint-level serialization/CAS for competing dialogs.
+
+**Next:** route pin reconciliation through a trust service. Preserve established
+local trust; durably quarantine conflicts with both fingerprints and explicit
+resolution. Resolution creates a new revision so the same conflict cannot recur
+forever. Canonicalize DNS case/trailing dot, IDNA, IP literals and ports before
+lookup; validate imported key algorithm/encoding. Serialize first approval and
+compare-and-set repins against the pin the dialog actually displayed.
+
+**Gate:** matching/new/conflicting pins across two devices; concurrent first
+connections; stale repin dialogs; restart and user resolution; equivalent endpoint
+spellings. Do not replace silent overwrite with a silent skip that reports success.
+Coordinate the public policy with Poltergeist and authenticated records.
+
+### Transactional credential editing — SOL-029
+
+**Evidence:** `ui/server_editor.dart` retains `secretRef` across auth changes.
+Referenced-key passphrases are displayed but not persisted by `_save`; changing
+only an existing stored key's passphrase is ignored. The old empty-key overwrite
+was fixed in #7; that is not the remaining bug.
+
+**Next:** model keep/replace/remove explicitly for password, stored key, referenced
+key and agent. Validate each mode, save config/secret changes as one unit, and
+remove obsolete local/synced credentials only after successful replacement.
+Prompt for referenced-key passphrases without requiring storage.
+
+**Gate:** every auth-mode transition, passphrase-only edits, unrelated config edits,
+failed secret writes and cancelled dialogs preserve the intended credential.
+
+### Recoverable vault re-key — SOL-030
+
+**Evidence:** `AppServices._rekeyVault` overwrites secrets one by one, migrates only
+currently referenced secrets, and changes memory before keystore persistence.
+Failure can leave mixed-key ciphertext or lose unreferenced credentials.
+
+**Next:** add `VaultStore.listIds`; stage and verify a complete new vault plus
+recovery journal. Atomically switch data/key only after all records succeed;
+retain rollback material until reopening works. Show/export recovery material
+before the destructive phase. Enrollment must not partially persist account
+settings/token on failure.
+
+**Gate:** inject failure at every phase, including keystore write and restart;
+all credentials reopen under either the old or new key, never a mixed vault.
+Do not tell users to “set up sync first” as a substitute for recovery.
+
+### Missing keystore key is not first run — SOL-031
+
+**Evidence:** `services/secure_master_key.dart:probeKeystore` creates a key after
+a null read without checking existing `vault.json` ciphertext. Locked-keystore
+errors already degrade safely; a genuinely missing key is a different state.
+
+**Next:** distinguish first run, locked keystore and lost key in the service.
+If ciphertext exists, open recovery/unlock UI and leave it untouched. Verify iOS
+entitlements under signed debug/profile/release; do not add macOS restricted
+keychain groups that break ad-hoc builds.
+
+**Gate:** signed Apple relaunch/update, code-signing/container migration, keystore
+loss, Android backup restore and empty first run. Never synthesize replacement
+keys over encrypted data. Coordinate with existing sandbox-migration PR #45.
+
+### Hash, expire and revoke bearer tokens — SOL-048
+
+**Evidence:** SQLite `tokens` contains permanent plaintext bearer tokens;
+`DELETE /v1/account` accepts one without recent authentication. A DB/backup leak
+therefore grants live API access, despite the breach-tolerant description.
+
+**Next:** store token hashes, creation/expiry/last-use/device metadata and bounded
+per-account sessions. Add logout, device listing, revoke-current/revoke-all, and
+recent verifier authentication for deletion. Rotate old tokens during migration;
+correct the documented database-leak model.
+
+**Gate:** raw DB tokens cannot authenticate, expired/revoked tokens fail, concurrent
+revoke/login/delete cannot revive an account, and migration does not retain live
+plaintext token rows or backups without an explicit retention warning.
+
+## P1/P2: protocol, recovery and storage
+
+### Strict wire parsing and deterministic revisions — SOL-008, SOL-009, SOL-012, SOL-013
+
+**Start:** protocol `records/`, `sync/dtos.dart`, core `sync_engine.dart`.
+Missing fields currently default into acceptance; numeric truncation and weak
+range checks remain outside the now-strict KDF parser. Exact LWW ties are not a
+deterministic total order, and clients can supply server-owned sequence values.
+Unknown-kind preservation in #58 is done; do not reintroduce kind guessing.
+
+**Next:** require typed fields, lengths, nonnegative ranges and canonical envelope
+combinations. Define version policy and typed parse errors; preserve/quarantine
+unknown future data with visible skipped outcomes. Use an authenticated operation
+ID/counter/HLC for total ordering; sequence is only a server delta cursor. Require
+one acknowledgement per submitted ID, reject duplicates/unknown IDs, and report
+pending/incomplete convergence after exhausted rounds. Derive opaque wire IDs
+with a domain-separated keyed HMAC; current IDs expose kind and hostnames.
+
+**Gate:** parser fuzz/property tests, commutative/associative/idempotent LWW,
+exact ties, same-millisecond edits, clock rollback, missing acknowledgements,
+unknown kinds across old/new clients, and migration interoperability.
+
+### Remaining KDF and crypto assurance — SOL-014, SOL-016, SOL-017, SOL-018
+
+**Done:** AST-001 bounds KDF resources, requires integer JSON and a 32-byte output,
+and validates direct derivation; defaults remain unchanged. The app strength floor
+is separate from resource validity. Unsupported old factors must be rejected,
+never clamped or hand-edited into a different key.
+
+**Next:** validate salt/verifier encoding and exact lengths at both boundaries.
+Add independent Argon2id, HKDF-domain, verifier-hash and XChaCha compatibility
+vectors, including production factors outside the fast suite. Profile KDF latency
+on a midrange phone; the 64 MiB/10-iteration/4-lane ceilings are safety limits,
+not a latency guarantee. Define Unicode normalization only in a versioned format
+with migration fixtures. Defensively copy key/blob storage, verify decrypted
+secret identity, and minimize root-key retention.
+
+**Gate:** malicious prelogin fails before allocation; independent vectors match;
+NFC/NFD policy is documented and tested without breaking existing accounts;
+external crypto/protocol review before sync GA. Unsupported factors alone cannot
+prove whether the endpoint is malicious or an account is legacy.
+
+### Serialize persistence or adopt transactional client storage — SOL-034
+
+**Start:** `services/{atomic_file,file_stores,app_settings}.dart`.
+Writers share `<file>.tmp`; parallel writes can replace each other's data. The
+rename fallback deletes the old destination even for unrelated I/O failures.
+Broad catches conflate malformed JSON with permissions/transient I/O. Multiple
+Linux processes can write the same stores.
+
+**Next:** prefer the planned transactional SQLite store. If retaining JSON, use a
+write queue, process lock, unique temporary files, flush/fsync where supported,
+atomic replacement and recoverable backups. Keep corruption quarantine distinct
+from I/O errors. Preserve the settings `deviceId` salvage path.
+
+**Gate:** concurrent writers, process contention, disk full, permission denial,
+crash at each rename phase, backup restore and partial-valid JSON. A failed cleanup
+must not discard readable safe state or erase the only original file.
+
+### Missing credentials and recovery onboarding — SOL-035; workflow backlog
+
+**Start:** `AppServices.resolveCredentials`, server editor, settings and master-key
+services. A synced local-only `secretRef` currently becomes an empty password/key
+on a new device and produces misleading network/auth errors.
+
+**Next:** show “Credential required on this device” before connecting; offer
+unlock, prompt, key selection or agent, never an invented empty credential.
+Implement encrypted offline export/import with canonical recovery codes and
+verified restore before promoting sync. Offer recovery enrollment when the first
+secret is saved; optional biometric/passcode app lock belongs at the same boundary.
+
+**Gate:** two devices with/without credential opt-in, locked/missing keys, export
+round-trip/tamper rejection, cancelled recovery and interrupted import. Explain
+local SFTP plaintext retention separately from encrypted vault guarantees.
+
+## SSH and terminal correctness
+
+### Complete connection ownership and deadlines — SOL-020, SOL-032, SOL-033
+
+**Start:** `seance_core/lib/src/ssh/ssh_session.dart`, `AppState._connect`.
+Pre-network key parsing, stale completion checks, idempotent engine disposal,
+remote output drain and teardown were implemented. Audit remaining handshake/auth/
+shell deadlines and immediate-closure callback races instead of rebuilding those
+fixes. Rejecting a stale result is not cancellation of the in-flight connection.
+
+**Next:** one phase/total-deadline cancellation lifecycle owning socket/client/
+channels. Expose replayable completion and disconnect reason; Cancel/retry/copy
+log actions in the UI. Complete failed/pending-engine ownership and verify a
+server deleted mid-connect cannot retain inaccessible work.
+
+**Gate:** delayed fakes for every phase, immediate remote close, cancellation
+while TOFU/auth is open, replaced tabs, stream errors and app disposal. No leaked
+client/engine, late state commit or unhandled completion error.
+
+### Typed keyboard-interactive challenges — SOL-021 / AST-002 residual
+
+**Start:** `SshSessionManager._keyboardInteractiveHandler` and
+`ui/keyboard_interactive_dialog.dart`. Answers now default private, support
+per-answer reveal, disable keyboard learning/suggestions and scroll above the IME.
+
+**Next:** add a compatible typed challenge carrying prompt text, echo policy and
+identity, plus explicit cancellation distinct from an empty valid challenge.
+Preserve existing callback consumers. Add verified Next/Done traversal between
+fields without landing on reveal buttons, and deliberate password/OTP autofill
+policy rather than guessing from remote prompt text.
+
+**Gate:** echo/no-echo, multiple challenge rounds, answer count/order, cancellation,
+active composition, small screens and hardware/software keyboard traversal.
+Never infer that a server-provided echo flag proves an answer is non-sensitive.
+
+### SSH config parity and import — SOL-022; SEA-007, SEA-027
+
+**Start:** `ssh_config_import.dart`, `AppState.importSshConfig`, import dialog.
+Repeated paste imports generate fresh UUIDs; wildcard defaults, multiple aliases,
+first-value semantics, Include and quoting are incomplete. ProxyJump is discarded.
+
+**Next:** file Browse plus paste, preview with unsupported-directive warnings and
+host/port/user dedupe. Evaluate all concrete aliases against matching defaults,
+first value wins; tokenize quotes/comments and handle multiple identities.
+Consider `ssh -G` on desktop behind an evaluator interface. Mark unresolved auth
+as setup-required rather than silently guessing an empty user or password.
+
+**Gate:** repeated imports are idempotent; wildcard/multi-alias/repeated blocks,
+quotes/comments/Include loops, unsupported ProxyJump and sandbox file grants.
+No imported directive executes local commands during preview.
+
+### Agent, jump hosts and forwards — SOL-028
+
+**Next:** transport-neutral agent signing for Unix sockets and Windows OpenSSH
+named pipes, including 1Password/Bitwarden. Implement ProxyJump execution and alias
+mapping; add local/remote/dynamic forwarding UI. Add known_hosts import/export,
+fingerprint randomart and per-device key generation/public-key deployment.
+
+**Gate:** real sshd version/password/key/passphrase/keyboard-interactive matrix;
+agent cancellation and unavailable agent; jump-chain TOFU at every hop; forwarding
+lifecycle and explicit bind addresses. Verify strict-KEX/Terrapin behavior of the
+pinned dartssh2 version and establish dependency/CVE monitoring. Do not unpin a
+working SFTP cancellation version without the same conformance tests.
+
+### Honest reachability probes — SOL-024
+
+**Evidence:** `TcpBannerProber` reads one chunk but never checks `SSH-`; a completed
+connection, including banner timeout, reports online. Socket exceptions conflate
+refusal, DNS and routing errors. Bounded concurrency, connected-host skipping and
+disposal guards are already implemented (#36 and follow-ups).
+
+**Next:** bounded identification-line parsing, distinguishing refusal from unknown
+network/DNS/filter states, with per-host opt-out. Preserve background pause,
+staggering and active-session bypass.
+
+**Gate:** real loopback services returning SSH, HTTP, silence, split banners,
+pre-banner lines and malformed/oversized data; disposal/background transitions
+must neither publish late state nor restart timers.
+
+### Runaway parser and backend conformance — AST-009 / SOL-027
+
+**Evidence:** current parser rolls incomplete OSC input back and re-parses it on
+every write: quadratic work. Existing [PR #49](https://github.com/L-K-M/Seance/pull/49)
+contains a reproduction and timings. Finish/review it; do not open a duplicate.
+
+**Next:** bounded resumable parsing; recovery must not reinterpret controls hidden
+inside an abandoned payload. Add output/input/selection/scrollback capabilities to
+the terminal seam before swapping backends. Current app code still reaches into
+xterm controllers, buffers and staged input; an interface name alone is not a
+renderer-independent implementation.
+
+**Gate:** arbitrary chunk boundaries, unterminated OSC/DCS/CSI, fuzz/property tests,
+large payload recovery and bounded memory/time. Real sshd conformance: vim, htop,
+readline, alternate screens, Unicode widths, mouse reports and resize/reflow.
+Adopt libghostty only after a stable suitable API and the same conformance gate.
+
+### Bounded, Unicode-safe pending-input hints — AST-010 / SEA-006
+
+**Evidence:** `XtermTerminalEngine._trackPending` appends per rune without a bound,
+ignores cursor/history edits and removes a UTF-16 code unit on backspace. Large
+pastes can be quadratic; non-BMP text can become malformed. `_snippetTitle` and
+`_shortError` still use grapheme-unsafe `substring` truncation.
+
+**Next:** bound and buffer hint assembly, delete graphemes, invalidate hints after
+unknown editing/history operations. Reuse grapheme-safe truncation for labels and
+errors. Treat pending text as a hint, never authoritative shell state or safe LLM
+context; do not guess a remote cursor position from screen columns.
+
+**Gate:** emoji/combining/ZWJ edits, large pastes, cursor/history/control keys and
+no-echo input; no malformed UTF-16, unbounded growth or automatic cloud prefill.
+
+### Search and native-feeling shell interaction — SEA-023, SEA-025, SEA-028; SOL-047
+
+**Search slice (P1):** add Cmd-F / Ctrl-Shift-F scrollback find, next/previous,
+case toggle, wrapped-line matching and stable hit anchors during output/trim.
+Keep highlights separate from selection; scan incrementally with bounded work.
+Escape restores terminal focus; never steal readline Ctrl-F. Fork theme slots
+and a commented search test do not constitute an implementation.
+
+**Navigation slice (P1):** cycle/select tabs 1–9, close, focus host filter, clear
+terminal and shortcut help. Preserve plain Ctrl-C interrupt, Ctrl-A home and
+remote mouse reporting. Put the managed-edit close guard behind the operation
+first (SEA-009), not in one button handler. Clear native terminal focus on dispose
+without an old view clearing a newer focused view (SEA-008); test native Edit menus.
+
+**Command slice:** build OSC 133 command blocks and Copy last command/output,
+Save snippet, reviewed Rerun and Explain. Use one backend-independent local Draft
+Dock for AI/snippets/history: exact target/source, editable text and danger
+findings, final control/newline validation, explicit handling of a nonempty prompt.
+Do not silently concatenate or submit. Clipboard multiline paste needs its own
+preview policy preserving bracketed paste and editor workflows.
+
+**Mobile gate:** test touch handles, copy toolbar, magnification, edge drag,
+selection under output, external keyboards, iPad shortcuts and CJK/dead-key IME on
+devices. Preserve the implemented multi-click/shift/drag/trim/Option behavior.
+
+### Disconnect recovery — SEA-026; “Last words”
+
+**Evidence:** final scrollback survives in the model but disconnected UI replaces
+it with a placeholder. Reconnect is manual; persisted edit placeholders are not
+session restoration.
+
+**Next:** show final scrollback plus reason, duration, cwd, copy/save/reconnect.
+Opt-in reconnect with bounded backoff/cancel after network changes; opt-in tab
+restoration with a target preview. Persistent tmux/Mosh sessions are separate
+features, not promises of TCP reconnect. Existing local-shell PR #44 is separate.
+
+**Gate:** network flaps/background/resume, auth expiry, remote normal/error exit,
+manual cancellation and stale attempts. Never replay a command/login script
+silently during recovery.
+
+## Performance: measure before changing architecture
+
+### Reproducible latency harness — SOL-026, SOL-057, SOL-059; SEA-012; AST-012
+
+Risks, not measured frame regressions:
+
+- Packet-by-packet synchronous parsing and rapid PTY resize compete with input.
+- All servers' sessions remain mounted in an `IndexedStack`; hidden views retain
+  render/paragraph caches and participate in layout/resize.
+- Broad `AppState` notifications rebuild unrelated chrome. The old trace-line
+  rebuild storm was fixed in #35; do not claim it is still present.
+- KDF, crypto, whole-collection JSON writes, recursive SFTP scans and editor work
+  share the UI isolate. Preserve existing syntax memoization/highlight caps.
+- SFTP and keystrokes share a transport; transfer throughput is not typing latency.
+
+**Next:** record p50/p95 frame and keystroke latency, parser throughput and peak
+RSS on a laptop and midrange phone: captured ASCII/color/Unicode, `yes`, large
+files, full scrollback, unterminated controls, resize spam, selection during output,
+1/10/50 tabs, tab switches and concurrent upload/cancel. Separate parser, layout,
+raster, transport and GC time. Target 60 Hz (16.7 ms frames), not an unmeasured claim.
+
+Then introduce independently measured changes: bounded output queues/backpressure,
+coalesced/duplicate-suppressed PTY resize, active-server plus LRU rendered views
+without discarding session state, focused listenables/selectors, batched domain
+writes and off-isolate work. Preserve interactive interrupt and quick tab switches.
+Initial PTY remains 80×24 until widget layout; negotiate the measured grid earlier
+if the harness shows visible redraw. Remote resize must never recurse into itself.
+
+An optional **connection flight recorder** (AST-012) can expose DNS/TCP/handshake/
+auth/shell versus parse/layout timings. Keep retention bounded, export previewable
+and redacted; no keys, commands or raw traces by default.
+
+### Network cancellation and response bounds — SOL-058 / AST-006 residual
+
+Owned sync clients now close after sync/enrollment, including failures; injected
+transports remain caller-owned. This is not general cancellation.
+
+**Next:** ownership-aware close for LLM/search providers; cancellable requests,
+connect/total/stream-idle deadlines and streamed response/body limits. Ensure
+reset, dialog dismissal, app disposal and timeout stop or discard work instead
+of only completing a `Future.timeout` wrapper.
+
+**Gate:** stalled headers/body/SSE, oversized responses, disposal during requests,
+late replies and retry; no resource accumulation or stale UI/PTY side effects.
+
+## Assistant privacy and usability
+
+### Session-local, bounded, cancellable conversation — SOL-038, SOL-041; SEA-017
+
+**Evidence:** drawer chat survives closure but is still shared across sessions.
+`ChatController.send` stores terminal context in history despite its “turn only”
+comment. Replies use non-streaming `SelectableText`; reset can race late results.
+
+**Next:** histories per SSH session with byte/token budgets, ephemeral terminal
+context separate from persistent messages, deterministic truncation/summarization.
+Stream replies with Stop/Retry; safe Markdown with code Copy/Stage, selectable
+text and preserved scroll position. Add generation tokens across chat, command
+generator, model discovery and enrollment UI. Cancel/dismiss must prevent later
+insertion; use `mounted` and `finally` for route/busy state.
+
+**Gate:** switching hosts mid-turn, closing/reopening utility pane, reset/dispose
+while blocked, long histories, provider errors and malformed Markdown/links.
+No old context silently resent and no result staged into another session.
+
+### Native tools and exact outbound receipts — SOL-042, SOL-044, SOL-045
+
+**Evidence:** native tool-call IDs are discarded; results become ordinary user
+strings. `ChatResult.sent` omits retained history and search snippets and the UI
+ignores it. Search results are untrusted external content too.
+
+**Next:** provider-neutral typed calls/results preserving IDs; emit Anthropic
+`tool_use/tool_result` and OpenAI assistant `tool_calls` / tool-role messages.
+Keep the existing bounded tool loop. Capture the complete serialized provider
+payload after redaction, including history and searches. Show expandable context
+receipts: target, provider/endpoint/model, command blocks, redactions, queries/
+results, token estimate and exact outbound text. Add user-defined/structured
+redaction patterns; label the filter best-effort, not guaranteed secrecy.
+
+**Gate:** second-request wire-format fixtures for both providers, search-injection
+fixtures, payload-to-receipt equality and credential URL/cookie/kubeconfig examples.
+Add provider connectivity/latency diagnostics. Expose Brave settings or remove the
+half-wired option; native provider web search remains an optional separate path.
+
+### Shell-aware command capture — SOL-046 / AST-007 residual; SEA-034
+
+Recognizable secrets are now filtered before capture, legacy loading and save,
+independently of assistant settings. Legacy cleanup is attempted on load; failed
+writes, unparseable files and historical backups cannot be promised scrubbed.
+
+**Next:** capture only proven OSC 133 command boundaries; arbitrary no-echo passwords
+are not recognizable by regex. Add a visible local privacy/“whisper” mode excluding
+capture and outgoing context, plus clear-history/storage controls. Never infer
+no-echo from ordinary SSH channel bytes alone. Bound command lengths/counts,
+loaded data and dismissal storage without silently breaking “never suggest again.”
+
+**Gate:** password/OTP prompts, shell/readline editing, nested shells and alternate
+screens; settings-independent protection; safe commands still rank. Explicitly
+warn that prior backups/plaintext history may persist.
+
+## Server operations and release reliability
+
+### Quotas, snapshots and abuse controls — SOL-049, SOL-050
+
+**Evidence:** request/batch/blob caps and expired limiter pruning already exist.
+Accounts can still accumulate unbounded blobs/tokens; full pulls materialize the
+account. Active unique-key spray grows limiter memory; username-only limits enable
+lockout and do not protect prelogin/registration.
+
+**Next:** account/token/record/blob/total-byte quotas; validate configured limits.
+Paginate against atomic snapshot watermarks. Separate bounded source-IP and
+account rate buckets, trusted-proxy policy, prelogin/register limits and
+`Retry-After`; shared/persistent state if supporting replicas. Reject malformed
+prelogin username types as structured 4xx, not internal 500.
+
+**Gate:** concurrent quota edges, large historical accounts, ID spray, targeted
+lockout, proxy spoofing, restarts and exhausted pages; bounded memory/disk and
+clear actionable status codes.
+
+### Account transactions, schema and backups — SOL-051, SOL-054
+
+**Start:** SQLite registration/deletion and `_migrate`.
+
+**Next:** atomic create-or-conflict including initial sequence/token; transactional
+account deletion; live-account token joins. Version schema with transactional
+`PRAGMA user_version` migrations, foreign keys/checks/cascades and bounded busy
+timeout. Document synchronous/durability settings and WAL-aware online backup /
+restore. Never copy only the main DB file while ignoring active WAL state.
+
+**Gate:** concurrent registration/delete/login, orphans, migration interruption,
+lock contention, disk full, corruption and restore during writes.
+
+### Readiness, drain and observability — SOL-052, SOL-053, SOL-055
+
+**Correction:** #48 replaced Compose's old `--help` check with real HTTP health;
+do not implement that obsolete fix again. `/healthz` remains liveness only.
+
+**Next:** bounded SQLite-aware `/readyz`; actual-container CI smoke test for
+register/login/push/pull/persistence/restart. Stop accepting on SIGTERM, drain with
+a deadline, finish/rollback transactions, close/checkpoint SQLite and handle
+repeated signals. Log request ID/route/status/duration/size and sanitized server
+errors; add auth/throttle/push/DB latency counters. No authorization, verifier,
+blob, request-body or raw command logging.
+
+**Gate:** live process with broken DB is not ready; SIGTERM during reads/writes,
+restart recovery, safe structured errors and container health failure detection.
+
+### Release/update hardening — SOL-040, SOL-056
+
+Client publishing now requires app analysis/tests and the terminal fork suite;
+that gate does not replace the remaining release checks.
+
+**Next:** SemVer tag/pubspec consistency; stable-only Docker `latest`; immutable
+action/base-image pins, checksums and multi-architecture images where supported.
+Back up before schema updates, wait for readiness and roll back failed deploys.
+Make Docker Hub/Gradle dependency pulls resilient to 429/timeouts through supported
+caches, authenticated pulls and bounded retries; distinguish infrastructure
+failures from code failures. Pin an SDK/golden-update policy, not arbitrary golden
+regeneration to turn CI green.
+
+Android's committed sideload key gives upgrade continuity, not private publisher
+authenticity. Exclude keystore-dependent data from incompatible backup restore;
+verify upgrade data retention. If distributing publicly, use protected signing.
+Add iOS LAN disclosure and narrowly tested transport policy; explain that phone
+`localhost` is the phone. Review cleartext sync/provider URL policy and publish
+reverse-proxy examples. Correct stale scratch/static-image and every-request
+version claims.
+
+**Gate:** tag mismatch/prerelease tests, actual packaged install/upgrade, failed
+rollout recovery, checksums, LAN endpoints and signed mobile relaunch.
+
+## Adaptive layout, aesthetics and convenience
+
+### Three-stage layout and navigation — SOL-039, SOL-060, SOL-062, SOL-065; SEA-015, SEA-018
+
+**Evidence:** the 960 px breakpoint drops both side panes at once. Narrow mode is
+an `AnimatedSwitcher`, not navigation history; system Back can leave the app.
+The utility drawer is fixed at 380 px. Pane sizes, utility tab and active host do
+not persist. The 1800×1600 window default exceeds common laptop work areas.
+
+**Next:** wide list/terminal/utility → medium list/terminal plus utility drawer →
+phone routes. Support drawer-first Back, Android predictive Back and iOS swipe;
+preserve sessions while resizing across modes. Add explicit pane collapse,
+keyboard/focus resizing and persisted ratios/selection. Constrain drawers and long
+credential dialogs to available width/keyboard space. Existing window-state
+[PR #47](https://github.com/L-K-M/Seance/pull/47) owns geometry: review/rebase it,
+clamp restored placement to current monitors and use laptop-safe defaults.
+
+**Gate:** 320/700/960/1440 px, 1×/2× text, IME open, RTL, monitor removal and
+breakpoint transitions. No inaccessible actions, lost sessions or unexpected exit.
+AST-003 fixed long session-footer targets; do not re-add that task.
+
+### Accessible controls and terminal preferences — SOL-061, SOL-064; SEA-019, SEA-020, SEA-021, SEA-039
+
+**Done:** persisted font size/family/palette/zoom, app mono stack, mobile cursor-mode
+keys, Unicode-safe middle labels and light-mode status contrast. Remaining status
+work is semantics/non-color cues, not another palette replacement.
+
+**Next:** touch-specific 44–48 dp tab-close/key/swatch targets without bloating
+desktop density; keyboard-adjustable separators, live safety notices and useful
+terminal screen-reader fallback. Distinguish connected/error/unknown beyond hue.
+Consider one composed connection/reachability indicator rather than two confusing
+dots. Make settings-recovery/device-ID reset notice persistent until acknowledged.
+Add cursor shape/blink, scrollback length, bell behavior, ligature, OSC 52 and
+remote-title policies. Keep system/reduced-motion preferences respected.
+
+**Gate:** semantics and keyboard tests plus native assistive-technology testing;
+color-vision simulation, text scale, all tab states and selection/copy during
+streaming output. Remote titles must never impersonate trusted local UI.
+
+### Visual hierarchy and identity — SOL-063; visual-direction backlog
+
+**Next:** recapture current light/dark desktop/mobile screens first. Keep the quiet
+violet/near-black identity; reduce duplicated utility headings, unlabelled icon
+clusters and inert empty space. Use short context-sensitive empty-state actions,
+consistent spacing/radii/density and a quiet host-identity edge. Terminal palettes
+remain user-controlled. Normalize visible platform names within signing/bundle
+constraints, check desktop/AppStream integration and simplify the small-size icon
+into a terminal/sigil; keep photographic artwork for onboarding/marketing.
+
+**Gate:** current-screen golden matrix at the layout sizes above, keyboard and
+screen-reader discovery, launcher-size icon checks and native desktop metadata.
+Linux `.deb`, AppImage, desktop/icon packaging already exist; audit completeness
+instead of starting another packaging format. No ornamental terminal animation.
+
+### Fast daily workflows
+
+- **P1: Planchette palette.** Fuzzy hosts/snippets/settings/reconnect/sync/assistant
+  actions, keyboard-first with shortcut help. Test filtering, focus return and
+  final target confirmation; use service commands, not raw UI-to-network calls.
+- **P1: Quick connect.** One-off host/user/port without forced persistence, reusing
+  editor/auth/TOFU validation. Add favorites/recents and duplicate detection;
+  server search and synced groups/colors/icons already exist.
+- **P1: Device/account management.** Sync logout, revoke/list devices, account
+  deletion, passphrase rotation and conflict/deletion audit, after token/ledger/
+  recovery foundations. UI must not imply a local delete also revoked a remote
+  credential until the tombstone is acknowledged.
+- **P2: Safe context enrichment.** Populate OS/distro/shell/cwd/exit status through
+  explicit shell integration; show unknown rather than guessed facts. Prefer
+  command blocks over a blind last-N-lines context window.
+
+### Files and mobile persistence follow-up
+
+SFTP, recursive transfers, durable local edits, conflict-checked upload-back,
+POSIX metadata, chmod/symlinks, sorting/filtering/bookmarks, Android export and the
+syntax/find/save-and-upload editor are implemented. Remaining scope is in
+[docs/SFTP.md](docs/SFTP.md), not “add an SFTP browser.”
+
+**Next:** Files widget tests with picker/opener fakes; keyboard/accessibility pass;
+copy/move operations, drop onto folder rows and persisted sort/filter preferences.
+Validate OpenSSH, BBEdit/macOS, Android SAF/provider grants and iOS editing on real
+devices. Add resumable/queued background transfers, optional independently owned
+transfer connections, server-side hash support where available, and promised-file
+drag-out as separate features. Expose retained plaintext edits/storage/discard;
+centralize destructive-close guards before adding shortcuts or swipe-close.
+
+**Gate:** never erase unsaved edits implicitly. Preserve cancellation ownership
+from dartssh2 3.0.2/#59 and new VFS metadata/hash controls (#61/#62). Test concurrent
+save/upload, reconnect/restart, chroots, symlinks and providers without stable paths.
+Hash-before-rename still has a remote-write race; do not describe it as a lock.
+
+Android foreground keep-alive (#51) is implemented, not device-validated. Measure
+battery/OEM behavior, notification permission and Android 15 six-hour `dataSync`
+timeout. Revisit Play `specialUse` policy if distributing there. Floating/overlay
+keyboards may still cover the final terminal row despite resize fixes. iOS opener
+copy/share is not proof of in-place upload-back support.
+
+## Optional product ideas
+
+Each is local/explicit by default, reduced-motion aware, and subordinate to shell
+predictability. These consolidate earlier ideas without removing their useful
+variants.
+
+| Idea / identifier | First useful slice and acceptance criterion |
 |---|---|
-| P0 | Data loss, command execution, security-model break, or permanent divergence |
-| P1 | Major functionality, privacy, reliability, or common-workflow failure |
-| P2 | Performance, robustness, accessibility, or significant polish issue |
-| P3 | Low-risk hardening, cleanup, documentation, or future-facing improvement |
+| Fingerprint spirit sigils / SEA-033 host hues | Deterministic fingerprint randomart + optional automatic host hue on rows/tabs/TOFU. Same key gives the same identity across devices; changed key visibly changes it. Never substitute art for fingerprint verification or overwrite explicit production labels. |
+| Safe Draft Dock / SOL-047 | Local editable target-labelled command staging with source/danger cues; only an explicit action sends to PTY, never Enter. Test nonempty prompts and stale sessions. |
+| Planchette | One fast action palette with a restrained selection motif; no theatrical delay or focus ambiguity. |
+| Production wards | Synced production/staging/lab tags with symbol and color; extra confirmation for reviewed destructive/sudo actions on production. No promise of intercepting every shell command. |
+| OSC 133 command cards / SEA-028 | Completed-command Copy/Explain/Snippet/Reviewed Rerun/Compare/Include-in-chat, using real command boundaries, not guessed keystrokes. |
+| Last words | Preserve final output, duration, cwd and disconnect reason with copy/save/reconnect; never hide diagnostic scrollback behind a blank placeholder. |
+| Completion notices / SEA-031 | For background completed commands, optional tab badge/OS notice with exit and duration. Prove correct session attribution; hide sensitive command text by default. |
+| Ghost tabs / SEA-032 | Short-lived Undo close restoring host/label and offering reviewed cwd staging. A new SSH session is not restoration of remote process state; never bypass managed-edit deletion guards. |
+| Whisper mode / SEA-034 | Visible capture/context privacy toggle; auto-arm only from a trustworthy supported signal. Ordinary channel bytes cannot prove no-echo. |
+| Séance transcript / SEA-035 | Previewable redacted Markdown export of command/output blocks, timestamps, host and duration to file/clipboard/snippet; warn redaction is best-effort. |
+| Presence pulse / SEA-036 | Optional real keepalive RTT tooltip/sparkline or quiet pulse; do not invent a measurement or animate terminal text. Respect reduced motion. |
+| Custom/two-hand mobile decks / SEA-037 | Per-host saved keys, modifiers left/navigation right, punctuation drawer, repeat/haptics and clipboard actions. Maintain application cursor modes and accessible targets. |
+| Context ledger / SOL-044 | Expandable exact outbound receipt for every assistant request, including history/search and redaction; no hidden resend. |
+| Idle divination / SEA-038 | Explicit per-host opt-in to cheap uptime/disk/reboot facts, outside PTY and through a core service. No autonomous assistant execution or undisclosed periodic commands. |
+| Reading anchor / AST-011 | Unread output counter + Jump to live while scrolled/selected. Stable absolute anchors, bounded counts after trims, no selection theft or unsolicited snap-to-bottom; test alternate screens. |
+| Connection flight recorder / AST-012 | Bounded opt-in local phase timings separating network/auth/parser/layout; redacted export preview, no commands/keys/raw traces by default. |
+| Portable workspace recipe / AST-013 | Save hosts/tab labels/pane layout/intended cwd, preview targets then explicitly reconnect. Stage quoted cd only at a verified empty prompt; never silently replay commands/login scripts. |
+| Quiet connection rehearsal / AST-014 | Optional cancellable DNS/port/key-readability check before saving, explaining the next trust/auth step. No password guessing, background remote commands or silent pinning. |
 
-## Pull Request Ledger
+Later, separate proposals: terminal splits, tmux/Mosh persistence, provider-native
+search, sync OIDC and libghostty. Keep the existing local-shell/sandbox/window/
+parser PRs (#44/#45/#47/#49) visible so future agents do not duplicate them.
 
-### Merged (#1–#31)
+## Completion ledger
 
-Every pull request from the first review pass has landed. Residual work found
-while reviewing each one is kept here, because the corresponding `SOL-` entries
-below describe *only* what remains.
+Implementation PRs #64–70 are awaiting final CI/review. Do not mark residuals
+complete merely because a smaller patch landed.
 
-| PR | Merged change | Residual finding |
+| Entry | Implementation PR | Proven scope / residual |
 |---|---|---|
-| [#1](https://github.com/L-K-M/Seance/pull/1) | Reject CR/LF in generated commands and snippets | Central safe staging still needed — SOL-047 |
-| [#2](https://github.com/L-K-M/Seance/pull/2) | Bind chat paste tools to the originating session | Chat state was global rather than per-session; hoisted to `AppState` in #37, still not per-session |
-| [#3](https://github.com/L-K-M/Seance/pull/3) | Redact common modern token formats | Redaction remains best-effort; inspector absent — SOL-045 |
-| [#4](https://github.com/L-K-M/Seance/pull/4) | Bind Compose HTTP port to loopback | App transport policy and reverse-proxy examples remain |
-| [#5](https://github.com/L-K-M/Seance/pull/5) | Return generic server errors | Server-side structured logging remains absent — SOL-055 |
-| [#6](https://github.com/L-K-M/Seance/pull/6) | Atomic JSON writes and corruption recovery | All writers share one `.tmp` path; transient I/O treated as corruption — SOL-034. `SettingsStore` was missed entirely; fixed in #38 |
-| [#7](https://github.com/L-K-M/Seance/pull/7) | Credential edit guard, port validation, supported default auth | Auth transitions can retain a wrong old secret — SOL-029 |
-| [#8](https://github.com/L-K-M/Seance/pull/8) | HTTP/LLM/search timeouts | `Future.timeout` does not cancel the request — SOL-058 |
-| [#9](https://github.com/L-K-M/Seance/pull/9) | Expanded danger-linter patterns | Quoted paths, long options, redirection still evade rules |
-| [#10](https://github.com/L-K-M/Seance/pull/10) | Honor redaction toggle and lint chat commands | Outbound inspector remains absent — SOL-044 |
-| [#11](https://github.com/L-K-M/Seance/pull/11) | Body, batch, and blob limits | No account quotas or pull pagination — SOL-049 |
-| [#12](https://github.com/L-K-M/Seance/pull/12) | Reconnect controller binding; scrollback-wide select-all | Superseded by #27's session-keyed views |
-| [#13](https://github.com/L-K-M/Seance/pull/13) | Reject KDF downgrades | Unbounded memory/iterations still allow client DoS — SOL-014 |
-| [#14](https://github.com/L-K-M/Seance/pull/14) | Pause probes in the background | Probes still ran against connected hosts, unbounded — fixed in #36 |
-| [#15](https://github.com/L-K-M/Seance/pull/15) | Snippet filtering; dialog controller lifecycle | The server list had no equivalent filter — fixed in #34 |
-| [#16](https://github.com/L-K-M/Seance/pull/16) | Stably signed Android APK | Provides continuity, not publisher authenticity |
-| [#17](https://github.com/L-K-M/Seance/pull/17) | Sync cursor advances only through observed pulls | Atomic server pull snapshots and local CAS remain — SOL-002, SOL-005 |
-| [#18](https://github.com/L-K-M/Seance/pull/18) | Parse private keys before opening a socket | Handshake/auth deadlines remain — SOL-020 |
-| [#19](https://github.com/L-K-M/Seance/pull/19) | Prune expired login-limiter buckets | Source-IP policy and spray defence remain — SOL-050 |
-| [#20](https://github.com/L-K-M/Seance/pull/20) | Preserve UTF-8 across SSH packets | Output batching/backpressure remains — SOL-026 |
-| [#21](https://github.com/L-K-M/Seance/pull/21) | Canonical 32-byte recovery codes | Recovery-key enrollment UI remains |
-| [#22](https://github.com/L-K-M/Seance/pull/22) | Bounded chat tool loops | Provider-native tool-result messages remain — SOL-042 |
-| [#23](https://github.com/L-K-M/Seance/pull/23) | DECCKM cursor keys on mobile | Custom key decks and larger touch targets remain — SEA-020 |
-| [#24](https://github.com/L-K-M/Seance/pull/24) | Grapheme-safe label truncation | The helper was not reused elsewhere — SEA-006 |
-| [#25](https://github.com/L-K-M/Seance/pull/25) | Validate sync enrollment | Transactional re-key/recovery remains — SOL-030 |
-| [#26](https://github.com/L-K-M/Seance/pull/26) | Reserve a usable terminal width; clamp pane drags | Persistence, collapse, and the single 960 px cliff remain — SOL-060, SEA-015, SEA-018 |
-| [#27](https://github.com/L-K-M/Seance/pull/27) | Terminal selection overhaul (vendored xterm fork) | No scrollback search — SEA-023 |
-| [#28](https://github.com/L-K-M/Seance/pull/28) | Per-server connection tabs | Tabs were unnamed and unreachable by keyboard — #33, SEA-025 |
-| [#29](https://github.com/L-K-M/Seance/pull/29) | Notify when a newer release exists | — |
-| [#30](https://github.com/L-K-M/Seance/pull/30) | Identity files in the macOS sandbox; Browse…; read audit log | Resolves SOL-036 |
-| [#31](https://github.com/L-K-M/Seance/pull/31) | Harden the PR-review workflow | — |
-
-### Open, from the 2026-07-25 pass
-
-Each is on its own branch, with mostly disjoint files so they can land in any
-order. Every one is `analyze`-clean with tests.
-
-| PR | Change | Addresses | Verification |
-|---|---|---|---|
-| [#32](https://github.com/L-K-M/Seance/pull/32) | Configurable terminal appearance: size, family, palette, zoom shortcuts | SEA-013, SOL-061 (part) | 145 Flutter tests (+9) |
-| [#33](https://github.com/L-K-M/Seance/pull/33) | Session tab names from OSC 7/0/2, plus a host/cwd/exit status bar | SEA-014 | 149 Flutter tests (+13) |
-| [#34](https://github.com/L-K-M/Seance/pull/34) | Server list filter, Enter-to-open, Escape-to-clear | SEA-024 | 141 Flutter tests (+5) |
-| [#35](https://github.com/L-K-M/Seance/pull/35) | Connection-log rebuild storm; bounded `recentText`; teardown hygiene | SEA-001, SEA-005, SEA-011, SOL-057 (part) | 142 Flutter tests (+6) |
-| [#36](https://github.com/L-K-M/Seance/pull/36) | Skip probing connected hosts; bound probe concurrency | SEA-003, SEA-004 | 193 Dart tests (+6) |
-| [#37](https://github.com/L-K-M/Seance/pull/37) | Chat survives the drawer closing; pane-proportional bubbles | SEA-010, SEA-016, SOL-065 (part) | 143 Flutter tests (+7) |
-| [#38](https://github.com/L-K-M/Seance/pull/38) | Quarantine a corrupt settings file; salvage `deviceId` | SEA-002 | 145 Flutter tests (+9) |
-
-## Immediate P0 Work
-
-### SOL-001: Persist typed tombstones so deletions do not return
-
-Priority: P0
-
-References: `app/seance_app/lib/app_state.dart:186-198,311-316`,
-`app/seance_app/lib/services/app_services.dart:150-168`,
-`packages/seance_core/lib/src/sync/sync_coordinator.dart:43-87`,
-`packages/seance_protocol/lib/src/records/record_codec.dart:17-43`
-
-The app hard-deletes server/snippet domain objects. Every sync creates an empty
-local mirror, and `collectLocal()` sees only objects that still exist, so no
-tombstone is emitted. The old remote record is pulled from sequence zero and
-recreates the deleted item.
-
-Tombstones also use an empty blob and decrypt as `RecordKind.serverConfig`, so a
-snippet, host-key, or secret tombstone cannot be routed correctly. Host keys
-have no deletion API. Revoking credential sync does not remove the previous
-remote encrypted secret.
-
-Action:
-
-- Create one durable sync ledger for records, dirty state, cursor, origin, and tombstones.
-- Record a tombstone before deleting a domain object.
-- Carry authenticated kind and identity in every tombstone.
-- Add deletion APIs for every synchronized record kind.
-- Tombstone credentials when per-item or global secret sync is revoked.
-- Test delete on A, restart both clients, sync A/B repeatedly, and prove no resurrection.
-
-### SOL-002: Make pull records and watermark one atomic snapshot
-
-Priority: P0
-
-References: `packages/seance_sync_server/lib/src/server.dart:176-180`,
-`packages/seance_sync_server/lib/src/storage.dart`
-
-PR #17 stops trusting an unseen `latestSeq` client-side, but the server still
-reads `recordsSince()` and `latestSeq()` separately. A concurrent write between
-those calls produces an inconsistent response and extra retries. Pagination
-will require a real snapshot cursor anyway.
-
-Action:
-
-- Add one storage operation returning `{records, watermark}` from a consistent snapshot.
-- In SQLite, read watermark W and return only `since < seq <= W` in one transaction.
-- Paginate against W so concurrent writes belong to the next snapshot.
-- Add barrier-controlled concurrent tests around watermark capture.
-
-### SOL-005: Make local sync acknowledgement compare-and-set
-
-Priority: P0
-
-References: `packages/seance_core/lib/src/sync/local_record_store.dart:19-20,56-60`,
-`packages/seance_core/lib/src/sync/sync_engine.dart`
-
-`markSynced(id, seq)` does not identify which local revision was sent. If an edit
-lands while a push is in flight, the old acknowledgement can clear the new
-dirty value. Applying a stale pull after `collectLocal()` can similarly overwrite
-a domain edit.
-
-Action:
-
-- Acknowledge the exact sent operation ID/revision/content hash.
-- Leave a newer local revision dirty.
-- Merge remote snapshots against current domain state rather than an earlier collection.
-- Serialize account sync runs through one mutex/queue.
-- Test local edit while push is blocked and remote apply while domain edit is blocked.
-
-### SOL-006: Replace full transient synchronization with a durable mirror
-
-Priority: P0
-
-References: `app/seance_app/lib/services/app_services.dart:157-168`,
-`packages/seance_core/lib/src/sync/sync_coordinator.dart:43-87`
-
-Every five-minute run starts at sequence zero, re-encrypts every item under a
-new nonce, stamps every item with the current device, marks all items dirty,
-pulls the full account, and rewrites domain files. An unchanged device-A record
-can be republished as a device-B write.
-
-Action:
-
-- Create a persistent `LocalRecordStore` at application initialization.
-- Preserve remote device/sequence metadata until domain content actually changes.
-- Batch domain application in one transaction/write.
-- Return `converged` and pending counts in `SyncOutcome`.
-- Add restart, unchanged-resync, offline-edit, and interrupted-sync tests.
-
-### SOL-007: Make server LWW compare, sequence allocation, and upsert atomic
-
-Priority: P0
-
-References: `packages/seance_sync_server/lib/src/server.dart:195-205`,
-`packages/seance_sync_server/lib/src/sqlite_storage.dart:118-168`
-
-Two concurrent requests can compare against the same old record and then write
-in arrival order, allowing the LWW loser to overwrite the winner. Sequence
-allocation and record storage are separate autocommit operations. Batch pushes
-can partially commit before returning an error.
-
-Action:
-
-- Move compare/resolve/sequence/upsert into a storage-level batch operation.
-- Use `BEGIN IMMEDIATE` and allocate/update in one SQLite transaction.
-- Serialize the in-memory implementation equivalently.
-- Decide and document whether a batch is atomic or returns durable per-record partial results.
-- Add concurrent same-ID, crash, and multi-process tests.
-
-### SOL-011: Authenticate the complete client-authored record envelope
-
-Priority: P0
-
-References: `packages/seance_protocol/lib/src/records/record.dart`,
-`packages/seance_protocol/lib/src/records/record_codec.dart`,
-`packages/seance_protocol/lib/src/crypto/vault.dart`
-
-The ciphertext authenticates `{kind, data}` only. `id`, `updatedAt`, `deviceId`,
-and `deleted` control routing/LWW but are mutable. Tombstones have no tag. A
-breached server or stolen token can forge a far-future deletion, replay stale
-host-key ciphertext with winning metadata, or transplant blobs between IDs.
-
-Action:
-
-- Bind canonical client-authored metadata with AEAD associated data or verify a duplicate inside ciphertext.
-- Include purpose domain, payload schema, key epoch, kind, identity, and deletion flag.
-- Encrypt authenticated tombstone payloads rather than accepting empty blobs.
-- Do not bind server-assigned sequence.
-- Add field-by-field tamper, replay, transplant, and tombstone-forgery tests.
-- Define and implement a versioned migration before changing shipped records.
-
-### SOL-014: Bound all Argon2 parameters before key derivation
-
-Priority: P0
-
-References: `packages/seance_protocol/lib/src/crypto/vault.dart`,
-`app/seance_app/lib/services/app_services.dart:129-148`, merged PR #13
-
-The prelogin endpoint controls client KDF parameters. PR #13 adds a minimum but
-allows a 4 GiB memory value and lacks safe ceilings for iterations, parallelism,
-and output length. A malicious endpoint can kill a desktop or phone before
-credentials are checked.
-
-Action:
-
-- Fix output length at 32.
-- Set conservative mobile-safe maximum memory, iteration, and parallelism values.
-- Validate exact salt/verifier lengths client-side and server-side.
-- Reject fractional and out-of-range JSON before invoking Argon2.
-- Add an end-to-end malicious-prelogin test that proves no expensive call starts.
-
-### SOL-029: Make credential edits explicit and transactional
-
-Priority: P0
-
-References: `app/seance_app/lib/ui/server_editor.dart`, merged PR #7
-
-Current main can overwrite a stored private key with empty text when unrelated
-fields are edited. PR #7 guards that path, but auth transitions can still retain
-an old `secretRef`; a password can be interpreted as a key or an obsolete secret
-can remain stored/synced after the user thinks it was removed.
-
-Action:
-
-- Model credential changes as explicit keep, replace, or remove.
-- Validate required fields per auth mode before persistence.
-- Save config and secret changes as one transaction/unit of work.
-- Delete obsolete local and synchronized secret records only after successful replacement.
-- Test every transition among password, stored key, referenced key, and agent.
-
-### SOL-030: Make vault re-key transactional and recoverable
-
-Priority: P0
-
-References: `app/seance_app/lib/services/app_services.dart:89-148`, PR #25
-
-PR #25 prevents blank/typo registration and performs an initial sync. The
-underlying re-key still overwrites secrets one at a time, changes in-memory key
-state before keystore persistence, and migrates only secrets referenced by
-current configs. Failure can leave a mixed-key vault.
-
-Action:
-
-- Add `VaultStore.listIds` and enumerate every encrypted secret.
-- Re-encrypt into a separate temporary vault and verify every record.
-- Atomically swap vault/key only after complete success.
-- Keep rollback material until the new key and vault reopen successfully.
-- Show/export a recovery artifact before destructive re-key.
-- Test interruption at every phase.
-
-### SOL-031: Never silently replace a missing secure-storage key
-
-Priority: P0
-
-References: `app/seance_app/lib/services/secure_master_key.dart`, iOS project settings
-
-The iOS secure-storage configuration needs real entitlement/relaunch testing.
-More generally, a null key read can create a new key while `vault.json` still
-contains ciphertext, permanently orphaning credentials.
-
-Action:
-
-- Add and verify iOS debug/profile/release entitlements required by the plugin.
-- If encrypted data exists, treat a missing key as recovery-required, not first run.
-- Present an unlock/recovery screen and keep the old vault untouched.
-- Add signed iOS/macOS relaunch, update, migration, and keystore-loss tests.
-
-### SOL-048: Hash, expire, and revoke bearer tokens
-
-Priority: P0
-
-References: `packages/seance_sync_server/lib/src/sqlite_storage.dart:35-39,103-115`,
-`packages/seance_sync_server/lib/src/server.dart:216-220`
-
-Tokens are permanent plaintext rows. A leaked database/backup becomes live API
-access that can fetch blobs, upload malicious metadata, or delete an account.
-Repeated logins create unlimited rows. Current documentation incorrectly says a
-database leak cannot allow login.
-
-Action:
-
-- Store SHA-256 token hashes only.
-- Add creation, expiry, last-use, device ID/name, and per-account token limits.
-- Add logout, current-device revoke, revoke-all, and device/session listing.
-- Require recent verifier authentication for account deletion.
-- Rotate existing tokens during migration.
-- Correct the breach-model documentation.
-
-## Protocol And Sync Backlog
-
-### SOL-008: Define a deterministic total order for writes
-
-Priority: P1
-
-References: `packages/seance_protocol/lib/src/records/lww.dart`
-
-Exact timestamp/device/sequence ties are non-commutative, and an already
-sequenced old value can beat a same-millisecond new local value. Client-supplied
-sequence is accepted even though sequence is server-owned.
-
-Action:
-
-- Use an authenticated operation ID, monotonic per-device counter, or hybrid logical clock.
-- Keep server sequence exclusively as a delta cursor.
-- Reject non-null client sequences.
-- Add commutative, associative, idempotent, exact-tie, and clock-rollback tests.
-
-### SOL-009: Report incomplete convergence honestly
-
-Priority: P1
-
-References: `packages/seance_core/lib/src/sync/sync_engine.dart`
-
-Missing, duplicate, or unknown push-result IDs are accepted. Dirty records can
-remain after `maxRounds`, but the UI reports success.
-
-Action:
-
-- Require exactly one acknowledgement for every sent ID.
-- Reject unknown/duplicate results and invalid sequence movement.
-- Return convergence/pending state or throw when rounds are exhausted.
-
-### SOL-010: Give secrets independent revisions
-
-Priority: P1
-
-References: `packages/seance_protocol/lib/src/models/secret.dart`,
-`packages/seance_core/lib/src/sync/sync_coordinator.dart:53-63`
-
-Secret records borrow the owning server's `updatedAt`. Credential-only changes
-can order incorrectly, and shared secrets depend on whichever server timestamp
-was used.
-
-Action:
-
-- Give each secret an independent immutable identity and update revision.
-- Emit one record per secret regardless of reference count.
-
-### SOL-012: Hide record kind and hostnames in wire IDs
-
-Priority: P1
-
-References: `packages/seance_core/lib/src/sync/sync_coordinator.dart:53-84`
-
-IDs such as `secret:`, `snippet:`, and `hostkey:<hostname>:<port>` disclose
-record category and endpoint metadata despite the opacity claim.
-
-Action:
-
-- Derive stable opaque IDs with a domain-separated keyed HMAC over kind and canonical identity.
-- Plan a protocol migration and preserve old records until converted.
-
-### SOL-013: Make protocol parsing strict and typed
-
-Priority: P1
-
-References: protocol record and DTO `fromJson` factories
-
-Missing `accepted` defaults true, missing blobs become empty tombstones, missing
-versions default current, arbitrary `num` values are truncated, negative values
-are accepted, and unknown enums silently become password/server-config behavior.
-
-Action:
-
-- Require every wire field and exact integer types.
-- Enforce nonnegative ranges, length limits, and canonical envelope combinations.
-- Require protocol version consistently or rely solely on `/v1` and update docs.
-- Throw typed `ProtocolFormatException`s.
-- Quarantine unknown future kinds instead of misrouting them.
-- Fuzz/property-test every parser with missing, wrong-type, huge, and fractional values.
-
-### SOL-016: Add fixed cryptographic compatibility vectors
-
-Priority: P1
-
-References: `packages/seance_protocol/test/crypto_test.dart`
-
-PR #21 adds a fixed recovery-code vector, but Argon2id, HKDF, verifier hash, and
-XChaCha compatibility are still only self-tested with matching code paths.
-
-Action:
-
-- Add independent fixed vectors for Argon2id, HKDF domains, verifier hashing, and XChaCha open.
-- Run at least one production-parameter KDF compatibility test separately from fast tests.
-- Complete the proposal's external crypto/protocol review before sync GA.
-
-### SOL-017: Define passphrase Unicode normalization
-
-Priority: P2
-
-Visually identical NFC/NFD text currently derives different keys across input
-methods. Define NFC in a versioned KDF format, test it across platforms, and
-document migration before stable release.
-
-### SOL-018: Stop exposing mutable key/ciphertext storage
-
-Priority: P3
-
-Defensively copy key/blob inputs, expose read-only views or copies, verify a
-decrypted secret's ID matches the requested ID, and minimize retention of the
-root key.
-
-## SSH, TOFU, Probe, And Terminal Backlog
-
-### SOL-020: Own the complete SSH connection lifecycle
-
-Priority: P1
-
-References: `packages/seance_core/lib/src/ssh/ssh_session.dart`
-
-PR #18 prevents the local key parse socket leak. Remaining problems include no
-deadline for handshake/auth/shell creation, `SSHClient` construction outside a
-complete ownership guard, callback registration races, and shell completion
-that does not set `_closed` or tear down subscriptions/client.
-
-Action:
-
-- Add phase and total connection deadlines with cancellation.
-- Transfer socket/client ownership through one `try/finally` lifecycle.
-- Expose a replayable closed future/state and disconnect reason.
-- Make shell completion, stream failure, user close, and timeout share idempotent teardown.
-
-### SOL-021: Preserve keyboard-interactive echo metadata
-
-Priority: P1
-
-References: `ssh_session.dart:404-412`, `keyboard_interactive_dialog.dart`
-
-Passwords and OTPs are displayed in plain text because the SSH prompt echo flag
-is discarded.
-
-Action:
-
-- Pass an app-facing prompt model with text and echo flag.
-- Obscure no-echo fields, validate answer count, and support explicit cancellation.
-- Make long instruction/multi-prompt dialogs scrollable.
-- Add core mapping and widget privacy tests.
-
-### SOL-022: Evaluate SSH config like OpenSSH
-
-Priority: P1
-
-References: `packages/seance_core/lib/src/ssh_config/ssh_config_import.dart`
-
-Wildcard defaults are dropped, only one alias from multi-host blocks is kept,
-later values overwrite OpenSSH first-value semantics, quotes/comments are
-misparsed, repeated blocks/Include/multiple identities are unsupported,
-ProxyJump is discarded, and missing user can become empty.
-
-Action:
-
-- Implement two-pass first-value evaluation over all matching blocks.
-- Import every concrete alias and apply wildcard/default directives.
-- Tokenize quotes/comments correctly and expose unsupported directives in a preview.
-- Consider `ssh -G` as the desktop evaluator where available.
-- Represent imported credentials as setup-required rather than guessing silently.
-
-### SOL-023: Make TOFU endpoint identity canonical and repins atomic
-
-Priority: P1
-
-References: `packages/seance_core/lib/src/hostkey/tofu.dart`, HostKey model
-
-Concurrent first connections can approve different keys and race. A stale
-changed-key dialog can overwrite a newer pin. Equivalent DNS/IP spellings create
-separate pins and can turn a changed key into apparent first use.
-
-Action:
-
-- Canonicalize DNS case/trailing dot, IDNA, IP literals, and ports.
-- Serialize verification per endpoint and compare-and-set repins.
-- Validate known-hosts fields and encoded key algorithm.
-
-### SOL-024: Verify SSH banners and bound probes
-
-Priority: P2
-
-References: `packages/seance_core/lib/src/probe/probe_service.dart`
-
-The prober reports any successful TCP connect as online, starts every host at
-once, conflates refusal/DNS/route failures, and can race disposal after an await.
-PR #14 addresses background pause only.
-
-Action:
-
-- Parse SSH identification lines and require `SSH-`.
-- Distinguish refusal from timeout/DNS/network uncertainty.
-- Bound concurrency or stagger hosts individually.
-- Track disposed state after every await.
-- Skip connected sessions and add per-host probe opt-out.
-
-### SOL-026: Batch terminal output and coalesce resize
-
-Priority: P2
-
-PR #20 fixes split UTF-8. Output is still fed packet-by-packet with no bounded
-queue, and every drag/window frame can send a remote PTY resize.
-
-Action:
-
-- Batch feed work per event-loop/frame with a bounded queue/backpressure policy.
-- Coalesce duplicate/rapid resize events.
-- Benchmark `yes`, large files, Unicode, resize spam, and session switching against latency budgets.
-
-### SOL-027: Complete the terminal backend seam
-
-Priority: P2
-
-The app reaches into `XtermTerminalEngine` for terminal widget, selection,
-controller, scrollback, pending input, and injection. A libghostty swap would
-still touch broad UI code.
-
-Action:
-
-- Add focused renderer/controller/input/scrollback capabilities.
-- Keep safe staged-command insertion backend-independent.
-- Build the proposal's headless conformance rig before swapping engines.
-
-### SOL-028: Complete common SSH power-user workflows
-
-Priority: P1
-
-- Implement Unix socket and Windows named-pipe ssh-agent signing.
-- Support 1Password/Bitwarden/OpenSSH agents.
-- Execute ProxyJump and map imported aliases to jump hosts.
-- Prompt for referenced-key passphrases without requiring storage.
-- Verify strict-KEX/Terrapin behavior and establish an SSH CVE watch.
-- Add a real sshd version/auth/cipher matrix in CI.
-
-## Flutter Application And Platform Backlog
-
-### SOL-032: Cancel stale connection attempts and dispose every engine
-
-Priority: P1
-
-References: `app/seance_app/lib/app_state.dart:230-283,478-500`
-
-Reconnect does not cancel the old attempt. Deleting a server while connect is
-pending can produce an inaccessible live session. Failed attempts have no
-`SshSession`, so their engines are not disposed. Teardown closes only live
-sessions and is not awaited.
-
-Action:
-
-- Give each attempt an identity/generation and cancellation state.
-- Commit completion only while it remains current; close stale results immediately.
-- Dispose engines on failure, replacement, disconnect, close, and app teardown.
-- Disable duplicate reconnect while connecting and expose Cancel.
-- Add delayed-fake lifecycle tests.
-
-### SOL-033: Reconcile remote shell closure completely
-
-Priority: P1
-
-Core calls `onClosed` but does not tear down or set closed state. The app keeps a
-non-null session and clears only `connecting`.
-
-Action:
-
-- Route remote completion through idempotent core teardown.
-- Clear/replace app session state and keep an explicit disconnect reason.
-- Preserve final scrollback for reconnect diagnostics.
-
-### SOL-034: Replace fragile JSON persistence or fully serialize it
-
-Priority: P1
-
-Merged PR #6 improves the current truncate-in-place behavior but introduces a
-shared-temp race and broad error recovery. Linux also permits multiple app
-processes writing the same files.
-
-Action:
-
-- Prefer the planned transactional SQLite client store.
-- If JSON remains, use an in-process queue, process lock, unique temp names, flush/fsync, atomic rename, and backup.
-- Distinguish malformed JSON from permission/transient I/O failures.
-- Add concurrent writer, crash, backup recovery, and multi-process tests.
-
-### SOL-035: Represent missing local credentials explicitly
-
-Priority: P1
-
-Synced configs retain `secretRef` even if credentials are local-only. On a new
-device a null lookup becomes an empty password/key and causes misleading auth
-failure.
-
-Action:
-
-- Add a `credential required on this device` state.
-- Prompt before network connection and never synthesize empty credentials.
-
-### SOL-036: Use sandbox-compatible private-key selection on macOS
-
-Priority: P1
-
-Typed `~/.ssh/id_ed25519` paths do not grant a sandboxed app read access.
-
-Action:
-
-- Use a file picker and persist a security-scoped bookmark, or import the key into the vault.
-- Add a picker/import preview for SSH config.
-
-### SOL-037: Serialize every sync entry point
-
-Priority: P1
-
-`syncNow()` can overlap startup, periodic, or debounced `_autoSync()` calls while
-all mutate the same stores and status.
-
-Action:
-
-- Use one async mutex/queue for manual and automatic sync.
-- Coalesce queued edits without losing an explicit manual request.
-
-### SOL-038: Cancel or discard stale asynchronous UI work
-
-Priority: P2
-
-Settings model discovery, sync buttons, command generation, and chat can call
-`setState` or mutate a terminal after route/dialog disposal. Dismissing command
-generation does not cancel insertion. Resetting chat during a request can let an
-old result repopulate the new conversation.
-
-Action:
-
-- Add generation tokens and cancellable/drop-stale requests.
-- Prevent dismissal while uncancelled work can alter the PTY, or make cancellation explicit.
-- Check `mounted` after every await and use `try/finally` for busy flags.
-- Disable/reset chat safely while a turn is in flight.
-
-### SOL-039: Give narrow mode real navigation history
-
-Priority: P1
-
-Narrow mode swaps widgets with a boolean. Android Back can exit instead of
-returning to servers; iOS lacks swipe-back and restoration.
-
-Action:
-
-- Use a nested Navigator/router, or at minimum a `PopScope` with correct route semantics.
-
-### SOL-040: Finish mobile security, networking, and signing
-
-Priority: P1
-
-Android backup can restore encrypted preferences without the keystore key. iOS
-lacks local-network disclosure for LAN endpoints. Mobile `localhost` means the
-phone. PR #16 now uses a committed stable sideloading key, which fixes upgrade
-continuity but deliberately does not establish private publisher authenticity.
-
-Action:
-
-- Exclude/scopely configure Android backup for secure-storage data.
-- Add iOS local-network usage text and tested transport exceptions only where needed.
-- Provide mobile endpoint guidance/discovery.
-- Decide whether debug-grade public signing is sufficient; use a protected private release key if publisher authenticity matters.
-- Test upgrade installation and local-data retention across released APKs.
-- Gate app artifacts on Flutter analysis/tests.
-
-## Assistant, Privacy, And Safety Backlog
-
-### SOL-041: Bound chat history and keep terminal context turn-local
-
-Priority: P1
-
-Terminal context is embedded in a user message and retained in `_history`, so
-old untrusted output is resent every turn. Cost, latency, memory, and injection
-exposure grow until provider context limits fail.
-
-Action:
-
-- Keep ephemeral terminal context outside persistent conversation history.
-- Maintain separate histories per SSH session.
-- Apply deterministic token/byte budgets with summarization or truncation.
-- Show what old context will be resent.
-
-### SOL-042: Use native structured tool-result protocols
-
-Priority: P1
-
-PR #22 fixes iteration limits and current text-role alternation. Tool-call IDs
-are still discarded and results are ordinary user strings. Strict Anthropic and
-OpenAI implementations expect their own structured tool messages.
-
-Action:
-
-- Model assistant tool calls and tool results in the provider abstraction.
-- Emit Anthropic `tool_use`/`tool_result` blocks.
-- Emit OpenAI assistant `tool_calls` and `role: tool` messages with IDs.
-- Mark search content as untrusted.
-- Add second-request wire-format tests for both providers.
-
-### SOL-044: Build a complete outbound context receipt
-
-Priority: P1
-
-`ChatResult.sent` omits old history and search result snippets, and the Flutter
-UI ignores it. The privacy promise is therefore not inspectable.
-
-Action:
-
-- Capture the exact complete provider payload after redaction for each request.
-- Render an expandable receipt with host, selected output, redactions, queries/results, model, endpoint, and token estimate.
-
-### SOL-045: Treat secret redaction as best-effort
-
-Priority: P2
-
-Patterns cannot reliably detect arbitrary passwords, cookies, kubeconfigs,
-credential URLs, or every vendor token.
-
-Action:
-
-- Add user-defined patterns and structured credential patterns.
-- Label redaction honestly as best-effort.
-- Use local-provider badges and the exact outbound inspector as the backstop.
-
-### SOL-046: Stop storing arbitrary no-echo input as command history
-
-Priority: P1
-
-The opt-in command tracker reconstructs all outgoing keystrokes and cannot know
-whether the remote disabled echo. Passwords can be written to
-`command_stats.json`; filtering happens only when presenting suggestions. The
-same pending input can prefill cloud command generation.
-
-Action:
-
-- Prefer OSC 133 command boundaries before enabling capture.
-- At minimum, filter before persistence rather than after.
-- Never send unknown no-echo pending input to an LLM.
-
-### SOL-047: Centralize safe command staging
-
-Priority: P1
-
-Merged PRs #1/#2/#10 improve individual paths, but generator,
-snippets, and chat still separately append text to current PTY input and surface
-danger differently.
-
-Action:
-
-- Add one backend-independent `stageCommandForReview` API.
-- Reject line/control/format hazards and lint danger at the final boundary.
-- Verify session identity/connectivity and handle a non-empty current prompt explicitly.
-- Prefer a local editable Safe Draft Dock before sending text to the PTY.
-
-## Sync Server And Operations Backlog
-
-### SOL-049: Add account quotas and paginated pulls
-
-Priority: P1
-
-PR #11 limits a request/batch/blob, but a token can still fill disk and
-`since=0` materializes the full account response.
-
-Action:
-
-- Add account/token/record/blob/total-byte quotas.
-- Validate all configured limits at startup.
-- Paginate pulls against a fixed snapshot watermark.
-- Return 413 and quota-specific structured 4xx errors.
-
-### SOL-050: Complete abuse-resistant rate limiting
-
-Priority: P1
-
-PR #19 removes indefinite stale-bucket retention without scanning on every
-request. Active unique-key spray can still grow state within one window.
-Username-only limits also permit targeted lockout, reset on restart, and do not
-cover prelogin/registration.
-
-Action:
-
-- Add separate source-IP and account buckets.
-- Bound active state with a policy that does not turn capacity into global lockout.
-- Add prelogin and registration limits and `Retry-After`.
-- Define trusted-proxy client-IP handling.
-- Use shared/persistent limits if multiple replicas are supported.
-
-### SOL-051: Make account lifecycle transactional
-
-Priority: P1
-
-Registration check/create and account deletion span independent statements and
-can race or leave orphan state.
-
-Action:
-
-- Make create return created/conflict atomically.
-- Wrap account, initial sequence, and token creation in one transaction.
-- Enable foreign keys with cascading deletion.
-- Join token lookup to a live active account.
-
-### SOL-052: Add real readiness checks
-
-Priority: P1
-
-Compose runs `seance-sync --help`, which says nothing about the running HTTP
-process or database. `/healthz` is liveness only.
-
-Action:
-
-- Probe the actual HTTP server from the container healthcheck.
-- Add `/readyz` with a bounded SQLite read/write or integrity check.
-- Add a built-in healthcheck CLI if no HTTP client belongs in the image.
-- Run the built image in CI and smoke register/login/push/pull/restart.
-
-### SOL-053: Drain requests and close SQLite on shutdown
-
-Priority: P1
-
-Current shutdown force-closes connections and exits without storage disposal.
-
-Action:
-
-- Stop accepting, drain with deadline, finish/rollback transactions, close/checkpoint SQLite, then exit.
-- Handle repeated signals safely and test SIGTERM during reads/writes.
-
-### SOL-054: Add schema migrations, constraints, and backup policy
-
-Priority: P1
-
-Action:
-
-- Use transactional `PRAGMA user_version` migrations.
-- Enable foreign keys, checks, cascade deletion, and a bounded busy timeout.
-- Document synchronous/durability settings.
-- Document/test online backup and restore while WAL is active.
-- Test lock contention, disk full, corruption, migration, and abrupt termination.
-
-### SOL-055: Add safe structured observability
-
-Priority: P1
-
-PR #5 hides internal errors from clients, but errors are now also invisible to
-operators.
-
-Action:
-
-- Log request ID, route, status, duration, response size, and sanitized exception/stack.
-- Never log authorization, verifiers, blobs, or request bodies.
-- Add counters for auth failure, throttle, push accept/reject, DB latency, and response size.
-
-### SOL-056: Harden releases and deployment updates
-
-Priority: P1
-
-Action:
-
-- Validate SemVer tags against every pubspec before publishing.
-- Emit Docker `latest` only for stable releases.
-- Pin actions and container bases by immutable versions/digests.
-- Publish checksums and multi-architecture images if ARM is supported.
-- Back up before schema updates, wait for readiness, and roll back failed deploys.
-- Correct docs that claim scratch/static image, every-request versioning, and ciphertext-only DB leakage.
-- **Make CI's container and Gradle pulls survivable.** Observed repeatedly on
-  2026-07-25: with several PRs open at once, `Sync server Docker image` fails
-  at `FROM debian:stable-slim` with `i/o timeout` to `registry-1.docker.io`,
-  and `Client build (android)` fails with HTTP 429 from
-  `repo.maven.apache.org` — both before any repository code is compiled, so
-  every red is a false negative that has to be diagnosed by hand. Options:
-  authenticate the Docker Hub pull (an authenticated token lifts the
-  anonymous rate limit), pull base images through a registry mirror or the
-  GitHub-hosted cache, and add a retry with backoff around the Gradle
-  dependency resolution.
-
-## Performance And Responsiveness Backlog
-
-### SOL-057: Split the monolithic `AppState` notifier
-
-Priority: P2
-
-Probe sweeps, sync status, suggestions, and sessions rebuild broad shell/server/
-terminal/sidebar widgets through one notifier.
-
-PR #35 removed the worst symptom — a full-tree rebuild per SSH trace line
-during every handshake — by giving the connection log its own notifier. The
-split itself remains.
-
-Action:
-
-- Split server status, sessions, sync, settings, and suggestions into focused listenables/selectors.
-- Keep terminal widget identity out of probe-driven rebuild paths.
-- Profile with large host lists before and after.
-
-### SOL-058: Cancel and dispose network clients
-
-Priority: P2
-
-PR #8 adds caller timeouts, but timeout does not cancel underlying I/O. Owned
-`http.Client`s have no lifecycle contract, and periodic sync creates new clients
-that rely on GC.
-
-Action:
-
-- Add ownership-aware `close()` APIs and close short-lived clients in `finally`.
-- Use cancellable requests/clients and response/body limits.
-- Add connect, total, and stream-idle deadlines.
-
-### SOL-059: Batch domain-store application
-
-Priority: P2
-
-Applying pulled records rewrites whole JSON collections per record. Combined
-with current full pulls, this causes unnecessary disk churn and UI-isolate work.
-
-Action:
-
-- Apply a pull in one transaction or one atomic collection write.
-- Move production KDF and large serialization off the UI isolate only after profiling.
-
-## Visual, Layout, And Accessibility Backlog
-
-### SOL-060: Finish adaptive pane behavior after PR #26
-
-Priority: P2
-
-PR #26 reserves a 480 px terminal, clamps side panes, and uses a viable 960 px
-three-pane breakpoint.
-
-Remaining actions:
-
-- Add explicit list/utility collapse controls.
-- Persist pane ratios rather than absolute widths.
-- Add keyboard/focus resizing and screen-reader semantics to handles.
-- Add large-text golden tests and test dynamic platform window constraints.
-
-### SOL-061: Add terminal appearance and accessibility settings
-
-Priority: P1
-
-PR #32 applies a deliberate terminal style, adopts the mono fallback stack
-(which was dead code), adds persisted font size/family, ships spectral
-light/dark palettes with a follow-the-app mode, and binds zoom shortcuts with
-clamped limits.
-
-Remaining actions:
-
-- Cursor shape and blink controls.
-- Scrollback length and bell behavior controls.
-- Ligature and OSC 52 / title policy controls.
-
-### SOL-062: Use laptop-safe and remembered window geometry
-
-Priority: P2
-
-The 1800x1600 desktop default exceeds common work areas.
-
-Action:
-
-- Start near 1180x760, clamp to monitor work area, set a useful minimum, and restore geometry.
-
-### SOL-063: Normalize product naming and desktop metadata
-
-Priority: P2
-
-Some iOS/Linux/Windows strings still show `seance_app` or `Seance App`; Linux
-lacks normal desktop/AppStream icon integration. The photographic source icon
-is memorable at full size but muddy at launcher scale.
-
-Action:
-
-- Normalize visible names under platform constraints.
-- Add `.desktop`, AppStream, and Linux icon assets.
-- Derive a simplified terminal/planchette/sigil small-size icon.
-
-### SOL-064: Complete accessibility after PRs #23 and #24
-
-Priority: P1
-
-PR #23 labels mobile terminal controls and PR #24 makes label truncation
-grapheme-safe with full semantics. Remaining issues include color-only status,
-unfocusable resize handles, small key targets, non-live safety notices, and an
-unlabeled terminal surface.
-
-Action:
-
-- Add non-color status text/icons and semantic state labels.
-- Make resize handles focusable and keyboard adjustable.
-- Raise touch targets toward 48 dp while preserving compact horizontal scrolling.
-- Mark safety notices as live regions.
-- Give the terminal a useful screen-reader description/fallback.
-- Respect reduced-motion for future animations.
-
-### SOL-065: Make chat and dialogs constraint-aware
-
-Priority: P2
-
-PR #37 sizes chat bubbles from the pane's own constraints. The drawer is still
-a fixed 380 px on narrow phones, and several long credential dialogs still need
-scroll/keyboard constraints.
-
-Remaining actions:
-
-- Size the drawer from available constraints.
-- Make every credential/long-content dialog scrollable and keyboard-safe.
-
-## 2026-07-25 Pass: Open Findings
-
-Findings from the second review pass that are **not** covered by PRs #32–#38.
-Items resolved by those PRs are recorded in
-[Resolved And Retired](#resolved-and-retired).
-
-### Correctness
-
-#### SEA-006: Grapheme-unsafe truncation outside the helper that fixes it
-
-Priority: P3
-
-`AppState._snippetTitle` (`substring(0, 39)`) and `AppState._shortError`
-(`substring(0, 200)`) can split a surrogate pair and produce a lone surrogate —
-the exact class of bug `MiddleEllipsisText` and PR #24 exist to prevent.
-
-Action: route both through the grapheme-aware helper.
-
-#### SEA-007: Repeated ssh_config import silently duplicates hosts
-
-Priority: P2
-
-`AppState.importSshConfig` assigns a fresh `uuidV4()` per parsed host and stores
-it unconditionally. Importing the same file twice yields two copies of every
-host, with no dedupe by host/port/user and no preview.
-
-Action: import with a preview and a dedupe pass; see also SEA-027.
-
-#### SEA-008: macOS terminal-focus flag is never cleared on dispose
-
-Priority: P3
-
-`_SessionViewState` reports focus to the native Edit menu over the
-`seance/menu` channel but never sends `false` from `dispose()`. If the last
-terminal is torn down while focused, the native menu keeps believing a terminal
-is focused. Degrades to "⌘C does nothing", not a crash.
-
-Action: send `false` on dispose.
-
-#### SEA-009: The destructive-close guard lives in one call site, not in the operation
-
-Priority: P1 — **settle before adding tab shortcuts**
-
-`AppState.closeTab` calls `_disposeSession(deleteLocalCopies: true)`, which
-permanently deletes unsaved managed SFTP edits. The only confirmation is the
-dialog in `TerminalPane._closeTab`. Any new call site — a ⌘W binding, a menu
-item, a mobile swipe — silently deletes user data.
-
-Action: move the guard behind the state operation, or split the destructive
-variant into a distinctly named method, *before* SEA-025 lands.
-
-#### SEA-012: Every session of every server stays fully mounted
-
-Priority: P2
-
-`TerminalPane._body` builds an `IndexedStack` over all sessions across all
-servers. The instant-switch rationale is sound, but the cost scales with total
-open tabs, not with tabs of the visible server: each mounted `TerminalView`
-holds a render object and paragraph cache, participates in every layout pass,
-and forwards a PTY resize to its remote host on every window resize.
-
-Action: mount the active server's tabs eagerly plus an LRU of others.
-
-### Interface and layout
-
-#### SEA-015: The layout collapses to the phone UI below 960 px
-
-Priority: P2 (refines SOL-060)
-
-`AdaptiveShell.breakpoint` is 200 + 480 + 260 + 2×10 = **960**. A half-screen
-window on a 13" laptop (~720 px) or an iPad in split view therefore loses the
-server list *and* the tiled utility panel at once.
-
-Action: two-stage response — drop the utility pane to a drawer first (keeping
-list + terminal tiled to ~700 px), then collapse fully.
-
-#### SEA-017: Assistant replies are unformatted plain text
-
-Priority: P1 (same item as the P1 in "Daily workflow")
-
-`SelectableText(m.text)`. Model answers arrive with fenced code, lists, and
-inline code, and render as a wall of proportional text with no per-block copy
-affordance.
-
-#### SEA-018: Pane widths, active host, and utility tab are not remembered
-
-Priority: P2 (refines SOL-060)
-
-`_AdaptivePaneLayoutState` initialises to constants on every launch; so does
-the sidebar's selected tab and the last active server.
-
-#### SEA-019: Status colors are hardcoded and theme-blind
-
-Priority: P2 (refines SOL-064)
-
-`StatusColors.online/offline/unknown` take a `BuildContext` and ignore it,
-returning fixed GitHub-dark hexes. Measured against pure white — the most
-favourable light surface there is — the green is **2.54:1**, below WCAG's 3:1
-for non-text indicators; the grey sits on the line at 3.08:1 and the red
-clears it at 3.35:1. The app's light surface is a tinted near-white, so all
-three land slightly lower again. The signature is already right; only the
-implementation needs to consult the theme brightness.
-
-The green is the one that matters most: "connected" is the state a user reads
-at a glance, and it is the least legible of the three.
-
-#### SEA-020: Tab-strip touch targets are below the platform minimum
-
-Priority: P2 (refines SOL-064)
-
-The tab close button is a 15 px icon in a 28 px box inside a 38 px strip, shown
-on touch platforms too. Material and HIG both want ≥44–48 px.
-
-#### SEA-021: Two similar dots per server row read as one broken indicator
-
-Priority: P3
-
-A filled 12 px connection dot on the left and a 10 px outlined reachability dot
-on the right, both grey when idle. The distinction is deliberate and documented
-but reads as a rendering bug. A single composed indicator — filled for the
-session, ring for reachability — would say the same thing in one glyph.
-
-#### SEA-039: A one-shot toast is a thin channel for a sync-identity reset
-
-Priority: P3
-
-PR #38 tells the user once, with a ten-second toast, that their settings
-file was unreadable and reset — and the flag is consumed on the launch that
-finds it, because the salvage is persisted in the same step. A user looking
-elsewhere for ten seconds never learns that their `deviceId` may have changed.
-
-Action: keep the notice until acknowledged — a dismissible banner, or a marker
-in Settings ▸ Sync — rather than a transient toast.
-
-### Missing features
-
-#### SEA-023: No scrollback search
-
-Priority: P1 — **the most conspicuous missing terminal feature**
-
-The vendored fork already carries `searchHitBackground`,
-`searchHitForeground` and `searchHitBackgroundCurrent` in `TerminalTheme`, so
-the render path has a slot for hit highlighting — but there is no search
-controller, no UI, and no buffer-scanning path.
-
-Action: implement in the fork (viewport control + hit highlighting) behind a
-⌘F / Ctrl+Shift+F panel. Non-trivial; worth doing properly.
-
-#### SEA-025: Almost no keyboard shortcuts
-
-Priority: P1
-
-`AppMenus` binds exactly two: new tab and settings. Missing, roughly in order:
-close tab (⌘W / Ctrl+Shift+W — **after SEA-009**), select tab 1–9, cycle tabs
-(Ctrl+Tab, ⌘⇧[ / ⌘⇧]), focus the server filter, clear terminal.
-
-Constraint that makes this subtle: the terminal handles most `Ctrl` chords
-itself and returns `handled`, so app-level bindings must use ⌘ on Apple and
-`Ctrl+Shift` elsewhere — the convention `_handleKeyEvent` already establishes.
-
-#### SEA-026: No auto-reconnect and no session restore
-
-Priority: P2
-
-A dropped connection leaves a manual Reconnect button. For a mobile client that
-changes network constantly, opt-in reconnect-with-backoff and a "reopen my tabs
-at launch" option are the difference between usable and irritating. The
-mechanism exists: `_restoreManagedEditSessions` already recreates placeholder
-tabs, but only for durable file edits.
-
-#### SEA-027: SSH config import is paste-only
-
-Priority: P2
-
-The tooltip says "Import ~/.ssh/config" but the dialog only accepts pasted text
-— on desktop, where the file is readable and the app already has a native
-file-picker plus security-scoped bookmark path for identity files.
-
-Action: add Browse…, reusing the existing bookmark plumbing. Pair with SEA-007.
-
-#### SEA-028: No "copy last command output"
-
-Priority: P2
-
-With OSC 133 marks already parsed, `Copy last output` / `Copy last command` /
-`Rerun` are a short step away and are the actions people actually reach for.
-The minimum viable slice of SOL's command-block treatment.
-
-## User Experience And Missing Features
-
-### Daily workflow
-
-- P1: Add a fuzzy command palette for hosts, snippets, settings, reconnect, sync, and assistant actions.
-- P1: Add server search, favorites, recently used, tags/groups, and duplicate detection.
-- P1: Add quick connect for one-off hosts without saving.
-- P1: Add first-run SSH config file import with preview, warnings, and deduplication.
-- P1: Add cancel/retry/copy actions for connections and assistant requests.
-- P1: Render assistant Markdown with safe code-block copy/stage affordances.
-- P1: Stream assistant output and expose Stop/Retry.
-- P1: Surface the exact outbound context receipt.
-- P1: Add sync logout, device list/revoke, account deletion, passphrase rotation, and conflict/deletion audit.
-- P1: Ship encrypted export/import without a server and complete recovery enrollment.
-- P1: Add optional biometric/passcode app lock on mobile.
-- P2: Remember last active host, utility tab, pane ratios, and per-host terminal scale.
-- P2: Reconcile remotely edited/deleted configs with live sessions; represent deleted active sessions as explicit orphans.
-- P2: Add terminal find, local paste preview, scrollback controls, bell settings, and OSC 52/title policies.
-- P2: Add a provider test action with latency and actionable diagnostics.
-- P2: Expose Brave Search settings or remove the half-wired configuration.
-- P2: Populate `HostContext` with OS, distro, shell, cwd, and exit status.
-
-### Power-user and later features
-
-- Real ssh-agent support across Unix/macOS/Windows.
-- ProxyJump execution and editing.
-- Local, remote, and dynamic port-forwarding UI.
-- Known-hosts import/export and visual randomart.
-- Per-device key generation and one-click public-key deployment.
-- Focused upload/download or an SFTP browser.
-- OSC 133 command blocks for context, history, cwd, exit status, and suggestions.
-- Persistent/reconnecting mobile sessions and Mosh.
-- Provider-native web search in addition to SearXNG/Brave.
-- Optional splits/tabs after single-session ergonomics are stable.
-- A real libghostty backend only after stable API/release and conformance coverage.
-
-## Delightful Product Ideas
-
-These ideas should remain useful, optional, professional, and reduced-motion
-aware. The theme should reinforce identity and trust rather than obscure an SSH
-client's behavior.
-
-### Fingerprint spirit sigils
-
-Render deterministic randomart/identicons from host-key fingerprints on server
-tiles and TOFU/re-pin screens. A key change visibly changes the host's identity,
-making the theme a real security aid.
-
-### Safe Draft Dock
-
-Stage AI commands, snippets, and history in a local editable strip above the
-terminal. Show target host, environment, source, and danger findings. Only an
-explicit action sends the text to PTY input. This solves prompt concatenation
-and centralizes review-before-run.
-
-### The Planchette
-
-Use one keyboard-first fuzzy palette for hosts, snippets, settings, and actions.
-A restrained planchette motif can indicate selection without compromising speed.
-
-### Production wards
-
-Allow production/staging/lab tags with color and symbol cues. Offer extra
-confirmation when a critical command, `sudo`, or destructive action is staged
-against production.
-
-### OSC 133 command-block actions
-
-Give completed commands Explain, Save as snippet, Copy, Rerun, Compare output,
-and Include in chat actions. This also fixes precise context and command stats.
-
-### Last words
-
-On disconnect, preserve the final command/output block and show duration, last
-cwd, exit/disconnect reason, reconnect, copy, and save actions.
-
-### Presence and heartbeat
-
-Use a restrained online breathing indicator, unknown-state flicker, connection
-materialization, and latency sparkline from keepalives. Never animate the
-terminal surface and respect reduced motion.
-
-### Custom mobile key deck
-
-Allow per-host key layouts, haptics, long-press repeat, application-mode-aware
-keys, clipboard/history actions, and saved decks.
-
-### Context ledger
-
-Attach a compact privacy receipt to each assistant response: host, command
-blocks, redactions, searches/results, provider/model, token estimate, and exact
-outbound payload.
-
-### Visual identity
-
-Use calm near-black/navy terminal surfaces, parchment-warm highlights, muted
-violet, and one vivid status accent. Keep photographic ghost art for onboarding
-or marketing and use a simpler terminal/sigil mark at launcher and toolbar size.
-
-### Séance-specific ideas from the 2026-07-25 pass
-
-These are additive to the list above, not replacements.
-
-#### SEA-031: "The spirit answered" — completion notices
-
-When an OSC 133 `D` arrives for a session that is not on screen, pulse that tab
-and optionally post an OS notification with the command, its exit code, and how
-long it took. Everything needed is already parsed. A long `apt upgrade` on a
-background tab is the canonical case, and the framing writes itself.
-
-#### SEA-032: Ghost tabs — undo close
-
-A closed tab leaves a translucent chip in the strip for ~10 s. Clicking it
-reopens a session on the same host and, where shell integration is present,
-`cd`s back to the last known working directory. Also defuses SEA-009 for the
-common "wrong tab" mistake.
-
-#### SEA-033: Host hues
-
-Hash the host key fingerprint — already the canonical identity — into a hue used
-for the tab underline, the status-bar edge, and the server-row accent. Unlike
-production wards, which need the user to tag things, this is automatic and
-zero-config, and makes "which box am I on" a peripheral-vision question. Same
-input as the spirit sigils, a second representation.
-
-#### SEA-034: Whisper mode
-
-A one-key toggle — auto-armed when the shell reports a no-echo prompt — that
-suspends command capture *and* excludes the next lines from assistant context,
-with a quiet visual indicator. This retires the caveat that command suggestions
-cannot tell a command from a password by making it an explicit, visible mode
-instead of an opt-out.
-
-#### SEA-035: Séance transcript
-
-Export a session as Markdown — commands, outputs, timestamps, host, duration —
-with redaction applied, into a snippet, a file, or the clipboard. The
-scrollback, the OSC 133 marks, and the redactor all exist; this is assembly.
-
-#### SEA-036: Latency as a pulse, not a number
-
-dartssh2 already sends a keepalive every ten seconds and gets a reply.
-Surfacing the round trip as a slow, low-contrast pulse on the connection dot
-(with the millisecond figure on hover) answers "is the link alive or is the box
-wedged?" without another readout. Must respect reduced motion.
-
-#### SEA-037: Two-hand mobile key deck
-
-The key row is one scrolling strip. On a phone held in two hands the reachable
-zones are the lower corners: modifiers left, navigation right, punctuation in a
-pull-up drawer. Pairs with the per-host decks above.
-
-#### SEA-038: Idle divination
-
-When a session is idle and reachable, occasionally sample cheap facts the
-assistant would otherwise have to ask for (uptime, disk pressure, pending
-reboots) — only with explicit per-server opt-in, and shown as a passive reading
-on the server row rather than injected into the terminal. Fills the empty
-`HostContext` without the assistant guessing.
-
-## Test And Release Gates
-
-Before sync or credential handling is described as production-ready:
-
-- Add restart-level two-device deletion tests for every record kind.
-- Add forced interleaving for pull watermark, push rejection, and local edit acknowledgement.
-- Add authenticated-envelope tamper/replay/transplant tests.
-- Add real HTTP-over-SQLite concurrency tests rather than only in-memory HTTP integration.
-- Add fixed independent crypto vectors and external review.
-- Add real sshd password/key/keyboard-interactive/changed-key/resize/output/strict-KEX matrix tests.
-- Add signed iOS/macOS keystore relaunch and stable Android upgrade tests.
-- Add adaptive golden/semantics tests at phone, tablet, laptop, and large text sizes.
-- Run the Docker image in CI with persistence, readiness, register/login/push/pull, restart, and SIGTERM.
-
-## Resolved And Retired
-
-Kept rather than deleted, so a future reader can tell "done" from "never
-considered". Each row names the evidence.
-
-| Item | Resolution |
-|---|---|
-| SOL-036 — sandbox-compatible private-key selection on macOS | **Done** in #30: `~` expansion against the real home (`expandHomePath`), a read-only `~/.ssh` entitlement exception, Browse… minting security-scoped bookmarks (`identity_bookmarks.dart`), an actionable error instead of a raw `PathNotFoundException`, and a device-local read audit trail. |
-| SOL-010 residual — "honor the redaction toggle" (still listed as open in `docs/STATUS.md`) | **Done** in #10: `chat_sidebar.dart` and `command_generator.dart` both construct `SecretRedactor(enabled: settings.redactionEnabled)`. `docs/STATUS.md` is stale here — SEA-030. |
-| SOL-032 — cancel stale connection attempts and dispose every engine | **Done**: `AppState._connect` closes a session whose tab was replaced mid-connect (`identical(sessionById(tab.id), tab)`), and `XtermTerminalEngine.dispose` is idempotent. The remaining fire-and-forget teardown in `AppState.dispose` is fixed in #35. |
-| SOL-033 — reconcile remote shell closure | **Done**: `SshSession._remoteClosed` drains stdout/stderr with a deadline before teardown, and `onClosed` flips the tab to disconnected, releasing the SFTP controller and retaining local copies. |
-| SEA-001, SEA-005, SEA-011 | #35 |
-| SEA-002 | #38 |
-| SEA-003, SEA-004 | #36 |
-| SEA-010, SEA-016 | #37 |
-| SEA-013 | #32 (size, family, palette, zoom; cursor/bell/scrollback controls remain under SOL-061) |
-| SEA-014 | #33 |
-| SEA-024 | #34 |
-| SEA-022 | Superseded by SEA-031, which is the feature rather than the gap. |
-| SEA-029 | Not a finding — a confirmation that the previous pass's power-user gaps (ssh-agent, port forwarding, ProxyJump execution, splits, Mosh, provider-native search, streaming replies, OSC 133 context) are all still open. |
-| SEA-030 | Documentation drift; fold into the next `docs/STATUS.md` update: the redaction item is done, the tab strip now shows at one tab, and `AGENTS.md` §8 names a long-dead development branch. |
-
-## Strengths To Preserve
-
-- Shared protocol code prevents ordinary client/server schema drift.
-- XChaCha20-Poly1305, Argon2id, and HKDF domain separation are sensible choices.
-- Strict TOFU and visually distinct changed-key handling are correct defaults.
-- Review-before-run and default secret redaction are load-bearing product invariants.
-- Terminal, store, sync, and provider interfaces are valuable seams even where they need expansion.
-- Stable server-list keys, connection logs, mobile keys, top notices, snippets,
-  and automatic sync status are thoughtful daily-use touches.
-- The name and premise are distinctive enough to support a memorable interface
-  without sacrificing predictable professional behavior.
+| AST-001 / SOL-014 part | [#64](https://github.com/L-K-M/Seance/pull/64) | KDF ceilings, strict integer typing and direct-call validation. Salt/verifier shape, device profiling and independent vectors remain. |
+| AST-002 / SOL-021 part | [#65](https://github.com/L-K-M/Seance/pull/65) | Masked/revealable, scrollable auth fields with IME privacy hints. Typed echo, cancellation model and Next/Done remain. |
+| AST-003 | [#66](https://github.com/L-K-M/Seance/pull/66) | Long footer labels and scaled text fit; full identity stays accessible. |
+| AST-004 / SEA-019 | [#68](https://github.com/L-K-M/Seance/pull/68) | Light/dark indicator contrast tests against real surfaces/overlays. Non-color cues remain. |
+| AST-005 | [#69](https://github.com/L-K-M/Seance/pull/69) | Fork tests in CI; app/fork gate before client publishing. Other release hardening remains. |
+| AST-006 / SOL-058 part | [#70](https://github.com/L-K-M/Seance/pull/70) | Owned sync HTTP cleanup; borrowed-client ownership preserved. Cancellation/LLM/search lifetimes remain. |
+| AST-007 / SOL-046 part | [#67](https://github.com/L-K-M/Seance/pull/67) | Recognizable-secret filtering and legacy cleanup. Unmarked passwords, failed disk scrubs, backups and retention limits remain. |
+
+Earlier completed work, removed from active instructions:
+
+- #1–31: command newline/control guard improvements, source-session paste binding,
+  modern token redaction, loopback Compose publish, generic server errors, atomic
+  JSON/quarantine, credential/port defaults, request timeouts, danger rules,
+  redaction toggle, body/batch/blob caps, Android signing continuity, observed
+  pull cursors, pre-socket key parsing, limiter pruning, packet-safe UTF-8,
+  canonical recovery codes, bounded tool loops, mobile DECCKM, grapheme-safe
+  middle labels, enrollment validation, pane constraints, selection overhaul,
+  per-server tabs, update notice, macOS key picker/bookmarks/audit, review workflow.
+  The full per-PR residual mapping remains in the July archive.
+- #32–38 are **merged**, not open: appearance (SEA-013), metadata labels/footer
+  (SEA-014), server filter (SEA-024), trace/recentText/teardown fixes
+  (SEA-001, SEA-005, SEA-011), bounded active-host-aware probes (SEA-003, SEA-004), surviving
+  drawer chat/constraint-aware bubbles (SEA-010, SEA-016), settings salvage (SEA-002).
+- #40/#41: command-aware and manually named tabs. #42: Option composition and
+  word/line drag selection. #43: synced server groups/colors/icons.
+- #46: syntax/find editor and top notices. #48: actual HTTP deployment health and
+  containerized reverse-proxy support. #50: explicit per-server login script.
+  #51: Android foreground-session anchor. #58: unknown-kind/malformed-record
+  preservation. #59–62: SFTP cancellation, authenticated-client ownership and
+  metadata/hash additions. #57 established the Unlicense.
+- SOL-036's macOS key-file access is implemented; validate native behavior rather
+  than recreating it. SOL-032/SOL-033's completed lifecycle portions are distinguished
+  from remaining cancellation/deadline work above.
+- SEA-022 was superseded by completion notices (SEA-031); SEA-029 merely confirmed
+  power-user gaps. SEA-030 is documentation drift: update `docs/STATUS.md` and
+  `AGENTS.md` counts/development-branch text. Redaction toggle and split UTF-8 are
+  fixed; the old ledger's “SOL-010 residual” referred to the toggle, **not** to the
+  still-open independent-secret-revisions issue.
+
+## Invariants and release gates
+
+Preserve shared protocol code; domain-separated Argon2id/HKDF and XChaCha AEAD;
+strict changed-host-key blocking; explicit review-before-run; default redaction;
+terminal scrollback/search content as untrusted; no assistant execution/file
+capabilities; stable terminal identities, selection and top notices that do not
+cover the shell prompt. The always-available assistant is deliberate, not a toggle
+bug. JSON and pure-Dart crypto are intentional swappable v1 choices.
+
+Before sync/credential handling is called production-ready, require:
+
+- Restart-level two-device typed deletion and forced acknowledgement/apply races.
+- Authenticated-envelope tamper/replay/transplant and version migration fixtures.
+- Real HTTP-over-SQLite concurrent snapshot/upsert and crash tests.
+- Independent crypto vectors, device KDF profiling and external protocol review.
+- Real sshd auth/changed-key/resize/output/strict-KEX matrix.
+- Signed Apple keystore relaunch/migration and Android upgrade/backup tests.
+- Adaptive golden/semantics tests plus native keyboard/clipboard/IME validation.
+- Running-container readiness/persistence/backup/restart/SIGTERM smoke tests.
