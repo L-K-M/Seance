@@ -24,6 +24,19 @@ can never drift. Pure Dart, no Flutter.
   are the domain separators.)
 - Sealed blob layout is `nonce(24) ‖ ciphertext ‖ mac(16)`.
 
+## KDF resource policy
+
+Prelogin is untrusted. Parsing and derivation reject non-integer parameters,
+memory above 64 MiB, more than 10 iterations or 4 lanes, memory below eight
+blocks per lane, and output lengths other than 32 bytes. Production enrollment
+also enforces the existing minimum; `Argon2Params.fast()` remains test-only.
+These ceilings bound resource use, not execution time on every device.
+
+Previously accepted accounts outside these limits cannot be opened by this
+version. Do not edit their stored factors: that derives a different key.
+Recover with a compatible trusted client and migrate by decrypting/re-encrypting
+under supported factors; back up first. Default accounts are unchanged.
+
 ## Test
 
 ```bash
