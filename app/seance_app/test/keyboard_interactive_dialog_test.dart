@@ -38,6 +38,7 @@ void main() {
     await openDialog(tester);
     for (final field in tester.widgetList<TextField>(find.byType(TextField))) {
       expect(field.obscureText, isTrue);
+      expect(field.keyboardType, TextInputType.visiblePassword);
       expect(field.autocorrect, isFalse);
       expect(field.enableSuggestions, isFalse);
       expect(field.enableIMEPersonalizedLearning, isFalse);

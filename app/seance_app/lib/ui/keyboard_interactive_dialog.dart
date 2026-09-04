@@ -80,6 +80,7 @@ class _KeyboardInteractiveDialogState
               child: TextField(
                 controller: _controllers[i],
                 autofocus: i == 0,
+                keyboardType: TextInputType.visiblePassword,
                 // Echo metadata is absent; reveal only on explicit user request.
                 obscureText: !_revealed.contains(i),
                 autocorrect: false,
