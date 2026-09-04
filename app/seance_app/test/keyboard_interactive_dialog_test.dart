@@ -58,6 +58,9 @@ void main() {
     expect(fields.first.controller!.text, 'operator');
     expect(fields.last.obscureText, isTrue);
     expect(fields.first.enableIMEPersonalizedLearning, isFalse);
+    final editable = tester.widget<EditableText>(find.byType(EditableText).first);
+    expect(editable.focusNode.hasFocus, isTrue);
+    expect(tester.testTextInput.isVisible, isTrue);
 
     await tester.tap(find.byTooltip('Hide answer'));
     await tester.pump();
@@ -113,6 +116,13 @@ void main() {
     await tester.ensureVisible(find.byType(TextField).last);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).last, 'last');
+    final keyboardTop = (tester.view.physicalSize.height -
+            tester.view.viewInsets.bottom) /
+        tester.view.devicePixelRatio;
+    expect(tester.getRect(find.text('Submit')).bottom, lessThan(keyboardTop));
+    expect(tester.getRect(find.text('Cancel')).bottom, lessThan(keyboardTop));
+    expect(tester.getRect(find.byType(TextField).last).bottom,
+        lessThan(keyboardTop));
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(find.byType(AlertDialog), findsNothing);
