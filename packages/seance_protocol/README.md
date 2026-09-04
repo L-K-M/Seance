@@ -26,10 +26,13 @@ can never drift. Pure Dart, no Flutter.
 
 ## KDF resource policy
 
-Prelogin is untrusted. Parsing and derivation reject non-integer parameters,
+Prelogin is untrusted. Parsing rejects non-integer JSON encodings, including
+integral floating-point values such as `19456.0`. Parsing and derivation reject
 memory above 64 MiB, more than 10 iterations or 4 lanes, memory below eight
-blocks per lane, and output lengths other than 32 bytes. Production enrollment
-also enforces the existing minimum; `Argon2Params.fast()` remains test-only.
+blocks per lane, and output lengths other than 32 bytes. The app registers with
+the default factors and checks `Argon2Params.minimum` before login derivation.
+The server enforces resource validity, not that client-side strength policy;
+`Argon2Params.fast()` remains test-only. Repository producers emit JSON integers.
 These ceilings bound resource use, not execution time on every device.
 
 Previously accepted accounts outside these limits cannot be opened by this

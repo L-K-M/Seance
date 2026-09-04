@@ -84,7 +84,11 @@ class Argon2Params {
         iterations < 1 ||
         iterations > _maximumIterations ||
         hashLength != _keyLength) {
-      throw const FormatException('Unsupported Argon2 resource parameters');
+      throw FormatException(
+        'Unsupported Argon2 resource parameters: '
+        'memory=$memory KiB, iterations=$iterations, '
+        'parallelism=$parallelism, hashLength=$hashLength',
+      );
     }
   }
 }
