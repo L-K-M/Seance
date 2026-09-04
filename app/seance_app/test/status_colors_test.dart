@@ -28,13 +28,15 @@ void main() {
         }),
       ));
 
-      // Cover avatar rings, tab/footer containers, and selected list rows.
+      // Selected ListTiles keep the surface background; selection tints text.
+      // Hover/focus overlays come from ThemeData rather than a guessed opacity.
       final scheme = theme.colorScheme;
       final backgrounds = [
         scheme.surface,
         scheme.surfaceContainerHigh,
         scheme.surfaceContainerHighest,
-        Color.alphaBlend(scheme.primary.withValues(alpha: 0.08), scheme.surface),
+        Color.alphaBlend(theme.hoverColor, scheme.surface),
+        Color.alphaBlend(theme.focusColor, scheme.surface),
       ];
       for (final indicator in indicators) {
         for (final background in backgrounds) {
