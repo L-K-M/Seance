@@ -622,6 +622,9 @@ class _TabChip extends StatelessWidget {
 /// the only clue to *which host you are typing into* was the highlighted row
 /// in the server list.
 class SessionStatusBar extends StatelessWidget {
+  static const double _locationGap = 12;
+  static const double _maximumTargetShare = 0.5;
+
   final TerminalSession session;
   const SessionStatusBar({super.key, required this.session});
 
@@ -629,13 +632,15 @@ class SessionStatusBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final config = session.config;
+    final target = '${config.username}@${config.host}:${config.port}';
     final style = Theme.of(context).textTheme.labelSmall?.copyWith(
       color: scheme.onSurfaceVariant,
       fontFamily: 'monospace',
     );
     return Container(
-      height: 24,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      // Grow with accessibility text size instead of clipping the host identity.
+      constraints: const BoxConstraints(minHeight: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHigh,
         border: Border(top: BorderSide(color: scheme.outlineVariant)),
@@ -644,21 +649,7 @@ class SessionStatusBar extends StatelessWidget {
         children: [
           _TabStatusDot(status: session.status),
           const SizedBox(width: 8),
-          Text(
-            '${config.username}@${config.host}:${config.port}',
-            style: style,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ValueListenableBuilder<SessionMetadata>(
-              valueListenable: session.metadata,
-              builder: (context, metadata, _) {
-                final cwd = metadata.workingDirectory;
-                if (cwd == null) return const SizedBox.shrink();
-                return MiddleEllipsisText(sanitizeRemoteLabel(cwd), style: style);
-              },
-            ),
-          ),
+          Expanded(child: _location(target, style)),
           // The exit code comes from the live engine's OSC 133 state, so it is
           // only shown while the engine exists (a closed session disposes it).
           if (session.isConnected)
@@ -680,6 +671,37 @@ class SessionStatusBar extends StatelessWidget {
       ),
     );
   }
+
+  Widget _location(String target, TextStyle? style) =>
+      ValueListenableBuilder<SessionMetadata>(
+        valueListenable: session.metadata,
+        builder: (context, metadata, _) {
+          final identity = Tooltip(
+            message: target,
+            excludeFromSemantics: true,
+            child: MiddleEllipsisText(target, style: style),
+          );
+          final cwd = metadata.workingDirectory;
+          if (cwd == null) return identity;
+
+          // Cap long targets; let cwd reclaim unused space from short ones.
+          return LayoutBuilder(builder: (context, constraints) {
+            if (constraints.maxWidth <= _locationGap) return identity;
+            final targetLimit =
+                (constraints.maxWidth - _locationGap) * _maximumTargetShare;
+            return Row(children: [
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: targetLimit),
+                child: identity,
+              ),
+              const SizedBox(width: _locationGap),
+              Expanded(
+                child: MiddleEllipsisText(sanitizeRemoteLabel(cwd), style: style),
+              ),
+            ]);
+          });
+        },
+      );
 }
 
 /// The small status dot on a tab chip (mirrors the server-list dot semantics
