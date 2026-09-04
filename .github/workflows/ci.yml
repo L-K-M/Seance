@@ -64,6 +64,13 @@ jobs:
       - name: Test
         working-directory: app/seance_app
         run: flutter test
+      # App tests do not discover the vendored selection/IME/parser suite.
+      - name: Resolve terminal fork dependencies
+        working-directory: third_party/xterm
+        run: flutter pub get
+      - name: Test terminal fork
+        working-directory: third_party/xterm
+        run: flutter test
 
   # Compile every client the release workflow ships (android / linux x64 /
   # macos / ios / windows) and run the Linux packaging step, so a

@@ -40,10 +40,8 @@ permissions:
 jobs:
   # Gate the release on the pure-Dart suite — it covers the protocol, core, and
   # server that this workflow's binaries and image ship. A tag on a broken
-  # commit must not publish a release. (The Flutter app's analyze+test and a
-  # per-platform compile of every client run in CI on main/PRs, so the tagged
-  # commit is already green there; the client jobs below still re-compile each
-  # platform, which fails that platform's asset if it won't build.)
+  # commit must not publish server artifacts. Clients also require the Flutter
+  # gate: tags and manual dispatch need not point at a CI-tested main commit.
   test:
     name: Test (release gate)
     runs-on: ubuntu-latest
@@ -70,6 +68,34 @@ jobs:
           packages/seance_protocol
           packages/seance_core
           packages/seance_sync_server
+
+  flutter:
+    name: Flutter tests (client release gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Resolve app dependencies
+        working-directory: app/seance_app
+        run: flutter pub get
+      - name: Analyze app
+        working-directory: app/seance_app
+        run: flutter analyze
+      - name: Test app
+        working-directory: app/seance_app
+        run: flutter test
+      - name: Resolve terminal fork dependencies
+        working-directory: third_party/xterm
+        run: flutter pub get
+      - name: Test terminal fork
+        working-directory: third_party/xterm
+        run: flutter test
 
   # Sync-server binary per desktop platform (`dart compile exe` is host-native;
   # there is no cross-compilation). Linux/macOS need libsqlite3 at runtime.
@@ -123,7 +149,7 @@ jobs:
   # never be the first time a client platform builds.
   client:
     name: Client (${{ matrix.target }})
-    needs: test
+    needs: [test, flutter]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45   # first run downloads the Flutter toolchain
     strategy:
