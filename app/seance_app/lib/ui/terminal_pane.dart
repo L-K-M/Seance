@@ -629,13 +629,15 @@ class SessionStatusBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final config = session.config;
+    final target = '${config.username}@${config.host}:${config.port}';
     final style = Theme.of(context).textTheme.labelSmall?.copyWith(
       color: scheme.onSurfaceVariant,
       fontFamily: 'monospace',
     );
     return Container(
-      height: 24,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      // Grow with accessibility text size instead of clipping the host identity.
+      constraints: const BoxConstraints(minHeight: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHigh,
         border: Border(top: BorderSide(color: scheme.outlineVariant)),
@@ -644,9 +646,12 @@ class SessionStatusBar extends StatelessWidget {
         children: [
           _TabStatusDot(status: session.status),
           const SizedBox(width: 8),
-          Text(
-            '${config.username}@${config.host}:${config.port}',
-            style: style,
+          Flexible(
+            child: Tooltip(
+              message: target,
+              excludeFromSemantics: true,
+              child: MiddleEllipsisText(target, style: style),
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
