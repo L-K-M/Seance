@@ -61,6 +61,8 @@ class _KeyboardInteractiveDialogState
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      // Long challenges must remain reachable above the software keyboard.
+      scrollable: true,
       title: Text(widget.name.isEmpty ? 'Authentication' : widget.name),
       content: Column(
         mainAxisSize: MainAxisSize.min,
@@ -76,6 +78,11 @@ class _KeyboardInteractiveDialogState
               child: TextField(
                 controller: _controllers[i],
                 autofocus: i == 0,
+                // The core API lacks echo metadata; treat every answer as secret.
+                obscureText: true,
+                autocorrect: false,
+                enableSuggestions: false,
+                enableIMEPersonalizedLearning: false,
                 decoration: InputDecoration(labelText: widget.prompts[i]),
               ),
             ),
