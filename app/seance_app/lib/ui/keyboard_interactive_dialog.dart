@@ -50,6 +50,8 @@ class _KeyboardInteractiveDialogState
     for (final _ in widget.prompts) TextEditingController(),
   ];
 
+  final Set<int> _revealed = {};
+
   @override
   void dispose() {
     for (final c in _controllers) {
@@ -61,6 +63,8 @@ class _KeyboardInteractiveDialogState
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      // Long challenges must remain reachable above the software keyboard.
+      scrollable: true,
       title: Text(widget.name.isEmpty ? 'Authentication' : widget.name),
       content: Column(
         mainAxisSize: MainAxisSize.min,
@@ -76,7 +80,24 @@ class _KeyboardInteractiveDialogState
               child: TextField(
                 controller: _controllers[i],
                 autofocus: i == 0,
-                decoration: InputDecoration(labelText: widget.prompts[i]),
+                keyboardType: TextInputType.visiblePassword,
+                // Echo metadata is absent; reveal only on explicit user request.
+                obscureText: !_revealed.contains(i),
+                autocorrect: false,
+                enableSuggestions: false,
+                enableIMEPersonalizedLearning: false,
+                decoration: InputDecoration(
+                  labelText: widget.prompts[i],
+                  suffixIcon: IconButton(
+                    tooltip: _revealed.contains(i) ? 'Hide answer' : 'Show answer',
+                    icon: Icon(_revealed.contains(i)
+                        ? Icons.visibility_off
+                        : Icons.visibility),
+                    onPressed: () => setState(() {
+                      if (!_revealed.remove(i)) _revealed.add(i);
+                    }),
+                  ),
+                ),
               ),
             ),
         ],
