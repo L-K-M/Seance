@@ -241,20 +241,21 @@ class AppServices {
       salt: salt,
       params: const Argon2Params(),
     );
-    final client = HttpSyncClient(baseUrl: baseUrl);
-    await client.register(
-      RegisterRequest(
-        username: username,
-        authVerifier: base64.encode(keys.authVerifier),
-        argonSalt: base64.encode(salt),
-        argonParams: const Argon2Params(),
-      ),
-    );
-    settings.syncBaseUrl = baseUrl;
-    settings.syncUsername = username;
-    await saveSettings();
-    await masterKeys.putApiKey('sync.token', client.token!);
-    await _rekeyVault(keys.vaultKey);
+    await _withSyncClient(baseUrl, (client) async {
+      await client.register(
+        RegisterRequest(
+          username: username,
+          authVerifier: base64.encode(keys.authVerifier),
+          argonSalt: base64.encode(salt),
+          argonParams: const Argon2Params(),
+        ),
+      );
+      settings.syncBaseUrl = baseUrl;
+      settings.syncUsername = username;
+      await saveSettings();
+      await masterKeys.putApiKey('sync.token', client.token!);
+      await _rekeyVault(keys.vaultKey);
+    });
   }
 
   /// Enrol this device against an existing account and adopt its vault key.
@@ -263,8 +264,7 @@ class AppServices {
     required String username,
     required String password,
     required String encryptionPassphrase,
-  }) async {
-    final client = HttpSyncClient(baseUrl: baseUrl);
+  }) => _withSyncClient(baseUrl, (client) async {
     final pre = await client.prelogin(username);
     // Refuse a KDF downgrade: the Argon2 parameters come from the server, so a
     // malicious/compromised one could return weak factors to make the vault key
@@ -309,7 +309,7 @@ class AppServices {
     await saveSettings();
     await masterKeys.putApiKey('sync.token', client.token!);
     await _rekeyVault(keys.vaultKey);
-  }
+  });
 
   /// Run one synchronization round against the configured server.
   Future<SyncOutcome> runSync() async {
@@ -339,7 +339,6 @@ class AppServices {
         'and sync again.',
       );
     }
-    final client = HttpSyncClient(baseUrl: baseUrl)..token = token;
     final coordinator = SyncCoordinator(
       configStore: configStore,
       hostKeyStore: hostKeyStore,
@@ -350,7 +349,23 @@ class AppServices {
       syncSecrets: settings.syncSecrets,
       secretVault: settings.syncSecrets ? vault : null,
     );
-    return coordinator.run(client);
+    return _withSyncClient(baseUrl, (client) {
+      client.token = token;
+      return coordinator.run(client);
+    });
+  }
+
+  /// Keep connections alive through response/persistence work, including errors.
+  Future<T> _withSyncClient<T>(
+    String baseUrl,
+    Future<T> Function(HttpSyncClient client) action,
+  ) async {
+    final client = HttpSyncClient(baseUrl: baseUrl);
+    try {
+      return await action(client);
+    } finally {
+      client.close();
+    }
   }
 
   /// Resolve connection credentials for [config] from the vault / on-disk key.
@@ -503,7 +518,7 @@ class AppServices {
     return null;
   }
 
-  /// A sync client for the configured server, or null if sync isn't set up.
+  /// A caller-owned sync client, or null if sync isn't set up. Close after use.
   HttpSyncClient? buildSyncClient() {
     final url = settings.syncBaseUrl;
     if (url == null || url.isEmpty) return null;
