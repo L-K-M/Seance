@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:seance_core/seance_core.dart';
+
 import 'atomic_file.dart';
 
 /// Local, on-device frequency count of the commands the user runs, used to
@@ -16,8 +18,19 @@ class CommandStats {
   final Set<String> dismissed;
 
   CommandStats({Map<String, int>? counts, Set<String>? dismissed})
-      : counts = counts ?? {},
-        dismissed = dismissed ?? {};
+      : counts = {
+          for (final entry in (counts ?? <String, int>{}).entries)
+            if (_safeToRetain(entry.key)) entry.key: entry.value,
+        },
+        dismissed = {
+          for (final command in dismissed ?? <String>{})
+            if (_safeToRetain(command)) command,
+        };
+
+  // Filter before persistence, independent of the assistant's redaction toggle.
+  // Unmarked no-echo passwords remain undetectable: capture stays opt-in.
+  static final _redactor = SecretRedactor();
+  static bool _safeToRetain(String command) => !_redactor.wouldRedact(command);
 
   /// Cap the tracked set so the file can't grow without bound; when exceeded,
   /// the least-used entries are dropped.
@@ -26,7 +39,7 @@ class CommandStats {
   /// Record one submitted command. Returns true if the counts changed.
   bool record(String command) {
     final cmd = command.trim();
-    if (cmd.length < 2) return false; // skip single-key noise
+    if (cmd.length < 2 || !_safeToRetain(cmd)) return false;
     counts[cmd] = (counts[cmd] ?? 0) + 1;
     if (counts.length > _maxTracked) _trim();
     return true;
@@ -51,6 +64,7 @@ class CommandStats {
         .where((e) =>
             e.value >= minCount &&
             !dismissed.contains(e.key) &&
+            _safeToRetain(e.key) &&
             !isExisting(e.key))
         .toList()
       ..sort((a, b) => b.value.compareTo(a.value));
@@ -59,11 +73,21 @@ class CommandStats {
 
   int countFor(String command) => counts[command] ?? 0;
 
-  void dismiss(String command) => dismissed.add(command);
+  void dismiss(String command) {
+    if (!_safeToRetain(command)) return;
+    dismissed.add(command);
+  }
 
+  // Existing callers can mutate these collections; guard the disk boundary too.
   Map<String, dynamic> toJson() => {
-        'counts': counts,
-        'dismissed': dismissed.toList(),
+        'counts': {
+          for (final entry in counts.entries)
+            if (_safeToRetain(entry.key)) entry.key: entry.value,
+        },
+        'dismissed': [
+          for (final command in dismissed)
+            if (_safeToRetain(command)) command,
+        ],
       };
 
   factory CommandStats.fromJson(Map<String, dynamic> json) => CommandStats(
