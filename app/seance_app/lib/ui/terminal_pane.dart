@@ -8,6 +8,7 @@ import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../services/web_links.dart';
 import '../services/xterm_engine.dart';
 import '../theme.dart';
 import 'app_menus.dart';
@@ -819,6 +820,7 @@ class _SessionViewState extends State<_SessionView> {
         focusNode: _focus,
         autofocus: widget.isActive,
         onKeyEvent: _handleKeyEvent,
+        onLinkTap: _openLink,
         textStyle: appearance.style,
         theme: appearance.theme,
         keyboardAppearance: appearance.brightness,
@@ -832,6 +834,11 @@ class _SessionViewState extends State<_SessionView> {
         padding: const EdgeInsets.all(6),
       ),
     );
+  }
+
+  Future<void> _openLink(Uri uri) async {
+    if (await openWebLink(uri) || !mounted) return;
+    showTopToastIn(context, message: 'Could not open link.');
   }
 
   /// Intercept a few shortcuts before the terminal consumes the keystroke: the

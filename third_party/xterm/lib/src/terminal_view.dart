@@ -1,4 +1,6 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -37,6 +39,7 @@ class TerminalView extends StatefulWidget {
     this.focusNode,
     this.autofocus = false,
     this.onTapUp,
+    this.onLinkTap,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.mouseCursor = SystemMouseCursors.text,
@@ -88,6 +91,10 @@ class TerminalView extends StatefulWidget {
 
   /// Callback for when the user taps on the terminal.
   final void Function(TapUpDetails, CellOffset)? onTapUp;
+
+  /// [seance fork] Opens visible HTTP(S) links on Ctrl-click (Cmd-click on
+  /// Apple platforms) or touch tap. Plain mouse clicks retain selection behavior.
+  final ValueChanged<Uri>? onLinkTap;
 
   /// Function called when the user taps on the terminal with a secondary
   /// button.
@@ -159,6 +166,9 @@ class TerminalViewState extends State<TerminalView> {
   final _viewportKey = GlobalKey();
 
   String? _composingText;
+
+  int _tapCount = 0;
+  Uri? _hoveredLink;
 
   /// [seance fork] The cell of the last plain primary click, kept as a
   /// content-glued buffer anchor so a later shift-click can select the range
@@ -328,7 +338,11 @@ class TerminalViewState extends State<TerminalView> {
     );
 
     child = MouseRegion(
-      cursor: widget.mouseCursor,
+      cursor: widget.onLinkTap != null && _hoveredLink != null
+          ? SystemMouseCursors.click
+          : widget.mouseCursor,
+      onHover: widget.onLinkTap == null ? null : _onLinkHover,
+      onExit: (_) => _setHoveredLink(null),
       child: child,
     );
 
@@ -358,12 +372,43 @@ class TerminalViewState extends State<TerminalView> {
         renderTerminal.cellSize;
   }
 
+  void _onLinkHover(PointerHoverEvent event) {
+    final offset = renderTerminal.getCellOffset(
+      renderTerminal.globalToLocal(event.position),
+    );
+    _setHoveredLink(widget.terminal.buffer.getLinkAt(offset));
+  }
+
+  void _setHoveredLink(Uri? link) {
+    if (_hoveredLink == link) return;
+    setState(() => _hoveredLink = link);
+  }
+
   void _onTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
+    final keys = HardwareKeyboard.instance;
+    final apple =
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    final linkGesture =
+        details.kind == PointerDeviceKind.touch ||
+        (apple ? keys.isMetaPressed : keys.isControlPressed);
+
+    // Only explicit link gestures open a browser; selection and remote mouse
+    // reporting retain ownership of their existing gestures.
+    if (widget.onLinkTap != null &&
+        _tapCount == 1 &&
+        linkGesture &&
+        !keys.isShiftPressed &&
+        !keys.isAltPressed) {
+      final link = widget.terminal.buffer.getLinkAt(offset);
+      if (link != null) widget.onLinkTap!(link);
+    }
     widget.onTapUp?.call(details, offset);
   }
 
   void _onTapDown(TapDownDetails details, int tapCount) {
+    _tapCount = tapCount;
     // [seance fork] Shift-click extends instead of clearing: from the live
     // selection's base if one exists, else from the last plain click.
     if (HardwareKeyboard.instance.isShiftPressed &&

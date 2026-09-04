@@ -236,6 +236,16 @@ what must be preserved.
     first survivor, detaches the trimmed slots, and advances
     `absoluteStartIndex` — exactly like a ring-buffer eviction.
 
+26. **Clickable web URLs** (`core/buffer/buffer.dart#getLinkAt`,
+    `terminal_view.dart#onLinkTap`; regressions: `link_test.dart`,
+    `link_gesture_test.dart`): HTTP(S) detection follows soft wraps and maps
+    wide characters to display cells. Prose punctuation is trimmed; credentials
+    and non-web schemes are rejected. Logical lines exceeding 16K cells are
+    skipped to bound hover work. Links show a hand cursor and activate on
+    Ctrl-click (Cmd-click on Apple platforms) or touch tap. Plain clicks,
+    shift-clicks, drags, and remote mouse reporting keep their existing behavior.
+    The app launches links externally and reports browser failures.
+
 ### App-layer notes (outside this package)
 
 - The app passes `shortcuts: {}` and instead routes ⌘C/⌘V/⌘A on

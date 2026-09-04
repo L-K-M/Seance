@@ -11,6 +11,15 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 import 'package:xterm/src/utils/unicode_v11.dart';
 
+// [seance fork] Only web URLs are actionable; terminal output is untrusted.
+final _webUrlPattern = RegExp(
+  r'''https?://[^\s<>"'`\x00-\x1f\x7f]+''',
+  caseSensitive: false,
+);
+const _trailingUrlPunctuation = '.,;:!?';
+const _urlBrackets = {')': '(', ']': '[', '}': '{'};
+const _maxLinkScanCells = 16 * 1024;
+
 class Buffer {
   final TerminalState terminal;
 
@@ -91,6 +100,81 @@ class Buffer {
 
   /// Absolute index of the last line in the scroll region.
   int get absoluteMarginBottom => _marginBottom + scrollBack;
+
+  /// [seance fork] Finds a visible HTTP(S) URL at a buffer cell, including
+  /// soft-wrapped continuations. Hard newlines never join separate URLs.
+  Uri? getLinkAt(CellOffset cell) {
+    if (cell.y < 0 || cell.y >= height || cell.x < 0 || cell.x >= viewWidth) {
+      return null;
+    }
+
+    // Bound hover work even when a remote prints an enormous unbroken line.
+    var first = cell.y;
+    var last = cell.y;
+    var scanCells = lines[first].length;
+    if (scanCells > _maxLinkScanCells) return null;
+    while (first > 0 && lines[first].isWrapped) {
+      first--;
+      scanCells += lines[first].length;
+      if (scanCells > _maxLinkScanCells) return null;
+    }
+    while (last + 1 < height && lines[last + 1].isWrapped) {
+      last++;
+      scanCells += lines[last].length;
+      if (scanCells > _maxLinkScanCells) return null;
+    }
+
+    // Map display cells to UTF-16 offsets, skipping wide-character fillers.
+    final text = StringBuffer();
+    int? hit;
+    for (var row = first; row <= last; row++) {
+      final line = lines[row];
+      for (var col = 0; col < line.length; col++) {
+        if (row == cell.y && col == cell.x) hit = text.length;
+        final codePoint = line.getCodePoint(col);
+        if (codePoint == 0 && col > 0 && line.getWidth(col - 1) == 2) {
+          if (row == cell.y && col == cell.x) hit = text.length - 1;
+          continue;
+        }
+        text.write(codePoint == 0 ? ' ' : String.fromCharCode(codePoint));
+      }
+    }
+    if (hit == null) return null;
+
+    final content = text.toString();
+    for (final match in _webUrlPattern.allMatches(content)) {
+      final candidate = match.group(0)!;
+      if (hit < match.start || hit >= match.end) continue;
+
+      // Strip prose punctuation, but retain balanced URL parentheses.
+      final unmatched = {
+        for (final pair in _urlBrackets.entries)
+          pair.key: pair.key.allMatches(candidate).length -
+              pair.value.allMatches(candidate).length,
+      };
+      var end = candidate.length;
+      while (end > 0) {
+        final char = candidate[end - 1];
+        if (_trailingUrlPunctuation.contains(char)) {
+          end--;
+          continue;
+        }
+        if ((unmatched[char] ?? 0) > 0) {
+          unmatched[char] = unmatched[char]! - 1;
+          end--;
+          continue;
+        }
+        break;
+      }
+      if (hit >= match.start + end) return null;
+
+      final uri = Uri.tryParse(candidate.substring(0, end));
+      if (uri == null || uri.host.isEmpty || uri.userInfo.isNotEmpty)
+        return null;
+      return uri;
+    }
+    return null;
+  }
 
   /// Writes data to the _terminal. Terminal sequences or special characters are
   /// not interpreted and directly added to the buffer.
