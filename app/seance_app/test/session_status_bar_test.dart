@@ -52,6 +52,12 @@ void main() {
 
           expect(tester.takeException(), isNull);
           expect(find.byTooltip(target), findsOneWidget);
+          final visibleTarget = tester.widget<Text>(find.descendant(
+            of: find.byTooltip(target),
+            matching: find.byType(Text),
+          ));
+          expect(visibleTarget.data, contains('…'));
+          expect(visibleTarget.data!.replaceAll('…', ''), isNotEmpty);
           expect(find.bySemanticsLabel(target), findsOneWidget);
           if (scale > 1) {
             expect(
@@ -62,7 +68,7 @@ void main() {
           if (cwd != null) {
             expect(find.bySemanticsLabel(cwd), findsOneWidget);
           }
-        });
+        }, semanticsEnabled: true);
       }
     }
   }
