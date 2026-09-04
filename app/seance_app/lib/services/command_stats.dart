@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:seance_core/seance_core.dart';
@@ -110,12 +111,31 @@ class CommandStatsStore {
 
   Future<CommandStats> load() async {
     if (!await file.exists()) return CommandStats();
+    final Map<String, dynamic> json;
+    final CommandStats stats;
     try {
-      return CommandStats.fromJson(
-          jsonDecode(await file.readAsString()) as Map<String, dynamic>);
+      json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      stats = CommandStats.fromJson(json);
     } catch (_) {
       return CommandStats();
     }
+
+    final oldCount = (json['counts'] as Map? ?? {}).length;
+    final oldDismissals = (json['dismissed'] as List? ?? []).length;
+    if (stats.counts.length == oldCount &&
+        stats.dismissed.length == oldDismissals) {
+      return stats;
+    }
+
+    // Scrub legacy records even when command capture is disabled after upgrade.
+    try {
+      await save(stats);
+    } on FileSystemException {
+      // Keep safe in-memory history usable; never log the rejected commands.
+      developer.log('Could not scrub command history; retry on next save.',
+          name: 'seance.command_stats');
+    }
+    return stats;
   }
 
   Future<void> save(CommandStats stats) async {

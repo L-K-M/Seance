@@ -12,7 +12,35 @@ const _secretCommands = [
   '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----',
 ];
 
+class _ReadOnlyStore extends CommandStatsStore {
+  _ReadOnlyStore(super.file);
+
+  @override
+  Future<void> save(CommandStats stats) async =>
+      throw const FileSystemException('Read-only test store');
+}
+
 void main() {
+  test('ordinary commands remain recordable', () {
+    final stats = CommandStats();
+    for (final command in ['git status', 'kubectl get pods', 'npm install']) {
+      expect(stats.record(command), isTrue);
+      expect(stats.countFor(command), 1);
+    }
+  });
+
+  test('failed disk cleanup preserves safe in-memory history', () async {
+    final dir = await Directory.systemTemp.createTemp('seance-history-');
+    addTearDown(() => dir.delete(recursive: true));
+    final file = File('${dir.path}/command_stats.json');
+    await file.writeAsString(jsonEncode({
+      'counts': {_secretCommands.first: 8, 'git status': 4},
+    }));
+    final stats = await _ReadOnlyStore(file).load();
+    expect(stats.counts, {'git status': 4});
+    expect(await file.exists(), isTrue);
+  });
+
   test('recognizable secrets never enter counts or dismissals', () {
     final stats = CommandStats();
     for (final command in _secretCommands) {
@@ -44,7 +72,7 @@ void main() {
     expect(stats.toJson(), {'counts': <String, int>{}, 'dismissed': <String>[]});
   });
 
-  test('saving a legacy file removes recognized secrets from disk', () async {
+  test('loading a legacy file removes recognized secrets from disk', () async {
     final dir = await Directory.systemTemp.createTemp('seance-history-');
     addTearDown(() => dir.delete(recursive: true));
     final file = File('${dir.path}/command_stats.json');
@@ -53,7 +81,8 @@ void main() {
       'dismissed': [_secretCommands.last],
     }));
     final store = CommandStatsStore(file);
-    await store.save(await store.load());
+    final stats = await store.load();
+    expect(stats.countFor('git status'), 4);
     expect(jsonDecode(await file.readAsString()), {
       'counts': {'git status': 4},
       'dismissed': <String>[],
