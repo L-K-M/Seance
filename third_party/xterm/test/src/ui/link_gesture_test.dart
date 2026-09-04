@@ -6,6 +6,7 @@ import 'package:xterm/xterm.dart';
 
 void main() {
   final url = Uri.parse('https://example.com');
+  // Outlast the fork's 400 ms multi-click window between independent gestures.
   const gestureTimeout = Duration(milliseconds: 600);
 
   Future<Offset> pumpTerminal(
@@ -84,12 +85,18 @@ void main() {
     await tester.pump(gestureTimeout);
     expect(controller.selection, isNotNull);
     expect(opened, isEmpty);
+    controller.clearSelection();
 
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-    await tester.tapAt(point, kind: PointerDeviceKind.mouse);
+    await tester.tapAt(point + const Offset(60, 0),
+        kind: PointerDeviceKind.mouse);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     await tester.pump(gestureTimeout);
+    expect(controller.selection, isNotNull);
+    expect(terminal.buffer.getText(controller.selection), isNotEmpty);
+    controller.clearSelection();
+
     await tester.dragFrom(
       point,
       const Offset(60, 0),
@@ -101,25 +108,32 @@ void main() {
     expect(controller.selection, isNotNull);
   });
 
-  testWidgets('mouse-reporting applications retain click ownership', (
-    tester,
-  ) async {
-    final terminal = Terminal();
-    final controller = TerminalController();
-    addTearDown(controller.dispose);
-    final opened = <Uri>[];
-    final point = await pumpTerminal(tester, terminal, controller, opened);
-    terminal.write('\x1b[?1000h\x1b[?1006h');
-    final output = <String>[];
-    terminal.onOutput = output.add;
+  const mouseReportingModes = {
+    'click-only': ('\x1b[?9h', 1),
+    'press/release': ('\x1b[?1000h', 2),
+  };
+  const sgrMouse = '\x1b[?1006h';
+  for (final mode in mouseReportingModes.entries) {
+    testWidgets('${mode.key} mouse reporting retains click ownership',
+        (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      addTearDown(controller.dispose);
+      final opened = <Uri>[];
+      final point = await pumpTerminal(tester, terminal, controller, opened);
+      terminal.write('${mode.value.$1}$sgrMouse');
+      final output = <String>[];
+      terminal.onOutput = output.add;
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-    await tester.tapAt(point, kind: PointerDeviceKind.mouse);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-    await tester.pump(gestureTimeout);
-    expect(opened, isEmpty);
-    expect(output, hasLength(2));
-  });
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.tapAt(point, kind: PointerDeviceKind.mouse);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump(gestureTimeout);
+      expect(opened, isEmpty);
+      expect(output, hasLength(mode.value.$2));
+      expect(output.every((event) => event.startsWith('\x1b[<')), isTrue);
+    });
+  }
 
   for (final update in {
     'mouse reporting': '\x1b[?1000h',

@@ -104,7 +104,7 @@ class Buffer {
   /// [seance fork] Finds a visible HTTP(S) URL at a buffer cell, including
   /// soft-wrapped continuations. Hard newlines never join separate URLs.
   Uri? getLinkAt(CellOffset cell) {
-    if (cell.y < 0 || cell.y >= height || cell.x < 0 || cell.x >= viewWidth) {
+    if (cell.y < 0 || cell.y >= lines.length || cell.x < 0 || cell.x >= viewWidth) {
       return null;
     }
 
@@ -118,7 +118,7 @@ class Buffer {
       scanCells += lines[first].length;
       if (scanCells > _maxLinkScanCells) return null;
     }
-    while (last + 1 < height && lines[last + 1].isWrapped) {
+    while (last + 1 < lines.length && lines[last + 1].isWrapped) {
       last++;
       scanCells += lines[last].length;
       if (scanCells > _maxLinkScanCells) return null;

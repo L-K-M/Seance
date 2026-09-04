@@ -245,7 +245,8 @@ what must be preserved.
     Ctrl-click (Cmd-click on Apple platforms) or touch tap. Plain clicks,
     shift-clicks, drags, and remote mouse reporting keep their existing behavior.
     Hover hints clear on output, scrolling, or controller changes and stay
-    hidden where remote mouse reporting owns the tap. The app launches links
+    hidden where remote mouse reporting owns the tap, including click-only
+    reporting (which leaves releases unconsumed). The app launches links
     externally and reports browser failures.
 
 ### App-layer notes (outside this package)

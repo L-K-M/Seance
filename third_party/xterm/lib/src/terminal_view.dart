@@ -392,13 +392,16 @@ class TerminalViewState extends State<TerminalView> {
     final offset = renderTerminal.getCellOffset(
       renderTerminal.globalToLocal(event.position),
     );
-    final terminal = widget.terminal;
-    final remoteOwnsTap = !widget.readOnly &&
-        _controller.shouldSendPointerInput(PointerInput.tap) &&
-        terminal.mouseMode != MouseMode.none &&
-        offset.y >= terminal.buffer.scrollBack;
-    _setHoveredLink(remoteOwnsTap ? null : terminal.buffer.getLinkAt(offset));
+    _setHoveredLink(_remoteOwnsTapAt(offset)
+        ? null
+        : widget.terminal.buffer.getLinkAt(offset));
   }
+
+  bool _remoteOwnsTapAt(CellOffset offset) =>
+      !widget.readOnly &&
+      _controller.shouldSendPointerInput(PointerInput.tap) &&
+      widget.terminal.mouseMode != MouseMode.none &&
+      offset.y >= widget.terminal.buffer.scrollBack;
 
   void _invalidateLinkHover() {
     if (_hoveredLink == null || _hoverInvalidationPending) return;
@@ -427,13 +430,14 @@ class TerminalViewState extends State<TerminalView> {
         details.kind == PointerDeviceKind.touch ||
         (apple ? keys.isMetaPressed : keys.isControlPressed);
 
-    // Only explicit link gestures open a browser; selection and remote mouse
-    // reporting retain ownership of their existing gestures.
+    // Click-only mouse reporting consumes DOWN but not UP. Keep that release
+    // from opening a browser even when the gesture handler passes it through.
     if (widget.onLinkTap != null &&
         _tapCount == 1 &&
         linkGesture &&
         !keys.isShiftPressed &&
-        !keys.isAltPressed) {
+        !keys.isAltPressed &&
+        !_remoteOwnsTapAt(offset)) {
       final link = widget.terminal.buffer.getLinkAt(offset);
       if (link != null) widget.onLinkTap!(link);
     }
