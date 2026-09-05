@@ -553,7 +553,6 @@ class AppServices {
     }
   }
 
-  /// Build the web-search backend for the chat tool, if one is configured.
   /// The chat tool's web search: every configured backend, merged.
   ///
   /// Configured means used, rather than a priority order that would quietly

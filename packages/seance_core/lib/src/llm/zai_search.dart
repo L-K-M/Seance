@@ -38,18 +38,28 @@ class ZaiSearch implements SearchProvider {
   /// gateway error page, and neither is worth the memory.
   static const int maxResponseBytes = 2 * 1024 * 1024;
 
+  /// How many pages of `tools/list` to walk. MCP paginates, and a server that
+  /// keeps handing back a cursor should stop the handshake rather than spin
+  /// it. Z.AI advertises a handful of tools; this is slack, not a budget.
+  static const int maxToolPages = 20;
+
   final String apiKey;
   final String endpoint;
   final Duration timeout;
   final http.Client _client;
 
   /// Headers the session has accumulated: the negotiated protocol version and,
-  /// once the server issues one, its session id.
-  final Map<String, String> _session = {};
+  /// once the server issues one, its session id. Replaced wholesale by a
+  /// completed handshake, never edited by one in progress.
+  Map<String, String> _session = const {};
 
-  /// The advertised search tool, or null before the handshake.
-  Map<String, dynamic>? _tool;
-  Future<void>? _handshake;
+  /// The handshake, and through it the advertised search tool.
+  ///
+  /// The tool is the future's *value* rather than a field beside it: with a
+  /// field, a concurrent reset could null it between the handshake completing
+  /// and the caller reading it, and the read was a `!`. There is no window to
+  /// lose here.
+  Future<Map<String, dynamic>>? _handshake;
   int _nextId = 0;
 
   ZaiSearch({
@@ -79,19 +89,20 @@ class ZaiSearch implements SearchProvider {
   }
 
   Future<List<SearchResult>> _attempt(String query, int limit) async {
-    await _ensureHandshake();
-    return _callSearch(query, limit);
+    return _callSearch(await _ensureHandshake(), query, limit);
   }
 
   /// Forget the negotiated session so the next search starts a new one.
   void _reset() {
-    _session.clear();
-    _tool = null;
+    _session = const {};
     _handshake = null;
   }
 
-  Future<List<SearchResult>> _callSearch(String query, int limit) async {
-    final tool = _tool!;
+  Future<List<SearchResult>> _callSearch(
+    Map<String, dynamic> tool,
+    String query,
+    int limit,
+  ) async {
     final result = await _call('tools/call', {
       'name': tool['name'],
       'arguments': buildArguments(
@@ -101,22 +112,30 @@ class ZaiSearch implements SearchProvider {
       ),
     });
     if (result['isError'] == true) {
+      // The tool's own text, unlike a gateway error page: this is written by
+      // the search server for a person to read ("quota exceeded"), and it is
+      // the only place that says *which* of key, plan and quota is the
+      // problem. A transport body still never gets quoted — that one can echo
+      // the request, Authorization header included.
+      final detail = _textBlocks(result['content']).join(' ').trim();
       throw http.ClientException(
-        'Z.AI search failed. Check the search key, Coding Plan access, '
-        'and quota.',
+        detail.isEmpty
+            ? 'Z.AI search failed. Check the search key, Coding Plan access, '
+                'and quota.'
+            : 'Z.AI search failed: $detail',
       );
     }
     return parseToolResult(result, limit);
   }
 
   /// Run the handshake once, and let concurrent callers await the same one.
-  Future<void> _ensureHandshake() async {
+  Future<Map<String, dynamic>> _ensureHandshake() async {
     final pending = _handshake;
     if (pending != null) return pending;
     final attempt = _runHandshake();
     _handshake = attempt;
     try {
-      await attempt;
+      return await attempt;
     } catch (_) {
       // A failed handshake must never stay cached as "done", or every later
       // search on this instance fails without retrying. Cleared by identity:
@@ -127,25 +146,50 @@ class ZaiSearch implements SearchProvider {
     }
   }
 
-  Future<void> _runHandshake() async {
-    final initialized = await _call('initialize', {
-      'protocolVersion': protocolVersion,
-      'capabilities': <String, dynamic>{},
-      'clientInfo': {'name': 'seance', 'version': '1'},
-    });
-    _session['mcp-protocol-version'] =
+  Future<Map<String, dynamic>> _runHandshake() async {
+    // Staged locally and published only on success. A handshake that edited
+    // `_session` as it went could have its freshly negotiated id wiped by a
+    // *second* caller's expiry reset arriving mid-flight, and would then send
+    // its own next request without one.
+    final staged = <String, String>{};
+    final initialized = await _call(
+      'initialize',
+      {
+        'protocolVersion': protocolVersion,
+        'capabilities': <String, dynamic>{},
+        'clientInfo': {'name': 'seance', 'version': '1'},
+      },
+      session: staged,
+    );
+    staged['mcp-protocol-version'] =
         initialized['protocolVersion'] as String? ?? protocolVersion;
     // A notification: no id, so no reply to match. The server acknowledges
     // with 202 and an empty body.
-    await _send({'jsonrpc': '2.0', 'method': 'notifications/initialized'});
+    await _send(
+      {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
+      session: staged,
+    );
 
-    final listing = await _call('tools/list', const <String, dynamic>{});
-    final tools = (listing['tools'] as List?) ?? const [];
+    final tools = <Map>[];
+    String? cursor;
+    // MCP paginates tool listings. Bounded so a server that keeps handing
+    // back a cursor cannot spin here forever.
+    for (var page = 0; page < maxToolPages; page++) {
+      final listing = await _call(
+        'tools/list',
+        cursor == null ? const <String, dynamic>{} : {'cursor': cursor},
+        session: staged,
+      );
+      tools.addAll(((listing['tools'] as List?) ?? const []).whereType<Map>());
+      cursor = listing['nextCursor'] as String?;
+      if (cursor == null || cursor.isEmpty) break;
+    }
+
     for (final name in toolNames) {
-      for (final tool in tools.whereType<Map>()) {
+      for (final tool in tools) {
         if (tool['name'] == name) {
-          _tool = tool.cast<String, dynamic>();
-          return;
+          _session = Map.unmodifiable(staged);
+          return tool.cast<String, dynamic>();
         }
       }
     }
@@ -158,15 +202,16 @@ class ZaiSearch implements SearchProvider {
   /// One JSON-RPC request/response pair, returning the `result` object.
   Future<Map<String, dynamic>> _call(
     String method,
-    Map<String, dynamic> params,
-  ) async {
+    Map<String, dynamic> params, {
+    Map<String, String>? session,
+  }) async {
     final id = ++_nextId;
     final message = await _send({
       'jsonrpc': '2.0',
       'id': id,
       'method': method,
       'params': params,
-    }, id: id);
+    }, id: id, session: session);
     return readRpcResult(message, method: method, id: id);
   }
 
@@ -175,24 +220,28 @@ class ZaiSearch implements SearchProvider {
   Future<Map<String, dynamic>?> _send(
     Map<String, dynamic> payload, {
     int? id,
+    Map<String, String>? session,
   }) async {
+    final headers = session ?? _session;
     final request = http.Request('POST', Uri.parse(endpoint))
       ..headers.addAll({
         'content-type': 'application/json',
         // The server picks per reply, so both have to be acceptable.
         'accept': 'application/json, text/event-stream',
         'authorization': 'Bearer $apiKey',
-        ..._session,
+        ...headers,
       })
       ..body = jsonEncode(payload);
 
     final response = await _client.send(request).timeout(timeout);
     // Case-insensitive by contract in package:http, so this is the header the
     // server sent whatever case it used.
-    final session = response.headers['mcp-session-id'];
-    if (session != null) _session['mcp-session-id'] = session;
+    final issued = response.headers['mcp-session-id'];
+    // Only a staged (in-handshake) map is written to; the published one is
+    // replaced wholesale when the handshake completes.
+    if (issued != null && session != null) session['mcp-session-id'] = issued;
 
-    if (response.statusCode == 404 && _session.containsKey('mcp-session-id')) {
+    if (response.statusCode == 404 && headers.containsKey('mcp-session-id')) {
       await response.stream.drain<void>();
       throw const _SessionExpired();
     }
@@ -208,7 +257,11 @@ class ZaiSearch implements SearchProvider {
 
     final contentType = response.headers['content-type'] ?? '';
     if (contentType.contains('text/event-stream')) {
-      final message = await readSseRpcMessage(response.stream, id);
+      // The send timeout only covers the headers. Streamable HTTP lets a
+      // server hold a stream open, so without a deadline here a proxy that
+      // answers 200 and then stalls hangs the caller for good.
+      final message =
+          await readSseRpcMessage(response.stream, id).timeout(timeout);
       if (message == null && id != null) {
         throw http.ClientException(
           'Z.AI closed the search stream before answering.',
@@ -217,9 +270,18 @@ class ZaiSearch implements SearchProvider {
       return message;
     }
 
-    final body = await _readBounded(response.stream);
+    final body = await _readBounded(response.stream).timeout(timeout);
     if (body.trim().isEmpty) return null;
-    final decoded = jsonDecode(body);
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(body);
+    } on FormatException {
+      // A gateway that answers 200 with an HTML error page reaches here. It
+      // is the same failure as a reply of the wrong shape, and deserves the
+      // same error rather than a raw decode exception the caller cannot
+      // classify.
+      throw http.ClientException('Z.AI returned an unexpected search reply.');
+    }
     if (decoded is! Map<String, dynamic>) {
       throw http.ClientException('Z.AI returned an unexpected search reply.');
     }
@@ -260,7 +322,15 @@ class ZaiSearch implements SearchProvider {
       if (data.isEmpty) return null;
       final payload = data.join('\n');
       data.clear();
-      final decoded = jsonDecode(payload);
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(payload);
+      } on FormatException {
+        // Not every data event is a JSON-RPC message: heartbeats, banners and
+        // a bare `data:` line are all legal SSE. Skipping is what the walk
+        // past unrelated events is for.
+        return null;
+      }
       if (decoded is! Map<String, dynamic>) return null;
       // A server may interleave other messages (a notification, a ping)
       // before the answer; only the matching id ends the read.

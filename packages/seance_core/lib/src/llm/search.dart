@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:http/http.dart' as http;
 
@@ -120,11 +121,22 @@ class CompositeSearch implements SearchProvider {
       providers.map((p) async {
         try {
           return await p.search(query, limit: limit);
-        } catch (error) {
+        } catch (error, stackTrace) {
           // One backend being down, rate-limited or misconfigured should not
           // take the search with it. If *every* one failed, the error is
           // re-raised below rather than reported as "nothing found".
-          return error;
+          //
+          // Logged either way: a partial failure is invisible from the
+          // outside — an expired key alongside a working backend just looks
+          // like worse results — so this is the only record it happened.
+          developer.log(
+            'Web search backend failed: $error',
+            name: _searchLoggerName,
+            level: _warningLogLevel,
+            error: error,
+            stackTrace: stackTrace,
+          );
+          return _Failure(error, stackTrace);
         }
       }),
     );
@@ -134,8 +146,14 @@ class CompositeSearch implements SearchProvider {
       // "nothing found", which is a different answer and a misleading one for
       // what is a configuration or outage problem. With no backends at all
       // there is nothing to raise and nothing to find.
-      final failure = answers.firstOrNull;
-      if (failure != null) throw failure;
+      //
+      // With its original stack: rethrowing the bare object would point at
+      // this loop instead of at the HTTP or parse failure inside the backend,
+      // which is exactly the case this branch exists to make legible.
+      final failure = answers.whereType<_Failure>().firstOrNull;
+      if (failure != null) {
+        Error.throwWithStackTrace(failure.error, failure.stackTrace);
+      }
       return const [];
     }
 
@@ -155,4 +173,15 @@ class CompositeSearch implements SearchProvider {
     }
     return merged;
   }
+}
+
+const int _warningLogLevel = 900;
+const String _searchLoggerName = 'seance.search';
+
+/// One backend's failure, kept with its stack so [CompositeSearch] can re-raise
+/// it as it was thrown rather than as it was collected.
+class _Failure {
+  final Object error;
+  final StackTrace stackTrace;
+  const _Failure(this.error, this.stackTrace);
 }

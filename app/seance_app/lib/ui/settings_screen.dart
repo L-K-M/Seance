@@ -801,17 +801,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _save(AppState state) async {
     setState(() => _saving = true);
     final s = state.services.settings;
-    s.llmKind = _kind;
-    s.llmBaseUrl = _baseUrl.text.trim();
-    s.llmModel = _model.text.trim();
-    s.redactionEnabled = _redaction;
-    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
-    // The reference is what switches the backend on; turning it off leaves the
-    // key in the keystore rather than deleting it, like every other key here.
-    s.zaiApiKeyRef = _zai ? _zaiKeyRef : null;
     // Store the API key under a per-provider name.
     final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
-    s.llmApiKeyRef = ref;
+
+    // Keys first, settings after. A keystore failure returns without saving,
+    // and the settings object is the one the running app reads — leaving it
+    // mutated to say "Z.AI is on" behind a key that never landed would make
+    // the failed save take effect anyway, until the next launch.
     if (_zai && _zaiApiKey.text.isNotEmpty) {
       try {
         await state.services.masterKeys.putApiKey(_zaiKeyRef, _zaiApiKey.text);
@@ -834,12 +830,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return;
       }
     }
+
+    s.llmKind = _kind;
+    s.llmBaseUrl = _baseUrl.text.trim();
+    s.llmModel = _model.text.trim();
+    s.llmApiKeyRef = ref;
+    s.redactionEnabled = _redaction;
+    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
+    // The reference is what switches the backend on; turning it off leaves the
+    // key in the keystore rather than deleting it, like every other key here.
+    s.zaiApiKeyRef = _zai ? _zaiKeyRef : null;
+    // Turning the switch on with the field left blank and nothing stored is
+    // the one way to end up with a backend that reads as on and is silently
+    // skipped on every search. Reported rather than blocked: the rest of this
+    // page has been saved, and a locked keyring — which also answers null —
+    // is not a reason to refuse a model change.
+    final zaiWithoutKey = _zai &&
+        await state.services.masterKeys.getApiKey(_zaiKeyRef) == null;
+
     await state.services.saveSettings();
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();
     if (mounted) {
       setState(() => _saving = false);
-      showTopToastIn(context, message: 'Saved');
+      showTopToastIn(
+        context,
+        message: zaiWithoutKey
+            ? 'Saved — but Z.AI search has no key stored, so it will be '
+                  'skipped. Enter one above.'
+            : 'Saved',
+      );
     }
   }
 

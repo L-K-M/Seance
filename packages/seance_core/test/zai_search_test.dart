@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -40,9 +41,19 @@ const Map<String, dynamic> _results = {
 /// to answer over SSE or to fail in each of the shapes the real gateway does.
 class FakeMcpServer {
   final bool sse;
+
+  /// Emit non-JSON events (a heartbeat, a bare `data:` line) alongside the
+  /// real one — all legal SSE, none of them JSON-RPC.
+  final bool noise;
   final String? sessionId;
   final List<String> methods = [];
   final List<Map<String, String>> headers = [];
+  final List<http.BaseRequest> requests = [];
+
+  /// Pages of extra tools to hand back before the real listing, to exercise
+  /// `tools/list` pagination.
+  int extraToolPages = 0;
+  int _toolPagesServed = 0;
   Map<String, dynamic>? lastArguments;
 
   /// Replies substituted for a method, by name (a gateway envelope, an error).
@@ -51,9 +62,14 @@ class FakeMcpServer {
   /// Answer 404 to this many `tools/call`s, as a retired session id does.
   int expireSession = 0;
 
-  FakeMcpServer({this.sse = false, this.sessionId = 'session-1'});
+  FakeMcpServer({
+    this.sse = false,
+    this.noise = false,
+    this.sessionId = 'session-1',
+  });
 
   http.Client get client => MockClient.streaming((request, body) async {
+        requests.add(request);
         headers.add(Map.of(request.headers));
         final payload =
             jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
@@ -81,6 +97,15 @@ class FakeMcpServer {
       case 'initialize':
         return {'protocolVersion': '2025-06-18'};
       case 'tools/list':
+        if (_toolPagesServed < extraToolPages) {
+          _toolPagesServed++;
+          return {
+            'tools': [
+              {'name': 'page_$_toolPagesServed', 'inputSchema': const {}},
+            ],
+            'nextCursor': 'cursor-$_toolPagesServed',
+          };
+        }
         return {
           'tools': [
             {'name': 'unrelated_tool', 'inputSchema': const {}},
@@ -120,7 +145,18 @@ class FakeMcpServer {
   String _asSse(String body) {
     final pretty = const JsonEncoder.withIndent('  ').convert(jsonDecode(body));
     final data = pretty.split('\n').map((line) => 'data: $line').join('\n');
-    return 'event: message\n'
+    final heartbeat = noise
+        ? ': keep-alive\n'
+            '\n'
+            'event: message\n'
+            'data: ping\n'
+            '\n'
+            'event: message\n'
+            'data:\n'
+            '\n'
+        : '';
+    return '$heartbeat'
+        'event: message\n'
         'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n'
         '\n'
         'event: message\n'
@@ -147,6 +183,18 @@ void main() {
         'tools/call',
       ]);
       expect(server.headers.first['authorization'], 'Bearer zai-key');
+      // Every MCP message is a POST to the one endpoint. Without this, a
+      // refactor that changed either would surface as an opaque crash inside
+      // the fake rather than as a failed expectation.
+      expect(server.requests.map((r) => r.method).toSet(), {'POST'});
+      expect(
+        server.requests.map((r) => r.url.toString()).toSet(),
+        {ZaiSearch.defaultEndpoint},
+      );
+      expect(
+        server.headers.first['content-type'],
+        contains('application/json'),
+      );
       // The version the *server* answered with, not the one we proposed, and
       // the session id it handed back in a header.
       expect(server.headers.last['mcp-protocol-version'], '2025-06-18');
@@ -243,7 +291,10 @@ void main() {
       };
       final search = ZaiSearch(apiKey: 'k', client: server.client);
 
-      await expectLater(search.search('dart'), throwsA(isA<Exception>()));
+      await expectLater(
+        search.search('dart'),
+        throwsA(isA<http.ClientException>()),
+      );
       server.overrides.clear();
       expect(await search.search('dart'), isNotEmpty);
     });
@@ -266,6 +317,69 @@ void main() {
       );
     });
 
+    test('a paginated tool listing is walked to the end', () async {
+      // MCP paginates tool listings; a search tool on page two must still be
+      // found rather than reported as "no web search tool".
+      final server = FakeMcpServer()..extraToolPages = 2;
+      final results =
+          await ZaiSearch(apiKey: 'k', client: server.client).search('dart');
+
+      expect(results, isNotEmpty);
+      expect(server.methods.where((m) => m == 'tools/list').length, 3);
+    });
+
+    test('a non-JSON event in the stream is walked past, not fatal', () async {
+      // Heartbeats, banners and a bare `data:` line are all legal SSE. One of
+      // them must not turn a recoverable stream into a raw FormatException.
+      final server = FakeMcpServer(sse: true, noise: true);
+      final results =
+          await ZaiSearch(apiKey: 'k', client: server.client).search('dart');
+      expect(results.map((r) => r.url), contains('https://dart.dev/3'));
+    });
+
+    test('a 200 that is not JSON fails like any other bad reply', () async {
+      // A gateway answering with an HTML error page is the same failure as a
+      // reply of the wrong shape, and deserves the same error type.
+      final client = MockClient.streaming((request, body) async =>
+          http.StreamedResponse(
+            Stream.value(utf8.encode('<html>gateway error</html>')),
+            200,
+            headers: {'content-type': 'text/html'},
+          ));
+      await expectLater(
+        ZaiSearch(apiKey: 'k', client: client).search('dart'),
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('unexpected search reply'),
+          ),
+        ),
+      );
+    });
+
+    test('a stalled body times out instead of hanging', () async {
+      // send() resolves when the *headers* arrive. Streamable HTTP lets a
+      // server hold the stream open, so a proxy that answers 200 and then
+      // says nothing would otherwise wedge the caller for good.
+      final stalled = StreamController<List<int>>();
+      addTearDown(stalled.close);
+      final client = MockClient.streaming((request, body) async =>
+          http.StreamedResponse(
+            stalled.stream,
+            200,
+            headers: {'content-type': 'application/json'},
+          ));
+      await expectLater(
+        ZaiSearch(
+          apiKey: 'k',
+          client: client,
+          timeout: const Duration(milliseconds: 50),
+        ).search('dart'),
+        throwsA(isA<TimeoutException>()),
+      );
+    });
+
     test('an errored tool result is a failure, not an empty answer', () async {
       final server = FakeMcpServer();
       server.overrides['tools/call'] = {
@@ -279,7 +393,15 @@ void main() {
       };
       await expectLater(
         ZaiSearch(apiKey: 'k', client: server.client).search('dart'),
-        throwsA(isA<http.ClientException>()),
+        throwsA(
+          // The tool's own words, unlike a transport body: this is the only
+          // place that says *which* of key, plan and quota is the problem.
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('quota exceeded'),
+          ),
+        ),
       );
     });
 
@@ -379,8 +501,12 @@ void main() {
             {'title': 'b', 'link': 'https://y', 'content': '3'},
           ],
         },
-      }, 1);
-      expect(results.map((r) => r.url), ['https://x']);
+      }, 2);
+      // Two slots and three raw items, one of them a repeat. Asked with a
+      // limit of 1 this could not tell "dedupe then limit" from "limit then
+      // dedupe"; at 2 it can — the duplicate must not eat a slot 'y' should
+      // have had.
+      expect(results.map((r) => r.url), ['https://x', 'https://y']);
     });
 
     test('prose is returned rather than silently dropped', () {
@@ -424,6 +550,32 @@ void main() {
         _Fixed([_hit('https://a')]),
       ]).search('q');
       expect(results.map((r) => r.url), ['https://a']);
+
+      // Any backend error is contained, not only the transport ones: a parse
+      // failure in one backend is no more the others' problem.
+      expect(
+        await CompositeSearch([
+          _Broken(const FormatException('bad payload')),
+          _Fixed([_hit('https://a')]),
+        ]).search('q'),
+        isNotEmpty,
+      );
+    });
+
+    test('the raised failure keeps the backend it came from', () async {
+      // Rethrowing the bare object would point the stack at the merge loop
+      // instead of at the backend that failed, in exactly the case this
+      // branch exists to make legible.
+      await expectLater(
+        CompositeSearch([_Broken()]).search('q'),
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            'backend down',
+          ),
+        ),
+      );
     });
 
     test('all backends failing is an error, not an empty answer', () async {
@@ -453,7 +605,10 @@ class _Fixed implements SearchProvider {
 }
 
 class _Broken implements SearchProvider {
+  final Object? error;
+  _Broken([this.error]);
+
   @override
   Future<List<SearchResult>> search(String query, {int limit = 5}) async =>
-      throw http.ClientException('backend down');
+      throw error ?? http.ClientException('backend down');
 }
