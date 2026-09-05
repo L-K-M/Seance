@@ -116,9 +116,18 @@ class SyncCoordinator {
 
   /// Retract a server the user has excluded from sync: tombstone its record,
   /// and its credential's, so a copy pushed before the exclusion comes off the
-  /// server — and off the devices that pulled it. Doing nothing instead would
-  /// leave the blob on the server forever while this device silently stopped
-  /// updating it, which is a worse answer than either syncing or not.
+  /// server — and off the devices that pulled it, which apply both tombstones
+  /// (see [_applySecretTombstones]). Doing nothing instead would leave the
+  /// blob on the server forever while this device silently stopped updating
+  /// it, which is a worse answer than either syncing or not.
+  ///
+  /// The record id is `secret:` + [ServerConfig.secretRef], which is the same
+  /// id [collectLocal] pushes under: [SecretVault.putSecret] keys the blob by
+  /// `secret.id` and serializes that same id inside it, so a secret read back
+  /// through a ref always reports that ref as its id. Resolving the ref
+  /// through the vault here to "be sure" would trade a guaranteed match for a
+  /// decryption that throws when the OS keyring is locked — turning a locked
+  /// keyring into a silently skipped retraction.
   ///
   /// Dated at [ServerConfig.updatedAt] rather than "now" for two reasons.
   /// Excluding a server *is* an edit, so that timestamp already is the moment
@@ -163,11 +172,25 @@ class SyncCoordinator {
     // A server excluded from sync is local-only, so nothing pulled may touch
     // it: not the tombstone this device pushed to retract it (which comes back
     // on the next pull sequenced by the server), and not a copy another device
-    // is still pushing because it has not seen that tombstone yet.
+    // is still pushing because it has not seen that tombstone yet. Its
+    // credential is shielded on the same grounds — a stale remote version of
+    // it would otherwise overwrite the vault entry of a local-only server.
+    final localServers = await configStore.listServers();
     final excluded = <String>{
-      for (final server in await configStore.listServers())
+      for (final server in localServers)
         if (server.excludeFromSync) server.id,
     };
+    final excludedSecretIds = <String>{
+      for (final server in localServers)
+        if (server.excludeFromSync && server.secretRef != null)
+          '$_secretIdPrefix${server.secretRef}',
+    };
+    // Secret tombstones are decided after the loop rather than inside it:
+    // whether one may be applied depends on whether any server still
+    // references that credential, and a config tombstone in the same batch may
+    // be about to remove the last reference. Record order is not defined, so
+    // deciding inline would make the outcome depend on it.
+    final secretTombstones = <String>[];
     final skippedIds = <String>[];
     Object? firstError;
     StackTrace? firstStackTrace;
@@ -176,12 +199,17 @@ class SyncCoordinator {
       try {
         final dec = await codec.decrypt(enc);
 
-        // Tombstones have no encrypted kind. Preserve legacy bare-id server
-        // deletion; prefixed tombstones remain no-ops pending per-kind delete.
+        // Tombstones have no encrypted kind, so the id prefix is what routes
+        // them. Bare ids are the legacy server-deletion form; `secret:` is
+        // handled after the loop; other prefixes remain no-ops pending a
+        // per-kind delete for them.
         if (dec.deleted) {
-          if (!dec.id.contains(_recordKindDelimiter) &&
-              !excluded.contains(dec.id)) {
-            await configStore.deleteServer(dec.id);
+          if (!dec.id.contains(_recordKindDelimiter)) {
+            if (!excluded.contains(dec.id)) {
+              await configStore.deleteServer(dec.id);
+            }
+          } else if (dec.id.startsWith(_secretIdPrefix)) {
+            secretTombstones.add(dec.id);
           }
           continue;
         }
@@ -195,6 +223,7 @@ class SyncCoordinator {
             await hostKeyStore.put(HostKey.fromJson(dec.data));
           case RecordKind.secret:
             if (!syncSecrets || secretVault == null) continue;
+            if (excludedSecretIds.contains(dec.id)) continue;
 
             await secretVault!.putSecret(Secret.fromJson(dec.data));
           case RecordKind.snippet:
@@ -213,6 +242,8 @@ class SyncCoordinator {
       }
     }
 
+    await _applySecretTombstones(secretTombstones);
+
     if (skippedIds.isEmpty) return;
 
     developer.log(
@@ -222,6 +253,33 @@ class SyncCoordinator {
       error: firstError,
       stackTrace: firstStackTrace,
     );
+  }
+
+  /// Withdraw vault entries whose records were tombstoned — but only the ones
+  /// no local server still points at.
+  ///
+  /// Deleting a credential is the one apply a later round cannot undo, so it
+  /// is deliberately conservative. On the device that *made* the retraction,
+  /// the excluded server still references its credential, and that reference
+  /// is exactly what keeps it — the whole point is that this device keeps
+  /// working. On the other device the config tombstone in the same batch has
+  /// already removed the last reference, so the credential goes rather than
+  /// lingering as an orphan nothing can name and nothing will ever clean up.
+  ///
+  /// Gated on [syncSecrets] like every other secret path: a user who has
+  /// turned credential sync off has said remote secret records are not to
+  /// touch their vault, and a delete is not the exception to that.
+  Future<void> _applySecretTombstones(List<String> ids) async {
+    final vault = secretVault;
+    if (ids.isEmpty || !syncSecrets || vault == null) return;
+    final referenced = <String>{
+      for (final server in await configStore.listServers())
+        if (server.secretRef != null) '$_secretIdPrefix${server.secretRef}',
+    };
+    for (final id in ids) {
+      if (referenced.contains(id)) continue;
+      await vault.deleteSecret(id.substring(_secretIdPrefix.length));
+    }
   }
 
   /// One full synchronization round.
