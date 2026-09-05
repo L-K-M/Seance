@@ -1,6 +1,11 @@
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart' show SSHAuthFailError;
+// ignore: implementation_imports — pinning the exact toString
+// dartssh2 prints is the point: the barrel does not export the
+// message, and asserting against a hand-written copy of it would
+// prove the pattern against itself rather than the dependency.
+import 'package:dartssh2/src/message/msg_userauth.dart';
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
 
@@ -332,7 +337,11 @@ void main() {
       // from a password manager can carry a line break, and `.` does not match
       // one — so without dotAll the match ends at the break and the rest of
       // the password lands in the transcript verbatim.
-      for (final breakChar in ['\n', '\r', '\u2028']) {
+      // All four terminators a Dart `.` refuses without dotAll — U+2029
+      // included, since this loop is the specification for what the redaction
+      // has to span and a later "simplification" that enumerated them would
+      // otherwise leave one out.
+      for (final breakChar in ['\n', '\r', '\u2028', '\u2029']) {
         final log = SshConnectionLog();
         log.add('-> sock: SSH_Message_Userauth_InfoResponse'
             '(responses: [pas${breakChar}sword])');
@@ -351,6 +360,35 @@ void main() {
       log.add('second');
       expect(lines, hasLength(2));
       expect(() => lines.add('third'), throwsUnsupportedError);
+    });
+
+    test('the real message dartssh2 sends is the shape this scrubs', () {
+      // The one assertion that is not written against my reading of dartssh2:
+      // it builds the message the client actually sends and redacts its own
+      // toString, so an upgrade that changes the format fails here rather
+      // than at the fail-closed branch in production.
+      final log = SshConnectionLog();
+      log.add('-> sock: '
+          '${SSH_Message_Userauth_InfoResponse(responses: const [
+            'hunter2',
+            'second-answer',
+          ])}');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), isNot(contains('second-answer')));
+      expect(log.toString(), contains('[redacted]'));
+      expect(log.toString(), isNot(contains('does not recognize')));
+    });
+
+    test('an InfoResponse this build cannot parse is withheld whole', () {
+      // Every test above is written against the shape dartssh2 prints today,
+      // so they pin the pattern to itself rather than to the dependency. A
+      // pub upgrade that changed it would make the pattern miss silently —
+      // this is what turns that into over-redaction instead of a leak.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(numResponses: 1, answers: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('does not recognize'));
     });
 
     test('redaction leaves an ordinary trace line untouched', () {
