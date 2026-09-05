@@ -49,6 +49,7 @@ class _ServerEditorState extends State<_ServerEditor> {
   late ServerIcon? _icon;
   bool _referenceKeyFile = true;
   late bool _syncSecret;
+  late bool _excludeFromSync;
   bool _busy = false;
 
   /// The security-scoped bookmark backing [_keyPath]'s current text, and the
@@ -88,6 +89,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     // New credentials default to syncable (a no-op until the global "sync saved
     // passwords & keys" is on); existing servers keep their stored choice.
     _syncSecret = e?.syncSecret ?? true;
+    _excludeFromSync = e?.excludeFromSync ?? false;
   }
 
   @override
@@ -169,6 +171,8 @@ class _ServerEditorState extends State<_ServerEditor> {
             ),
             const SizedBox(height: 8),
             ..._authFields(),
+            const SizedBox(height: 20),
+            ..._syncFields(),
             const SizedBox(height: 20),
             ..._loginScriptFields(),
             const SizedBox(height: 20),
@@ -374,15 +378,43 @@ class _ServerEditorState extends State<_ServerEditor> {
 
   /// Per-server opt-in for including this credential in sync. Gated globally by
   /// the "Sync saved passwords & keys" setting, so it's a no-op until that's on.
+  ///
+  /// Excluding the whole server settles the question, so the switch reads off
+  /// and takes no input then. What it *stores* is still the user's own choice
+  /// ([_syncSecret]) rather than the displayed false: clearing the exclusion
+  /// has to give them back the answer they picked, not silently opt their
+  /// credential out on the way through.
   Widget _syncSecretToggle() => SwitchListTile(
         contentPadding: EdgeInsets.zero,
         title: const Text('Allow this credential to sync'),
-        subtitle: const Text(
-            'End-to-end encrypted. Also needs sync set up with '
-            '"Sync saved passwords & keys" enabled.'),
-        value: _syncSecret,
-        onChanged: (v) => setState(() => _syncSecret = v),
+        subtitle: Text(_excludeFromSync
+            ? 'Not used while this server is excluded from sync.'
+            : 'End-to-end encrypted. Also needs sync set up with '
+                '"Sync saved passwords & keys" enabled.'),
+        value: _syncSecret && !_excludeFromSync,
+        onChanged:
+            _excludeFromSync ? null : (v) => setState(() => _syncSecret = v),
       );
+
+  /// Whether this server takes part in sync at all.
+  ///
+  /// Worth saying out loud in the subtitle, because "exclude" understates what
+  /// the switch does to a server that has already synced: the retraction is a
+  /// tombstone, so the other devices lose their copy. Only this device keeps
+  /// one, which is the point — but it is not something to find out afterwards.
+  List<Widget> _syncFields() => [
+        const Divider(),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Exclude from sync'),
+          subtitle: Text(_excludeFromSync
+              ? 'Kept on this device only. A copy that synced earlier is '
+                  'removed from the sync server and from your other devices.'
+              : 'Keep this server on this device only — never upload it.'),
+          value: _excludeFromSync,
+          onChanged: (v) => setState(() => _excludeFromSync = v),
+        ),
+      ];
 
   /// Pick an identity file. On macOS this also mints the security-scoped
   /// bookmark that keeps a key outside ~/.ssh readable across relaunches.
@@ -456,6 +488,7 @@ class _ServerEditorState extends State<_ServerEditor> {
       color: _color,
       icon: _icon,
       loginScript: normalizeLoginScript(_loginScript.text),
+      excludeFromSync: _excludeFromSync,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     );

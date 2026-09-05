@@ -445,4 +445,220 @@ void main() {
 
     expect(await hostKeys.get('nas.example.com', 22), same(key));
   });
+
+  group('exclude from sync', () {
+    /// The set of record ids a coordinator would push, and whether each is a
+    /// tombstone. Reading the local store after `collectLocal` is the only way
+    /// to see what a round *would* send without a server in the way.
+    Future<Map<String, bool>> collected(SyncCoordinator coordinator,
+        LocalRecordStore local) async {
+      await coordinator.collectLocal();
+      return {
+        for (final record in await local.allRecords()) record.id: record.deleted,
+      };
+    }
+
+    test('an excluded server is retracted instead of pushed', () async {
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      final local = InMemoryLocalRecordStore();
+      await configs.putServer(server('kept', 'alpha', 10));
+      await configs.putServer(
+        server('local-only', 'beta', 20).copyWith(
+          secretRef: 'sec-1',
+          excludeFromSync: true,
+        ),
+      );
+
+      final records = await collected(
+        SyncCoordinator(
+          configStore: configs,
+          hostKeyStore: InMemoryHostKeyStore(),
+          codec: codec,
+          local: local,
+          deviceId: 'A',
+        ),
+        local,
+      );
+
+      expect(records['kept'], isFalse, reason: 'a normal server still syncs');
+      // Not merely absent: the copy pushed before the exclusion has to come
+      // off the server, which only a tombstone does.
+      expect(records['local-only'], isTrue);
+      // And its credential with it, whatever the secret-sync settings say —
+      // this device cannot tell whether an earlier session pushed one.
+      expect(records['secret:sec-1'], isTrue);
+    });
+
+    test('the retraction is dated at the exclusion, not at the round', () async {
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      final local = InMemoryLocalRecordStore();
+      await configs.putServer(
+        server('local-only', 'beta', 4242).copyWith(excludeFromSync: true),
+      );
+      final coordinator = SyncCoordinator(
+        configStore: configs,
+        hostKeyStore: InMemoryHostKeyStore(),
+        codec: codec,
+        local: local,
+        deviceId: 'A',
+      );
+
+      await coordinator.collectLocal();
+      final tombstone = await local.getRecord('local-only');
+
+      // A tombstone stamped "now" would be a different record every round, so
+      // the server would sequence it again on each one and every other device
+      // would pull it again. Stamping it at the edit that excluded the server
+      // makes repeat rounds a no-op.
+      expect(tombstone!.updatedAt, 4242);
+      expect(tombstone.blob, isEmpty, reason: 'a tombstone leaks no payload');
+    });
+
+    test('a host key is withheld only when no synced server shares it',
+        () async {
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      final hostKeys = InMemoryHostKeyStore();
+      final local = InMemoryLocalRecordStore();
+      await configs.putServer(
+        server('local-only', 'beta', 10).copyWith(excludeFromSync: true),
+      );
+      // A second, syncing server on the same box — its own record already
+      // names the address, so withholding the pin would protect nothing.
+      await configs.putServer(ServerConfig(
+        id: 'shared',
+        label: 'beta root',
+        host: 'beta.example.com',
+        username: 'root',
+        createdAt: 1,
+        updatedAt: 10,
+      ));
+      for (final host in ['beta.example.com', 'gamma.example.com']) {
+        await hostKeys.put(HostKey(
+          host: host,
+          type: 'ssh-ed25519',
+          fingerprintSha256: 'SHA256:$host',
+          pinnedAt: 5,
+        ));
+      }
+
+      var records = await collected(
+        SyncCoordinator(
+          configStore: configs,
+          hostKeyStore: hostKeys,
+          codec: codec,
+          local: local,
+          deviceId: 'A',
+        ),
+        local,
+      );
+      expect(records.containsKey('hostkey:beta.example.com:22'), isTrue);
+
+      // Drop the syncing server and the same pin is withheld.
+      await configs.deleteServer('shared');
+      final second = InMemoryLocalRecordStore();
+      records = await collected(
+        SyncCoordinator(
+          configStore: configs,
+          hostKeyStore: hostKeys,
+          codec: codec,
+          local: second,
+          deviceId: 'A',
+        ),
+        second,
+      );
+      expect(records.containsKey('hostkey:beta.example.com:22'), isFalse);
+      // A host no excluded server names is unaffected either way.
+      expect(records.containsKey('hostkey:gamma.example.com:22'), isTrue);
+    });
+
+    test('applying records never deletes or overwrites an excluded server',
+        () async {
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      final local = InMemoryLocalRecordStore();
+      final excluded =
+          server('local-only', 'beta', 20).copyWith(excludeFromSync: true);
+      await configs.putServer(excluded);
+
+      // This device's own retraction, come back from the server sequenced…
+      await local.putRemote(await codec.encrypt(const DecryptedRecord(
+        id: 'local-only',
+        kind: RecordKind.serverConfig,
+        updatedAt: 20,
+        deviceId: 'A',
+        deleted: true,
+      )));
+      // …and a second device that has not seen it yet, still pushing its copy.
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: 'local-only',
+        kind: RecordKind.serverConfig,
+        updatedAt: 99,
+        deviceId: 'B',
+        data: server('local-only', 'renamed-elsewhere', 99).toJson(),
+      )));
+
+      await SyncCoordinator(
+        configStore: configs,
+        hostKeyStore: InMemoryHostKeyStore(),
+        codec: codec,
+        local: local,
+        deviceId: 'A',
+      ).applyToStores();
+
+      final after = await configs.getServer('local-only');
+      expect(after, isNotNull, reason: 'the retraction must not delete it here');
+      expect(after!.label, 'beta');
+      expect(after.excludeFromSync, isTrue);
+    });
+
+    test('excluding on one device removes the server from the other', () async {
+      final remote = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+
+      final cfgA = InMemoryConfigStore();
+      await cfgA.putServer(server('s1', 'alpha', 10));
+      SyncCoordinator coordA(LocalRecordStore local) => SyncCoordinator(
+            configStore: cfgA,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: local,
+            deviceId: 'A',
+          );
+
+      final cfgB = InMemoryConfigStore();
+      SyncCoordinator coordB(LocalRecordStore local) => SyncCoordinator(
+            configStore: cfgB,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: local,
+            deviceId: 'B',
+          );
+
+      await coordA(InMemoryLocalRecordStore()).run(remote);
+      await coordB(InMemoryLocalRecordStore()).run(remote);
+      expect(await cfgB.getServer('s1'), isNotNull);
+
+      // A excludes it — an edit, so it carries a later timestamp.
+      await cfgA.putServer(
+        server('s1', 'alpha', 30).copyWith(excludeFromSync: true),
+      );
+      await coordA(InMemoryLocalRecordStore()).run(remote);
+
+      // A keeps its copy; B loses it on its next round, which is what the
+      // editor's subtitle promises.
+      expect((await cfgA.getServer('s1'))!.excludeFromSync, isTrue);
+      await coordB(InMemoryLocalRecordStore()).run(remote);
+      expect(await cfgB.getServer('s1'), isNull);
+
+      // And it stays gone: B re-pushing nothing, A re-pushing the same
+      // tombstone, converges instead of resurrecting or churning.
+      await coordA(InMemoryLocalRecordStore()).run(remote);
+      await coordB(InMemoryLocalRecordStore()).run(remote);
+      expect(await cfgB.getServer('s1'), isNull);
+      expect((await cfgA.getServer('s1'))!.label, 'alpha');
+    });
+  });
 }

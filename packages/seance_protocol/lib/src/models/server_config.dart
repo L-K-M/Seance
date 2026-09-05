@@ -151,6 +151,24 @@ class ServerConfig {
   /// is no place for secrets.
   final String? loginScript;
 
+  /// Keep this server on this device only: its configuration is never pushed
+  /// to the sync server, and a copy pushed before the flag went on is
+  /// retracted with a tombstone — which also removes it from the other devices
+  /// that had pulled it. The local copy is untouched.
+  ///
+  /// The flag rides on the config rather than in device-local settings because
+  /// it is only ever read next to the config it governs, and it costs nothing
+  /// to carry: the one record that could publish it is exactly the record it
+  /// suppresses. Clearing it pushes the config again, with the flag false.
+  ///
+  /// Scope is this server's own record and its stored credential. A pinned
+  /// host key is *not* retracted: it is keyed by `host:port` rather than by
+  /// server, another device may have pinned the same host on its own, and
+  /// deleting it there would drop that device back to trust-on-first-use — a
+  /// weaker position than the one the user asked for. Going forward, a pin for
+  /// a `host:port` that only excluded servers name is simply not pushed.
+  final bool excludeFromSync;
+
   final int createdAt;
   final int updatedAt;
 
@@ -169,6 +187,7 @@ class ServerConfig {
     this.color,
     this.icon,
     this.loginScript,
+    this.excludeFromSync = false,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -194,6 +213,7 @@ class ServerConfig {
     bool clearIcon = false,
     String? loginScript,
     bool clearLoginScript = false,
+    bool? excludeFromSync,
     int? updatedAt,
   }) {
     return ServerConfig(
@@ -218,6 +238,7 @@ class ServerConfig {
       loginScript: clearLoginScript
           ? null
           : normalizeLoginScript(loginScript ?? this.loginScript),
+      excludeFromSync: excludeFromSync ?? this.excludeFromSync,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -238,6 +259,11 @@ class ServerConfig {
         if (color != null) 'color': color!.name,
         if (icon != null) 'icon': icon!.name,
         if (loginScript != null) 'loginScript': loginScript,
+        // Written unconditionally, like `syncSecret` and unlike the optional
+        // presentation fields above: the two sync-policy booleans are a pair
+        // and should read the same way round, and "no, I want this synced" is
+        // an answer the user gave rather than an attribute left unset.
+        'excludeFromSync': excludeFromSync,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
@@ -260,6 +286,7 @@ class ServerConfig {
         color: _colorFromName(json['color'] as String?),
         icon: _iconFromName(json['icon'] as String?),
         loginScript: normalizeLoginScript(json['loginScript'] as String?),
+        excludeFromSync: json['excludeFromSync'] as bool? ?? false,
         createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
         updatedAt: (json['updatedAt'] as num?)?.toInt() ?? 0,
       );

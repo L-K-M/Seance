@@ -239,7 +239,7 @@ class _ServerListPaneState extends State<ServerListPane> {
   Widget _tile(BuildContext context, AppState state, ServerConfig server) {
     final reachability = state.statuses[server.id] ?? ProbeStatus.unknown;
     final tabs = state.sessionsForServer(server.id);
-    return _ServerTile(
+    return ServerTile(
       // Stable identity so a background sync replacing the list
       // reconciles each tile to its server instead of by position.
       key: ValueKey(server.id),
@@ -461,7 +461,13 @@ TerminalStatus _aggregateStatus(List<TerminalSession> tabs) {
   return TerminalStatus.disconnected;
 }
 
-class _ServerTile extends StatelessWidget {
+/// One server's row in the list.
+///
+/// Public, like [ServerGroupHeader] and unlike the rest of this pane's parts,
+/// so a widget test can assert what the row says without standing up an
+/// [AppState]: the sync-exclusion mark is an icon, and what a screen reader
+/// makes of an icon is not something to assume.
+class ServerTile extends StatelessWidget {
   final ServerConfig server;
   final TerminalStatus connection;
 
@@ -480,7 +486,7 @@ class _ServerTile extends StatelessWidget {
   /// reconnect otherwise lives in the pane.
   final VoidCallback? onReconnect;
 
-  const _ServerTile({
+  const ServerTile({
     super.key,
     required this.server,
     required this.connection,
@@ -525,6 +531,7 @@ class _ServerTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (server.excludeFromSync) const _ExcludedFromSyncMark(),
           _ReachabilityDot(status: reachability),
           PopupMenuButton<String>(
             onSelected: (v) {
@@ -558,6 +565,44 @@ class _ServerTile extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The mark on a row whose server never leaves this device.
+///
+/// Shown whether or not sync is set up: the flag is the user's standing answer
+/// for this server, and hiding it until an account exists would make it look
+/// like it had been forgotten.
+///
+/// The description is carried as a [Semantics] *label* and the [Tooltip] is
+/// kept out of the semantics tree, which is not the obvious way round. A
+/// [ListTile] merges everything under it into one node, and a merge keeps only
+/// one tooltip while concatenating every label — so a tooltip here would be
+/// dropped in favour of some other one on the row (the row already has
+/// several), and a screen reader would be told nothing at all. The tooltip
+/// still does its own job for a pointer.
+class _ExcludedFromSyncMark extends StatelessWidget {
+  const _ExcludedFromSyncMark();
+
+  static const String description = 'Excluded from sync — this device only';
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: description,
+      child: Tooltip(
+        message: description,
+        excludeFromSemantics: true,
+        child: Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Icon(
+            Icons.cloud_off_outlined,
+            size: 16,
+            color: Theme.of(context).hintColor,
+          ),
+        ),
       ),
     );
   }
