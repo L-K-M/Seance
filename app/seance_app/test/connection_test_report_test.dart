@@ -105,7 +105,9 @@ void main() {
     expect(find.text('(no log captured)'), findsOneWidget);
     // Nothing to copy, so the button says so by being unavailable.
     expect(
-      tester.widget<TextButton>(find.byType(TextButton)).onPressed,
+      tester
+          .widget<TextButton>(find.widgetWithText(TextButton, 'Copy'))
+          .onPressed,
       isNull,
     );
   });

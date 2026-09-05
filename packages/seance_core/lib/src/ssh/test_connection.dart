@@ -36,8 +36,11 @@ HostAuthenticator liveHostAuthenticator({
   KeyboardInteractiveResponder? onKeyboardInteractive,
   Duration timeout = const Duration(seconds: 15),
 }) {
-  final tofu = TofuVerifier(UnpinnedHostKeyStore(hostKeys));
   return (config, credentials, log) async {
+    // Built per attempt, not once per authenticator: a shared trial store
+    // would carry an approval from one attempt into the next, and "pinned for
+    // the attempt only" is the whole reason this wrapper exists.
+    final tofu = TofuVerifier(UnpinnedHostKeyStore(hostKeys));
     final (client, kind) = await openAuthenticatedClient(
       config: config,
       credentials: credentials,
@@ -49,7 +52,13 @@ HostAuthenticator liveHostAuthenticator({
     );
     // On success the client is ours to close (there is no SshSession here to
     // own it); on failure openAuthenticatedClient has already closed it.
-    await client.close();
+    try {
+      await client.close();
+    } catch (_) {
+      // Authentication has already succeeded by here, and that is the only
+      // thing this reports. A socket that misbehaves on the way down must not
+      // come back as "could not connect" for a server that just did.
+    }
     return kind;
   };
 }
@@ -67,7 +76,13 @@ class ConnectionTestResult {
   /// not used, for instance. Empty is the common case.
   final List<String> notes;
 
-  /// The full handshake transcript, ending with [summary] when it failed.
+  /// The full handshake transcript.
+  ///
+  /// A failure that happens *before* the handshake — a locked keyring, an
+  /// unreadable identity file — has its summary appended here by
+  /// [runConnectionTest], since nothing else has written anything. One that
+  /// happens during it already ends with the summary, because the SSH layer
+  /// writes that line before it throws.
   final String log;
 
   const ConnectionTestResult({

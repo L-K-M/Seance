@@ -147,15 +147,25 @@ class _ServerEditorState extends State<_ServerEditor> {
         _loginScript,
       ];
 
-  /// Forget the last test result, because the form no longer describes what
-  /// was tested.
+  /// Forget the last test result, and abandon one still running, because the
+  /// form no longer describes what is being tested.
   ///
   /// A green "authenticated" sitting beside a host that has since been retyped
   /// reads as current, and the report's whole claim is that it describes the
-  /// server about to be saved. Guarded on non-null so typing does not rebuild
-  /// the dialog on every keystroke.
+  /// server about to be saved. An attempt *in flight* is the same problem
+  /// arriving late, so the counter moves too and its result lands as
+  /// superseded — which means clearing [_testing] here as well, or the Save
+  /// button would stay disabled waiting for a result that will be dropped.
+  ///
+  /// Guarded so typing does not rebuild the dialog on every keystroke.
   void _dropTestResult() {
-    if (_testResult != null) setState(() => _testResult = null);
+    _testAttempt++;
+    if (_testResult != null || _testing) {
+      setState(() {
+        _testResult = null;
+        _testing = false;
+      });
+    }
   }
 
   @override
