@@ -50,7 +50,7 @@ class ConnectionTestReport extends StatelessWidget {
           const SizedBox(height: 6),
           Padding(
             padding: const EdgeInsets.only(left: 26),
-            child: Text(
+            child: SelectableText(
               note,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.hintColor,

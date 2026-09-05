@@ -309,7 +309,13 @@ class _ServerEditorState extends State<_ServerEditor> {
                     child: const Text('Cancel')),
                 const SizedBox(width: 8),
                 FilledButton(
-                    onPressed: _busy || _testing ? null : _save,
+                    // Not disabled while a test runs: an attempt can take minutes,
+                    // and the only other way out was typing a character into
+                    // any field to drop the test. Saving mid-test is sound —
+                    // any edit that could make the two disagree already
+                    // supersedes the attempt, and the save pops the editor, so
+                    // the late result is discarded by the mounted check.
+                    onPressed: _busy ? null : _save,
                     child: const Text('Save')),
               ],
             ),
