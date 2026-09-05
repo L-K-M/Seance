@@ -119,22 +119,43 @@ class _ServerEditorState extends State<_ServerEditor> {
     // passwords & keys" is on); existing servers keep their stored choice.
     _syncSecret = e?.syncSecret ?? true;
     _excludeFromSync = e?.excludeFromSync ?? false;
+    for (final field in _fields) {
+      field.addListener(_dropTestResult);
+    }
+  }
+
+  /// Every text field in the form, so the connection test's result can be
+  /// invalidated whenever one of them changes.
+  List<TextEditingController> get _fields => [
+        _label,
+        _host,
+        _port,
+        _user,
+        _group,
+        _password,
+        _keyPem,
+        _keyPath,
+        _keyPassphrase,
+        _loginScript,
+      ];
+
+  /// Forget the last test result, because the form no longer describes what
+  /// was tested.
+  ///
+  /// A green "authenticated" sitting beside a host that has since been retyped
+  /// reads as current, and the report's whole claim is that it describes the
+  /// server about to be saved. Guarded on non-null so typing does not rebuild
+  /// the dialog on every keystroke.
+  void _dropTestResult() {
+    if (_testResult != null) setState(() => _testResult = null);
   }
 
   @override
   void dispose() {
-    for (final c in [
-      _label,
-      _host,
-      _port,
-      _user,
-      _group,
-      _password,
-      _keyPem,
-      _keyPath,
-      _keyPassphrase,
-      _loginScript
-    ]) {
+    for (final c in _fields) {
+      // Disposing drops the listeners with it; removing them first is only so
+      // a late notification cannot reach setState on the way down.
+      c.removeListener(_dropTestResult);
       c.dispose();
     }
     super.dispose();
@@ -196,7 +217,10 @@ class _ServerEditorState extends State<_ServerEditor> {
                 DropdownMenuItem(
                     value: AuthMethod.privateKey, child: Text('Private key')),
               ],
-              onChanged: (v) => setState(() => _auth = v ?? AuthMethod.agent),
+              onChanged: (v) => setState(() {
+                _auth = v ?? AuthMethod.agent;
+                _testResult = null;
+              }),
             ),
             const SizedBox(height: 8),
             ..._authFields(),
@@ -282,7 +306,10 @@ class _ServerEditorState extends State<_ServerEditor> {
             title: const Text('Reference a key file on disk'),
             subtitle: const Text("Don't store the key — read it at connect"),
             value: _referenceKeyFile,
-            onChanged: (v) => setState(() => _referenceKeyFile = v),
+            onChanged: (v) => setState(() {
+              _referenceKeyFile = v;
+              _testResult = null;
+            }),
           ),
           if (_referenceKeyFile)
             Row(
@@ -602,16 +629,30 @@ class _ServerEditorState extends State<_ServerEditor> {
       secretRef: widget.existing?.secretRef,
       now: DateTime.now().millisecondsSinceEpoch,
     );
-    final result = await widget.state.testServerConnection(
-      config,
-      draftPassword: _password.text,
-      // The PEM box is hidden (and stale) while the key is referenced from
-      // disk; passing it then would test text the user cannot see.
-      draftPrivateKey: _referenceKeyFile ? null : _keyPem.text,
-      draftKeyPassphrase: _keyPassphrase.text,
-      draftIdentityBookmark: _bookmarkFor(config.identityFilePath),
-      log: log,
-    );
+    final ConnectionTestResult result;
+    try {
+      result = await widget.state.testServerConnection(
+        config,
+        draftPassword: _password.text,
+        // The PEM box is hidden (and stale) while the key is referenced from
+        // disk; passing it then would test text the user cannot see.
+        draftPrivateKey: _referenceKeyFile ? null : _keyPem.text,
+        draftKeyPassphrase: _keyPassphrase.text,
+        draftIdentityBookmark: _bookmarkFor(config.identityFilePath),
+        log: log,
+      );
+    } catch (error) {
+      // runConnectionTest turns every failure it can see into a result, so
+      // reaching here means something outside it went wrong. Belt and braces,
+      // because the alternative is the wedged editor `_save` is careful to
+      // avoid: _testing stuck on, Save disabled, and Cancel — which throws
+      // away everything just typed — as the only way out.
+      log.freeze();
+      if (!mounted || attempt != _testAttempt) return;
+      setState(() => _testing = false);
+      showTopToastIn(context, message: 'Could not test the connection: $error');
+      return;
+    }
     log.freeze();
     // Superseded by a newer attempt, or the dialog is gone: drop it.
     if (!mounted || attempt != _testAttempt) return;

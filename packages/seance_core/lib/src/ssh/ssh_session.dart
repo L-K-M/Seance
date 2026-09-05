@@ -103,7 +103,7 @@ class SshConnectionLog {
 
   void add(String line) {
     if (_frozen) return;
-    lines.add(line);
+    lines.add(redactConnectionTrace(line));
     if (lines.length > _maxLines) {
       lines.removeRange(0, lines.length - _maxLines);
     }
@@ -124,6 +124,28 @@ class SshConnectionLog {
   @override
   String toString() => lines.join('\n');
 }
+
+/// The one shape in dartssh2's packet trace that carries a secret.
+///
+/// Every message it traces goes through `toString`, and most of them are
+/// careful — `SSH_Message_Userauth_Request` prints its user and method and
+/// deliberately not its password. `SSH_Message_Userauth_InfoResponse` is not:
+/// it prints `responses: [...]`, and for a host that does password login over
+/// keyboard-interactive (the OpenSSH default on many distributions) that list
+/// *is* the password, in plaintext.
+///
+/// The transcript is shown in the UI with a Copy button beside it and is meant
+/// to be pasted into a bug report, so this is neutralised where it is
+/// captured — one place every producer passes through — rather than wherever
+/// it happens to be displayed.
+final RegExp _userauthResponses =
+    RegExp(r'(Userauth_InfoResponse\(responses: )\[[^\]]*\]');
+
+/// [line] with any credential dartssh2's trace would otherwise print replaced.
+/// Public so the redaction can be asserted directly rather than only through a
+/// live handshake, which no test performs.
+String redactConnectionTrace(String line) =>
+    line.replaceAll(_userauthResponses, r'$1[redacted]');
 
 /// Thrown when a connection attempt fails. [message] is a one-line,
 /// user-facing summary; [log] carries the full transcript for a details view;
