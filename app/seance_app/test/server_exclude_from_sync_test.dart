@@ -96,4 +96,71 @@ void main() {
       );
     });
   });
+
+  group('confirmSyncExclusion', () {
+    Future<bool?> tapThrough(WidgetTester tester, String? answer) async {
+      bool? result;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => result = await confirmSyncExclusion(context),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.text('Exclude from sync?'), findsOneWidget);
+      if (answer == null) {
+        // Barrier tap: the way a dialog is dismissed without answering it.
+        await tester.tapAt(const Offset(10, 10));
+      } else {
+        await tester.tap(find.text(answer));
+      }
+      await tester.pumpAndSettle();
+      return result;
+    }
+
+    testWidgets('Exclude proceeds', (tester) async {
+      expect(await tapThrough(tester, 'Exclude'), isTrue);
+    });
+
+    testWidgets('Cancel does not', (tester) async {
+      expect(await tapThrough(tester, 'Cancel'), isFalse);
+    });
+
+    testWidgets('dismissing without answering does not', (tester) async {
+      // The null case: the one input that means the user never answered must
+      // not be the one that deletes the server from their other devices.
+      expect(await tapThrough(tester, null), isFalse);
+    });
+
+    testWidgets('says what it will take away', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => confirmSyncExclusion(context),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      final body = tester
+          .widgetList<Text>(find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.byType(Text),
+          ))
+          .map((t) => t.data ?? '')
+          .join(' ');
+      // Naming the credential is the part a user cannot infer from "sync".
+      expect(body, contains('your other devices'));
+      expect(body, contains('credential'));
+      expect(body, contains('This device keeps its copy'));
+    });
+  });
 }

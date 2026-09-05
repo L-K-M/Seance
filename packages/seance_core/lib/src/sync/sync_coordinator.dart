@@ -183,41 +183,36 @@ class SyncCoordinator {
   }
 
   /// Write every record in the local store back into the domain stores,
-  /// honouring tombstones.
-  Future<void> applyToStores() async {
+  /// honouring tombstones. Returns the number of retractions that had to be
+  /// re-dated (see [_rescheduleOutranked]), so the caller knows a further push
+  /// is worth making.
+  Future<int> applyToStores() async {
     // A server excluded from sync is local-only, so nothing pulled may touch
     // it: not the tombstone this device pushed to retract it (which comes back
     // on the next pull sequenced by the server), and not a copy another device
     // is still pushing because it has not seen that tombstone yet. Its
-    // credential is shielded on the same grounds — a stale remote version of
-    // it would otherwise overwrite the vault entry of a local-only server.
-    final localServers = await configStore.listServers();
+    // credential is shielded on the same grounds, in [_applySecretRecords].
     final excluded = <String>{
-      for (final server in localServers)
+      for (final server in await configStore.listServers())
         if (server.excludeFromSync) server.id,
     };
-    // Shielded only when *no* synced server shares the credential — the same
-    // "every server that names it" rule the host-key locators use. A record
-    // for a ref a synced server still holds is a live update for that server,
-    // not a stale copy of a local-only one.
-    final excludedSecretIds = <String>{
-      for (final server in localServers)
-        if (server.excludeFromSync && server.secretRef != null)
-          '$_secretIdPrefix${server.secretRef}',
-    }..removeAll(<String>{
-        for (final server in localServers)
-          if (!server.excludeFromSync && server.secretRef != null)
-            '$_secretIdPrefix${server.secretRef}',
-      });
-    // Secret tombstones are decided after the loop rather than inside it:
-    // whether one may be applied depends on whether any server still
-    // references that credential, and a config tombstone in the same batch may
-    // be about to remove the last reference. Record order is not defined, so
-    // deciding inline would make the outcome depend on it.
+    // Credentials are decided after the loop rather than inside it: whether one
+    // may be applied or withdrawn depends on which servers still reference it,
+    // and a config record in the same batch may be about to add or remove the
+    // last reference. Record order is not defined, so deciding inline would
+    // make the outcome depend on it.
+    final secretRecords = <DecryptedRecord>[];
     final secretTombstones = <String>[];
+    // Live configs for servers this device excluded: see [_rescheduleOutranked].
+    final outranked = <DecryptedRecord>[];
     final skippedIds = <String>[];
     Object? firstError;
     StackTrace? firstStackTrace;
+    void skip(String id, Object error, StackTrace stackTrace) {
+      skippedIds.add(id);
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    }
 
     for (final enc in await local.allRecords()) {
       try {
@@ -240,16 +235,16 @@ class SyncCoordinator {
 
         switch (dec.kind) {
           case RecordKind.serverConfig:
-            if (excluded.contains(dec.id)) continue;
+            if (excluded.contains(dec.id)) {
+              outranked.add(dec);
+              continue;
+            }
 
             await configStore.putServer(ServerConfig.fromJson(dec.data));
           case RecordKind.hostKey:
             await hostKeyStore.put(HostKey.fromJson(dec.data));
           case RecordKind.secret:
-            if (!syncSecrets || secretVault == null) continue;
-            if (excludedSecretIds.contains(dec.id)) continue;
-
-            await secretVault!.putSecret(Secret.fromJson(dec.data));
+            secretRecords.add(dec);
           case RecordKind.snippet:
             final store = snippetStore;
             if (store == null) continue;
@@ -260,23 +255,101 @@ class SyncCoordinator {
             continue;
         }
       } catch (error, stackTrace) {
-        skippedIds.add(enc.id);
-        firstError ??= error;
-        firstStackTrace ??= stackTrace;
+        skip(enc.id, error, stackTrace);
       }
     }
 
-    await _applySecretTombstones(secretTombstones);
+    await _applySecretRecords(secretRecords, skip);
+    await _applySecretTombstones(secretTombstones, skip);
 
-    if (skippedIds.isEmpty) return;
+    if (skippedIds.isNotEmpty) {
+      developer.log(
+        'Skipped synced records: ${skippedIds.join(', ')}',
+        name: _syncLoggerName,
+        level: _warningLogLevel,
+        error: firstError,
+        stackTrace: firstStackTrace,
+      );
+    }
 
-    developer.log(
-      'Skipped synced records: ${skippedIds.join(', ')}',
-      name: _syncLoggerName,
-      level: _warningLogLevel,
-      error: firstError,
-      stackTrace: firstStackTrace,
-    );
+    return _rescheduleOutranked(outranked);
+  }
+
+  /// Store pulled credentials, shielding the ones only excluded servers name.
+  ///
+  /// A stale remote version of a local-only server's credential would
+  /// otherwise overwrite the vault entry that server still uses. Shielded only
+  /// when *no* synced server shares it — the same "every server that names it"
+  /// rule the host-key locators use: a record for a ref a synced server holds
+  /// is a live update for that server, not a stale copy of a local-only one.
+  ///
+  /// The rule is evaluated here, after the record loop, against the server
+  /// list the whole batch produced: a config in the same batch may have just
+  /// introduced the synced server that shares this credential, and deciding
+  /// inline would have shielded it on a snapshot taken before that.
+  Future<void> _applySecretRecords(
+    List<DecryptedRecord> records,
+    void Function(String, Object, StackTrace) skip,
+  ) async {
+    final vault = secretVault;
+    if (records.isEmpty || !syncSecrets || vault == null) return;
+    final shielded = await _shieldedSecretIds();
+    for (final dec in records) {
+      if (shielded.contains(dec.id)) continue;
+      try {
+        await vault.putSecret(Secret.fromJson(dec.data));
+      } catch (error, stackTrace) {
+        skip(dec.id, error, stackTrace);
+      }
+    }
+  }
+
+  /// Ids of credentials only excluded servers reference.
+  Future<Set<String>> _shieldedSecretIds() async {
+    final servers = await configStore.listServers();
+    return <String>{
+      for (final server in servers)
+        if (server.excludeFromSync && server.secretRef != null)
+          '$_secretIdPrefix${server.secretRef}',
+    }..removeAll(<String>{
+        for (final server in servers)
+          if (!server.excludeFromSync && server.secretRef != null)
+            '$_secretIdPrefix${server.secretRef}',
+      });
+  }
+
+  /// Re-date retractions the server outranked, and report how many.
+  ///
+  /// [_retract] dates a tombstone at the config's `updatedAt` — the moment the
+  /// user excluded the server, and so later than the copy on the server in the
+  /// ordinary case. It is *not* later when another device wrote that copy
+  /// under a clock this one runs behind, or edited it while this device was
+  /// offline. Then the live record wins last-write-wins, the pull adopts it
+  /// back over the tombstone, and every later round mints the same losing date
+  /// again: the exclusion holds on this device forever while the config sits
+  /// on the sync server and on every other device — a privacy switch failing
+  /// silently in exactly the multi-device case it exists for.
+  ///
+  /// So a live config for an excluded server (which can only reach the local
+  /// store by beating our tombstone) re-dates it one millisecond past the
+  /// record that won, the smallest date that wins outright instead of tying.
+  /// It escalates once and settles: the other device pushes its copy at a
+  /// fixed `updatedAt` of its own, not a fresh one per round, so nothing
+  /// bids back. Once the retraction lands, no live copy returns and
+  /// [_retract]'s stable date takes over again.
+  ///
+  /// A credential is deliberately not re-dated the same way. A `secret:`
+  /// record is keyed by the credential rather than by the server holding it,
+  /// so a live one may be the ongoing push of a *synced* server on another
+  /// device that shares the vault entry — one this device has not pulled yet,
+  /// and whose owner never excluded anything. Out-bidding that would end
+  /// credential sync for their server; the shield in [_applySecretRecords]
+  /// already keeps the stale-copy case from touching this device's vault.
+  Future<int> _rescheduleOutranked(List<DecryptedRecord> records) async {
+    for (final dec in records) {
+      await _tombstone(dec.id, dec.kind, dec.updatedAt + 1);
+    }
+    return records.length;
   }
 
   /// Withdraw vault entries whose records were tombstoned — but only the ones
@@ -293,7 +366,10 @@ class SyncCoordinator {
   /// Gated on [syncSecrets] like every other secret path: a user who has
   /// turned credential sync off has said remote secret records are not to
   /// touch their vault, and a delete is not the exception to that.
-  Future<void> _applySecretTombstones(List<String> ids) async {
+  Future<void> _applySecretTombstones(
+    List<String> ids,
+    void Function(String, Object, StackTrace) skip,
+  ) async {
     final vault = secretVault;
     if (ids.isEmpty || !syncSecrets || vault == null) return;
     final referenced = <String>{
@@ -302,15 +378,33 @@ class SyncCoordinator {
     };
     for (final id in ids) {
       if (referenced.contains(id)) continue;
-      await vault.deleteSecret(id.substring(_secretIdPrefix.length));
+      // Fail-soft like every other apply: the vault throws when the OS keyring
+      // is locked, and one refused delete must not abandon the rest of the
+      // batch — nor discard the diagnostics gathered for it.
+      try {
+        await vault.deleteSecret(id.substring(_secretIdPrefix.length));
+      } catch (error, stackTrace) {
+        skip(id, error, stackTrace);
+      }
     }
   }
 
   /// One full synchronization round.
   Future<SyncOutcome> run(SyncApi api) async {
     await collectLocal();
-    final outcome = await SyncEngine(local).sync(api);
+    final engine = SyncEngine(local);
+    final first = await engine.sync(api);
+    // A retraction the server outranked has been re-dated to beat the record
+    // that beat it. Push it now: the next run would only re-mint the same
+    // losing date [collectLocal] computes, so waiting never resolves it. One
+    // extra pass, never a loop — a second re-dating is left to the next run.
+    if (await applyToStores() == 0) return first;
+    final second = await engine.sync(api);
     await applyToStores();
-    return outcome;
+    return SyncOutcome(
+      pulled: first.pulled + second.pulled,
+      pushed: first.pushed + second.pushed,
+      rounds: first.rounds + second.rounds,
+    );
   }
 }
