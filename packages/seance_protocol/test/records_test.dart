@@ -66,6 +66,20 @@ void main() {
       // what it did.
       final legacy = {...c.toJson()}..remove('excludeFromSync');
       expect(ServerConfig.fromJson(legacy).excludeFromSync, isFalse);
+      // Including one built here rather than read back: if the field were
+      // stored tri-state and only normalized on the way in, a record this app
+      // wrote would still be silent about it.
+      expect(
+        ServerConfig(
+          id: 's2',
+          label: 'laptop',
+          host: 'localhost',
+          username: 'me',
+          createdAt: 1,
+          updatedAt: 2,
+        ).toJson()['excludeFromSync'],
+        isFalse,
+      );
     });
 
     test('copyWith flips excludeFromSync without touching anything else', () {
@@ -99,6 +113,17 @@ void main() {
       // Re-stating the current timestamp ties, which loses the same way.
       expect(
         () => excluded.copyWith(excludeFromSync: false, updatedAt: 3),
+        throwsA(isA<ArgumentError>()),
+      );
+      // A strictly older timestamp loses outright rather than merely tying.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 2),
+        throwsA(isA<ArgumentError>()),
+      );
+      // And the guard is symmetric: raising the flag without a fresh
+      // timestamp ships a tombstone the server's copy already outranks.
+      expect(
+        () => c.copyWith(excludeFromSync: true),
         throwsA(isA<ArgumentError>()),
       );
       // Omitting it leaves it alone, like every other copyWith field.
