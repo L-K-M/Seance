@@ -292,4 +292,45 @@ void main() {
       expect(keystrokes, utf8.encode('cd work\n'));
     });
   });
+
+  group('connection-log redaction', () {
+    test('a keyboard-interactive answer never reaches the transcript', () {
+      // dartssh2 traces every packet through toString.
+      // SSH_Message_Userauth_Request deliberately omits its password;
+      // SSH_Message_Userauth_InfoResponse prints its `responses` list, and for
+      // a host doing password login over keyboard-interactive that list *is*
+      // the password. The transcript is shown with a Copy button beside it and
+      // is meant for bug reports, so it is neutralised at capture.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(responses: [hunter2, 123456])');
+      log.add('-> sock: SSH_Message_Userauth_Request(user: deploy, '
+          'serviceName: ssh-connection, methodName: password)');
+
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), isNot(contains('123456')));
+      expect(log.toString(), contains('[redacted]'));
+      // Everything else about the exchange is still legible — the point of
+      // the log is to say what happened.
+      expect(log.toString(), contains('methodName: password'));
+      expect(log.toString(), contains('user: deploy'));
+    });
+
+    test('a password containing a bracket does not leak its tail', () {
+      // A Dart list's toString does not escape its elements, so `pas]sword`
+      // prints as `responses: [pas]sword])`. A bracket-bounded match would
+      // stop after `[pas]` and leave the rest in the transcript.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(responses: [pas]sword])');
+      expect(log.toString(), isNot(contains('sword')));
+      expect(log.toString(), contains('[redacted]'));
+    });
+
+    test('redaction leaves an ordinary trace line untouched', () {
+      const line = '  <- sock: SSH_Message_Userauth_Failure('
+          'methodsLeft: [publickey], partialSuccess: false)';
+      expect(redactConnectionTrace(line), line);
+    });
+  });
 }

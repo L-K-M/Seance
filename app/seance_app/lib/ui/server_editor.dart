@@ -3,6 +3,7 @@ import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../services/app_settings.dart';
+import 'connection_test_report.dart';
 import 'server_appearance.dart';
 import 'server_grouping.dart';
 import 'top_toast.dart';
@@ -74,6 +75,20 @@ class _ServerEditorState extends State<_ServerEditor> {
   late bool _excludeFromSync;
   bool _busy = false;
 
+  /// The id a *new* server will be saved under, minted once rather than per
+  /// save so a test connection and the save that follows describe one server,
+  /// and so a save that failed and is retried does not mint a second identity.
+  final String _draftId = uuidV4();
+
+  /// The connection test: whether one is running, what the last one found,
+  /// and which attempt is current. The counter is the cancellation flag — the
+  /// SSH layer has no cancel seam, so a superseded or abandoned attempt is
+  /// left to finish and its result dropped, which is what the terminal pane
+  /// does with a tab that closed mid-connect.
+  bool _testing = false;
+  ConnectionTestResult? _testResult;
+  int _testAttempt = 0;
+
   /// The security-scoped bookmark backing [_keyPath]'s current text, and the
   /// path it was minted for. Set by Browse… (or loaded for an existing
   /// server); dropped at save when the user hand-edits the path afterwards,
@@ -112,22 +127,53 @@ class _ServerEditorState extends State<_ServerEditor> {
     // passwords & keys" is on); existing servers keep their stored choice.
     _syncSecret = e?.syncSecret ?? true;
     _excludeFromSync = e?.excludeFromSync ?? false;
+    for (final field in _fields) {
+      field.addListener(_dropTestResult);
+    }
+  }
+
+  /// Every text field in the form, so the connection test's result can be
+  /// invalidated whenever one of them changes.
+  List<TextEditingController> get _fields => [
+        _label,
+        _host,
+        _port,
+        _user,
+        _group,
+        _password,
+        _keyPem,
+        _keyPath,
+        _keyPassphrase,
+        _loginScript,
+      ];
+
+  /// Forget the last test result, and abandon one still running, because the
+  /// form no longer describes what is being tested.
+  ///
+  /// A green "authenticated" sitting beside a host that has since been retyped
+  /// reads as current, and the report's whole claim is that it describes the
+  /// server about to be saved. An attempt *in flight* is the same problem
+  /// arriving late, so the counter moves too and its result lands as
+  /// superseded — which means clearing [_testing] here as well, or the Save
+  /// button would stay disabled waiting for a result that will be dropped.
+  ///
+  /// Guarded so typing does not rebuild the dialog on every keystroke.
+  void _dropTestResult() {
+    _testAttempt++;
+    if (_testResult != null || _testing) {
+      setState(() {
+        _testResult = null;
+        _testing = false;
+      });
+    }
   }
 
   @override
   void dispose() {
-    for (final c in [
-      _label,
-      _host,
-      _port,
-      _user,
-      _group,
-      _password,
-      _keyPem,
-      _keyPath,
-      _keyPassphrase,
-      _loginScript
-    ]) {
+    for (final c in _fields) {
+      // Disposing drops the listeners with it; removing them first is only so
+      // a late notification cannot reach setState on the way down.
+      c.removeListener(_dropTestResult);
       c.dispose();
     }
     super.dispose();
@@ -189,7 +235,10 @@ class _ServerEditorState extends State<_ServerEditor> {
                 DropdownMenuItem(
                     value: AuthMethod.privateKey, child: Text('Private key')),
               ],
-              onChanged: (v) => setState(() => _auth = v ?? AuthMethod.agent),
+              onChanged: (v) => setState(() {
+                _auth = v ?? AuthMethod.agent;
+                _testResult = null;
+              }),
             ),
             const SizedBox(height: 8),
             ..._authFields(),
@@ -201,18 +250,46 @@ class _ServerEditorState extends State<_ServerEditor> {
             ..._appearanceFields(),
             const SizedBox(height: 20),
             Row(
-              mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                OutlinedButton.icon(
+                  onPressed: _busy || _testing ? null : _testConnection,
+                  icon: _testing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.wifi_tethering, size: 18),
+                  label: Text(_testing ? 'Testing…' : 'Test connection'),
+                ),
+                const Spacer(),
+                // Cancel stays live during a test: the attempt cannot be
+                // stopped, but being unable to leave the dialog for the five
+                // minutes an authentication may take is worse than letting it
+                // finish unwatched.
                 TextButton(
                     onPressed:
                         _busy ? null : () => Navigator.of(context).pop(),
                     child: const Text('Cancel')),
                 const SizedBox(width: 8),
                 FilledButton(
-                    onPressed: _busy ? null : _save,
+                    onPressed: _busy || _testing ? null : _save,
                     child: const Text('Save')),
               ],
             ),
+            const SizedBox(height: 8),
+            Text(
+              'Testing authenticates without opening a shell or running the '
+              'login script. A host key you approve here is trusted for the '
+              'test only — the first real connection asks again.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).hintColor,
+                  ),
+            ),
+            if (_testResult != null) ...[
+              const SizedBox(height: 12),
+              ConnectionTestReport(result: _testResult!),
+            ],
           ],
         ),
       ),
@@ -247,7 +324,10 @@ class _ServerEditorState extends State<_ServerEditor> {
             title: const Text('Reference a key file on disk'),
             subtitle: const Text("Don't store the key — read it at connect"),
             value: _referenceKeyFile,
-            onChanged: (v) => setState(() => _referenceKeyFile = v),
+            onChanged: (v) => setState(() {
+              _referenceKeyFile = v;
+              _testResult = null;
+            }),
           ),
           if (_referenceKeyFile)
             Row(
@@ -505,12 +585,106 @@ class _ServerEditorState extends State<_ServerEditor> {
     return null;
   }
 
+  /// The server the form currently describes, with [secretRef] as its
+  /// credential reference. Shared by Save and Test connection so a test can
+  /// never run against a different server than the one about to be saved.
+  ServerConfig _formConfig({required String? secretRef, required int now}) {
+    final existing = widget.existing;
+    return ServerConfig(
+      id: existing?.id ?? _draftId,
+      label: _label.text.trim(),
+      host: _host.text.trim(),
+      port: int.tryParse(_port.text) ?? 22,
+      username: _user.text.trim(),
+      authMethod: _auth,
+      secretRef: secretRef,
+      identityFilePath: (_auth == AuthMethod.privateKey && _referenceKeyFile)
+          ? _keyPath.text.trim()
+          : null,
+      syncSecret: _syncSecret,
+      // Normalized here rather than trusted from the field, so a trailing
+      // space typed into the group name can't fork a second section that
+      // looks identical to the one the user meant to join.
+      group: normalizeServerGroup(_group.text),
+      color: _color,
+      icon: _icon,
+      loginScript: normalizeLoginScript(_loginScript.text),
+      excludeFromSync: _excludeFromSync,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    );
+  }
+
+  /// The security-scope grant that goes with [identityFilePath], or null when
+  /// there is none to apply.
+  ///
+  /// Matched trim-insensitively: the saved path is trimmed, while a
+  /// Browse…-picked path is verbatim (macOS filenames may carry edge
+  /// whitespace — the bookmark, which opens by file identity, still works
+  /// there). A hand-edit that moves the path off the grant drops it, since a
+  /// bookmark only ever opens the exact file it was created from.
+  IdentityFileBookmark? _bookmarkFor(String? identityFilePath) {
+    final bookmark = _keyBookmark;
+    if (identityFilePath == null || bookmark == null) return null;
+    if (identityFilePath != _keyBookmarkPath?.trim()) return null;
+    return IdentityFileBookmark(path: identityFilePath, bookmark: bookmark);
+  }
+
+  /// Connect and authenticate with what the form holds right now — including
+  /// a password or key typed but not yet saved, which is not in the vault and
+  /// would otherwise be tested as whatever is stored (or as nothing at all,
+  /// for a server being added).
+  Future<void> _testConnection() async {
+    if (!_form.currentState!.validate()) return;
+    final attempt = ++_testAttempt;
+    setState(() {
+      _testing = true;
+      _testResult = null;
+    });
+
+    final log = SshConnectionLog();
+    final config = _formConfig(
+      secretRef: widget.existing?.secretRef,
+      now: DateTime.now().millisecondsSinceEpoch,
+    );
+    final ConnectionTestResult result;
+    try {
+      result = await widget.state.testServerConnection(
+        config,
+        draftPassword: _password.text,
+        // The PEM box is hidden (and stale) while the key is referenced from
+        // disk; passing it then would test text the user cannot see.
+        draftPrivateKey: _referenceKeyFile ? null : _keyPem.text,
+        draftKeyPassphrase: _keyPassphrase.text,
+        draftIdentityBookmark: _bookmarkFor(config.identityFilePath),
+        log: log,
+      );
+    } catch (error) {
+      // runConnectionTest turns every failure it can see into a result, so
+      // reaching here means something outside it went wrong. Belt and braces,
+      // because the alternative is the wedged editor `_save` is careful to
+      // avoid: _testing stuck on, Save disabled, and Cancel — which throws
+      // away everything just typed — as the only way out.
+      log.freeze();
+      if (!mounted || attempt != _testAttempt) return;
+      setState(() => _testing = false);
+      showTopToastIn(context, message: 'Could not test the connection: $error');
+      return;
+    }
+    log.freeze();
+    // Superseded by a newer attempt, or the dialog is gone: drop it.
+    if (!mounted || attempt != _testAttempt) return;
+    setState(() {
+      _testing = false;
+      _testResult = result;
+    });
+  }
+
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
     final now = DateTime.now().millisecondsSinceEpoch;
     final existing = widget.existing;
-    final id = existing?.id ?? uuidV4();
 
     String? secretRef = existing?.secretRef;
     Secret? secret;
@@ -535,38 +709,10 @@ class _ServerEditorState extends State<_ServerEditor> {
       );
     }
 
-    final identityFilePath =
-        (_auth == AuthMethod.privateKey && _referenceKeyFile)
-            ? _keyPath.text.trim()
-            : null;
-    final config = ServerConfig(
-      id: id,
-      label: _label.text.trim(),
-      host: _host.text.trim(),
-      port: int.tryParse(_port.text) ?? 22,
-      username: _user.text.trim(),
-      authMethod: _auth,
-      secretRef: secret != null ? secretRef : (existing?.secretRef),
-      identityFilePath: identityFilePath,
-      syncSecret: _syncSecret,
-      // Normalized here rather than trusted from the field, so a trailing
-      // space typed into the group name can't fork a second section that
-      // looks identical to the one the user meant to join.
-      group: normalizeServerGroup(_group.text),
-      color: _color,
-      icon: _icon,
-      loginScript: normalizeLoginScript(_loginScript.text),
-      excludeFromSync: _excludeFromSync,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
+    final config = _formConfig(
+      secretRef: secret != null ? secretRef : existing?.secretRef,
+      now: now,
     );
-
-    // Trim-insensitively: the saved path is trimmed, while a Browse…-picked
-    // path is verbatim (macOS filenames may carry edge whitespace — the
-    // bookmark, which opens by file identity, still works there).
-    final bookmarkMatchesPath = identityFilePath != null &&
-        _keyBookmark != null &&
-        identityFilePath == _keyBookmarkPath?.trim();
     try {
       // The vault write inside throws (VaultLockedException) when the OS
       // keyring is unavailable — tell the user instead of wedging the editor
@@ -574,10 +720,7 @@ class _ServerEditorState extends State<_ServerEditor> {
       await widget.state.saveServer(
         config,
         secret: secret,
-        identityFileBookmark: bookmarkMatchesPath
-            ? IdentityFileBookmark(
-                path: identityFilePath, bookmark: _keyBookmark!)
-            : null,
+        identityFileBookmark: _bookmarkFor(config.identityFilePath),
       );
     } catch (e) {
       if (!mounted) return;
