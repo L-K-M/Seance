@@ -4,14 +4,15 @@ Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
 _Last updated: 2026-09-05 — a server can be excluded from sync and kept on
-one device, duplicated, or tested before it is saved._
+one device, duplicated, or tested before it is saved; web search can go
+through Z.AI._
 
 ## Done (implemented + verified)
 
 | Area | State |
 |---|---|
 | `seance_protocol` | Complete. Models (incl. strict Bookmark, Snippet with `{{placeholder}}` parsing/fill, and `ServerConfig`'s optional `group`/`color`/`icon`/`loginScript` — named accents and icons rather than raw values, so they render per theme and an unknown name decodes to "none"), E2E crypto, forward-compatible records (serverConfig/hostKey/secret/snippet/bookmark/unknown), LWW, sync DTOs. |
-| `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + fail-soft coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores; per-server login script typed into the shell once it opens. |
+| `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + fail-soft coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores; per-server login script typed into the shell once it opens. Web search has three backends — SearXNG, Brave, and **Z.AI Web Search Prime** (`ZaiSearch`, MCP over Streamable HTTP: JSON-RPC handshake, session-id echo, JSON-or-SSE replies, tool arguments built from the advertised schema) — and every configured one is used, their results merged round-robin and deduplicated by `CompositeSearch`. |
 | `seance_sync_server` | Complete. 7 endpoints, in-memory + SQLite storage, rate limiting, Dockerfile + compose. |
 <<<<<<< HEAD
 | `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the top-level list; each server can hold several sessions shown as a per-server tab strip (a strip appears only at 2+ tabs, so a single session looks title-bar-less as before), with ⌘T/Ctrl+Shift+T + a "New tab" affordance, status dot: green/grey/red + connecting spinner; resizable tiled panes); right-hand utility panel with Assistant + Snippets + **Files** tabs. Files is session-scoped SFTP over the existing SSH transport: responsive navigation, OSC 7 follow mode, picker/desktop-drop upload, local open + conflict-checked upload-back, mkdir/rename/delete, progress/cancel; narrow/Android gets a full-screen route. See [`docs/SFTP.md`](SFTP.md) for implementation state and remaining real-device work. Snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends; inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. **Automatic sync** runs at startup, after any server/snippet add/edit/delete (debounced), and every 5 min, with a live header/settings status; the "Sync now" button remains. **Credential sync** is opt-in (global toggle × per-server "allow this credential to sync"; E2E-encrypted). The editor has a **Test connection** button: it authenticates with what the form holds right now (including a password or key typed but not yet saved), without opening a shell or running the login script, and reports how authentication completed plus the same summary and expandable transcript a failed connection shows. A host key approved during a test is pinned for the attempt only (`UnpinnedHostKeyStore`) — a form that may still be cancelled is not where trust-on-first-use is granted for good — and a configured jump host is called out, since ProxyJump is modelled but not executed. A server row's menu also **duplicates** it: fresh id and timestamps, a "… copy" / "… copy 2" label that continues rather than stutters, everything else carried over, and the credential copied into a vault entry of its own (never shared — nothing reference-counts vault entries, so a shared one would vanish when either copy is deleted). A server can also be **excluded from sync** outright (per-server switch in the editor, confirmed when there is something to retract; `cloud_off` mark on its row): its config is never pushed, and a copy pushed before the switch went on is retracted with a tombstone — so it also leaves the other devices, which the switch's subtitle says. Its credential is retracted with it (`secret:` tombstones are now applied, deleting a vault entry once no local server references it — so the excluding device keeps its own credential and the others don't keep an orphan); a pinned host key is not (it is keyed by `host:port`, and deleting it elsewhere would drop that device back to trust-on-first-use), though new pins for an address only excluded servers use are no longer pushed. The **built-in text editor** opens at the top with the app's monospace stack, has an in-file find bar (⌘F/Ctrl+F; Enter/F3/⌘G cycle, match-case toggle, all matches highlighted) and basic syntax highlighting (shell, python, js/ts, dart, json, yaml, ini/conf, dockerfile, sql, c-family, xml, markdown — detected by name/extension/shebang); for a server file ⌘S/Ctrl+S saves **and uploads immediately** (⇧⌘S keeps it local; conflicts still prompt). Transient notices app-wide use **top toasts**, never bottom SnackBars, so they can't cover the shell prompt at the bottom of the terminal. On **touch platforms** the terminal shows an on-screen key row (Esc/Tab/Ctrl [sticky]/^C/arrows/Home/End/PgUp/PgDn/`|` `/` `-` `~` + hide-keyboard) and reflows above the soft keyboard. **Command suggestions** (opt-in, local only) surface frequently-run commands in the Snippets tab to save as snippets. **Server groups, colours and icons** are per-server and synced: the list files servers into collapsible sections (alphabetical, ungrouped last; no headers at all until something is grouped, and a live filter overrides collapsed sections so it can never hide a match), each row carries a badge of the server's icon on its accent with the connection dot in the corner, and the accent also rules the terminal's tab strip. Folded sections are device-local (settings), the grouping itself syncs. On **Android**, backgrounding no longer kills the sessions: a `dataSync` foreground service anchors the process while any session is connecting/connected (ongoing notification with the live count, opt-out in Settings ▸ General; `BackgroundKeepAlive` drives it through the `seance/keepalive` channel — on other platforms it is a no-op). Default desktop window 1800×1600. Platform folders committed. |
@@ -32,6 +33,16 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
   strict unions, kind fields, ids, dates, and immutable rules.
 - `seance_core/test/pure_logic_test.dart` — ssh_config import, TOFU verdicts,
   danger linter, paste sanitizer, secret redaction.
+- `seance_core/test/zai_search_test.dart` — the Z.AI MCP client against a fake
+  server: handshake once then search, arguments built from the advertised
+  schema (including a required `search_engine` this file never names), replies
+  read over both JSON and a multi-line `text/event-stream`, a retired session
+  re-handshaking once and then failing readably, a rejected key named as such,
+  a failed handshake retried rather than cached, HTTP errors that never quote
+  the body back, an errored tool result treated as a failure, result parsing
+  (JSON inside a text block, icons skipped, duplicates dropped, prose kept
+  rather than silently discarded); plus `CompositeSearch` interleaving,
+  tolerating one backend failing and raising when all of them do.
 - `seance_core/test/llm_test.dart` — Anthropic/OpenAI request build + response
   parse, command JSON extraction, SSE parse, chat tool loop (paste + search),
   redaction of outbound context.
@@ -113,6 +124,9 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
 - `packages/seance_core/test/sync_coordinator_test.dart` — a server's group,
   colour and icon travel between devices, and regrouping converges like a
   rename (a group is a name its members carry, not a record that can dangle).
+- `app/seance_app/test/app_settings_test.dart` — also that `zaiApiKeyRef` is
+  off by default, round-trips, and reads as "not configured" in a settings
+  file written before it existed.
 - `app/seance_app/test/connection_test_report_test.dart` — the test result as
   the editor shows it: the reason rather than only a colour, the outcome
   spoken as well as coloured, notes that qualify a success, and the transcript

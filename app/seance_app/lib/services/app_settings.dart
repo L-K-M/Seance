@@ -52,9 +52,16 @@ class AppSettings {
   String llmModel;
   String llmApiKeyRef; // keystore entry name; empty for keyless local Ollama
 
-  // Web-search backend for the chat tool (local providers have no native one).
+  // Web-search backends for the chat tool (local providers have no native
+  // one). Every configured backend is used and their results merged, so
+  // leaving one blank is how you get "instead of" and filling both is how you
+  // get "in addition to" — see `CompositeSearch`.
   String? searxngUrl;
   String? braveApiKeyRef;
+
+  /// Keystore entry name for the Z.AI key, or null when Z.AI web search is
+  /// off. Like every other key reference this holds the *name*, never the key.
+  String? zaiApiKeyRef;
 
   bool redactionEnabled;
 
@@ -133,6 +140,7 @@ class AppSettings {
     this.llmApiKeyRef = 'anthropic',
     this.searxngUrl,
     this.braveApiKeyRef,
+    this.zaiApiKeyRef,
     this.redactionEnabled = true,
     this.syncBaseUrl,
     this.syncUsername,
@@ -164,6 +172,7 @@ class AppSettings {
     'llmApiKeyRef': llmApiKeyRef,
     if (searxngUrl != null) 'searxngUrl': searxngUrl,
     if (braveApiKeyRef != null) 'braveApiKeyRef': braveApiKeyRef,
+    if (zaiApiKeyRef != null) 'zaiApiKeyRef': zaiApiKeyRef,
     'redactionEnabled': redactionEnabled,
     if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
     if (syncUsername != null) 'syncUsername': syncUsername,
@@ -203,6 +212,7 @@ class AppSettings {
     llmApiKeyRef: json['llmApiKeyRef'] as String? ?? 'anthropic',
     searxngUrl: json['searxngUrl'] as String?,
     braveApiKeyRef: json['braveApiKeyRef'] as String?,
+    zaiApiKeyRef: json['zaiApiKeyRef'] as String?,
     redactionEnabled: json['redactionEnabled'] as bool? ?? true,
     syncBaseUrl: json['syncBaseUrl'] as String?,
     syncUsername: json['syncUsername'] as String?,

@@ -548,16 +548,32 @@ class AppServices {
   }
 
   /// Build the web-search backend for the chat tool, if one is configured.
+  /// The chat tool's web search: every configured backend, merged.
+  ///
+  /// Configured means used, rather than a priority order that would quietly
+  /// ignore the second backend someone took the trouble to set up. Clearing a
+  /// field is how you pick one instead of the other; filling both is how you
+  /// use both (see [CompositeSearch]). Null when nothing is configured, which
+  /// is what hides the search tool from the assistant.
   Future<SearchProvider?> buildSearchProvider() async {
+    final backends = <SearchProvider>[];
     if (settings.searxngUrl != null && settings.searxngUrl!.isNotEmpty) {
-      return SearxngSearch(baseUrl: settings.searxngUrl!);
+      backends.add(SearxngSearch(baseUrl: settings.searxngUrl!));
     }
     if (settings.braveApiKeyRef != null &&
         settings.braveApiKeyRef!.isNotEmpty) {
+      // getApiKey answers null on a locked keyring rather than throwing, so a
+      // keystore that is down reads as "this backend is not available" and the
+      // others still work.
       final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
-      if (key != null) return BraveSearch(apiKey: key);
+      if (key != null) backends.add(BraveSearch(apiKey: key));
     }
-    return null;
+    if (settings.zaiApiKeyRef != null && settings.zaiApiKeyRef!.isNotEmpty) {
+      final key = await masterKeys.getApiKey(settings.zaiApiKeyRef!);
+      if (key != null) backends.add(ZaiSearch(apiKey: key));
+    }
+    if (backends.isEmpty) return null;
+    return backends.length == 1 ? backends.single : CompositeSearch(backends);
   }
 
   /// A caller-owned sync client, or null if sync isn't set up. Close after use.

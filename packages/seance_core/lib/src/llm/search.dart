@@ -95,3 +95,64 @@ class BraveSearch implements SearchProvider {
         .toList();
   }
 }
+
+/// Query several backends at once and merge what comes back.
+///
+/// Configured means used: a priority chain would quietly ignore the second key
+/// someone took the trouble to enter, and "use Z.AI as well as my SearXNG" is
+/// a reasonable thing to want. Clearing the other field is how you get "instead
+/// of" — so one control shape covers both, with no mode to keep in step.
+///
+/// Results are interleaved round-robin rather than concatenated, so a fast
+/// backend cannot fill the whole limit before a slower one is heard from, and
+/// deduplicated by URL because two web indexes agreeing is one result, not two.
+class CompositeSearch implements SearchProvider {
+  final List<SearchProvider> providers;
+
+  const CompositeSearch(this.providers);
+
+  @override
+  Future<List<SearchResult>> search(String query, {int limit = 5}) async {
+    // Each backend is asked for the full limit: after deduplication the union
+    // is usually smaller than the sum, and a short answer from one is exactly
+    // when the other's results are wanted.
+    final answers = await Future.wait(
+      providers.map((p) async {
+        try {
+          return await p.search(query, limit: limit);
+        } catch (error) {
+          // One backend being down, rate-limited or misconfigured should not
+          // take the search with it. If *every* one failed, the error is
+          // re-raised below rather than reported as "nothing found".
+          return error;
+        }
+      }),
+    );
+    final lists = answers.whereType<List<SearchResult>>().toList();
+    if (lists.isEmpty) {
+      // Every backend failed. Re-raise the first failure rather than reporting
+      // "nothing found", which is a different answer and a misleading one for
+      // what is a configuration or outage problem. With no backends at all
+      // there is nothing to raise and nothing to find.
+      final failure = answers.firstOrNull;
+      if (failure != null) throw failure;
+      return const [];
+    }
+
+    final merged = <SearchResult>[];
+    final seen = <String>{};
+    for (var rank = 0; merged.length < limit; rank++) {
+      var exhausted = true;
+      for (final list in lists) {
+        if (rank >= list.length) continue;
+        exhausted = false;
+        final result = list[rank];
+        if (result.url.isNotEmpty && !seen.add(result.url)) continue;
+        merged.add(result);
+        if (merged.length == limit) break;
+      }
+      if (exhausted) break;
+    }
+    return merged;
+  }
+}
