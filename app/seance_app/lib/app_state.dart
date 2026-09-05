@@ -593,12 +593,24 @@ class AppState extends ChangeNotifier {
   /// time out a queue whose whole job is keeping a check and its write
   /// together.
   Future<T> _mutate<T>(Future<T> Function() action) async {
+    // A queued action that calls a queued method waits on its own completion,
+    // and since the queue has no timeout the app's mutations simply stop with
+    // no error to find. The marker is a zone value rather than a field: a
+    // field would read as "set" for an unrelated second caller arriving while
+    // the first action is suspended at an await, which is the normal case
+    // this queue exists to serialize, not a bug.
+    assert(
+      Zone.current[#seanceMutation] == null,
+      'Re-entrant mutation: an action inside the queue must call the '
+      'non-queuing core (_saveServerNow), not saveServer, deleteServer, '
+      'duplicateServer or a sync round.',
+    );
     final queued = _mutating;
     final finished = Completer<void>();
     _mutating = finished.future;
     await queued;
     try {
-      return await action();
+      return await runZoned(action, zoneValues: {#seanceMutation: true});
     } finally {
       finished.complete();
     }
@@ -933,9 +945,15 @@ class AppState extends ChangeNotifier {
     // On the mutation queue: a round writes the config store and the vault
     // (tombstones delete both), so it is a mutation like any other and must
     // not interleave with a delete's reference count or a duplicate's plan.
-    final outcome = await _mutate(services.runSync);
-    servers = await services.configStore.listServers();
-    snippets = await services.snippetStore.listSnippets();
+    // The re-reads are inside it too — outside, a mutation could land while
+    // `listServers` was still resolving and then have its own assignment
+    // overwritten by this older snapshot.
+    final outcome = await _mutate(() async {
+      final result = await services.runSync();
+      servers = await services.configStore.listServers();
+      snippets = await services.snippetStore.listSnippets();
+      return result;
+    });
     services.probe.updateServers(servers);
     _recomputeSuggestions();
     return outcome;

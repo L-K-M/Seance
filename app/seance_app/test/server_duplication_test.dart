@@ -19,6 +19,11 @@ void main() {
   group('duplicateServerLabel', () {
     test('names the first copy and then numbers the rest', () {
       expect(duplicateServerLabel('web', const []), 'web copy');
+      // Fills from the front rather than continuing past the highest taken
+      // number: with only "web copy 2" in the way, the first copy is still
+      // "web copy". Pinned because both rules are defensible and nothing
+      // else says which one ships.
+      expect(duplicateServerLabel('web', const ['web copy 2']), 'web copy');
       expect(duplicateServerLabel('web', const ['web', 'web copy']),
           'web copy 2');
       expect(
@@ -236,6 +241,33 @@ void main() {
       createdAt: 1,
       updatedAt: 2,
     );
+
+    test('planning writes nothing, which is what lets the save be aborted',
+        () async {
+      // The guard runs between the plan and the save, so `SourceServerChanged`
+      // can promise nothing was created — but only while planning stays a
+      // read. A vault write moved in here would strand an entry no server
+      // names, and nothing reference-counts those.
+      final store = vault();
+      await store.putSecret(const Secret(
+        id: 'sec-old',
+        kind: SecretKind.password,
+        value: 'hunter2',
+      ));
+      final plan = await planServerDuplication(
+        source(secretRef: 'sec-old'),
+        vault: store,
+        takenLabels: const [],
+        id: 'copy-1',
+        secretId: 'sec-new',
+        now: 100,
+      );
+
+      expect(plan.secret?.id, 'sec-new');
+      expect(await store.getSecret('sec-new'), isNull,
+          reason: 'the planned entry is written by the save, not the plan');
+      expect((await store.getSecret('sec-old'))?.value, 'hunter2');
+    });
 
     test('copies the credential into a vault entry of its own', () async {
       final store = vault();

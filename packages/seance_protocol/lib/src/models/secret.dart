@@ -31,8 +31,10 @@ class Secret {
   /// Exists so duplicating a server can re-key a credential without listing
   /// this class's fields at the call site. It is not itself a safety net: a
   /// field added to [Secret] has to be wired in here too, and the guard that
-  /// actually catches a missed one is the JSON comparison in the app's
-  /// `server_duplication_test.dart`. And since a null argument means "keep",
+  /// actually catches a missed one is a JSON comparison — one in this
+  /// package's `records_test.dart`, so it cannot go missing with a client,
+  /// and one in the app's `server_duplication_test.dart` covering the call
+  /// site. And since a null argument means "keep",
   /// [keyPassphrase] cannot be cleared through this.
   Secret copyWith({
     String? id,
