@@ -171,4 +171,28 @@ void main() {
       expect(body, contains('This device keeps its copy'));
     });
   });
+
+  group('nextUpdatedAt', () {
+    test('uses the wall clock when it is already ahead', () {
+      expect(nextUpdatedAt(100, now: 5000), 5000);
+    });
+
+    test('a new server has nothing to outrank', () {
+      expect(nextUpdatedAt(null, now: 5000), 5000);
+    });
+
+    test('a clock behind the stored stamp still moves the record forward', () {
+      // The case that matters: this device pulled a record another device
+      // wrote under a faster clock. Stamping an honest "now" would tie with or
+      // lose to it, so the edit — an exclusion, most expensively — would take
+      // here and nowhere else.
+      expect(nextUpdatedAt(5000, now: 100), 5001);
+    });
+
+    test('a tie is not good enough', () {
+      // Last-write-wins breaks a tie by device id and sequence, not in the
+      // editing device's favour, so an equal stamp is a coin flip.
+      expect(nextUpdatedAt(5000, now: 5000), 5001);
+    });
+  });
 }
