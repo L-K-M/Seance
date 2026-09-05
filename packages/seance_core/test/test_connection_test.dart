@@ -71,6 +71,30 @@ void main() {
         'Password rejected by prod.example.com. Check the credential.',
       );
       expect(result.log, contains('auth failed'));
+      // The caller's own instance, not just `result.log`: a runConnectionTest
+      // that ignored `log:` and wrote to one of its own would render the same
+      // string into the result and pass every assertion above.
+      expect(log.lines.join('\n'), contains('auth failed'));
+    });
+
+    test('a bookmark with no path fails the test instead of the app',
+        () async {
+      // `resolveCredentials` throws `ArgumentError` on that wiring mistake,
+      // deliberately, so it cannot be missed. A user-triggered button must
+      // still get a red result rather than an unhandled async error — loudly
+      // *and* gracefully.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async =>
+            throw ArgumentError.value(null, 'identityFilePath', 'missing'),
+        authenticate: (_, _, _) async => AuthKind.key,
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.summary, contains('identityFilePath'));
+      // An Error is our bug, so the transcript keeps the trace that locates it.
+      expect(result.log, contains('identityFilePath'));
+      expect(result.log, contains('runConnectionTest'));
     });
 
     test('a failure before the handshake still lands in the transcript',
@@ -244,9 +268,15 @@ void main() {
       expect(() => result.notes.add('mine'), throwsUnsupportedError);
     });
 
-    test('every auth kind has a label', () {
+    test('every auth kind has a distinct, non-empty label', () {
+      // Distinct as well as present: two kinds sharing a label would report
+      // the wrong thing about how authentication completed, which is the one
+      // distinction the summary exists to draw.
+      final labels = <String>{};
       for (final kind in AuthKind.values) {
         expect(authKindLabel(kind), isNotEmpty);
+        expect(labels.add(authKindLabel(kind)), isTrue,
+            reason: 'duplicate label for ${kind.name}');
       }
     });
   });
@@ -297,6 +327,58 @@ void main() {
       // real, so a form that is never saved leaves no trust behind.
       expect(await real.get('new.example.com', 22), isNull);
       expect(await real.all(), [pinned]);
+    });
+
+    test('a declined host key is neither trusted nor pinned', () async {
+      // Consent is the whole security boundary here, and every other callback
+      // in this file answers yes — so an implementation that ignored the
+      // decline and pinned anyway passed the suite.
+      final inner = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(inner);
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(trial),
+        onHostKey: (_) async => false,
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'declined.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('declined'),
+        ),
+        isFalse,
+      );
+      expect(await trial.get('declined.example.com', 22), isNull);
+      expect(await inner.get('declined.example.com', 22), isNull);
+    });
+
+    test('an approval during a trial never reaches the real store', () async {
+      // The promise the editor makes in copy — "trusted for the test only, the
+      // first real connection asks again" — enforced rather than asserted in a
+      // comment. `UnpinnedHostKeyStore.put` writes only its own map, and this
+      // is what would fail if it ever delegated.
+      final persistent = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(persistent);
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(trial),
+        onHostKey: (_) async => true,
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'trial.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('trial'),
+        ),
+        isTrue,
+      );
+      // Approved and usable for the rest of this attempt…
+      expect(await trial.get('trial.example.com', 22), isNotNull);
+      // …and invisible to the store a real session would consult.
+      expect(await persistent.get('trial.example.com', 22), isNull);
+      expect(await persistent.all(), isEmpty);
     });
 
     test('a trial approval satisfies the verifier it is wrapped in', () async {
@@ -358,6 +440,22 @@ void main() {
         pinnedAt: 4,
       ));
       expect(mismatch.verdict, HostKeyVerdict.changed);
+
+      // Through the manager as well, not only the verifier: if
+      // `verifyHostKey` consulted the verifier for unknown hosts and short-cut
+      // a host it had already pinned, every assertion above still passes and
+      // a changed key is silently trusted.
+      final reoffered = await manager.verifyHostKey(
+        host: 'new.example.com',
+        port: 22,
+        type: 'ssh-ed25519',
+        fingerprintBytes: fingerprint('attacker'),
+      );
+      expect(
+        reoffered && prompts == 1,
+        isFalse,
+        reason: 'a changed key must be refused or re-asked, never assumed',
+      );
     });
   });
 }

@@ -375,7 +375,11 @@ class AppServices {
   /// vault yet, so resolving from storage alone would quietly test the *old*
   /// credential — or an empty one for a server being added. A blank draft
   /// field falls back to the vault, which is how an unchanged credential is
-  /// re-tested, and matches what saving does with a blank field.
+  /// re-tested, and matches what saving does with a blank field — with one
+  /// exception the blanket claim was hiding: a typed draft PEM is new key
+  /// material by construction (the editor passes null whenever the key is
+  /// referenced from disk or held in the vault), so a blank passphrase beside
+  /// one means "no passphrase" rather than "the stored one".
   ///
   /// Precedence, since it is not obvious from the branches: a configured
   /// [ServerConfig.identityFilePath] wins over [draftPrivateKey]. The editor

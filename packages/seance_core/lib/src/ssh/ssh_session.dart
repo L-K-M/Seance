@@ -165,8 +165,17 @@ class SshConnectionLog {
 /// (dartssh2's `printDebug`/`printTrace` and `note` all pass one message
 /// through) rather than splitting it on newlines first, which would put a
 /// tail past this regex's reach entirely.
+/// The class name is *optional* so a renamed message is still caught. The
+/// fail-closed branch below keys off the name, and a `pub upgrade` that
+/// renamed the class — `SSH_Message_Userauth_InfoResponse` to anything not
+/// containing `Userauth_InfoResponse` — would defeat both the name check and a
+/// name-anchored pattern, and print the password with nothing red anywhere.
+/// Anchoring on `(responses: [` instead catches it, and catches the same
+/// shape arriving in a chunk that did not carry the name. In an SSH packet
+/// trace that substring belongs to this message alone, so the over-redaction
+/// this admits costs nothing by the standard the paragraph above sets.
 final RegExp _userauthResponses =
-    RegExp(r'Userauth_InfoResponse\(responses: \[.*', dotAll: true);
+    RegExp(r'(Userauth_InfoResponse)?\(responses: \[.*', dotAll: true);
 
 /// The message whose `responses` list *is* the password for a host doing
 /// password login over keyboard-interactive.
@@ -193,9 +202,13 @@ String redactConnectionTrace(String line) {
     return '$_userauthMessage(redacted: this build does not recognize the '
         'shape of this message, so all of it is withheld)';
   }
+  // The name is put back from the match rather than restated, because the
+  // match only includes one when the class still has today's name. Canonical
+  // lines come out byte-identical to before; a renamed class keeps its own
+  // name (which the match did not consume) instead of gaining a second one.
   return line.replaceAllMapped(
     _userauthResponses,
-    (_) => 'Userauth_InfoResponse(responses: [redacted])',
+    (match) => '${match[1] ?? ''}(responses: [redacted])',
   );
 }
 

@@ -382,6 +382,25 @@ void main() {
       expect(log.toString(), isNot(contains('does not recognize')));
     });
 
+    test('the real password request never carries the password either', () {
+      // The *other* secret-bearing message. dartssh2 omits the password from
+      // `SSH_Message_Userauth_Request.toString()` today, so nothing has to
+      // scrub it — and until now nothing checked that, so an upgrade that
+      // started printing it would put a plaintext password into a transcript
+      // this feature shows with a Copy button and invites people to paste
+      // into bug reports. Built from the real message for the same reason the
+      // InfoResponse one is: a hand-written line would pin my reading of
+      // dartssh2 rather than dartssh2.
+      final log = SshConnectionLog();
+      log.add('-> sock: '
+          '${SSH_Message_Userauth_Request.password(
+            user: 'deploy',
+            password: 'hunter2',
+          )}');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('deploy'));
+    });
+
     test('an InfoResponse this build cannot parse is withheld whole', () {
       // Every test above is written against the shape dartssh2 prints today,
       // so they pin the pattern to itself rather than to the dependency. A
@@ -392,6 +411,40 @@ void main() {
           '(numResponses: 1, answers: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('does not recognize'));
+    });
+
+    test('a renamed InfoResponse class is still redacted', () {
+      // The fail-closed branch keys off the class name, so a `pub upgrade`
+      // that renamed the class would defeat both it and a name-anchored
+      // pattern — printing the password with nothing red anywhere. Anchoring
+      // on the `(responses: [` shape catches it whatever it is called.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSHMsgUserauthInfoResponse(responses: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('SSHMsgUserauthInfoResponse'));
+      expect(log.toString(), contains('(responses: [redacted])'));
+    });
+
+    test('a tail chunk carrying no class name is redacted too', () {
+      // Every producer hands `add` a whole record today. If one ever split a
+      // message, the chunk with the credential in it would be the one without
+      // the name — the case a name-anchored pattern cannot see.
+      final log = SshConnectionLog();
+      log.add('(responses: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('(responses: [redacted])'));
+    });
+
+    test('the canonical line still redacts to exactly what it always did', () {
+      // Pinned as a whole string, not as a `contains`: making the class name
+      // optional must not change the canonical output by a byte, and a field
+      // rename must land in the withheld branch rather than quietly here.
+      expect(
+        redactConnectionTrace(
+          '-> sock: SSH_Message_Userauth_InfoResponse(responses: [hunter2])',
+        ),
+        '-> sock: SSH_Message_Userauth_InfoResponse(responses: [redacted])',
+      );
     });
 
     test('redaction leaves an ordinary trace line untouched', () {
