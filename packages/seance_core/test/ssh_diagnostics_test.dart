@@ -316,6 +316,17 @@ void main() {
       expect(log.toString(), contains('user: deploy'));
     });
 
+    test('a password containing a bracket does not leak its tail', () {
+      // A Dart list's toString does not escape its elements, so `pas]sword`
+      // prints as `responses: [pas]sword])`. A bracket-bounded match would
+      // stop after `[pas]` and leave the rest in the transcript.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(responses: [pas]sword])');
+      expect(log.toString(), isNot(contains('sword')));
+      expect(log.toString(), contains('[redacted]'));
+    });
+
     test('redaction leaves an ordinary trace line untouched', () {
       const line = '  <- sock: SSH_Message_Userauth_Failure('
           'methodsLeft: [publickey], partialSuccess: false)';
