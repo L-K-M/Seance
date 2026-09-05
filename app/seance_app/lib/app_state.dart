@@ -592,13 +592,14 @@ class AppState extends ChangeNotifier {
         now: DateTime.now().millisecondsSinceEpoch,
         bookmarkFor: (id) => services.settings.identityFileBookmarks[id],
       );
-      // The plan describes the source as it was before the vault read, and
-      // that read can wait out a keychain prompt. Deletes are serialized
-      // behind this one, but a sync round is not: it can withdraw the
-      // credential and remove the server in the meantime, and then the plan
-      // holds a null secret it read as "this server has none". Saving it would
-      // create the copy the user asked for without the password they expect it
-      // to have — and resurrect a config another device deleted.
+      // Deletes, saves and sync rounds are all serialized behind this one
+      // now, so nothing can move the vault under the plan. What the queue
+      // cannot make fresh is [source] itself: the caller captured it before
+      // the queue was entered, so by the time the plan is built it may
+      // describe a server that has since been deleted or re-pointed at
+      // another credential. Saving from a stale snapshot would create the
+      // copy the user asked for without the password they expect it to have —
+      // and resurrect a config another device deleted.
       if (!duplicationSourceUnchanged(
         await services.configStore.getServer(source.id),
         source,
@@ -618,6 +619,16 @@ class AppState extends ChangeNotifier {
 
   /// The store mutation currently in flight, so the next one waits for it.
   Future<void> _mutating = Future<void>.value();
+
+  /// The zone this object was built in, i.e. one no mutation is running in.
+  ///
+  /// A `Timer` runs its callback in the zone it was *created* in, and the
+  /// callback is bound there before any `createTimer` override sees it — so a
+  /// zone specification cannot hand it back. A timer scheduled from inside a
+  /// mutation (every save schedules the auto-sync debounce) therefore has to
+  /// be created out here, or its round runs carrying the mutation marker and
+  /// trips the assert in [_mutate].
+  final Zone _outsideMutations = Zone.current;
 
   /// Run [action] after every mutation queued before it has finished.
   ///
@@ -645,12 +656,24 @@ class AppState extends ChangeNotifier {
   /// time out a queue whose whole job is keeping a check and its write
   /// together.
   Future<T> _mutate<T>(Future<T> Function() action) async {
+    // A queued action that calls a queued method waits on its own completion,
+    // and since the queue has no timeout the app's mutations simply stop with
+    // no error to find. The marker is a zone value rather than a field: a
+    // field would read as "set" for an unrelated second caller arriving while
+    // the first action is suspended at an await, which is the normal case
+    // this queue exists to serialize, not a bug.
+    assert(
+      Zone.current[#seanceMutation] == null,
+      'Re-entrant mutation: an action inside the queue must call the '
+      'non-queuing core (_saveServerNow), not saveServer, deleteServer, '
+      'duplicateServer or a sync round.',
+    );
     final queued = _mutating;
     final finished = Completer<void>();
     _mutating = finished.future;
     await queued;
     try {
-      return await action();
+      return await runZoned(action, zoneValues: {#seanceMutation: true});
     } finally {
       finished.complete();
     }
@@ -985,9 +1008,15 @@ class AppState extends ChangeNotifier {
     // On the mutation queue: a round writes the config store and the vault
     // (tombstones delete both), so it is a mutation like any other and must
     // not interleave with a delete's reference count or a duplicate's plan.
-    final outcome = await _mutate(services.runSync);
-    servers = await services.configStore.listServers();
-    snippets = await services.snippetStore.listSnippets();
+    // The re-reads are inside it too — outside, a mutation could land while
+    // `listServers` was still resolving and then have its own assignment
+    // overwritten by this older snapshot.
+    final outcome = await _mutate(() async {
+      final result = await services.runSync();
+      servers = await services.configStore.listServers();
+      snippets = await services.snippetStore.listSnippets();
+      return result;
+    });
     services.probe.updateServers(servers);
     _recomputeSuggestions();
     // A pulled assistant configuration changes the provider, the model or the
@@ -1052,7 +1081,8 @@ class AppState extends ChangeNotifier {
     _autoSyncTimer?.cancel();
     _autoSyncTimer = null;
     if (services.settings.autoSync && services.isSyncConfigured) {
-      _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => _autoSync());
+      _autoSyncTimer = _outsideMutations
+          .run(() => Timer.periodic(_autoSyncInterval, (_) => _autoSync()));
     }
   }
 
@@ -1061,7 +1091,12 @@ class AppState extends ChangeNotifier {
   void _scheduleAutoSync() {
     if (!services.settings.autoSync || !services.isSyncConfigured) return;
     _syncDebounce?.cancel();
-    _syncDebounce = Timer(_syncDebounceDelay, _autoSync);
+    // Created in [_outsideMutations]: this is reached from inside `_mutate`
+    // (every save schedules one), and a timer's callback runs in the zone it
+    // was created in — so the debounce would fire a sync round carrying the
+    // mutation marker and trip the re-entrancy assert on every save.
+    _syncDebounce =
+        _outsideMutations.run(() => Timer(_syncDebounceDelay, _autoSync));
   }
 
   /// Best-effort background sync. Errors are captured into [lastSyncError]
