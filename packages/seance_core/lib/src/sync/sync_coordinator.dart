@@ -63,14 +63,21 @@ class SyncCoordinator {
     // address is already published by that server's own record.
     final excludedLocators = <String>{};
     final syncedLocators = <String>{};
+    // The same rule, for credentials: nothing prevents two configs pointing at
+    // one vault entry, and a credential a still-synced server holds must keep
+    // reaching the devices that want it.
+    final syncedSecretRefs = <String>{};
     for (final s in servers) {
       (s.excludeFromSync ? excludedLocators : syncedLocators)
           .add(hostKeyLocator(s.host, s.port));
+      if (!s.excludeFromSync && s.secretRef != null) {
+        syncedSecretRefs.add(s.secretRef!);
+      }
     }
 
     for (final server in servers) {
       if (server.excludeFromSync) {
-        await _retract(server);
+        await _retract(server, syncedSecretRefs);
         continue;
       }
       await local.putLocal(await codec.encrypt(DecryptedRecord(
@@ -163,10 +170,19 @@ class SyncCoordinator {
   /// settings already did. Withdrawing a credential that was never there costs
   /// an id-shaped row; leaving one behind because we were unsure costs the
   /// credential.
-  Future<void> _retract(ServerConfig server) async {
+  ///
+  /// Unless a still-synced server shares it, which [syncedSecretRefs] names.
+  /// A secret record is keyed by the credential, not by the server holding it,
+  /// so a tombstone dated at the exclusion would beat that server's own push
+  /// of the same id every round — quietly and permanently ending credential
+  /// sync for a server the user never excluded.
+  Future<void> _retract(
+    ServerConfig server,
+    Set<String> syncedSecretRefs,
+  ) async {
     await _tombstone(server.id, RecordKind.serverConfig, server.updatedAt);
     final secretRef = server.secretRef;
-    if (secretRef != null) {
+    if (secretRef != null && !syncedSecretRefs.contains(secretRef)) {
       await _tombstone(
         '$_secretIdPrefix$secretRef',
         RecordKind.secret,
@@ -199,11 +215,19 @@ class SyncCoordinator {
       for (final server in localServers)
         if (server.excludeFromSync) server.id,
     };
+    // Shielded only when *no* synced server shares the credential — the same
+    // "every server that names it" rule the host-key locators use. A record
+    // for a ref a synced server still holds is a live update for that server,
+    // not a stale copy of a local-only one.
     final excludedSecretIds = <String>{
       for (final server in localServers)
         if (server.excludeFromSync && server.secretRef != null)
           '$_secretIdPrefix${server.secretRef}',
-    };
+    }..removeAll(<String>{
+        for (final server in localServers)
+          if (!server.excludeFromSync && server.secretRef != null)
+            '$_secretIdPrefix${server.secretRef}',
+      });
     // Secret tombstones are decided after the loop rather than inside it:
     // whether one may be applied depends on whether any server still
     // references that credential, and a config tombstone in the same batch may
