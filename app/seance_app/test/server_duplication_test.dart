@@ -111,8 +111,10 @@ void main() {
 
     test('carries over every field a copy is allowed to share', () {
       // Compared as JSON against the source rather than field by field, so a
-      // field added to ServerConfig later fails here instead of being
-      // silently reset to its default on every duplicate.
+      // field added to ServerConfig later fails here — but only once the
+      // `source()` fixture above gives it a non-default value, since a field
+      // left at its default matches on both sides. Set it there when you add
+      // one, or it is silently reset on every copy.
       final original = source(secretRef: 'sec-old', syncSecret: true);
       final copy = duplicateServerConfig(
         original,
