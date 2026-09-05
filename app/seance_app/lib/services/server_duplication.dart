@@ -80,3 +80,58 @@ ServerConfig duplicateServerConfig(
   createdAt: now,
   updatedAt: now,
 );
+
+/// A planned duplicate: the config to store, and the vault entry to write
+/// first when the source had a credential to copy.
+class ServerDuplication {
+  final ServerConfig config;
+  final Secret? secret;
+  const ServerDuplication({required this.config, this.secret});
+}
+
+/// Work out what duplicating [source] takes, without writing anything.
+///
+/// Separated from the notifier that saves it because this is the part that can
+/// lose a credential, and orchestration left inside an `AppState` is
+/// orchestration nothing can exercise — no test in this app can build an
+/// `AppServices`, whose constructor is private. The ids and the clock are
+/// arguments for the same reason.
+///
+/// A dangling [ServerConfig.secretRef] — the config points at a vault entry
+/// that is gone — plans as "no credential" rather than failing: the original
+/// is already in that state, and the copy is not the place to discover it. A
+/// vault that *throws*, which is what a locked OS keyring does, propagates
+/// instead: a duplicate that quietly lost its password would look identical in
+/// the list and only admit it at connect time.
+Future<ServerDuplication> planServerDuplication(
+  ServerConfig source, {
+  required SecretVault vault,
+  required Iterable<String> takenLabels,
+  required String id,
+  required String secretId,
+  required int now,
+}) async {
+  Secret? secret;
+  final sourceRef = source.secretRef;
+  if (sourceRef != null) {
+    final original = await vault.getSecret(sourceRef);
+    if (original != null) {
+      secret = Secret(
+        id: secretId,
+        kind: original.kind,
+        value: original.value,
+        keyPassphrase: original.keyPassphrase,
+      );
+    }
+  }
+  return ServerDuplication(
+    config: duplicateServerConfig(
+      source,
+      id: id,
+      label: duplicateServerLabel(source.label, takenLabels),
+      secretRef: secret?.id,
+      now: now,
+    ),
+    secret: secret,
+  );
+}

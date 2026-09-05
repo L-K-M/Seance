@@ -304,7 +304,13 @@ class _ServerListPaneState extends State<ServerListPane> {
       context,
       message: 'Duplicated as "${copy.label}"',
       actionLabel: 'Edit',
-      onAction: () => _editServer(context, state, copy),
+      // Checked again inside the closure, not only before showing the toast:
+      // the action fires whenever the user taps it, which can be after this
+      // pane is gone, and a defunct context reaches showDialog as an ancestor
+      // lookup on a deactivated widget.
+      onAction: () {
+        if (context.mounted) _editServer(context, state, copy);
+      },
     );
   }
 
