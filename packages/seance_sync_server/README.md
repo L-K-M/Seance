@@ -105,6 +105,26 @@ so an old client and new server detect a mismatch instead of corrupting data.
 | `PUT /v1/records` | Bearer | Push a batch of encrypted records (LWW) |
 | `DELETE /v1/account` | Bearer | Delete the account and all its data |
 
+### Sync transaction semantics
+
+A push resolves LWW, allocates sequences and commits all accepted records in one
+storage transaction. An LWW rejection is a per-record result, not a batch failure.
+A database failure rolls back the batch and its sequence changes. A lost HTTP
+reply can still follow a successful commit; clients must reconcile by pulling.
+
+Pull records and `latestSeq` come from one snapshot: every returned sequence is
+`since < seq <= latestSeq`. Later writes belong to the next pull. This does not
+yet provide pagination, client-side durable revisions or authenticated metadata.
+
+SQLite uses `BEGIN IMMEDIATE` for writes and a read transaction for snapshots.
+Lock contention fails the request rather than falling back to non-atomic writes.
+The memory backend stages batches without yielding, then swaps state together.
+
+Custom server `Storage` implementations must implement `pushRecords` and
+`pullSnapshot` with these guarantees. The older primitives remain for source
+compatibility with callers, but must not be composed into sync operations. Wire
+DTOs and the database schema are unchanged; this is not an account migration.
+
 ## Security model
 
 - The client derives a vault key and an **independent** auth verifier from the
@@ -126,4 +146,6 @@ dart test packages/seance_sync_server
 Covers the endpoints (register/prelogin/login/push/pull/delete, auth, rate
 limiting, protocol-version and open-registration gating), the SQLite backend
 (round-trips + durability across reopen), and a full end-to-end run of the real
-client against a live server with two devices converging.
+client against a live server with two devices converging. Atomic-sync regressions
+force stale-write and watermark races over HTTP, a separate-connection SQLite
+commit during a pull, and a late batch-write failure followed by reopen/retry.

@@ -175,9 +175,8 @@ class SyncServer {
 
   Future<Response> _sync(Request req) => _withAuth(req, (username) async {
     final since = int.tryParse(req.url.queryParameters['since'] ?? '0') ?? 0;
-    final records = await storage.recordsSince(username, since);
-    final latest = await storage.latestSeq(username);
-    return _json(PullResponse(records: records, latestSeq: latest).toJson());
+    final snapshot = await storage.pullSnapshot(username, since);
+    return _json(snapshot.toJson());
   });
 
   Future<Response> _push(Request req) => _withAuth(req, (username) async {
@@ -202,25 +201,8 @@ class SyncServer {
             'A record blob exceeds the ${settings.maxBlobBytes}-byte limit');
       }
     }
-    final results = <PushResult>[];
-    for (final incoming in r.records) {
-      final existing = await storage.getRecord(username, incoming.id);
-      // Server applies the same LWW rule as the client.
-      final incomingWins =
-          existing == null ||
-          identical(Lww.resolve(existing, incoming), incoming);
-      if (incomingWins) {
-        final seq = await storage.nextSeq(username);
-        await storage.putRecord(username, incoming.withSeq(seq));
-        results.add(PushResult(id: incoming.id, seq: seq, accepted: true));
-      } else {
-        results.add(
-          PushResult(id: incoming.id, seq: existing.seq ?? 0, accepted: false),
-        );
-      }
-    }
-    final latest = await storage.latestSeq(username);
-    return _json(PushResponse(results: results, latestSeq: latest).toJson());
+    final pushed = await storage.pushRecords(username, r.records);
+    return _json(pushed.toJson());
   });
 
   Future<Response> _deleteAccount(Request req) =>

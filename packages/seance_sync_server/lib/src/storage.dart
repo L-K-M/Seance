@@ -50,6 +50,15 @@ abstract class Storage {
   Future<String> createToken(String username);
   Future<String?> usernameForToken(String token);
 
+  /// Resolve LWW, allocate sequences and commit a whole batch atomically.
+  /// A rejected LWW write is a result; a storage failure commits nothing.
+  Future<PushResponse> pushRecords(
+      String username, List<EncryptedRecord> records);
+
+  /// Return records and their watermark from one consistent snapshot.
+  Future<PullResponse> pullSnapshot(String username, int since);
+
+  // Compatibility primitives; sync handlers must use the atomic operations.
   Future<EncryptedRecord?> getRecord(String username, String id);
 
   /// Store [record] (which must have a non-null seq) as the current version.
@@ -96,6 +105,43 @@ class InMemoryStorage implements Storage {
 
   @override
   Future<String?> usernameForToken(String token) async => _tokens[token];
+
+  @override
+  Future<PushResponse> pushRecords(
+      String username, List<EncryptedRecord> records) async {
+    // Stage without awaits so failures and concurrent requests see no partial batch.
+    final staged = Map<String, EncryptedRecord>.of(_records[username] ?? {});
+    var seq = _seq[username] ?? 0;
+    final results = <PushResult>[];
+    for (final incoming in records) {
+      final existing = staged[incoming.id];
+      if (existing != null &&
+          !identical(Lww.resolve(existing, incoming), incoming)) {
+        results.add(PushResult(
+            id: incoming.id, seq: existing.seq ?? 0, accepted: false));
+        continue;
+      }
+
+      seq++;
+      staged[incoming.id] = incoming.withSeq(seq);
+      results.add(PushResult(id: incoming.id, seq: seq, accepted: true));
+    }
+
+    _records[username] = staged;
+    _seq[username] = seq;
+    return PushResponse(results: results, latestSeq: seq);
+  }
+
+  @override
+  Future<PullResponse> pullSnapshot(String username, int since) async {
+    // Copy the rows and watermark in one synchronous turn.
+    final watermark = _seq[username] ?? 0;
+    final records = (_records[username]?.values ?? const <EncryptedRecord>[])
+        .where((r) => (r.seq ?? 0) > since && (r.seq ?? 0) <= watermark)
+        .toList()
+      ..sort((a, b) => (a.seq ?? 0).compareTo(b.seq ?? 0));
+    return PullResponse(records: records, latestSeq: watermark);
+  }
 
   @override
   Future<EncryptedRecord?> getRecord(String username, String id) async =>
