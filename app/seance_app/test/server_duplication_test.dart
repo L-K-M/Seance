@@ -252,7 +252,8 @@ void main() {
       // can promise nothing was created — but only while planning stays a
       // read. A vault write moved in here would strand an entry no server
       // names, and nothing reference-counts those.
-      final store = SecretVault(_RecordingVaultStore(writes), List.filled(32, 7));
+      final store =
+          SecretVault(_RecordingVaultStore(writes), List.filled(32, 7));
       await store.putSecret(const Secret(
         id: 'sec-old',
         kind: SecretKind.password,
@@ -476,16 +477,24 @@ void main() {
   });
 }
 
-/// Records every write so a test can assert a read-only path touched nothing,
-/// under any id rather than only the one it expected.
+/// Records every mutation so a test can assert a read-only path touched
+/// nothing, under any id rather than only the one it expected. `VaultStore`
+/// has exactly two mutators; a third would have to be recorded here too, or
+/// the emptiness assertion quietly stops covering it.
 class _RecordingVaultStore extends InMemoryVaultStore {
   _RecordingVaultStore(this.writes);
   final List<String> writes;
 
   @override
   Future<void> putSecretBlob(String id, Uint8List blob) async {
-    writes.add(id);
+    writes.add('put:$id');
     return super.putSecretBlob(id, blob);
+  }
+
+  @override
+  Future<void> deleteSecret(String id) async {
+    writes.add('delete:$id');
+    return super.deleteSecret(id);
   }
 }
 
