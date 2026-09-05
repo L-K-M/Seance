@@ -302,9 +302,16 @@ void main() {
     test('a trial approval satisfies the verifier it is wrapped in', () async {
       final trial = UnpinnedHostKeyStore(InMemoryHostKeyStore());
       final verifier = TofuVerifier(trial);
+      // Counted, because a pin is not consent: an implementation that trusted
+      // and pinned an unknown key without asking would satisfy every verdict
+      // assertion below while skipping the one step this whole design is for.
+      var prompts = 0;
       final manager = SshSessionManager(
         tofu: verifier,
-        onHostKey: (_) async => true,
+        onHostKey: (_) async {
+          prompts++;
+          return true;
+        },
       );
 
       // First use: prompted, approved, pinned into the trial store.
@@ -317,8 +324,21 @@ void main() {
         ),
         isTrue,
       );
+      expect(prompts, 1, reason: 'first sight must ask, not silently pin');
+
       // Second offer of the same key is trusted without another prompt, so a
       // reconnect inside one attempt does not re-ask.
+      expect(
+        await manager.verifyHostKey(
+          host: 'new.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('new'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1, reason: 'the pin from this attempt answers for it');
+
       final decision = await verifier.check(HostKey(
         host: 'new.example.com',
         port: 22,
