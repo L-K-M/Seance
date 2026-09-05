@@ -126,24 +126,29 @@ class SqliteStorage implements Storage {
 
   @override
   Future<PushResponse> pushRecords(
-      String username, List<EncryptedRecord> records) async =>
-      _transaction(_TransactionMode.write, () {
-        final results = <PushResult>[];
-        for (final incoming in records) {
-          final existing = _getRecord(username, incoming.id);
-          if (existing != null &&
-              !identical(Lww.resolve(existing, incoming), incoming)) {
-            results.add(PushResult(
-                id: incoming.id, seq: existing.seq ?? 0, accepted: false));
-            continue;
-          }
-
-          final seq = _nextSeq(username);
-          _putRecord(username, incoming.withSeq(seq));
-          results.add(PushResult(id: incoming.id, seq: seq, accepted: true));
+      String username, List<EncryptedRecord> records) async {
+    // A no-op push must not contend with writers.
+    final mode = records.isEmpty
+        ? _TransactionMode.read
+        : _TransactionMode.write;
+    return _transaction(mode, () {
+      final results = <PushResult>[];
+      for (final incoming in records) {
+        final existing = _getRecord(username, incoming.id);
+        if (existing != null &&
+            !identical(Lww.resolve(existing, incoming), incoming)) {
+          results.add(PushResult(
+              id: incoming.id, seq: existing.seq ?? 0, accepted: false));
+          continue;
         }
-        return PushResponse(results: results, latestSeq: _latestSeq(username));
-      });
+
+        final seq = _nextSeq(username);
+        _putRecord(username, incoming.withSeq(seq));
+        results.add(PushResult(id: incoming.id, seq: seq, accepted: true));
+      }
+      return PushResponse(results: results, latestSeq: _latestSeq(username));
+    });
+  }
 
   @override
   Future<PullResponse> pullSnapshot(String username, int since) async =>

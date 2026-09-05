@@ -161,11 +161,13 @@ void main() {
 
     writer.execute('BEGIN IMMEDIATE');
     try {
+      final empty = await client.push([]);
+      expect(empty.results, isEmpty);
+      expect(empty.latestSeq, before.latestSeq);
+
       await expectLater(
         client.push([_record('existing', 20), _record('new', 30)]),
-        throwsA(
-          isA<ApiError>().having((e) => e.code, 'code', 'storage_busy'),
-        ),
+        throwsA(isA<ApiError>().having((e) => e.code, 'code', 'storage_busy')),
       );
       expect((await client.pull(since: 0)).toJson(), before.toJson());
     } finally {
@@ -199,8 +201,15 @@ void main() {
       function: (arguments) {
         if (!committed) {
           writer.execute('BEGIN IMMEDIATE');
-          writer.execute('UPDATE records SET updated_at = 20, seq = 2');
-          writer.execute('UPDATE sequence_data SET value = 2');
+          writer.execute(
+            'UPDATE records SET updated_at = 20, seq = 2 '
+            'WHERE username = ? AND id = ?',
+            ['user', 'shared'],
+          );
+          writer.execute(
+            'UPDATE sequence_data SET value = 2 WHERE username = ?',
+            ['user'],
+          );
           writer.execute('COMMIT');
           committed = true;
         }
