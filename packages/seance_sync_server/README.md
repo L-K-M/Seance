@@ -120,10 +120,13 @@ Pull records and `latestSeq` come from one snapshot: every returned sequence is
 yet provide pagination, client-side durable revisions or authenticated metadata.
 
 SQLite uses `BEGIN IMMEDIATE` for writes and a read transaction for snapshots.
-Lock contention fails the request rather than falling back to non-atomic writes.
-If transaction cleanup itself fails, SQLite storage fails closed, emits a sanitized
-stderr diagnostic and returns `503 storage_unavailable` on subsequent storage
-requests. Restart after investigating the database failure; automatic reopen could
+Transaction lock contention returns `503 storage_busy` without committing the
+batch; retry later. There is no synchronous wait or non-atomic fallback.
+If transaction cleanup itself fails, SQLite storage fails closed and returns
+`503 storage_unavailable` for the triggering and subsequent storage requests.
+Diagnostics retain the original cause and log only exception types/SQLite numeric
+codes—not messages, SQL, parameters or blobs. Restart after investigating the
+database failure; automatic reopen could
 silently replace an injected or in-memory database. `/healthz` remains liveness,
 not storage readiness. Closing the disabled connection is safe to repeat.
 The memory backend stages batches without yielding, then swaps state together.

@@ -21,6 +21,14 @@ EncryptedRecord _record(
   blob: Uint8List.fromList([revision]),
 );
 
+Account _account(String username) => Account(
+  username: username,
+  authVerifierHash: 'unused',
+  verifierSalt: 'unused',
+  argonSalt: 'unused',
+  argonParams: const Argon2Params(),
+);
+
 enum _CleanupFault { rollback, stateRead }
 
 class _FaultingDatabase implements Database {
@@ -32,7 +40,8 @@ class _FaultingDatabase implements Database {
 
   @override
   void execute(String sql, [List<Object?> parameters = const []]) {
-    if (sql == 'ROLLBACK' && _fault == _CleanupFault.rollback) {
+    if (sql.trim().toUpperCase().startsWith('ROLLBACK') &&
+        _fault == _CleanupFault.rollback) {
       throw StateError('injected cleanup failure');
     }
     _inner.execute(sql, parameters);
@@ -71,6 +80,7 @@ void main() {
         final adapter = _FaultingDatabase(database, fault);
         final storage = SqliteStorage(adapter);
         addTearDown(storage.close);
+        await storage.createAccount(_account('user'));
         database.execute('''
         CREATE TRIGGER fail_record BEFORE INSERT ON records
         BEGIN SELECT RAISE(ABORT, 'original write failure'); END;
@@ -79,10 +89,14 @@ void main() {
         await expectLater(
           storage.pushRecords('user', [_record('record', 10)]),
           throwsA(
-            isA<SqliteException>().having(
-              (e) => e.message,
+            isA<StorageUnavailableException>().having(
+              (e) => e.cause,
               'cause',
-              contains('original write failure'),
+              isA<SqliteException>().having(
+                (e) => e.message,
+                'original message',
+                contains('original write failure'),
+              ),
             ),
           ),
         );
@@ -113,6 +127,39 @@ void main() {
     );
   }
 
+  test('the request that disables storage also returns unavailable', () async {
+    final database = sqlite3.openInMemory();
+    final storage = SqliteStorage(
+      _FaultingDatabase(database, _CleanupFault.rollback),
+    );
+    addTearDown(storage.close);
+    await storage.createAccount(_account('user'));
+    final token = await storage.createToken('user');
+    final handler = SyncServer(
+      storage: storage,
+      settings: const ServerSettings(),
+    ).handler;
+    database.execute('''
+      CREATE TRIGGER fail_record BEFORE INSERT ON records
+      BEGIN SELECT RAISE(ABORT, 'private-test-detail'); END;
+    ''');
+
+    final response = await handler(
+      Request(
+        'PUT',
+        Uri.parse('http://localhost/v1/records'),
+        headers: {'authorization': 'Bearer $token'},
+        body: jsonEncode(
+          PushRequest(records: [_record('record', 10)]).toJson(),
+        ),
+      ),
+    );
+    expect(response.statusCode, HttpStatus.serviceUnavailable);
+    final body = await response.readAsString();
+    expect(jsonDecode(body)['error'], 'storage_unavailable');
+    expect(body, isNot(contains('private-test-detail')));
+  });
+
   final factories = <String, Storage Function()>{
     'memory': InMemoryStorage.new,
     'sqlite': () {
@@ -128,15 +175,7 @@ void main() {
       setUp(() async {
         storage = entry.value();
         for (final username in ['alice', 'bob']) {
-          await storage.createAccount(
-            Account(
-              username: username,
-              authVerifierHash: 'unused',
-              verifierSalt: 'unused',
-              argonSalt: 'unused',
-              argonParams: const Argon2Params(),
-            ),
-          );
+          await storage.createAccount(_account(username));
         }
       });
 
@@ -224,6 +263,10 @@ void main() {
             (await storage.pullSnapshot('alice', 0)).toJson(),
             before.toJson(),
           );
+          final retry = await storage.pushRecords('alice', [
+            _record('existing', 20),
+          ]);
+          expect(retry.results.single.seq, before.latestSeq + 1);
         },
       );
     });
@@ -235,6 +278,7 @@ void main() {
       final database = sqlite3.openInMemory();
       final storage = SqliteStorage(database);
       addTearDown(storage.close);
+      await storage.createAccount(_account('user'));
       database.execute('''
       CREATE TRIGGER fail_record BEFORE INSERT ON records
       WHEN NEW.id = 'poison'

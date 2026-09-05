@@ -278,6 +278,9 @@ class SyncServer {
       } on StorageUnavailableException catch (e) {
         return _error(
             HttpStatus.serviceUnavailable, 'storage_unavailable', e.toString());
+      } on StorageBusyException {
+        return _error(HttpStatus.serviceUnavailable, 'storage_busy',
+            'Storage is busy; retry shortly.');
       } on _PayloadTooLarge {
         return _error(413, 'payload_too_large', 'Request body too large');
       } on FormatException {

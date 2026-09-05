@@ -14,14 +14,15 @@ enum _TransactionMode { read, write }
 /// already end-to-end encrypted; this layer only shuffles opaque bytes.
 class SqliteStorage implements Storage {
   final Database _connection;
-  bool _available = true;
+  StorageUnavailableException? _failure;
 
   SqliteStorage(this._connection) {
     _migrate();
   }
 
   Database get _db {
-    if (!_available) throw const StorageUnavailableException();
+    final failure = _failure;
+    if (failure != null) throw failure;
     return _connection;
   }
 
@@ -157,31 +158,53 @@ class SqliteStorage implements Storage {
   T _transaction<T>(_TransactionMode mode, T Function() action) {
     // No awaits while the connection owns a transaction. Acquire the write
     // lock before comparing LWW so another process cannot commit a stale winner.
-    _db.execute(mode == _TransactionMode.write ? 'BEGIN IMMEDIATE' : 'BEGIN');
+    _begin(mode);
     try {
       final result = action();
       _db.execute('COMMIT');
       return result;
-    } catch (_) {
-      _rollback();
+    } catch (e) {
+      _rollback(e);
+      final failure = _failure;
+      if (failure != null) throw failure;
+      if (_isBusy(e)) throw const StorageBusyException();
       rethrow;
     }
   }
 
-  void _rollback() {
+  void _begin(_TransactionMode mode) {
+    try {
+      _db.execute(mode == _TransactionMode.write ? 'BEGIN IMMEDIATE' : 'BEGIN');
+    } on SqliteException catch (e) {
+      if (_isBusy(e)) throw const StorageBusyException();
+      rethrow;
+    }
+  }
+
+  static bool _isBusy(Object error) => error is SqliteException &&
+      (error.resultCode == SqlError.SQLITE_BUSY ||
+          error.resultCode == SqlError.SQLITE_LOCKED);
+
+  static String _diagnosticCause(Object error) => error is SqliteException
+      ? 'SQLite ${error.extendedResultCode}'
+      : error.runtimeType.toString();
+
+  void _rollback(Object cause) {
+    final Object cleanupCause;
     try {
       // SQLite may already have rolled back after a trigger or storage error.
       if (!_db.autocommit) _db.execute('ROLLBACK');
       return;
-    } catch (_) {
-      // Never reuse a connection whose transaction state is uncertain.
+    } catch (e) {
+      cleanupCause = e;
     }
 
-    _available = false;
+    // Never reuse a connection whose transaction state is uncertain.
+    _failure = StorageUnavailableException(cause: cause);
     try {
-      // Do not log SQL, parameters or ciphertext from the original exception.
-      stderr.writeln('Transaction cleanup failed. '
-          '${const StorageUnavailableException()}');
+      // Log types/codes, not SQL, parameters, messages or ciphertext.
+      stderr.writeln('Transaction failed (${_diagnosticCause(cause)}); '
+          'cleanup failed (${_diagnosticCause(cleanupCause)}). $_failure');
     } catch (_) {
       // Diagnostics must not replace the original failure.
     }
@@ -227,10 +250,12 @@ class SqliteStorage implements Storage {
   }
 
   @override
-  Future<List<EncryptedRecord>> recordsSince(String username, int since) async =>
+  Future<List<EncryptedRecord>> recordsSince(
+          String username, int since) async =>
       _recordsSince(username, since);
 
-  List<EncryptedRecord> _recordsSince(String username, int since, {int? through}) {
+  List<EncryptedRecord> _recordsSince(String username, int since,
+      {int? through}) {
     final rows = _db.select(
         through == null
             ? 'SELECT * FROM records WHERE username = ? AND seq > ? '

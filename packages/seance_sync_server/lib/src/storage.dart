@@ -40,10 +40,18 @@ class Account {
 
 /// A backend disabled after an unrecoverable transaction failure.
 class StorageUnavailableException implements Exception {
-  const StorageUnavailableException();
+  /// Retained for diagnostics, never included in the public error message.
+  final Object? cause;
+
+  const StorageUnavailableException({this.cause});
 
   @override
   String toString() => 'Sync storage unavailable; restart required.';
+}
+
+/// Transient storage contention; no batch was committed.
+class StorageBusyException implements Exception {
+  const StorageBusyException();
 }
 
 /// Persistence for the server. Records are stored as opaque [EncryptedRecord]s

@@ -164,7 +164,7 @@ void main() {
       await expectLater(
         client.push([_record('existing', 20), _record('new', 30)]),
         throwsA(
-          isA<ApiError>().having((e) => e.code, 'code', 'internal_error'),
+          isA<ApiError>().having((e) => e.code, 'code', 'storage_busy'),
         ),
       );
       expect((await client.pull(since: 0)).toJson(), before.toJson());
