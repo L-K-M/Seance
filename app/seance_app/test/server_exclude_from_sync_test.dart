@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/app_state.dart';
+import 'package:seance_app/ui/server_editor.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -71,5 +72,28 @@ void main() {
     );
     expect(tooltip.message, contains('Excluded from sync'));
     expect(tooltip.excludeFromSemantics, isTrue);
+  });
+
+  group('excludingNeedsConfirmation', () {
+    ServerConfig existing() => config(excluded: false);
+
+    test('asks only when another device could lose the server', () {
+      // The one thing this editor does that deletes data elsewhere, sitting a
+      // few rows from the colour picker — so it is confirmed rather than left
+      // to a subtitle.
+      expect(
+        excludingNeedsConfirmation(existing: existing(), syncConfigured: true),
+        isTrue,
+      );
+      // Nothing to retract: never uploaded, or nowhere to have uploaded it.
+      expect(
+        excludingNeedsConfirmation(existing: null, syncConfigured: true),
+        isFalse,
+      );
+      expect(
+        excludingNeedsConfirmation(existing: existing(), syncConfigured: false),
+        isFalse,
+      );
+    });
   });
 }

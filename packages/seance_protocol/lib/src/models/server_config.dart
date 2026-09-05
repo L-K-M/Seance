@@ -167,6 +167,12 @@ class ServerConfig {
   /// deleting it there would drop that device back to trust-on-first-use — a
   /// weaker position than the one the user asked for. Going forward, a pin for
   /// a `host:port` that only excluded servers name is simply not pushed.
+  ///
+  /// Any write that *changes* this must carry a fresh [updatedAt]. The
+  /// retraction tombstone is dated from it, so a stale one ties with the copy
+  /// already on the server and loses the tie-break to it — the UI would report
+  /// the server as excluded while its record sat there untouched. [copyWith]
+  /// asserts on that rather than leaving it to be discovered in a sync log.
   final bool excludeFromSync;
 
   final int createdAt;
@@ -216,6 +222,14 @@ class ServerConfig {
     bool? excludeFromSync,
     int? updatedAt,
   }) {
+    assert(
+      excludeFromSync == null ||
+          excludeFromSync == this.excludeFromSync ||
+          updatedAt != null,
+      'Changing excludeFromSync needs a fresh updatedAt: the retraction '
+      'tombstone is dated from it, and a stale date ties with the copy '
+      'already on the sync server and loses.',
+    );
     return ServerConfig(
       id: id,
       label: label ?? this.label,
