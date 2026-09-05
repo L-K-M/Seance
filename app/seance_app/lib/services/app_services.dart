@@ -395,6 +395,13 @@ class AppServices {
   /// field falls back to the vault, which is how an unchanged credential is
   /// re-tested, and matches what saving does with a blank field.
   ///
+  /// Precedence, since it is not obvious from the branches: a configured
+  /// [ServerConfig.identityFilePath] wins over [draftPrivateKey]. The editor
+  /// cannot produce both — it sets the path only while the key is referenced
+  /// from disk, and passes the draft PEM as null in exactly that case — so
+  /// the order is unreachable from there today, and a caller that populates
+  /// both is asking to test the file.
+  ///
   /// [draftIdentityBookmark] plays the same role for a Browse…-picked identity
   /// file: its macOS security-scoped grant is keyed by server id and is not
   /// written to settings until save, so without it a key outside `~/.ssh`

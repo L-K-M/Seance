@@ -10,6 +10,12 @@ import 'ssh_session.dart';
 /// returned client. A trial wants no channel at all, so the seam a test stands
 /// in for is one future and one enum rather than a live client somebody has to
 /// remember to close.
+///
+/// One contract on failures: write the summary into the log only when
+/// throwing an [SshConnectException]. [runConnectionTest] takes that
+/// exception's own message verbatim and appends a summary itself for anything
+/// else, so an implementation that logs a line and then throws something else
+/// puts the same sentence in the transcript twice.
 typedef HostAuthenticator =
     Future<AuthKind> Function(
       ServerConfig config,
@@ -18,6 +24,12 @@ typedef HostAuthenticator =
     );
 
 /// A [HostAuthenticator] over the real transport.
+///
+/// On failure it leaves the socket to [openAuthenticatedClient], which closes
+/// the client before every throw that can happen after it is constructed (the
+/// only ones are inside the `client.authenticated` try, which calls `close`
+/// first). Keep that true: a settings form invites repeated clicks, so a leak
+/// here is a leak per click.
 ///
 /// Takes the [hostKeys] store rather than a [TofuVerifier] so it can wrap it
 /// in an [UnpinnedHostKeyStore] itself. A verifier parameter would let a
@@ -54,10 +66,13 @@ HostAuthenticator liveHostAuthenticator({
     // own it); on failure openAuthenticatedClient has already closed it.
     try {
       await client.close();
-    } catch (_) {
+    } catch (error) {
       // Authentication has already succeeded by here, and that is the only
-      // thing this reports. A socket that misbehaves on the way down must not
-      // come back as "could not connect" for a server that just did.
+      // thing this reports: a socket that misbehaves on the way down must not
+      // come back as "could not connect" for a server that just did. It still
+      // earns a transcript line — "authenticated, but the connection feels
+      // flaky" is undiagnosable if the one clue is dropped here.
+      log.add('Closing the trial connection failed: $error');
     }
     return kind;
   };
