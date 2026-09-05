@@ -1,7 +1,7 @@
 # Séance: engineering and product backlog
 
-Consolidated: 2026-09-04. Review base: `2f99f4e` (`origin/main`).
-Implementation PRs #64–70 are merged; integrated source verified at `9583f1e`.
+Consolidated: 2026-09-05. Original review base: `2f99f4e`; continuation: `d18f1ac`.
+Implementation PRs #64–71 are merged; integrated source verified at `791d86e`.
 
 This is the **unfinished-work list**. Each entry gives a starting point, a bounded
 next step, and verification criteria. Completed work belongs in the ledger, not
@@ -36,8 +36,9 @@ validation.
 
 Baseline at the review base: 263 package tests, 309 app tests, 137 terminal-fork
 tests passed; two existing macOS-only goldens skipped on Linux. Package and app
-analysis were clean. Continuation used Flutter 3.47.2 / Dart 3.13.2. SQLite tests
-needed an environment-only `libsqlite3.so` symlink to the installed `.so.0`.
+analysis were clean. The initial implementation ledger recorded Flutter 3.47.2 /
+Dart 3.13.2; this continuation used Flutter 3.47.1 / Dart 3.13.1. SQLite tests needed
+an environment-only `libsqlite3.so` symlink to the installed `.so.0`.
 
 ```bash
 dart pub get
@@ -62,6 +63,17 @@ action geometry. KDF tests include hostile prelogin and the separate strength
 floor; HTTP cleanup is exercised through real AppServices operations with fakes.
 Platform compilation is not equivalent to real-device validation.
 
+Continuation baseline at `d18f1ac`: 299 package, 342 app and 154 fork tests passed;
+two macOS goldens skipped. After #71, all suites were rerun at `791d86e`:
+
+| Check | Result |
+|---|---|
+| Package analysis / tests | Clean / 320 passed |
+| App analysis / tests | Clean / 342 passed |
+| Terminal fork tests | 154 passed; 2 existing macOS goldens skipped |
+| Sync server AOT compilation | Passed |
+| #71 review / CI | Five reviews; feedback implemented or resolved against source/tests; all package/app/platform/Docker checks passed |
+
 ### Priority and execution
 
 - **P0:** security boundary, data loss or permanent divergence.
@@ -79,7 +91,7 @@ Recommended sequence:
 ```text
 versioned/authenticated records -> durable ledger + exact revisions -> deletes
                                -> durable host-key conflict resolution
-storage transactions -> snapshot pagination -> quotas + honest convergence
+snapshot pagination -> quotas + honest convergence
 recoverable vault migration -> credential transactions -> recovery onboarding
 terminal benchmarks -> bounded parser/output work -> ergonomic shell actions
 ```
@@ -135,24 +147,6 @@ JSON collections repeatedly.
 unchanged resync sends nothing; blocked push plus local edit retains the edit;
 blocked apply plus domain edit cannot overwrite it; startup/manual/timer sync
 serialize; crash/offline recovery and credential opt-out converge.
-
-### Atomic server writes and pull snapshots — SOL-002, SOL-007
-
-**Evidence:** `seance_sync_server/lib/src/{server,storage,sqlite_storage}.dart`
-separates LWW comparison, sequence allocation, upsert, and pull/watermark reads.
-Concurrent requests can overwrite a winner or expose inconsistent snapshots.
-Batches can partially commit before returning an error.
-
-**Next:** move compare/resolve/sequence/upsert into a storage batch transaction
-(`BEGIN IMMEDIATE` for SQLite); serialize the memory backend equivalently.
-Define atomic-batch versus explicit durable partial-result semantics. Add a
-storage pull operation capturing watermark W and records `since < seq <= W`
-in one snapshot; paginate against W, not a moving latest sequence.
-
-**Gate:** barrier-controlled real HTTP/SQLite tests force a stale loser to write
-after a winner; concurrent watermark capture, crashes mid-batch, lock contention
-and separate processes cannot violate ordering/durability. PR #17's observed
-client cursor remains necessary; it did not make the server transactional.
 
 ### Never silently re-trust synced host keys — AST-008 / SOL-023
 
@@ -406,6 +400,26 @@ large payload recovery and bounded memory/time. Real sshd conformance: vim, htop
 readline, alternate screens, Unicode widths, mouse reports and resize/reflow.
 Adopt libghostty only after a stable suitable API and the same conformance gate.
 
+### Bound completed control-sequence work — AST-015
+
+**P1. Evidence:** `third_party/xterm/lib/src/terminal.dart` loops over an unchecked
+CSI REP count in `repeatPreviousCharacter`. The 12-byte input `X\x1b[10000000b`
+performs ten million
+cell writes. A bounded Linux parser-only JIT probe took 364 ms (one million:
+40 ms; 80×24 terminal, 10,000 retained rows). These are single samples, not frame-time
+measurements. Larger values were not executed. PR #49's unfinished-sequence cap
+does not cover this path.
+
+**Next:** specify supported numeric/count/size limits and recovery for excessive
+work across REP, resize, erase and insert operations. Use equivalent bounded bulk
+updates where possible; preserve ordinary wrap/cursor semantics rather than adding
+an undocumented arbitrary clamp. Audit numeric overflow as well as huge counts.
+
+**Gate:** short complete adversarial sequences, count boundaries, chunked input,
+normal REP/wrap conformance, continued output and bounded scheduling latency.
+Keep this distinct from the incomplete-OSC queue fix; both are required before
+claiming malformed output cannot wedge the terminal.
+
 ### Bounded, Unicode-safe pending-input hints — AST-010 / SEA-006
 
 **Evidence:** `XtermTerminalEngine._trackPending` appends per rune without a bound,
@@ -562,7 +576,7 @@ warn that prior backups/plaintext history may persist.
 
 ## Server operations and release reliability
 
-### Quotas, snapshots and abuse controls — SOL-049, SOL-050
+### Quotas, snapshots and abuse controls — SOL-049, SOL-050; SOL-002/SOL-007 residual
 
 **Evidence:** request/batch/blob caps and expired limiter pruning already exist.
 Accounts can still accumulate unbounded blobs/tokens; full pulls materialize the
@@ -570,9 +584,12 @@ account. Active unique-key spray grows limiter memory; username-only limits enab
 lockout and do not protect prelogin/registration.
 
 **Next:** account/token/record/blob/total-byte quotas; validate configured limits.
-Paginate against atomic snapshot watermarks. Separate bounded source-IP and
-account rate buckets, trusted-proxy policy, prelogin/register limits and
-`Retry-After`; shared/persistent state if supporting replicas. Reject malformed
+Paginate against a defined snapshot/revision contract, not a moving watermark.
+Independent `seq <= W` queries across requests are not one historical snapshot:
+test records updated/deleted between pages and preserve eventual delta delivery.
+Separate bounded source-IP and account rate buckets, trusted-proxy policy,
+prelogin/register limits and `Retry-After`; shared/persistent state if supporting
+replicas. Reject malformed
 prelogin username types as structured 4xx, not internal 500.
 
 **Gate:** concurrent quota edges, large historical accounts, ID spray, targeted
@@ -585,12 +602,17 @@ clear actionable status codes.
 
 **Next:** atomic create-or-conflict including initial sequence/token; transactional
 account deletion; live-account token joins. Version schema with transactional
-`PRAGMA user_version` migrations, foreign keys/checks/cascades and bounded busy
-timeout. Document synchronous/durability settings and WAL-aware online backup /
+`PRAGMA user_version` migrations and foreign keys/checks/cascades. Define bounded
+asynchronous contention retries, backoff and `Retry-After`; do not add seconds of
+synchronous `busy_timeout` that block the shared isolate. #71 already fails
+transaction contention atomically with `503 storage_busy`; empty pushes stay
+read-only. Document synchronous/durability settings and WAL-aware online backup /
 restore. Never copy only the main DB file while ignoring active WAL state.
 
 **Gate:** concurrent registration/delete/login, orphans, migration interruption,
-lock contention, disk full, corruption and restore during writes.
+cross-process kill/lock recovery, disk full, corruption and restore during writes.
+Two-connection contention and trigger rollback tests do not prove power-loss or
+cross-process crash durability.
 
 ### Readiness, drain and observability — SOL-052, SOL-053, SOL-055
 
@@ -601,8 +623,10 @@ do not implement that obsolete fix again. `/healthz` remains liveness only.
 register/login/push/pull/persistence/restart. Stop accepting on SIGTERM, drain with
 a deadline, finish/rollback transactions, close/checkpoint SQLite and handle
 repeated signals. Log request ID/route/status/duration/size and sanitized server
-errors; add auth/throttle/push/DB latency counters. No authorization, verifier,
-blob, request-body or raw command logging.
+errors; add auth/throttle/push/DB latency counters. #71 adds sanitized cleanup
+failure codes and fail-closed 503s, not general observability. Preserve causal stack
+traces when wrapping errors and add structured diagnostics for ordinary failures.
+No authorization, verifier, blob, request-body or raw command logging.
 
 **Gate:** live process with broken DB is not ready; SIGTERM during reads/writes,
 restart recovery, safe structured errors and container health failure detection.
@@ -760,7 +784,7 @@ parser PRs (#44/#45/#47/#49) visible so future agents do not duplicate them.
 
 ## Completion ledger
 
-All seven implementation PRs are merged. Review feedback was implemented or
+All eight implementation PRs are merged. Review feedback was implemented or
 resolved against source/tests; no in-scope blocker remained. Residuals below are
 still open. No reviewer timeout exemption was needed.
 
@@ -773,6 +797,19 @@ still open. No reviewer timeout exemption was needed.
 | AST-005 | [#69](https://github.com/L-K-M/Seance/pull/69) | Fork tests in CI; app/fork gate before client publishing. Other release hardening remains. |
 | AST-006 / SOL-058 part | [#70](https://github.com/L-K-M/Seance/pull/70) | Owned sync HTTP cleanup; borrowed-client ownership preserved. Cancellation/LLM/search lifetimes remain. |
 | AST-007 / SOL-046 part | [#67](https://github.com/L-K-M/Seance/pull/67) | Recognizable-secret filtering and parsed legacy cleanup. Unmarked passwords, failed/corrupt-file scrubs, backups and retention limits remain. |
+| SOL-002 / SOL-007 core | [#71](https://github.com/L-K-M/Seance/pull/71) | Atomic LWW/sequence/batch writes and pull snapshots in both backends. Pagination, client revisions, account transactions and crash/operational hardening remain above. |
+
+#71 replaced split comparison/allocation/upsert and pull/watermark reads. Five
+HTTP regressions failed first; 21 added package tests cover stale winners, torn
+snapshots, repeated ids/ties, partial failures, sequence rollback, reopen/retry,
+a second connection committing during a pull, contention and fail-closed cleanup.
+SQLite uses `BEGIN IMMEDIATE` for writes and read transactions for pulls/empty
+pushes; memory stages without yielding. Pulls return `since < seq <= W` and W
+together. Unknown transaction state disables storage with a sanitized diagnostic
+and explicit 503s, not unsafe automatic reopening.
+Wire/schema are unchanged; custom `Storage` implementers need the two new methods.
+PR #17's observed client cursor remains necessary; it did not make the server
+transactional. Deletes, trust reconciliation and client convergence are not fixed.
 
 Earlier completed work, removed from active instructions:
 
@@ -789,6 +826,10 @@ Earlier completed work, removed from active instructions:
   (SEA-014), server filter (SEA-024), trace/recentText/teardown fixes
   (SEA-001, SEA-005, SEA-011), bounded active-host-aware probes (SEA-003, SEA-004), surviving
   drawer chat/constraint-aware bubbles (SEA-010, SEA-016), settings salvage (SEA-002).
+- #63: visible HTTP(S) links open through the app's web-link service; wrapped
+  URLs, scheme/userinfo rejection and mouse-report compatibility have tests.
+  OSC 8 hyperlinks, keyboard link discovery and real mobile gestures remain
+  separate enhancements, not reasons to reimplement plain URL detection.
 - #40/#41: command-aware and manually named tabs. #42: Option composition and
   word/line drag selection. #43: synced server groups/colors/icons.
 - #46: syntax/find editor and top notices. #48: actual HTTP deployment health and

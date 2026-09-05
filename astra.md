@@ -413,3 +413,50 @@ retain concise evidence in its resolved ledger. Mark #32–38 merged; remove sta
 Do not retire residuals (no-echo capture, typed echo, salt validation, LLM client
 lifetime) merely because a smaller fix landed. Preserve prior product ideas,
 security dependencies, test gates and historical PR links.
+
+## Continuation: 2026-09-05
+
+Pulled `main` at `d18f1ac`, including #63 and all seven original fixes.
+Reverified: 299 package tests, 342 app tests, 154 fork tests pass; two existing
+macOS-only goldens skipped. Package/app analysis clean. Flutter 3.47.1 / Dart
+3.13.1; SQLite uses the same temporary library-path setup.
+
+SOL-002/SOL-007 reproduced independently: five real-HTTP regressions failed across
+memory and SQLite storage. A delayed older write displaced the LWW winner;
+a concurrent write separated pull rows from their watermark; a late SQLite
+trigger failure returned 500 after earlier rows and sequence increments committed.
+PR #71 moves these operations into atomic storage boundaries. The initial fix
+passes 312 package tests, including a second SQLite connection committing during
+a pull and rollback/reopen/retry. Removing the read transaction makes its snapshot
+regression fail.
+
+#71 merged after five reviews. Follow-up regressions cover cleanup cause retention,
+consistent fail-closed 503s, retryable contention and read-only empty pushes.
+Review claims about missing body/batch limits, unsafe exception text, absent JSON
+errors and disabled WAL were rejected against full definitions and tests.
+Final merged verification at `791d86e`: 320 package, 342 app and 154 fork tests pass;
+two macOS goldens skipped. Analysis and server AOT compilation pass. Platform and
+Docker builds passed in CI, not native-device or container-runtime validation.
+Pagination, causal stack/structured diagnostics, client revisions, account
+transactions, cross-process kill/durability tests and the P0 migration work remain
+in `ANALYSIS.md`.
+
+### AST-015 · P1 · Bound work from completed control sequences
+
+The parser hang is broader than an unfinished OSC. In
+`third_party/xterm/lib/src/terminal.dart:repeatPreviousCharacter`, a valid CSI REP
+count drives an uncapped loop. `X\x1b[10000000b` is only 12 bytes but performs
+ten million cell writes. A bounded local probe took 364 ms on this Linux host;
+1 million took 40 ms (80×24 terminal, 10,000-row retention). These are single
+JIT/parser samples, not GUI/frame benchmarks or device comparisons. Larger counts
+were deliberately not executed.
+
+PR #49 caps unfinished sequence retention; it cannot address this complete short
+sequence. Also audit numeric overflow and operation-level limits for resize,
+repeat, erase and insert handlers—not just sequence byte length.
+
+**Next:** define supported count/size ceilings and excess-work recovery, then add
+bounded-work regression tests alongside parser fuzzing. Prefer mathematically
+equivalent bulk updates where feasible; do not silently change normal REP/wrap
+semantics. Prove later output and interrupt scheduling recover. Numeric limits
+need a documented compatibility policy before a blanket clamp ships.
