@@ -23,6 +23,25 @@ class Secret {
     this.keyPassphrase,
   });
 
+  /// The same secret under a different [id].
+  ///
+  /// Exists so duplicating a server can re-key a credential without listing
+  /// this class's fields at the call site — a hand-written constructor there
+  /// would silently drop anything [Secret] gains later, which for credential
+  /// metadata is a loss nothing would report.
+  Secret copyWith({
+    String? id,
+    SecretKind? kind,
+    String? value,
+    String? keyPassphrase,
+  }) =>
+      Secret(
+        id: id ?? this.id,
+        kind: kind ?? this.kind,
+        value: value ?? this.value,
+        keyPassphrase: keyPassphrase ?? this.keyPassphrase,
+      );
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'kind': kind.name,

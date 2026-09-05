@@ -12,6 +12,7 @@ import 'services/chat_session.dart';
 import 'services/default_snippets.dart';
 import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
+import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
 import 'ui/session_label.dart';
 import 'ui/terminal_appearance.dart';
@@ -459,6 +460,53 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     _scheduleAutoSync();
   }
+
+  /// Duplicate [source] as a new server and return the copy.
+  ///
+  /// The credential is copied into a vault entry of the copy's own (see
+  /// [duplicateServerConfig] for why it is never shared), and so is the
+  /// device-local security-scoped grant for a Browse…-picked identity file:
+  /// that grant is keyed by server id, so without copying it the duplicate
+  /// would silently fall back to the raw path and fail to open a key outside
+  /// `~/.ssh`.
+  ///
+  /// Vault failures propagate, as they do from [saveServer]. A duplicate that
+  /// quietly lost its password would look identical in the list and only admit
+  /// it at connect time.
+  Future<ServerConfig> duplicateServer(ServerConfig source) async {
+    // Serialized against any duplicate still running. The label is chosen from
+    // the list as it stands *before* the vault read, and that read can sit for
+    // a long time behind an OS keychain prompt — long enough for a second
+    // Duplicate to plan against the same list and land on the same name, which
+    // is the one outcome the naming rule exists to prevent.
+    final queued = _duplicating;
+    final finished = Completer<void>();
+    _duplicating = finished.future;
+    await queued;
+    try {
+      final plan = await planServerDuplication(
+        source,
+        vault: services.vault,
+        takenLabels: servers.map((s) => s.label),
+        id: uuidV4(),
+        secretId: uuidV4(),
+        now: DateTime.now().millisecondsSinceEpoch,
+      );
+      await saveServer(
+        plan.config,
+        secret: plan.secret,
+        identityFileBookmark:
+            services.settings.identityFileBookmarks[source.id],
+      );
+      return plan.config;
+    } finally {
+      finished.complete();
+    }
+  }
+
+  /// The duplicate currently in flight, so the next one waits for it. See
+  /// [duplicateServer].
+  Future<void> _duplicating = Future<void>.value();
 
   Future<void> deleteServer(String id) async {
     await closeAllTabsForServer(id);
