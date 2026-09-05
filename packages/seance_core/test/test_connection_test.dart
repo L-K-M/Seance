@@ -17,6 +17,9 @@ ServerConfig config({String? jumpHostId}) => ServerConfig(
       updatedAt: 2,
     );
 
+/// Pass-through bytes, not a digest: dartssh2 hands `onVerifyHostKey` the
+/// `SHA256:…` fingerprint *string* as bytes, so these are what a [HostKey]
+/// built with `fingerprintSha256: 'SHA256:<s>'` describes.
 Uint8List fingerprint(String s) => Uint8List.fromList(utf8.encode('SHA256:$s'));
 
 void main() {
@@ -50,7 +53,10 @@ void main() {
           transcript.add('  <- sock: auth failed');
           throw SshConnectException(
             'Password rejected by prod.example.com. Check the credential.',
-            StateError('auth'),
+            // An Exception, not an Error: this file's own rule is that an
+            // Error means our bug and keeps a stack trace, while a rejected
+            // password is the expected, readable kind of failure.
+            Exception('auth rejected'),
             transcript,
           );
         },
@@ -193,7 +199,12 @@ void main() {
         pinnedAt: 3,
       );
       await trial.put(reapproved);
-      expect((await trial.all()).length, 2);
+      final merged = await trial.all();
+      expect(merged, hasLength(2));
+      // Named, not just counted: a concatenating `all()` that returned the
+      // original pin would also be length 2 while contradicting `get`.
+      expect(merged, containsAll([fresh, reapproved]));
+      expect(merged, isNot(contains(pinned)));
       expect(await trial.get('known.example.com', 22), same(reapproved));
 
       // …and nowhere else. The first real connection asks again and pins for
@@ -230,6 +241,17 @@ void main() {
         pinnedAt: 3,
       ));
       expect(decision.verdict, HostKeyVerdict.trusted);
+
+      // And a *different* key for that host is still the MITM case: one
+      // approval trusts one key, not the host forever.
+      final mismatch = await verifier.check(HostKey(
+        host: 'new.example.com',
+        port: 22,
+        type: 'ssh-ed25519',
+        fingerprintSha256: 'SHA256:attacker',
+        pinnedAt: 4,
+      ));
+      expect(mismatch.verdict, HostKeyVerdict.changed);
     });
   });
 }

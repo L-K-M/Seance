@@ -88,7 +88,12 @@ Future<bool> _verifyHostKey({
 /// which the server actually accepts — instead of a bare
 /// `SSHAuthFailError(All authentication methods failed)`.
 class SshConnectionLog {
-  final List<String> lines = [];
+  final List<String> _lines = [];
+
+  /// The transcript so far. A view, not the backing list: every line has to
+  /// come through [add], which is where credentials are redacted out, and a
+  /// publicly mutable list is a one-character way past that.
+  List<String> get lines => List.unmodifiable(_lines);
 
   /// Called after every [add] so a live view can repaint. Cleared by [freeze].
   void Function()? onUpdate;
@@ -103,9 +108,9 @@ class SshConnectionLog {
 
   void add(String line) {
     if (_frozen) return;
-    lines.add(redactConnectionTrace(line));
-    if (lines.length > _maxLines) {
-      lines.removeRange(0, lines.length - _maxLines);
+    _lines.add(redactConnectionTrace(line));
+    if (_lines.length > _maxLines) {
+      _lines.removeRange(0, _lines.length - _maxLines);
     }
     onUpdate?.call();
   }
@@ -122,7 +127,7 @@ class SshConnectionLog {
   }
 
   @override
-  String toString() => lines.join('\n');
+  String toString() => _lines.join('\n');
 }
 
 /// The one shape in dartssh2's packet trace that carries a secret.
@@ -138,14 +143,26 @@ class SshConnectionLog {
 /// to be pasted into a bug report, so this is neutralised where it is
 /// captured — one place every producer passes through — rather than wherever
 /// it happens to be displayed.
+/// Matched greedily to end of line rather than to a closing bracket: a Dart
+/// list's `toString` does not escape its elements, so a password containing
+/// `]` prints as `responses: [pas]sword])` and a bracket-bounded match would
+/// stop after `[pas]`, leaving the rest of it in the transcript. The list is
+/// the last thing the message prints and [SshConnectionLog.add] is handed one
+/// line at a time, so there is nothing after it to preserve.
 final RegExp _userauthResponses =
-    RegExp(r'(Userauth_InfoResponse\(responses: )\[[^\]]*\]');
+    RegExp(r'Userauth_InfoResponse\(responses: \[.*');
 
 /// [line] with any credential dartssh2's trace would otherwise print replaced.
 /// Public so the redaction can be asserted directly rather than only through a
 /// live handshake, which no test performs.
-String redactConnectionTrace(String line) =>
-    line.replaceAll(_userauthResponses, r'$1[redacted]');
+///
+/// `replaceAllMapped`, not `replaceAll`: Dart's plain replacement takes the
+/// string literally, so a `$1` in it lands in the output as the characters
+/// `$1` and takes the matched prefix with it.
+String redactConnectionTrace(String line) => line.replaceAllMapped(
+      _userauthResponses,
+      (_) => 'Userauth_InfoResponse(responses: [redacted]',
+    );
 
 /// Thrown when a connection attempt fails. [message] is a one-line,
 /// user-facing summary; [log] carries the full transcript for a details view;
