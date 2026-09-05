@@ -32,9 +32,21 @@ class ConnectionLogView extends StatelessWidget {
                   // while this is still on screen: saying "copied" for a write
                   // that failed sends someone to paste an empty bug report.
                   : () async {
-                      await Clipboard.setData(ClipboardData(text: text));
+                      // The write can fail — no clipboard on the platform, a
+                      // plugin that is not there — and an unhandled async
+                      // error is not a report of that.
+                      var copied = true;
+                      try {
+                        await Clipboard.setData(ClipboardData(text: text));
+                      } catch (_) {
+                        copied = false;
+                      }
                       if (context.mounted) {
-                        showTopToastIn(context, message: 'Log copied');
+                        showTopToastIn(
+                          context,
+                          message:
+                              copied ? 'Log copied' : 'Could not copy the log',
+                        );
                       }
                     },
               icon: const Icon(Icons.copy, size: 16),

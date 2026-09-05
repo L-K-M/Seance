@@ -1,10 +1,13 @@
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart' show SSHAuthFailError;
-// ignore: implementation_imports — pinning the exact toString
-// dartssh2 prints is the point: the barrel does not export the
-// message, and asserting against a hand-written copy of it would
-// prove the pattern against itself rather than the dependency.
+// Pinning the exact toString dartssh2 prints is the point: the barrel does not
+// export the message, and asserting against a hand-written copy of it would
+// prove the pattern against itself rather than against the dependency. The
+// lint is not enabled in this workspace, so the directive below is for
+// whenever it is, and has to be the line immediately above the import with
+// nothing after the code — prose beside it suppresses nothing.
+// ignore: implementation_imports
 import 'package:dartssh2/src/message/msg_userauth.dart';
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
@@ -314,7 +317,7 @@ void main() {
 
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), isNot(contains('123456')));
-      expect(log.toString(), contains('[redacted]'));
+      expect(log.toString(), contains('[redacted])'));
       // Everything else about the exchange is still legible — the point of
       // the log is to say what happened.
       expect(log.toString(), contains('methodName: password'));
@@ -329,7 +332,7 @@ void main() {
       log.add('-> sock: SSH_Message_Userauth_InfoResponse'
           '(responses: [pas]sword])');
       expect(log.toString(), isNot(contains('sword')));
-      expect(log.toString(), contains('[redacted]'));
+      expect(log.toString(), contains('[redacted])'));
     });
 
     test('a password containing a newline does not leak its tail', () {
@@ -347,7 +350,7 @@ void main() {
             '(responses: [pas${breakChar}sword])');
         expect(log.toString(), isNot(contains('sword')),
             reason: 'leaked past ${breakChar.codeUnitAt(0)}');
-        expect(log.toString(), contains('[redacted]'));
+        expect(log.toString(), contains('[redacted])'));
       }
     });
 
@@ -375,7 +378,7 @@ void main() {
           ])}');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), isNot(contains('second-answer')));
-      expect(log.toString(), contains('[redacted]'));
+      expect(log.toString(), contains('[redacted])'));
       expect(log.toString(), isNot(contains('does not recognize')));
     });
 

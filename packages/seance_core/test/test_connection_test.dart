@@ -189,26 +189,48 @@ void main() {
       // SshConnectException, whose message runConnectionTest takes verbatim.
       // Asserted here so the shipped authenticator's own behaviour is pinned
       // rather than assumed.
+      const summary = 'Could not reach host.example.com:22 — refused';
       final log = SshConnectionLog();
       final result = await runConnectionTest(
         config: config(),
         log: log,
         credentials: () async => const SshCredentials.password('pw'),
         authenticate: (_, _, transcript) async {
-          transcript.add('Could not reach host.example.com:22 — refused');
+          transcript.add(summary);
           throw SshConnectException(
-            'Could not reach host.example.com:22 — refused',
+            summary,
             const SocketException('refused'),
             transcript,
           );
         },
       );
       expect(result.ok, isFalse);
+      // The whole summary, not a word it shares with its own cause: counting
+      // 'refused' would also count the SocketException if that were ever
+      // logged, and then this would fail for the wrong reason.
       expect(
-        'refused'.allMatches(result.log).length,
+        summary.allMatches(result.log).length,
         1,
         reason: 'the summary must appear once, not once per writer',
       );
+    });
+
+    test('a pre-handshake SshConnectException still lands in the transcript',
+        () async {
+      // The SSH layer logs its own summary before throwing this type, which is
+      // why the branch appends nothing — but a resolver that reuses the type
+      // has logged nothing, and the transcript would end mid-sentence.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw SshConnectException(
+          'The identity file could not be read',
+          const FormatException('bad key'),
+          SshConnectionLog(),
+        ),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(result.ok, isFalse);
+      expect(result.log, contains('The identity file could not be read'));
     });
 
     test('the notes a result carries cannot be edited through it', () async {
@@ -280,9 +302,16 @@ void main() {
     test('a trial approval satisfies the verifier it is wrapped in', () async {
       final trial = UnpinnedHostKeyStore(InMemoryHostKeyStore());
       final verifier = TofuVerifier(trial);
+      // Counted, because a pin is not consent: an implementation that trusted
+      // and pinned an unknown key without asking would satisfy every verdict
+      // assertion below while skipping the one step this whole design is for.
+      var prompts = 0;
       final manager = SshSessionManager(
         tofu: verifier,
-        onHostKey: (_) async => true,
+        onHostKey: (_) async {
+          prompts++;
+          return true;
+        },
       );
 
       // First use: prompted, approved, pinned into the trial store.
@@ -295,8 +324,21 @@ void main() {
         ),
         isTrue,
       );
+      expect(prompts, 1, reason: 'first sight must ask, not silently pin');
+
       // Second offer of the same key is trusted without another prompt, so a
       // reconnect inside one attempt does not re-ask.
+      expect(
+        await manager.verifyHostKey(
+          host: 'new.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('new'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1, reason: 'the pin from this attempt answers for it');
+
       final decision = await verifier.check(HostKey(
         host: 'new.example.com',
         port: 22,
