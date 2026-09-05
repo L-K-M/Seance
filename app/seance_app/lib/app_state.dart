@@ -235,6 +235,24 @@ class TerminalSession {
   }
 }
 
+/// Whether any server other than [excludingId] still points at [secretRef].
+///
+/// Deleting a server drops its vault entry, and nothing stops two configs
+/// sharing one — a synced credential record is keyed by the credential rather
+/// than by the server holding it, and the editor can be pointed at an existing
+/// ref by hand. Dropping it out from under a server that still names it is
+/// silent credential loss the survivor only discovers at connect time.
+///
+/// The same check `SyncCoordinator` makes before applying a `secret:`
+/// tombstone. A top-level function so the rule can be asserted directly — no
+/// test in this app can construct an [AppState].
+bool secretStillReferenced(
+  String secretRef,
+  Iterable<ServerConfig> servers, {
+  required String excludingId,
+}) =>
+    servers.any((s) => s.id != excludingId && s.secretRef == secretRef);
+
 /// Top-level app state: the server list, live reachability, and the open
 /// terminal sessions. A server may have several sessions (tabs); the UI is a
 /// thin `ListenableBuilder` over this.
@@ -526,11 +544,11 @@ class AppState extends ChangeNotifier {
   /// quietly lost its password would look identical in the list and only admit
   /// it at connect time.
   Future<ServerConfig> duplicateServer(ServerConfig source) async {
-    // Serialized against any duplicate still running. The label is chosen from
-    // the list as it stands *before* the vault read, and that read can sit for
-    // a long time behind an OS keychain prompt — long enough for a second
-    // Duplicate to plan against the same list and land on the same name, which
-    // is the one outcome the naming rule exists to prevent.
+    // Serialized against any duplicate still running. The vault read can sit
+    // behind an OS keychain prompt for as long as the user takes to answer it
+    // — long enough for a second Duplicate to pick a name from a list that
+    // does not yet contain the first copy, so both land on the same one, which
+    // is the outcome the naming rule exists to prevent.
     final queued = _duplicating;
     final finished = Completer<void>();
     _duplicating = finished.future;
@@ -543,12 +561,12 @@ class AppState extends ChangeNotifier {
         id: uuidV4(),
         secretId: uuidV4(),
         now: DateTime.now().millisecondsSinceEpoch,
+        bookmarkFor: (id) => services.settings.identityFileBookmarks[id],
       );
       await saveServer(
         plan.config,
         secret: plan.secret,
-        identityFileBookmark:
-            services.settings.identityFileBookmarks[source.id],
+        identityFileBookmark: plan.identityFileBookmark,
       );
       return plan.config;
     } finally {
@@ -563,8 +581,14 @@ class AppState extends ChangeNotifier {
   Future<void> deleteServer(String id) async {
     await closeAllTabsForServer(id);
     final server = await services.configStore.getServer(id);
-    if (server?.secretRef != null) {
-      await services.vault.deleteSecret(server!.secretRef!);
+    final secretRef = server?.secretRef;
+    if (secretRef != null &&
+        !secretStillReferenced(
+          secretRef,
+          await services.configStore.listServers(),
+          excludingId: id,
+        )) {
+      await services.vault.deleteSecret(secretRef);
     }
     if (services.settings.identityFileBookmarks.remove(id) != null) {
       await services.saveSettings();
