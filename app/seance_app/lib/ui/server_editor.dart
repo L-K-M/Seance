@@ -8,6 +8,20 @@ import 'server_appearance.dart';
 import 'server_grouping.dart';
 import 'top_toast.dart';
 
+/// Whether turning "exclude from sync" on needs confirming before it takes.
+///
+/// Only when there is something to retract: a server being added has never
+/// been anywhere, and with no sync account configured there is no other device
+/// that could lose it. Turning the switch back off is never destructive.
+///
+/// A top-level function so the rule can be asserted directly — no widget test
+/// in this app stands up an [AppState], and this is the part of the dialog
+/// worth pinning down.
+bool excludingNeedsConfirmation({
+  required ServerConfig? existing,
+  required bool syncConfigured,
+}) => existing != null && syncConfigured;
+
 /// Add or edit a server. Password / private-key material is written to the
 /// encrypted vault; the config stores only a reference.
 Future<void> showServerEditor(
@@ -455,9 +469,55 @@ class _ServerEditorState extends State<_ServerEditor> {
                   'removed from the sync server and from your other devices.'
               : 'Keep this server on this device only — never upload it.'),
           value: _excludeFromSync,
-          onChanged: (v) => setState(() => _excludeFromSync = v),
+          onChanged: (v) async {
+            if (v && !await _confirmExclusion()) return;
+            if (mounted) setState(() => _excludeFromSync = v);
+          },
         ),
       ];
+
+  /// Ask before an exclusion that reaches other devices.
+  ///
+  /// Turning this on for a server that may already have synced is the one
+  /// thing this editor does that deletes data somewhere else, and the switch
+  /// sits a few rows from the login script and the colour picker, which lowers
+  /// the stakes it looks like it carries. Subtitles get skimmed; a dialog does
+  /// not.
+  ///
+  /// Nothing is asked when there is nothing to retract — a server being added
+  /// has never been anywhere, and with no sync account configured there is no
+  /// other device to lose it. Turning the switch back off is not destructive
+  /// either way.
+  Future<bool> _confirmExclusion() async {
+    if (!excludingNeedsConfirmation(
+      existing: widget.existing,
+      syncConfigured: widget.state.services.isSyncConfigured,
+    )) {
+      return true;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Exclude from sync?'),
+        content: const Text(
+          'If this server synced earlier, it is removed from the sync server '
+          'and from your other devices, along with any credential that synced '
+          'with it. This device keeps its copy.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Exclude'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
 
   /// Pick an identity file. On macOS this also mints the security-scoped
   /// bookmark that keeps a key outside ~/.ssh readable across relaunches.

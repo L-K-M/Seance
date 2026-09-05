@@ -83,7 +83,18 @@ void main() {
       // The credential's own opt-in survives the exclusion, so clearing it
       // gives the user back the answer they picked rather than a silent no.
       expect(excluded.syncSecret, isTrue);
-      expect(excluded.copyWith(excludeFromSync: false).excludeFromSync, isFalse);
+      expect(
+        excluded
+            .copyWith(excludeFromSync: false, updatedAt: 4)
+            .excludeFromSync,
+        isFalse,
+      );
+      // The pairing is enforced, not merely documented: a stale tombstone
+      // ties with the record already on the sync server and loses to it.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false),
+        throwsA(isA<AssertionError>()),
+      );
       // Omitting it leaves it alone, like every other copyWith field.
       expect(excluded.copyWith(label: 'other').excludeFromSync, isTrue);
     });
