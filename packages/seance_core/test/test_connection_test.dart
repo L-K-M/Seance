@@ -181,6 +181,33 @@ void main() {
       expect(unsupported.log, isNot(contains('runConnectionTest')));
     });
 
+    test('a summary an authenticator already logged is not repeated', () async {
+      // The contract on HostAuthenticator: log the summary only when throwing
+      // SshConnectException, whose message runConnectionTest takes verbatim.
+      // Asserted here so the shipped authenticator's own behaviour is pinned
+      // rather than assumed.
+      final log = SshConnectionLog();
+      final result = await runConnectionTest(
+        config: config(),
+        log: log,
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, transcript) async {
+          transcript.add('Could not reach host.example.com:22 — refused');
+          throw SshConnectException(
+            'Could not reach host.example.com:22 — refused',
+            const SocketException('refused'),
+            transcript,
+          );
+        },
+      );
+      expect(result.ok, isFalse);
+      expect(
+        'refused'.allMatches(result.log).length,
+        1,
+        reason: 'the summary must appear once, not once per writer',
+      );
+    });
+
     test('the notes a result carries cannot be edited through it', () async {
       // The same instance flows into all three results, and a caller that
       // sorted or filtered it in place would be editing what it was handed.

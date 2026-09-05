@@ -97,4 +97,9 @@ class HostKey {
 /// coordinator matching server configs against pinned hosts — need the same
 /// spelling, and two places building `'$host:$port'` by hand is how they stop
 /// agreeing.
+/// [host] goes in verbatim, so two spellings of one host are two locators.
+/// That holds today because both sides come from the same string: a pin is
+/// created with `host: config.host` (ssh_session.dart), the same value the
+/// coordinator matches against. A caller that ever takes a host from
+/// somewhere else has to normalize it first.
 String hostKeyLocator(String host, int port) => '$host:$port';

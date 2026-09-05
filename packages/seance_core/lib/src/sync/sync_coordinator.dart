@@ -97,6 +97,20 @@ class SyncCoordinator {
     for (final hk in await hostKeyStore.all()) {
       if (excludedLocators.contains(hk.locator) &&
           !syncedLocators.contains(hk.locator)) {
+        // Withheld, not retracted, and the difference is a real residual: a
+        // pin pushed before the exclusion stays on the sync server, carrying
+        // the host and port the user asked to keep local. Another device that
+        // still holds the pin — the config tombstone deletes its server, not
+        // its pins — also keeps re-publishing it.
+        //
+        // Retracting would need a `hostkey:` tombstone the apply path honours,
+        // and that is the change not to make: a tombstone is the one record
+        // with no sealed payload (`RecordCodec.decrypt` short-circuits on the
+        // envelope's `deleted` flag), so honouring one for a pin would let
+        // anything able to write to the sync server strip every device's
+        // pinned host keys and drop each of them back to trust-on-first-use.
+        // A breach-tolerant blob store must not be able to do that. Sealing
+        // tombstones comes first; retraction can follow it.
         continue;
       }
       await local.putLocal(await codec.encrypt(DecryptedRecord(
@@ -345,6 +359,12 @@ class SyncCoordinator {
   /// and whose owner never excluded anything. Out-bidding that would end
   /// credential sync for their server; the shield in [_applySecretRecords]
   /// already keeps the stale-copy case from touching this device's vault.
+  ///
+  /// The residual that leaves, stated rather than left to be rediscovered:
+  /// when the live `secret:` record on the server is dated after the
+  /// exclusion, the retraction loses and nothing escalates it, so the
+  /// credential stays on the sync server. The shield protects this device's
+  /// vault, not the remote copy.
   Future<int> _rescheduleOutranked(List<DecryptedRecord> records) async {
     for (final dec in records) {
       await _tombstone(dec.id, dec.kind, dec.updatedAt + 1);
@@ -366,6 +386,14 @@ class SyncCoordinator {
   /// Gated on [syncSecrets] like every other secret path: a user who has
   /// turned credential sync off has said remote secret records are not to
   /// touch their vault, and a delete is not the exception to that.
+  /// One caveat this makes newly relevant: a tombstone carries no sealed
+  /// payload — `RecordCodec.decrypt` returns a deleted record straight from
+  /// the envelope's flag, without opening anything — so a deletion is the one
+  /// signal the sync server can assert on its own. Bare-id tombstones already
+  /// deleted configs on that basis; this path extends the reach to the
+  /// credentials no remaining config names. The extra cost is bounded (the
+  /// config has to go first, which was already possible) but the fix is to
+  /// seal tombstones, not to special-case this apply.
   Future<void> _applySecretTombstones(
     List<String> ids,
     void Function(String, Object, StackTrace) skip,

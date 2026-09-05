@@ -166,7 +166,8 @@ class ServerConfig {
   /// server, another device may have pinned the same host on its own, and
   /// deleting it there would drop that device back to trust-on-first-use — a
   /// weaker position than the one the user asked for. Going forward, a pin for
-  /// a `host:port` that only excluded servers name is simply not pushed.
+  /// a `host:port` that is named only by excluded servers is simply not
+  /// pushed.
   ///
   /// Any write that *changes* this must carry a strictly later [updatedAt].
   /// The retraction tombstone is dated from it, so a stale one — or the
