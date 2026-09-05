@@ -273,9 +273,16 @@ class SyncCoordinator {
             final store = assistantStore;
             if (store == null) continue;
 
-            await store.putAssistantSettings(
-              AssistantSettings.fromJson(dec.data),
-            );
+            final assistant = AssistantSettings.fromJson(dec.data);
+            // `fromJson` degrades a missing field to '' rather than throwing,
+            // so that a record from a newer build stays readable. A provider
+            // name is the one field that can never legitimately be empty — it
+            // is written from an enum — so an empty one means the payload is
+            // not a configuration, and adopting it would replace a working
+            // assistant with nothing on every device that pulled it.
+            if (assistant.providerKind.isEmpty) continue;
+
+            await store.putAssistantSettings(assistant);
           case RecordKind.bookmark:
           case RecordKind.unknown:
             continue;

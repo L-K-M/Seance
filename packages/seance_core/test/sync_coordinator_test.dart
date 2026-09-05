@@ -1180,6 +1180,28 @@ void main() {
       expect(remote.latestSeq, seqBefore);
     });
 
+    test('a record with no provider is not a configuration', () async {
+      // fromJson degrades a missing field to '' so a record from a newer
+      // build stays readable; a provider name is written from an enum and can
+      // never legitimately be empty, so an empty one means the payload is not
+      // a configuration — and adopting it would leave every device that
+      // pulled it with an assistant that answers nothing.
+      final remote = FakeServer();
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 99,
+        deviceId: 'B',
+        data: assistant().copyWith(providerKind: '').toJson(),
+      )));
+      final store = InMemoryAssistantSettingsStore(assistant());
+      await coordinator('A', local, store: store).applyToStores();
+      expect(store.settings!.providerKind, 'anthropic');
+      expect(store.settings!.updatedAt, 10);
+      expect(remote.pushedRecords, 0);
+    });
+
     test('the keys never reach the server in the clear', () async {
       // The record is the only one that carries API keys, and it carries them
       // whatever `syncSecrets` says — so the seal is the whole protection.

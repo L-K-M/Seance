@@ -144,11 +144,12 @@ void main() {
   group('adopting', () {
     AssistantSettings arriving({
       String providerKind = 'openaiCompatible',
+      String model = 'gpt-5',
       Map<String, String> apiKeys = const {'openai': 'sk-remote'},
     }) => AssistantSettings(
           providerKind: providerKind,
           baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-5',
+          model: model,
           llmApiKeyRef: 'openai',
           searxngUrl: 'https://searx.example.com',
           zaiApiKeyRef: 'zai',
@@ -213,6 +214,47 @@ void main() {
       await keys.putApiKey('openai', 'sk-local');
       await sync.putAssistantSettings(arriving(apiKeys: const {}));
       expect(await keys.getApiKey('openai'), 'sk-local');
+    });
+
+    test('only the keys the configuration references are written', () async {
+      // Publishing never sweeps the keystore; importing whatever names a
+      // record happens to carry would give that care straight back.
+      await sync.putAssistantSettings(arriving(apiKeys: const {
+        'openai': 'sk-remote',
+        'sync.token': 'stolen',
+        'unrelated': 'sk-other',
+      }));
+      expect(await keys.getApiKey('openai'), 'sk-remote');
+      expect(await keys.getApiKey('sync.token'), isNull);
+      expect(await keys.getApiKey('unrelated'), isNull);
+    });
+
+    test('a round that changes nothing does not rebuild the provider',
+        () async {
+      // The coordinator hands this record over every round, so an
+      // unconditional `applied` would rebuild the chat provider — and rewrite
+      // the keystore — every five minutes for a configuration that has not
+      // moved.
+      await sync.putAssistantSettings(arriving());
+      expect(sync.applied, isTrue);
+
+      sync.applied = false;
+      await sync.putAssistantSettings(arriving());
+      expect(sync.applied, isFalse);
+
+      // A rotated key is a change even though every field matches.
+      await sync.putAssistantSettings(
+        arriving(apiKeys: const {'openai': 'sk-rotated'}),
+      );
+      expect(sync.applied, isTrue);
+      expect(await keys.getApiKey('openai'), 'sk-rotated');
+
+      // And so is a field.
+      sync.applied = false;
+      await sync.putAssistantSettings(
+        arriving(apiKeys: const {'openai': 'sk-rotated'}, model: 'gpt-5-mini'),
+      );
+      expect(sync.applied, isTrue);
     });
   });
 

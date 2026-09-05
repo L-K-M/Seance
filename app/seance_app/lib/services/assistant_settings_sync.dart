@@ -106,6 +106,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
 
   @override
   Future<void> putAssistantSettings(AssistantSettings value) async {
+    final before = assistantSyncFingerprint(settings);
     // A provider this build has never heard of keeps the one already
     // configured rather than being decoded into a wrong guess — the same
     // choice `ServerConfig.color` makes for a colour, with more at stake.
@@ -129,9 +130,28 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     settings.redactionEnabled = value.redactSecrets;
     settings.assistantUpdatedAt = value.updatedAt;
 
+    // Only the names this configuration now references, mirroring the filter
+    // on the way out. Publishing is careful never to sweep the keystore; an
+    // import that writes whatever names a record happens to carry gives that
+    // care back, since a record is exactly as trustworthy as the device that
+    // wrote it.
+    //
+    // Removals are deliberately not propagated: the record says which keys a
+    // configuration uses, never which ones a device should forget, and a name
+    // dropped here may still be referenced by settings this record does not
+    // describe. A key that stops being referenced stops being read.
+    final referenced = _referencedKeys.toSet();
+    var keysChanged = false;
     for (final entry in value.apiKeys.entries) {
+      if (!referenced.contains(entry.key)) continue;
       try {
+        // Read first: the record is pulled and re-applied every round, so
+        // writing unconditionally would rewrite the keystore — and rebuild the
+        // chat provider — every five minutes for a configuration that has not
+        // moved.
+        if (await masterKeys.getApiKey(entry.key) == entry.value) continue;
         await masterKeys.putApiKey(entry.key, entry.value);
+        keysChanged = true;
       } on KeystoreException {
         // The keyring is locked or missing. The configuration is still worth
         // keeping — the key is re-applied on the next round once the keystore
@@ -140,6 +160,9 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     }
 
     await saveSettings();
-    applied = true;
+    // Only a real change: `applied` rebuilds the chat provider, and the
+    // coordinator hands this record over on every round whether or not
+    // anything in it moved.
+    applied = keysChanged || assistantSyncFingerprint(settings) != before;
   }
 }
