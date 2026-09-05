@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:seance_core/seance_core.dart';
@@ -110,6 +111,47 @@ void main() {
       expect(result.notes.single, contains('jump host'));
     });
 
+    test('the jump-host caveat also accompanies a failure', () async {
+      // The caveat matters most on the failure it explains: "could not reach
+      // the host" means something different for a host only reachable through
+      // a bastion the test did not use.
+      final result = await runConnectionTest(
+        config: config(jumpHostId: 'bastion'),
+        credentials: () async => const SshCredentials.password('x'),
+        authenticate: (_, _, transcript) async => throw SshConnectException(
+          'Could not reach prod.example.com:2222.',
+          const SocketException('refused'),
+          transcript,
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.notes.single, contains('jump host'));
+    });
+
+    test('a bug keeps its stack trace, an expected failure stays readable',
+        () async {
+      // An Error here is our bug, and its message alone rarely says where it
+      // came from. An Exception — a locked keyring, an unreadable key file —
+      // already says everything a person can act on, and a stack trace under
+      // one is noise in a transcript people read.
+      final bug = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw StateError('bad state'),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(bug.log, contains('runConnectionTest'));
+
+      final expected = await runConnectionTest(
+        config: config(),
+        credentials: () async =>
+            throw const FormatException('unreadable identity file'),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(expected.log, contains('unreadable identity file'));
+      expect(expected.log, isNot(contains('runConnectionTest')));
+    });
+
     test('every auth kind has a label', () {
       for (final kind in AuthKind.values) {
         expect(authKindLabel(kind), isNotEmpty);
@@ -141,6 +183,18 @@ void main() {
       await trial.put(fresh);
       expect(await trial.get('new.example.com', 22), same(fresh));
       expect((await trial.all()).length, 2);
+
+      // Re-approving a host that is already pinned lists once, not twice, and
+      // lists as the trial's version — the precedence get() establishes.
+      final reapproved = HostKey(
+        host: 'known.example.com',
+        type: 'ssh-ed25519',
+        fingerprintSha256: 'SHA256:rotated',
+        pinnedAt: 3,
+      );
+      await trial.put(reapproved);
+      expect((await trial.all()).length, 2);
+      expect(await trial.get('known.example.com', 22), same(reapproved));
 
       // …and nowhere else. The first real connection asks again and pins for
       // real, so a form that is never saved leaves no trust behind.

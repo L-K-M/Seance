@@ -459,10 +459,16 @@ class AppServices {
       scoped = await identityBookmarks.resolveAndStart(entry.bookmark);
       if (scoped != null) {
         readPath = scoped.path;
-        // Only a grant that came *from* settings is refreshed back into them:
-        // an override belongs to an unsaved editor draft, and writing it here
-        // would file a grant under a server that may never exist.
-        if (scoped.refreshedBookmark != null && bookmarkOverride == null) {
+        // Only a grant that came *from* settings is refreshed back into
+        // them. A draft override of a *newly picked* file is not persisted —
+        // that would file a grant under a server that may never exist — but
+        // an override that is simply the saved grant passed back in (which is
+        // what the editor does for a server it did not re-Browse) may refresh
+        // in place, or a stale bookmark would be re-minted on every attempt
+        // and never kept.
+        final refreshable = bookmarkOverride == null ||
+            bookmarkOverride == settings.identityFileBookmarks[config.id];
+        if (scoped.refreshedBookmark != null && refreshable) {
           // The stored bookmark went stale (key moved/replaced); persist the
           // re-minted one so the grant keeps surviving relaunches.
           settings.identityFileBookmarks[config.id] = IdentityFileBookmark(
