@@ -21,6 +21,13 @@ void main() {
     // field a serializer is most likely to omit.
     expect(original.toJson(), containsPair('keyPassphrase', 'phrase'));
     expect({...rekeyed.toJson(), 'id': original.id}, original.toJson());
+    // Directly too, which survives a serializer omission: a field dropped from
+    // both `toJson` and `copyWith` would be absent from each side of the map
+    // comparison and pass it. A field added to Secret goes on `original` above
+    // and gets a line here.
+    expect(rekeyed.kind, original.kind);
+    expect(rekeyed.value, original.value);
+    expect(rekeyed.keyPassphrase, original.keyPassphrase);
   });
 
   group('model JSON round-trips', () {

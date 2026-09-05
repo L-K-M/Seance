@@ -531,8 +531,24 @@ class AppState extends ChangeNotifier {
   /// it at connect time.
   Future<ServerConfig> duplicateServer(ServerConfig source) async {
     return _mutate(() async {
+      // Deletes, saves and sync rounds are all serialized behind this one, so
+      // nothing can move under the plan once it starts. What the queue cannot
+      // make fresh is [source]: the caller captured it before the queue was
+      // entered, so it may describe a server since deleted or re-pointed at
+      // another credential. Planning from a stale snapshot would create the
+      // copy the user asked for without the password they expect it to have —
+      // and resurrect a config another device deleted.
+      final latest = await services.configStore.getServer(source.id);
+      if (!duplicationSourceUnchanged(latest, source)) {
+        throw SourceServerChanged(source.label);
+      }
       final plan = await planServerDuplication(
-        source,
+        // The store's copy, not the caller's: `source` was captured before
+        // the queue was entered, so every field on it can be stale, not only
+        // the label. Copying what the server *is* beats copying what the row
+        // said when it was tapped, and the credential check above is what
+        // makes the two safe to swap.
+        latest!,
         vault: services.vault,
         takenLabels: servers.map((s) => s.label),
         id: uuidV4(),
@@ -540,20 +556,6 @@ class AppState extends ChangeNotifier {
         now: DateTime.now().millisecondsSinceEpoch,
         bookmarkFor: (id) => services.settings.identityFileBookmarks[id],
       );
-      // Deletes, saves and sync rounds are all serialized behind this one
-      // now, so nothing can move the vault under the plan. What the queue
-      // cannot make fresh is [source] itself: the caller captured it before
-      // the queue was entered, so by the time the plan is built it may
-      // describe a server that has since been deleted or re-pointed at
-      // another credential. Saving from a stale snapshot would create the
-      // copy the user asked for without the password they expect it to have —
-      // and resurrect a config another device deleted.
-      if (!duplicationSourceUnchanged(
-        await services.configStore.getServer(source.id),
-        source,
-      )) {
-        throw SourceServerChanged(source.label);
-      }
       // The non-queuing core: this is already inside the queue, and calling
       // the public one would wait on itself.
       await _saveServerNow(
@@ -610,12 +612,17 @@ class AppState extends ChangeNotifier {
     // field would read as "set" for an unrelated second caller arriving while
     // the first action is suspended at an await, which is the normal case
     // this queue exists to serialize, not a bug.
-    assert(
-      Zone.current[#seanceMutation] == null,
-      'Re-entrant mutation: an action inside the queue must call the '
-      'non-queuing core (_saveServerNow), not saveServer, deleteServer, '
-      'duplicateServer or a sync round.',
-    );
+    if (Zone.current[#seanceMutation] != null) {
+      // A throw, not an assert. What an assert buys is a debug-only warning
+      // for a failure whose release-build symptom is every store mutation in
+      // the app stopping forever with nothing in the logs — which is the one
+      // shape of bug worth crashing on instead.
+      throw StateError(
+        'Re-entrant mutation: an action inside the queue must call the '
+        'non-queuing core (_saveServerNow), not saveServer, deleteServer, '
+        'duplicateServer or a sync round.',
+      );
+    }
     final queued = _mutating;
     final finished = Completer<void>();
     _mutating = finished.future;
