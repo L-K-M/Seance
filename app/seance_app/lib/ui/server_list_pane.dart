@@ -291,6 +291,13 @@ class _ServerListPaneState extends State<ServerListPane> {
     final ServerConfig copy;
     try {
       copy = await state.duplicateServer(server);
+    } on SourceServerChanged catch (error) {
+      // Verbatim: this one is written as a whole sentence *for* this toast,
+      // and "Could not duplicate: …Nothing was created." says it twice.
+      if (context.mounted) {
+        showTopToastIn(context, message: '$error');
+      }
+      return;
     } catch (error) {
       // The vault throws when the OS keyring is locked. Say so rather than
       // leaving the menu looking like it did nothing.
