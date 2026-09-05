@@ -16,6 +16,10 @@ void main() {
     );
     final rekeyed = original.copyWith(id: 'copy');
     expect(rekeyed.id, 'copy');
+    // The comparison below only guards copyWith while toJson writes every
+    // field the fixture sets. Pin that for the nullable one, which is the
+    // field a serializer is most likely to omit.
+    expect(original.toJson(), containsPair('keyPassphrase', 'phrase'));
     expect({...rekeyed.toJson(), 'id': original.id}, original.toJson());
   });
 
