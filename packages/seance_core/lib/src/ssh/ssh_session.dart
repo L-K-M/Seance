@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -90,10 +91,14 @@ Future<bool> _verifyHostKey({
 class SshConnectionLog {
   final List<String> _lines = [];
 
-  /// The transcript so far. A view, not the backing list: every line has to
-  /// come through [add], which is where credentials are redacted out, and a
-  /// publicly mutable list is a one-character way past that.
-  List<String> get lines => List.unmodifiable(_lines);
+  /// The transcript so far. A view, not a copy: every line has to come through
+  /// [add], which is where credentials are redacted out, and a publicly
+  /// mutable list is a one-character way past that.
+  ///
+  /// `UnmodifiableListView` rather than `List.unmodifiable`, which allocates a
+  /// fresh copy per read — this is read on every repaint of a live connection
+  /// log, and a copy also silently freezes for any caller that holds on to it.
+  List<String> get lines => UnmodifiableListView(_lines);
 
   /// Called after every [add] so a live view can repaint. Cleared by [freeze].
   void Function()? onUpdate;
@@ -143,14 +148,20 @@ class SshConnectionLog {
 /// to be pasted into a bug report, so this is neutralised where it is
 /// captured — one place every producer passes through — rather than wherever
 /// it happens to be displayed.
-/// Matched greedily to end of line rather than to a closing bracket: a Dart
-/// list's `toString` does not escape its elements, so a password containing
-/// `]` prints as `responses: [pas]sword])` and a bracket-bounded match would
-/// stop after `[pas]`, leaving the rest of it in the transcript. The list is
-/// the last thing the message prints and [SshConnectionLog.add] is handed one
-/// line at a time, so there is nothing after it to preserve.
+/// Matched greedily to the end of what it is handed, rather than to a closing
+/// bracket or a line break: a Dart list's `toString` does not escape its
+/// elements, so a password containing `]` prints as `responses: [pas]sword])`
+/// and a bracket-bounded match would stop after `[pas]`; one containing a
+/// newline — a value pasted from a password manager with a trailing return —
+/// would end a `.`-bounded match the same way and leave its tail behind.
+/// Hence `dotAll`. Over-redacting costs nothing here: the responses list is
+/// the last thing the message prints, so there is nothing after it to
+/// preserve, and every producer hands [SshConnectionLog.add] a whole record
+/// (dartssh2's `printDebug`/`printTrace` and `note` all pass one message
+/// through) rather than splitting it on newlines first, which would put a
+/// tail past this regex's reach entirely.
 final RegExp _userauthResponses =
-    RegExp(r'Userauth_InfoResponse\(responses: \[.*');
+    RegExp(r'Userauth_InfoResponse\(responses: \[.*', dotAll: true);
 
 /// [line] with any credential dartssh2's trace would otherwise print replaced.
 /// Public so the redaction can be asserted directly rather than only through a

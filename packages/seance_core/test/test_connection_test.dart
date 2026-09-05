@@ -156,6 +156,40 @@ void main() {
       );
       expect(expected.log, contains('unreadable identity file'));
       expect(expected.log, isNot(contains('runConnectionTest')));
+
+      // Past the credentials call the calculus flips. openAuthenticatedClient
+      // wraps every failure it can name in SshConnectException, so a bare
+      // Exception from authenticate is one nothing was written to expect —
+      // and the trace is the only thing that says where it came from.
+      final unexpected = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async =>
+            throw const FormatException('unwrapped transport failure'),
+      );
+      expect(unexpected.log, contains('unwrapped transport failure'));
+      expect(unexpected.log, contains('runConnectionTest'));
+
+      // The one Error that stays quiet, wherever it comes from: the ssh-agent
+      // path the backend deliberately does not implement.
+      final unsupported = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async => throw UnsupportedError('no agent'),
+      );
+      expect(unsupported.log, contains('no agent'));
+      expect(unsupported.log, isNot(contains('runConnectionTest')));
+    });
+
+    test('the notes a result carries cannot be edited through it', () async {
+      // The same instance flows into all three results, and a caller that
+      // sorted or filtered it in place would be editing what it was handed.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async => AuthKind.storedPassword,
+      );
+      expect(() => result.notes.add('mine'), throwsUnsupportedError);
     });
 
     test('every auth kind has a label', () {
