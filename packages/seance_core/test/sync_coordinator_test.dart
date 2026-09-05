@@ -467,7 +467,7 @@ void main() {
         server('local-only', 'beta', 20).copyWith(
           secretRef: 'sec-1',
           excludeFromSync: true,
-          updatedAt: 20,
+          updatedAt: 21,
         ),
       );
 
@@ -497,7 +497,7 @@ void main() {
       final local = InMemoryLocalRecordStore();
       await configs.putServer(
         server('local-only', 'beta', 4242)
-            .copyWith(excludeFromSync: true, updatedAt: 4242),
+            .copyWith(excludeFromSync: true, updatedAt: 4243),
       );
       final coordinator = SyncCoordinator(
         configStore: configs,
@@ -514,7 +514,7 @@ void main() {
       // the server would sequence it again on each one and every other device
       // would pull it again. Stamping it at the edit that excluded the server
       // makes repeat rounds a no-op.
-      expect(tombstone!.updatedAt, 4242);
+      expect(tombstone!.updatedAt, 4243);
       expect(tombstone.blob, isEmpty, reason: 'a tombstone leaks no payload');
     });
 
@@ -584,7 +584,7 @@ void main() {
       final configs = InMemoryConfigStore();
       await configs.putServer(
         server('excluded', 'alpha', 20)
-            .copyWith(secretRef: 'sec-kept', excludeFromSync: true, updatedAt: 20),
+            .copyWith(secretRef: 'sec-kept', excludeFromSync: true, updatedAt: 21),
       );
       final local = InMemoryLocalRecordStore();
       // This device's own retraction, and one from a device whose server the
@@ -630,7 +630,7 @@ void main() {
       final configs = InMemoryConfigStore();
       await configs.putServer(
         server('excluded', 'alpha', 20)
-            .copyWith(secretRef: 'sec-1', excludeFromSync: true, updatedAt: 20),
+            .copyWith(secretRef: 'sec-1', excludeFromSync: true, updatedAt: 21),
       );
 
       final local = InMemoryLocalRecordStore();
@@ -669,7 +669,13 @@ void main() {
       // the write rather than in a sync log.
       expect(
         () => synced.copyWith(excludeFromSync: true),
-        throwsA(isA<AssertionError>()),
+        throwsA(isA<ArgumentError>()),
+      );
+      // A timestamp that merely re-states the current one is the same bug: it
+      // ties with the record on the server and loses the tie-break to it.
+      expect(
+        () => synced.copyWith(excludeFromSync: true, updatedAt: 10),
+        throwsA(isA<ArgumentError>()),
       );
       expect(
         synced.copyWith(excludeFromSync: true, updatedAt: 11).excludeFromSync,
@@ -677,6 +683,67 @@ void main() {
       );
       // Restating the value it already has is not a change and needs nothing.
       expect(synced.copyWith(excludeFromSync: false).excludeFromSync, isFalse);
+    });
+
+    test('a credential a synced server shares is neither withdrawn nor frozen',
+        () async {
+      // Nothing stops two configs pointing at one vault entry, and a secret
+      // record is keyed by the credential rather than by the server holding
+      // it. Excluding one of the pair must not take the credential away from
+      // the other — the same "every server that names it" rule the host-key
+      // locators use.
+      final vaultKey = secureRandomBytes(32);
+      final codec = RecordCodec(vaultKey);
+      final vault = SecretVault(InMemoryVaultStore(), vaultKey);
+      await vault.putSecret(const Secret(
+        id: 'shared',
+        kind: SecretKind.password,
+        value: 'old',
+      ));
+
+      final configs = InMemoryConfigStore();
+      await configs.putServer(
+        server('local-only', 'alpha', 20)
+            .copyWith(secretRef: 'shared', excludeFromSync: true,
+                updatedAt: 21),
+      );
+      await configs.putServer(
+        server('still-synced', 'beta', 20)
+            .copyWith(secretRef: 'shared', syncSecret: true),
+      );
+      SyncCoordinator coordinator(LocalRecordStore local) => SyncCoordinator(
+            configStore: configs,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: local,
+            deviceId: 'A',
+            syncSecrets: true,
+            secretVault: vault,
+          );
+
+      final local = InMemoryLocalRecordStore();
+      final collectedRecords = await collected(coordinator(local), local);
+      // Pushed live for the server that still syncs, not tombstoned for the
+      // one that no longer does: a tombstone dated at the exclusion would beat
+      // that server's own push of the same id every round, ending credential
+      // sync for a server the user never excluded.
+      expect(collectedRecords['secret:shared'], isFalse);
+
+      // And an update arriving for it is applied rather than shielded.
+      final incoming = InMemoryLocalRecordStore();
+      await incoming.putRemote(await codec.encrypt(DecryptedRecord(
+        id: 'secret:shared',
+        kind: RecordKind.secret,
+        updatedAt: 99,
+        deviceId: 'B',
+        data: const Secret(
+          id: 'shared',
+          kind: SecretKind.password,
+          value: 'rotated',
+        ).toJson(),
+      )));
+      await coordinator(incoming).applyToStores();
+      expect((await vault.getSecret('shared'))?.value, 'rotated');
     });
 
     test('a host key is withheld only when no synced server shares it',
@@ -687,7 +754,7 @@ void main() {
       final local = InMemoryLocalRecordStore();
       await configs.putServer(
         server('local-only', 'beta', 10)
-            .copyWith(excludeFromSync: true, updatedAt: 10),
+            .copyWith(excludeFromSync: true, updatedAt: 11),
       );
       // A second, syncing server on the same box — its own record already
       // names the address, so withholding the pin would protect nothing.
@@ -745,7 +812,7 @@ void main() {
       final local = InMemoryLocalRecordStore();
       final excluded =
           server('local-only', 'beta', 20)
-          .copyWith(excludeFromSync: true, updatedAt: 20);
+          .copyWith(excludeFromSync: true, updatedAt: 21);
       await configs.putServer(excluded);
 
       // This device's own retraction, come back from the server sequenced…
@@ -808,7 +875,7 @@ void main() {
 
       // A excludes it — an edit, so it carries a later timestamp.
       await cfgA.putServer(
-        server('s1', 'alpha', 30).copyWith(excludeFromSync: true, updatedAt: 30),
+        server('s1', 'alpha', 30).copyWith(excludeFromSync: true, updatedAt: 31),
       );
       await coordA(InMemoryLocalRecordStore()).run(remote);
 
