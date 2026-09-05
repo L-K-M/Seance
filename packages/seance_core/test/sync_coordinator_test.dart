@@ -687,6 +687,13 @@ void main() {
       );
       // Restating the value it already has is not a change and needs nothing.
       expect(synced.copyWith(excludeFromSync: false).excludeFromSync, isFalse);
+      // Not even with a stale timestamp: the guard is about the flag's
+      // tie-break, not about clock hygiene, so a no-op save from a device
+      // whose clock trails is not something to refuse.
+      expect(
+        synced.copyWith(excludeFromSync: false, updatedAt: 5).excludeFromSync,
+        isFalse,
+      );
       // Re-including has the mirror-image tie: the live record that supersedes
       // the tombstone has to outrank it, so the guard must fire both ways.
       final excluded = synced.copyWith(excludeFromSync: true, updatedAt: 11);

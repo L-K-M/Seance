@@ -94,6 +94,12 @@ void main() {
       );
       final excluded = c.copyWith(excludeFromSync: true, updatedAt: 3);
       expect(excluded.excludeFromSync, isTrue);
+      // "Without touching anything else" is the name's promise; assert it.
+      expect(excluded.label, c.label);
+      expect(excluded.host, c.host);
+      expect(excluded.username, c.username);
+      expect(excluded.createdAt, c.createdAt);
+      expect(excluded.updatedAt, 3);
       // The credential's own opt-in survives the exclusion, so clearing it
       // gives the user back the answer they picked rather than a silent no.
       expect(excluded.syncSecret, isTrue);
