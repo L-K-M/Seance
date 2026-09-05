@@ -16,6 +16,21 @@ void main() {
     expect(AppSettings.fromJson(on.toJson()).checkForUpdates, isTrue);
   });
 
+  test('zaiApiKeyRef is off by default and round-trips', () {
+    // The reference is what switches the backend on. It is a key *name*; the
+    // key itself never comes near settings.json.
+    expect(AppSettings().zaiApiKeyRef, isNull);
+    expect(AppSettings().toJson().containsKey('zaiApiKeyRef'), isFalse);
+
+    final on = AppSettings(zaiApiKeyRef: 'zai');
+    expect(AppSettings.fromJson(on.toJson()).zaiApiKeyRef, 'zai');
+
+    // A settings file written before Z.AI existed reads as "not configured",
+    // which is what it was.
+    final legacy = on.toJson()..remove('zaiApiKeyRef');
+    expect(AppSettings.fromJson(legacy).zaiApiKeyRef, isNull);
+  });
+
   test('missing checkForUpdates in stored JSON defaults to on', () {
     final json = AppSettings().toJson()..remove('checkForUpdates');
     expect(AppSettings.fromJson(json).checkForUpdates, isTrue);
