@@ -964,6 +964,61 @@ void main() {
       expect(revived.excludeFromSync, isFalse);
     });
 
+    test('re-including still lands after the tombstone was re-dated',
+        () async {
+      // Excluding under a clock this device runs behind re-dates the tombstone
+      // past its own "now", and the guard on copyWith only compares against
+      // the config's own updatedAt — so an honest re-inclusion stamp still
+      // loses, and the device would apply its own stale retraction and delete
+      // the server it had just brought back.
+      final remote = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfgA = InMemoryConfigStore();
+      final cfgB = InMemoryConfigStore();
+      SyncCoordinator coord(ConfigStore configs, String device) =>
+          SyncCoordinator(
+            configStore: configs,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: InMemoryLocalRecordStore(),
+            deviceId: device,
+          );
+
+      await cfgA.putServer(server('s1', 'alpha', 10));
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+
+      // B's clock is an hour ahead; A excludes at its own honest 31.
+      await cfgB.putServer(server('s1', 'renamed', 5000));
+      await coord(cfgB, 'B').run(remote);
+      await cfgA.putServer(
+        server('s1', 'alpha', 30).copyWith(excludeFromSync: true, updatedAt: 31),
+      );
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+      expect(await cfgB.getServer('s1'), isNull);
+
+      // A changes its mind, at a stamp that still trails the re-dated
+      // tombstone sitting on the server.
+      await cfgA.putServer((await cfgA.getServer('s1'))!
+          .copyWith(excludeFromSync: false, updatedAt: 32));
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+
+      expect(await cfgA.getServer('s1'), isNotNull,
+          reason: 'a device must not delete a server it just re-included');
+      expect((await cfgA.getServer('s1'))!.label, 'alpha');
+      final revived = await cfgB.getServer('s1');
+      expect(revived, isNotNull,
+          reason: 're-inclusion has to outrank the re-dated tombstone');
+      expect(revived!.label, 'alpha');
+
+      // And it settles: nothing re-dates once the live record is winning.
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+      expect(await cfgB.getServer('s1'), isNotNull);
+    });
+
     test('a vault that refuses a tombstone does not abandon the batch',
         () async {
       // The vault throws when the OS keyring is locked, and the tombstone
@@ -1010,6 +1065,10 @@ void main() {
         completion(0),
       );
       expect(vault.deletesAttempted, 1);
+      // And the tombstone is still staged, so a round after the keyring
+      // unlocks retries it — pulls are incremental, so a dropped one would
+      // never be delivered again.
+      expect(await local.getRecord('secret:sec-1'), isNotNull);
       // The rest of the batch still applied.
       expect((await hostKeys.all()).single.host, 'beta.example.com');
     });
