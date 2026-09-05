@@ -80,10 +80,13 @@ void main() {
     test('publishes the configuration with the keys it references', () async {
       settings.assistantUpdatedAt = 99;
       settings.llmApiKeyRef = 'anthropic';
+      settings.llmModel = 'claude-custom';
+      settings.braveApiKeyRef = 'brave';
       settings.zaiApiKeyRef = 'zai';
       settings.searxngUrl = 'https://searx.example.com';
       settings.redactionEnabled = false;
       await keys.putApiKey('anthropic', 'sk-llm');
+      await keys.putApiKey('brave', 'sk-brave');
       await keys.putApiKey('zai', 'sk-zai');
       // Neither of these is referenced by the assistant configuration, and
       // neither may ever leave this device: one protects the account, the
@@ -94,12 +97,17 @@ void main() {
       final published = (await sync.getAssistantSettings())!;
 
       expect(published.providerKind, 'anthropic');
-      expect(published.model, settings.llmModel);
+      expect(published.model, 'claude-custom');
+      expect(published.braveApiKeyRef, 'brave');
       expect(published.searxngUrl, 'https://searx.example.com');
       expect(published.zaiApiKeyRef, 'zai');
       expect(published.redactSecrets, isFalse);
       expect(published.updatedAt, 99);
-      expect(published.apiKeys, {'anthropic': 'sk-llm', 'zai': 'sk-zai'});
+      expect(published.apiKeys, {
+        'anthropic': 'sk-llm',
+        'brave': 'sk-brave',
+        'zai': 'sk-zai',
+      });
       // The keys are gathered from the references, never by sweeping the
       // keystore — so nothing unreferenced can be swept up with them.
       final encoded = published.toJson().toString();
@@ -132,6 +140,8 @@ void main() {
       // for this name, so waiting for it would stop publishing forever.
       settings.assistantUpdatedAt = 99;
       settings.llmApiKeyRef = 'anthropic';
+      settings.llmModel = 'claude-custom';
+      settings.braveApiKeyRef = 'brave';
       settings.zaiApiKeyRef = 'zai';
       await keys.putApiKey('anthropic', 'sk-llm');
 
@@ -181,22 +191,27 @@ void main() {
       // Decoding an unknown name into a wrong guess is worse than keeping
       // what works — the same choice ServerConfig makes for a colour.
       settings.llmKind = LlmProviderKind.anthropic;
+      settings.llmBaseUrl = 'https://prior.example.com';
+      settings.llmModel = 'prior-model';
+      settings.llmApiKeyRef = 'prior-ref';
       await sync.putAssistantSettings(
         arriving(providerKind: 'some-future-provider'),
       );
+      // Asserted against the values that were configured, not against the
+      // production defaults they happen to equal — a regression that wrote
+      // some other constant matching a default would pass that.
       expect(settings.llmKind, LlmProviderKind.anthropic);
-      // And everything coupled to the provider stays with it. Adopting the
-      // unknown provider's endpoint, model and key reference onto the one
-      // that was kept builds a client neither side can use: Anthropic pointed
-      // at an OpenAI-compatible URL, holding a key filed under another name.
-      expect(settings.llmBaseUrl, 'https://api.anthropic.com');
-      expect(settings.llmModel, 'claude-haiku-4-5-20251001');
-      expect(settings.llmApiKeyRef, isNot('openai'));
-      // What is not provider-coupled still lands: the search backends and
-      // redaction mean the same thing whoever answers the chat.
-      expect(settings.searxngUrl, 'https://searx.example.com');
-      expect(settings.zaiApiKeyRef, 'zai');
-      expect(settings.redactionEnabled, isFalse);
+      expect(settings.llmBaseUrl, 'https://prior.example.com');
+      expect(settings.llmModel, 'prior-model');
+      expect(settings.llmApiKeyRef, 'prior-ref');
+      // And nothing else is taken either. Adopting the half this build
+      // understands would leave the account with two disagreeing
+      // configurations and matching stamps to hide it.
+      expect(settings.searxngUrl, isNull);
+      expect(settings.zaiApiKeyRef, isNull);
+      expect(settings.redactionEnabled, isTrue);
+      expect(settings.assistantUpdatedAt, 0);
+      expect(sync.applied, isFalse);
     });
 
     test('a locked keyring still adopts the configuration', () async {
@@ -208,6 +223,15 @@ void main() {
       expect(settings.llmModel, 'gpt-5');
       expect(settings.assistantUpdatedAt, 500);
       expect(saves, 1);
+
+      // The catch-up this test's comment claims, asserted: the record is
+      // pulled again every round, and the key write is retried because the
+      // stored value still differs from the one the record carries.
+      keystore.locked = false;
+      sync.applied = false;
+      await sync.putAssistantSettings(arriving());
+      expect(await keys.getApiKey('openai'), 'sk-remote');
+      expect(sync.applied, isTrue);
     });
 
     test('a record with no keys leaves the local ones alone', () async {
@@ -284,6 +308,18 @@ void main() {
         change();
         expect(assistantSyncFingerprint(settings), isNot(was));
       }
+    });
+
+    test('a separator inside a field cannot forge another one', () {
+      // These are free text that can arrive from another device, so any
+      // character a separator could be is one a field could contain. Length
+      // prefixes are what make the encoding unambiguous.
+      settings.llmBaseUrl = 'a\u0000b';
+      settings.llmModel = 'c';
+      final first = assistantSyncFingerprint(settings);
+      settings.llmBaseUrl = 'a';
+      settings.llmModel = 'b\u0000c';
+      expect(assistantSyncFingerprint(settings), isNot(first));
     });
 
     test('a field ending where the next begins is still a change', () {

@@ -880,10 +880,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     await state.services.saveSettings();
     // Stamp and publish: this is the edit the synced record's timestamp is
-    // supposed to move for. A no-op when assistant sync is off. A key typed
-    // into the field counts even when every other field matched — the key
-    // travels in the record too, and it is not part of the fingerprint.
-    if (_apiKey.text.isNotEmpty || assistantSyncFingerprint(s) != before) {
+    // supposed to move for. A no-op when assistant sync is off.
+    //
+    // A key typed into *any* of these fields counts even when every other
+    // field matched: the keys travel in the record too, under refs that do not
+    // change when the value behind them is rotated, so nothing about a
+    // re-entered key moves the fingerprint.
+    final keyEntered =
+        _apiKey.text.isNotEmpty || _zaiApiKey.text.trim().isNotEmpty;
+    if (keyEntered || assistantSyncFingerprint(s) != before) {
       await state.assistantSettingsEdited();
     }
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.

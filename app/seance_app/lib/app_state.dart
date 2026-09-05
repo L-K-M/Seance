@@ -1063,15 +1063,23 @@ class AppState extends ChangeNotifier {
     if (services.isSyncConfigured) {
       try {
         await _runSyncAndRefresh();
-      } catch (_) {
+      } on Exception {
         // Offline, or the server is down: this is the one moment not to
-        // publish on a guess. The switch stays on and the next round settles
+        // publish on a guess. An `Error` is a bug in this path rather than a
+        // fact about the network, and swallowing one here would leave a
+        // toggle that quietly does nothing with no trace of why. The switch stays on and the next round settles
         // it — either by adopting the account's record or, once this device
         // is edited, by publishing that edit.
         return;
       }
       if (services.assistantSettingsChanged) return;
     }
+    // Nothing configured here, so there is nothing worth publishing: stamping
+    // now would turn this device's defaults into the account's newest write
+    // and beat a phone that configured its assistant while sync was off and
+    // enables the switch afterwards. The zero stamp is the whole guard, and
+    // it is this line that would step around it.
+    if (services.settings.assistantUpdatedAt == 0) return;
     await assistantSettingsEdited();
   }
 

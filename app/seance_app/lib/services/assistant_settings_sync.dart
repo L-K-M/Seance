@@ -14,7 +14,9 @@ import 'secure_master_key.dart';
 ///
 /// A string rather than an equality override: [AppSettings] is a mutable
 /// device-local bag, and comparing two of them field-by-field is not something
-/// the rest of the app has any use for.
+/// the rest of the app has any use for. Length-prefixed rather than joined on
+/// a separator: these are free text that can arrive from another device, so
+/// any character a separator could be is one a field could contain.
 String assistantSyncFingerprint(AppSettings settings) => [
   settings.llmKind.name,
   settings.llmBaseUrl,
@@ -24,7 +26,7 @@ String assistantSyncFingerprint(AppSettings settings) => [
   settings.braveApiKeyRef ?? '',
   settings.zaiApiKeyRef ?? '',
   '${settings.redactionEnabled}',
-].join('\u0000');
+].map((field) => '${field.length}:$field').join();
 
 /// Bridges the assistant half of [AppSettings] — and the OS keystore entries
 /// it references — to the sync layer.
@@ -83,8 +85,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // to authenticate them — and nothing would republish the keys, because
       // by then the stamps agree. A round skipped costs five minutes.
       final value = await masterKeys.getApiKey(name);
+      // Anything but a positively readable keystore: `unknown` and any state
+      // added later mean the same thing here — this null is not evidence the
+      // key is gone.
       if (value == null &&
-          masterKeys.keystoreStatus == KeystoreStatus.unavailable) {
+          masterKeys.keystoreStatus != KeystoreStatus.available) {
         return null;
       }
       if (value != null) keys[name] = value;
@@ -107,6 +112,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   @override
   Future<void> putAssistantSettings(AssistantSettings value) async {
     final before = assistantSyncFingerprint(settings);
+    final stampBefore = settings.assistantUpdatedAt;
     // A provider this build has never heard of keeps the one already
     // configured rather than being decoded into a wrong guess — the same
     // choice `ServerConfig.color` makes for a colour, with more at stake.
@@ -118,12 +124,19 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // combination neither build can use — an Anthropic client pointed at an
     // OpenAI-compatible URL, holding a key stored under the other provider's
     // name. Keeping the provider means keeping all of it.
-    if (kind != null) {
-      settings.llmKind = kind;
-      settings.llmBaseUrl = value.baseUrl;
-      settings.llmModel = value.model;
-      settings.llmApiKeyRef = value.llmApiKeyRef;
+    if (kind == null) {
+      // Nothing of this record is adopted, and the stamp stays where it is.
+      // Taking the half this build understands would leave the account with
+      // two disagreeing configurations and matching timestamps to hide it —
+      // and this device's next edit would publish the hybrid over the newer
+      // build's record everywhere. An older build not participating is the
+      // smaller failure, and it self-heals when the build catches up.
+      return;
     }
+    settings.llmKind = kind;
+    settings.llmBaseUrl = value.baseUrl;
+    settings.llmModel = value.model;
+    settings.llmApiKeyRef = value.llmApiKeyRef;
     settings.searxngUrl = value.searxngUrl;
     settings.braveApiKeyRef = value.braveApiKeyRef;
     settings.zaiApiKeyRef = value.zaiApiKeyRef;
@@ -159,10 +172,13 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       }
     }
 
-    await saveSettings();
-    // Only a real change: `applied` rebuilds the chat provider, and the
-    // coordinator hands this record over on every round whether or not
-    // anything in it moved.
-    applied = keysChanged || assistantSyncFingerprint(settings) != before;
+    // Only a real change, on both counts: `applied` rebuilds the chat provider
+    // and `saveSettings` rewrites settings.json, and the coordinator hands
+    // this record over on every round whether or not anything in it moved.
+    final changed = keysChanged ||
+        assistantSyncFingerprint(settings) != before ||
+        settings.assistantUpdatedAt != stampBefore;
+    if (changed) await saveSettings();
+    applied = changed;
   }
 }

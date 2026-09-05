@@ -31,10 +31,22 @@ abstract class SnippetStore {
 /// publish — which is what keeps two freshly-installed devices from pushing
 /// rival defaults at each other before either has configured anything. It is
 /// not how a configuration is withdrawn: clearing one is an edit like any
-/// other, so it still returns a record, with the fields cleared and a fresh
-/// `updatedAt`. Returning null for that would read as "nothing to publish",
-/// and the next pull would re-apply the configuration this device just
-/// removed.
+/// other, so it still returns a record, with the fields the user cleared
+/// cleared and a fresh `updatedAt`. Returning null for that would read as
+/// "nothing to publish", and the next pull would re-apply the configuration
+/// this device just removed.
+///
+/// The provider name is not one of the fields a clear can empty — it is
+/// written from an enum, which always has a value — and the apply path in
+/// `SyncCoordinator` relies on that: a record with an empty one is a payload
+/// this build could not read, not a configuration, and is skipped rather than
+/// adopted over a working assistant.
+///
+/// What it returns is the *publishable* value: any keystore references it
+/// holds are resolved to key material first, because it is this value's
+/// `toJson()` that is sealed and pushed. An implementation that returned the
+/// references alone would sync a configuration that looks set up everywhere
+/// and answers nowhere.
 abstract class AssistantSettingsStore {
   Future<AssistantSettings?> getAssistantSettings();
   Future<void> putAssistantSettings(AssistantSettings settings);

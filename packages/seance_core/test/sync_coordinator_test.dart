@@ -1252,7 +1252,6 @@ void main() {
       // never legitimately be empty, so an empty one means the payload is not
       // a configuration — and adopting it would leave every device that
       // pulled it with an assistant that answers nothing.
-      final remote = FakeServer();
       final local = InMemoryLocalRecordStore();
       await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
         id: AssistantSettings.recordId,
@@ -1265,7 +1264,12 @@ void main() {
       await coordinator('A', local, store: store).applyToStores();
       expect(store.settings!.providerKind, 'anthropic');
       expect(store.settings!.updatedAt, 10);
-      expect(remote.pushedRecords, 0);
+      // And it is not marked for pushing onward, which is what would carry a
+      // payload this build could not read to every other device.
+      expect(
+        (await local.dirtyRecords()).map((r) => r.id),
+        isNot(contains(AssistantSettings.recordId)),
+      );
     });
 
     test('the keys never reach the server in the clear', () async {

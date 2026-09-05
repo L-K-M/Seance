@@ -365,6 +365,11 @@ class AppServices {
       syncSecrets: settings.syncSecrets,
       secretVault: settings.syncSecrets ? vault : null,
     );
+    // Cleared before the round, not only assigned after it: a round that
+    // throws would otherwise leave the answer from the last successful one
+    // standing, and a caller reading it after a failure would rebuild the chat
+    // provider for an adoption that never happened.
+    assistantSettingsChanged = false;
     final outcome = await _withSyncClient(baseUrl, (client) {
       client.token = token;
       return coordinator.run(client);

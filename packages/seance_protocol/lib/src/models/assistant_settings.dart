@@ -117,6 +117,12 @@ class AssistantSettings {
 
   /// The same settings with no key material, for a device that has opted out
   /// of syncing them.
+  ///
+  /// The key *references* stay, so a receiver resolves them against its own
+  /// keystore: absent from [apiKeys] means "look locally", never "forget the
+  /// entry you have". A record that cleared local keys would break the
+  /// assistant on every device that adopted it, which is why the apply path
+  /// only ever writes the keys a record carries.
   AssistantSettings withoutKeys() =>
       apiKeys.isEmpty ? this : copyWith(apiKeys: const {});
 

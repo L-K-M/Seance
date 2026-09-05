@@ -38,7 +38,8 @@ void main() {
     expect(withKeys.withoutKeys().toJson(), settings().toJson());
     expect(settings().toJson().containsKey('apiKeys'), isFalse);
     // Dropping nothing is the same object rather than a copy.
-    expect(settings().withoutKeys().apiKeys, isEmpty);
+    final bare = settings();
+    expect(bare.withoutKeys(), same(bare));
   });
 
   test('a cleared field arrives cleared, not as an empty endpoint', () {

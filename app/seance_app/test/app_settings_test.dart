@@ -41,6 +41,15 @@ void main() {
     expect(restored.syncAssistant, isTrue);
     expect(restored.assistantUpdatedAt, 500);
 
+    // The stamp is independent of the toggle: someone who published and then
+    // turned sync off must not read as "never published" when they turn it
+    // back on, which is what the publish guard keys on.
+    final offWithHistory =
+        AppSettings(syncAssistant: false, assistantUpdatedAt: 900);
+    final offRestored = AppSettings.fromJson(offWithHistory.toJson());
+    expect(offRestored.syncAssistant, isFalse);
+    expect(offRestored.assistantUpdatedAt, 900);
+
     // containsKey guards the removal: a renamed serialization key must fail
     // here rather than vacuously testing the default.
     final json = on.toJson();
