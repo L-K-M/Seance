@@ -147,6 +147,36 @@ void main() {
     });
   }
 
+  test('SQLite contention fails atomically and can be retried', () async {
+    final directory = await Directory.systemTemp.createTemp('seance-lock-');
+    addTearDown(() => directory.delete(recursive: true));
+    final path = '${directory.path}/sync.sqlite';
+    final storage = SqliteStorage.open(path);
+    addTearDown(storage.close);
+    final client = await _connect(storage);
+    await client.push([_record('existing', 10)]);
+    final before = await client.pull(since: 0);
+    final writer = sqlite3.open(path);
+    addTearDown(writer.dispose);
+
+    writer.execute('BEGIN IMMEDIATE');
+    try {
+      await expectLater(
+        client.push([_record('existing', 20), _record('new', 30)]),
+        throwsA(
+          isA<ApiError>().having((e) => e.code, 'code', 'internal_error'),
+        ),
+      );
+      expect((await client.pull(since: 0)).toJson(), before.toJson());
+    } finally {
+      writer.execute('ROLLBACK');
+    }
+
+    final retry = await client.push([_record('existing', 20)]);
+    expect(retry.results.single.seq, before.latestSeq + 1);
+    expect((await client.pull(since: 0)).records.single.updatedAt, 20);
+  });
+
   test('SQLite snapshot survives a commit from another connection', () async {
     final directory = await Directory.systemTemp.createTemp('seance-snapshot-');
     addTearDown(() => directory.delete(recursive: true));

@@ -14,7 +14,75 @@ EncryptedRecord _record(String id, int revision) => EncryptedRecord(
   blob: Uint8List.fromList([revision]),
 );
 
+enum _CleanupFault { rollback, stateRead }
+
+class _FaultingDatabase implements Database {
+  final Database _inner;
+  final _CleanupFault _fault;
+  bool disposed = false;
+
+  _FaultingDatabase(this._inner, this._fault);
+
+  @override
+  void execute(String sql, [List<Object?> parameters = const []]) {
+    if (sql == 'ROLLBACK' && _fault == _CleanupFault.rollback) {
+      throw StateError('injected cleanup failure');
+    }
+    _inner.execute(sql, parameters);
+  }
+
+  @override
+  ResultSet select(String sql, [List<Object?> parameters = const []]) =>
+      _inner.select(sql, parameters);
+
+  @override
+  bool get autocommit {
+    if (_fault == _CleanupFault.stateRead) {
+      throw StateError('injected state-read failure');
+    }
+    return _inner.autocommit;
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    _inner.dispose();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
+  for (final fault in _CleanupFault.values) {
+    test(
+      'failed ${fault.name} preserves the cause and closes storage',
+      () async {
+        final database = sqlite3.openInMemory();
+        final adapter = _FaultingDatabase(database, fault);
+        final storage = SqliteStorage(adapter);
+        addTearDown(storage.close);
+        database.execute('''
+        CREATE TRIGGER fail_record BEFORE INSERT ON records
+        BEGIN SELECT RAISE(ABORT, 'original write failure'); END;
+      ''');
+
+        await expectLater(
+          storage.pushRecords('user', [_record('record', 10)]),
+          throwsA(
+            isA<SqliteException>().having(
+              (e) => e.message,
+              'cause',
+              contains('original write failure'),
+            ),
+          ),
+        );
+        expect(adapter.disposed, isTrue);
+        await expectLater(storage.pullSnapshot('user', 0), throwsStateError);
+      },
+    );
+  }
+
   final factories = <String, Storage Function()>{
     'memory': InMemoryStorage.new,
     'sqlite': () {

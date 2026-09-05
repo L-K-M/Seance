@@ -156,9 +156,24 @@ class SqliteStorage implements Storage {
       _db.execute('COMMIT');
       return result;
     } catch (_) {
+      _rollback();
+      rethrow;
+    }
+  }
+
+  void _rollback() {
+    try {
       // SQLite may already have rolled back after a trigger or storage error.
       if (!_db.autocommit) _db.execute('ROLLBACK');
-      rethrow;
+      return;
+    } catch (_) {
+      // Never reuse a connection whose transaction state is uncertain.
+    }
+
+    try {
+      _db.dispose();
+    } catch (_) {
+      // Preserve the original write/commit failure, not a cleanup exception.
     }
   }
 
@@ -201,8 +216,11 @@ class SqliteStorage implements Storage {
 
   List<EncryptedRecord> _recordsSince(String username, int since, {int? through}) {
     final rows = _db.select(
-        'SELECT * FROM records WHERE username = ? AND seq > ? '
-        '${through == null ? '' : 'AND seq <= ? '}ORDER BY seq ASC',
+        through == null
+            ? 'SELECT * FROM records WHERE username = ? AND seq > ? '
+                'ORDER BY seq ASC'
+            : 'SELECT * FROM records WHERE username = ? AND seq > ? '
+                'AND seq <= ? ORDER BY seq ASC',
         [username, since, if (through != null) through]);
     return rows.map(_rowToRecord).toList();
   }
