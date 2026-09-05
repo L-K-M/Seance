@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -94,7 +95,21 @@ class ZaiSearch implements SearchProvider {
   }
 
   /// Forget the negotiated session so the next search starts a new one.
+  ///
+  /// No-op when the session is already cleared, which is what keeps a burst of
+  /// concurrent expiries to one re-handshake. N callers sharing one session
+  /// all see the same 404: without this, the first would clear and install a
+  /// fresh attempt, the second would null *that* still-in-flight attempt and
+  /// start another, and so on — N handshakes, N abandoned server-side
+  /// sessions, and `_session` left to whichever orphan finished last.
+  ///
+  /// Sound because [_runHandshake] stages its headers locally and publishes
+  /// `_session` only on success: while an attempt is in flight the published
+  /// session is empty, so an empty one never means "a live session still
+  /// needs clearing". It is the same identity reasoning [_ensureHandshake]
+  /// already uses when clearing a failed attempt.
   void _reset() {
+    if (_session.isEmpty) return;
     _session = const {};
     _handshake = null;
   }
@@ -185,6 +200,15 @@ class ZaiSearch implements SearchProvider {
       cursor = listing['nextCursor'] as String?;
       if (cursor == null || cursor.isEmpty) break;
     }
+    if (cursor != null && cursor.isNotEmpty) {
+      // Falling out of the loop still holding a cursor means the listing was
+      // truncated. Searching the partial list anyway would report "no search
+      // tool… needs a GLM Coding Plan" for what is a pagination anomaly —
+      // sending the user to check their plan and key over a transport fault.
+      throw http.ClientException(
+        'Z.AI kept paginating tools/list; stopped after $maxToolPages pages.',
+      );
+    }
 
     for (final name in toolNames) {
       for (final tool in tools) {
@@ -249,12 +273,16 @@ class ZaiSearch implements SearchProvider {
     // replaced wholesale when the handshake completes.
     if (issued != null && session != null) session['mcp-session-id'] = issued;
 
+    // Both drains are deadlined like the SSE one: `send` only bounds the wait
+    // for headers, so a gateway that answers 4xx and then stalls the body
+    // would hang here — turning a fast retry into an unbounded wait, on the
+    // one path that exists to fail quickly.
     if (response.statusCode == 404 && sentSessionId) {
-      await response.stream.drain<void>();
+      await response.stream.drain<void>().timeout(timeout);
       throw const _SessionExpired();
     }
     if (response.statusCode >= 400) {
-      await response.stream.drain<void>();
+      await response.stream.drain<void>().timeout(timeout);
       // Deliberately without the body, unlike the LLM providers': this is a
       // gateway that can echo the request — including its Authorization
       // header — back in an error page, and this string reaches the UI.
@@ -334,12 +362,22 @@ class ZaiSearch implements SearchProvider {
     Duration idle,
   ) async* {
     var read = 0;
-    await for (final chunk in bytes.timeout(idle)) {
-      read += chunk.length;
-      if (read > maxBytes) {
-        throw http.ClientException('Z.AI search reply was too large.');
+    try {
+      await for (final chunk in bytes.timeout(idle)) {
+        read += chunk.length;
+        if (read > maxBytes) {
+          throw http.ClientException('Z.AI search reply was too large.');
+        }
+        yield chunk;
       }
-      yield chunk;
+    } on TimeoutException {
+      // The byte cap already throws something a person can read; the idle
+      // deadline was raising a bare `TimeoutException` whose message is
+      // "Future not completed". Both guards exist for the same 200-then-stall
+      // case, and both reach the UI, so both say what happened. Nothing in
+      // this package retries on the type — the two `on TimeoutException`
+      // handlers in `seance_core` are SSH's.
+      throw http.ClientException('Z.AI stopped sending the search reply.');
     }
   }
 
@@ -543,6 +581,17 @@ class ZaiSearch implements SearchProvider {
   /// `StackOverflowError` is an `Error`, so it would sail past the
   /// `on Exception` handling every caller of this class relies on. Thirty-two
   /// is far past any real result shape.
+  /// A URL a search result may legitimately carry: a web page, with a host.
+  ///
+  /// Parsed rather than prefix-matched, so `https:evil` and a bare
+  /// `https://` do not pass for want of a host.
+  static bool _isWebUrl(String value) {
+    final uri = Uri.tryParse(value);
+    return uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty;
+  }
+
   static void _collect(Object? value, List<SearchResult> out, Set<String> seen,
       [int depth = 0]) {
     if (depth > 32) return;
@@ -567,8 +616,15 @@ class ZaiSearch implements SearchProvider {
     }
     if (value is! Map) return;
 
-    final url = value['link'] ?? value['url'];
-    if (url is String && url.isNotEmpty && seen.add(url)) {
+    // `??` alone would keep an empty `link` and hide a usable `url` beside
+    // it, dropping the result — the opposite of the shape-tolerance the rest
+    // of this walk is written for.
+    final link = value['link'];
+    final url = link is String && link.isNotEmpty ? link : value['url'];
+    // http(s) only. These strings are chosen by the search gateway, and a
+    // result is a web page by definition — so anything else is either not a
+    // result or an attempt to hand the app a scheme to launch.
+    if (url is String && _isWebUrl(url) && seen.add(url)) {
       // Interpolating whatever is there would put `{lang: en, text: …}` or
       // `[a, b]` into the UI verbatim: some search APIs return `content` as a
       // list of paragraphs or `title` as a localized object. The rest of this

@@ -196,6 +196,15 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     revisit whether Play accepts `dataSync` for an indefinite session anchor
     or whether `specialUse` (with its justification form) is the safer fit.
 
+15. **A domain exception type for search failures.** `ZaiSearch` and
+    `CompositeSearch` raise `http.ClientException` for everything — a 502, a
+    rejected key, a missing search tool, a reply of the wrong shape — so the
+    only way to tell a user-fixable failure from a transient one is matching
+    the message string, which the tests already do. A dedicated type carrying
+    the backend and the reason would let a caller retry transport blips
+    without retrying a bad key. Worth doing when something actually retries;
+    today nothing does.
+
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
 terminal **splits** (multiple panes visible at once), OIDC on the sync server,

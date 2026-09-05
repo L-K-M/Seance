@@ -269,6 +269,62 @@ void main() {
       expect(server.methods.where((m) => m == 'initialize').length, 2);
     });
 
+    test('two searches racing the first handshake share it', () async {
+      // `_ensureHandshake` caches the *Future*, not its result, so a second
+      // caller arriving before the first has finished awaits the same
+      // attempt. Only ever asserted sequentially before, which the classic
+      // racing implementation (`_session ??= await …`) also passes.
+      final server = FakeMcpServer();
+      final search = ZaiSearch(apiKey: 'k', client: server.client);
+
+      final results = await Future.wait([
+        search.search('dart'),
+        search.search('flutter'),
+      ]);
+
+      expect(results, everyElement(isNotEmpty));
+      expect(server.methods.where((m) => m == 'initialize').length, 1);
+    });
+
+    test('a burst of expiries costs one re-handshake, not one each', () async {
+      // Every caller sharing a retired session sees the same 404. Without the
+      // guard in `_reset`, the first installs a fresh attempt and the second
+      // nulls that still-in-flight one to start another — N handshakes and N
+      // abandoned server-side sessions for one expiry.
+      final server = FakeMcpServer()..expireSession = 3;
+      final search = ZaiSearch(apiKey: 'k', client: server.client);
+
+      final results = await Future.wait([
+        search.search('a'),
+        search.search('b'),
+        search.search('c'),
+      ]);
+
+      expect(results, everyElement(isNotEmpty));
+      // One for the original session, one for the shared replacement.
+      expect(server.methods.where((m) => m == 'initialize').length, 2);
+    });
+
+    test('a listing that never stops paginating says so', () async {
+      // Searching the truncated list instead would report "no search tool…
+      // needs a GLM Coding Plan" — an entitlement accusation for a transport
+      // fault, sending the user to check their plan and key.
+      final server = FakeMcpServer()
+        ..extraToolPages = ZaiSearch.maxToolPages + 5;
+      final search = ZaiSearch(apiKey: 'k', client: server.client);
+
+      await expectLater(
+        search.search('dart'),
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('kept paginating'),
+          ),
+        ),
+      );
+    });
+
     test('a rejected key says so instead of naming the quota', () async {
       final server = FakeMcpServer();
       server.overrides['initialize'] = {
@@ -503,11 +559,48 @@ void main() {
       expect(results.single.snippet, 'one two');
     });
 
+    test('an empty link falls back to the url beside it', () {
+      // `link ?? url` keeps the empty string, the isNotEmpty guard then fails,
+      // and the result is dropped even though a usable URL was right there.
+      final results = ZaiSearch.parseToolResult(const {
+        'structuredContent': {
+          'results': [
+            {'link': '', 'url': 'https://a.example', 'title': 'A'},
+            {'link': null, 'url': 'https://b.example', 'title': 'B'},
+            {'link': 42, 'url': 'https://c.example', 'title': 'C'},
+          ],
+        },
+      }, 5);
+      expect(
+        results.map((r) => r.url),
+        ['https://a.example', 'https://b.example', 'https://c.example'],
+      );
+    });
+
+    test('only http(s) URLs with a host become results', () {
+      // These strings are the gateway's, and a search result is a web page by
+      // definition — so anything else is either not a result or a scheme
+      // someone would like this app to launch.
+      final results = ZaiSearch.parseToolResult(const {
+        'structuredContent': {
+          'results': [
+            {'link': 'javascript:alert(1)', 'title': 'x'},
+            {'link': 'data:text/html,<script>', 'title': 'x'},
+            {'link': 'file:///etc/passwd', 'title': 'x'},
+            {'link': 'https:no-host', 'title': 'x'},
+            {'link': 'https://', 'title': 'x'},
+            {'link': 'https://ok.example/page', 'title': 'ok'},
+          ],
+        },
+      }, 10);
+      expect(results.map((r) => r.url), ['https://ok.example/page']);
+    });
+
     test('a payload nested past any real shape is walked, not crashed', () {
       // Server-controlled, and StackOverflowError is an Error — it would sail
       // past the `on Exception` handling every caller of this class relies on.
       var nested = <String, Object?>{'link': 'https://deep.example'};
-      for (var i = 0; i < 5000; i++) {
+      for (var i = 0; i < 100000; i++) {
         nested = <String, Object?>{'a': nested};
       }
       expect(() => ZaiSearch.parseToolResult({'structuredContent': nested}, 5),
@@ -599,7 +692,16 @@ void main() {
           1024,
           const Duration(milliseconds: 20),
         ).toList(),
-        throwsA(isA<TimeoutException>()),
+        // Readable, like the byte cap's: both guards exist for the same
+        // 200-then-stall case and both reach the UI, so neither surfaces as
+        // "Future not completed".
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('stopped sending'),
+          ),
+        ),
       );
       expect(cancelled, isTrue);
     });

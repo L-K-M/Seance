@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
@@ -584,6 +585,20 @@ class AppServices {
   /// field is how you pick one instead of the other; filling both is how you
   /// use both (see [CompositeSearch]). Null when nothing is configured, which
   /// is what hides the search tool from the assistant.
+  /// A backend the user configured that this launch could not build.
+  ///
+  /// `CompositeSearch` logs a backend that fails mid-search "because this is
+  /// the only record it happened"; one dropped before the search starts leaves
+  /// exactly the same symptom — quietly worse results — and deserves the same
+  /// record. Never the key or the ref, only which backend and why.
+  static void _searchBackendUnavailable(String backend) {
+    developer.log(
+      '$backend search key unavailable (locked keyring or missing entry); '
+      'backend skipped for this session',
+      name: 'seance.search',
+    );
+  }
+
   Future<SearchProvider?> buildSearchProvider() async {
     final backends = <SearchProvider>[];
     if (settings.searxngUrl != null && settings.searxngUrl!.isNotEmpty) {
@@ -595,11 +610,19 @@ class AppServices {
       // keystore that is down reads as "this backend is not available" and the
       // others still work.
       final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
-      if (key != null) backends.add(BraveSearch(apiKey: key));
+      if (key != null) {
+        backends.add(BraveSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Brave');
+      }
     }
     if (settings.zaiApiKeyRef != null && settings.zaiApiKeyRef!.isNotEmpty) {
       final key = await masterKeys.getApiKey(settings.zaiApiKeyRef!);
-      if (key != null) backends.add(ZaiSearch(apiKey: key));
+      if (key != null) {
+        backends.add(ZaiSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Z.AI');
+      }
     }
     if (backends.isEmpty) return null;
     return backends.length == 1 ? backends.single : CompositeSearch(backends);
