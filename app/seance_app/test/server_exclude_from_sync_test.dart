@@ -31,6 +31,7 @@ void main() {
               onTap: () {},
               onNewTab: () {},
               onEdit: () {},
+              onDuplicate: () {},
               onDelete: () {},
               onDisconnect: () {},
               onReconnect: null,

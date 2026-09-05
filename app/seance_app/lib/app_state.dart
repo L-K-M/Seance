@@ -12,6 +12,7 @@ import 'services/chat_session.dart';
 import 'services/default_snippets.dart';
 import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
+import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
 import 'ui/session_label.dart';
 import 'ui/terminal_appearance.dart';
@@ -458,6 +459,53 @@ class AppState extends ChangeNotifier {
     services.probe.updateServers(servers);
     notifyListeners();
     _scheduleAutoSync();
+  }
+
+  /// Duplicate [source] as a new server and return the copy.
+  ///
+  /// The credential is copied into a vault entry of the copy's own (see
+  /// [duplicateServerConfig] for why it is never shared), and so is the
+  /// device-local security-scoped grant for a Browse…-picked identity file:
+  /// that grant is keyed by server id, so without copying it the duplicate
+  /// would silently fall back to the raw path and fail to open a key outside
+  /// `~/.ssh`.
+  ///
+  /// Vault failures propagate, as they do from [saveServer]. A duplicate that
+  /// quietly lost its password would look identical in the list and only admit
+  /// it at connect time.
+  Future<ServerConfig> duplicateServer(ServerConfig source) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    Secret? secret;
+    final sourceRef = source.secretRef;
+    if (sourceRef != null) {
+      final original = await services.vault.getSecret(sourceRef);
+      // A dangling ref (the vault entry is gone) copies as "no credential"
+      // rather than failing: the original is in that state already, and the
+      // copy is not the place to discover it.
+      if (original != null) {
+        secret = Secret(
+          id: uuidV4(),
+          kind: original.kind,
+          value: original.value,
+          keyPassphrase: original.keyPassphrase,
+        );
+      }
+    }
+
+    final copy = duplicateServerConfig(
+      source,
+      id: uuidV4(),
+      label: duplicateServerLabel(source.label, servers.map((s) => s.label)),
+      secretRef: secret?.id,
+      now: now,
+    );
+    await saveServer(
+      copy,
+      secret: secret,
+      identityFileBookmark: services.settings.identityFileBookmarks[source.id],
+    );
+    return copy;
   }
 
   Future<void> deleteServer(String id) async {

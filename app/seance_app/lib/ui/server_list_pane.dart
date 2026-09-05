@@ -251,6 +251,7 @@ class _ServerListPaneState extends State<ServerListPane> {
       onTap: () => widget.onOpen(server),
       onNewTab: () => state.newTab(server),
       onEdit: () => _editServer(context, state, server),
+      onDuplicate: () => _duplicateServer(context, state, server),
       onDelete: () => _deleteServer(context, state, server),
       // Disconnect every live tab; reconnect the lone dead tab.
       onDisconnect: () {
@@ -277,6 +278,34 @@ class _ServerListPaneState extends State<ServerListPane> {
     ServerConfig? server,
   ) async {
     await showServerEditor(context, state, server);
+  }
+
+  /// Copy a server, then offer the editor — duplicating is almost always the
+  /// first half of "…and change one thing", and the toast's action is a
+  /// shorter route back than finding the new row and reopening its menu.
+  Future<void> _duplicateServer(
+    BuildContext context,
+    AppState state,
+    ServerConfig server,
+  ) async {
+    final ServerConfig copy;
+    try {
+      copy = await state.duplicateServer(server);
+    } catch (error) {
+      // The vault throws when the OS keyring is locked. Say so rather than
+      // leaving the menu looking like it did nothing.
+      if (context.mounted) {
+        showTopToastIn(context, message: 'Could not duplicate: $error');
+      }
+      return;
+    }
+    if (!context.mounted) return;
+    showTopToastIn(
+      context,
+      message: 'Duplicated as "${copy.label}"',
+      actionLabel: 'Edit',
+      onAction: () => _editServer(context, state, copy),
+    );
   }
 
   Future<void> _deleteServer(
@@ -479,6 +508,7 @@ class ServerTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onNewTab;
   final VoidCallback onEdit;
+  final VoidCallback onDuplicate;
   final VoidCallback onDelete;
   final VoidCallback onDisconnect;
 
@@ -496,6 +526,7 @@ class ServerTile extends StatelessWidget {
     required this.onTap,
     required this.onNewTab,
     required this.onEdit,
+    required this.onDuplicate,
     required this.onDelete,
     required this.onDisconnect,
     required this.onReconnect,
@@ -540,6 +571,8 @@ class ServerTile extends StatelessWidget {
                   onNewTab();
                 case 'edit':
                   onEdit();
+                case 'duplicate':
+                  onDuplicate();
                 case 'delete':
                   onDelete();
                 case 'disconnect':
@@ -561,6 +594,10 @@ class ServerTile extends StatelessWidget {
                   child: Text('Reconnect'),
                 ),
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
+              const PopupMenuItem(
+                value: 'duplicate',
+                child: Text('Duplicate'),
+              ),
               const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),
