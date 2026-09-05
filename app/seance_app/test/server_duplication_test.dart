@@ -233,10 +233,17 @@ void main() {
       // Never the original's entry: deleting either server would strip the
       // credential from the other, and edits would rewrite it in place.
       expect(plan.config.secretRef, 'sec-new');
-      expect(plan.secret!.id, 'sec-new');
+      // Compared as JSON with only the id overridden, like the config's own
+      // carryover test: a field Secret gains later fails here rather than
+      // being silently dropped from every duplicated credential.
+      final original = (await store.getSecret('sec-old'))!;
+      expect(
+        plan.secret!.toJson(),
+        {...original.toJson()}..['id'] = 'sec-new',
+      );
+      // Spelled out as well, because these are the two that stop a copy
+      // connecting: the material and the passphrase that opens it.
       expect(plan.secret!.value, 'PEM');
-      expect(plan.secret!.kind, SecretKind.privateKey);
-      // The passphrase travels too, or the copy has a key it cannot open.
       expect(plan.secret!.keyPassphrase, 'phrase');
       expect(plan.config.label, 'web copy');
     });

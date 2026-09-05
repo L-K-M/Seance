@@ -474,23 +474,39 @@ class AppState extends ChangeNotifier {
   /// quietly lost its password would look identical in the list and only admit
   /// it at connect time.
   Future<ServerConfig> duplicateServer(ServerConfig source) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-
-    final plan = await planServerDuplication(
-      source,
-      vault: services.vault,
-      takenLabels: servers.map((s) => s.label),
-      id: uuidV4(),
-      secretId: uuidV4(),
-      now: now,
-    );
-    await saveServer(
-      plan.config,
-      secret: plan.secret,
-      identityFileBookmark: services.settings.identityFileBookmarks[source.id],
-    );
-    return plan.config;
+    // Serialized against any duplicate still running. The label is chosen from
+    // the list as it stands *before* the vault read, and that read can sit for
+    // a long time behind an OS keychain prompt — long enough for a second
+    // Duplicate to plan against the same list and land on the same name, which
+    // is the one outcome the naming rule exists to prevent.
+    final queued = _duplicating;
+    final finished = Completer<void>();
+    _duplicating = finished.future;
+    await queued;
+    try {
+      final plan = await planServerDuplication(
+        source,
+        vault: services.vault,
+        takenLabels: servers.map((s) => s.label),
+        id: uuidV4(),
+        secretId: uuidV4(),
+        now: DateTime.now().millisecondsSinceEpoch,
+      );
+      await saveServer(
+        plan.config,
+        secret: plan.secret,
+        identityFileBookmark:
+            services.settings.identityFileBookmarks[source.id],
+      );
+      return plan.config;
+    } finally {
+      finished.complete();
+    }
   }
+
+  /// The duplicate currently in flight, so the next one waits for it. See
+  /// [duplicateServer].
+  Future<void> _duplicating = Future<void>.value();
 
   Future<void> deleteServer(String id) async {
     await closeAllTabsForServer(id);
