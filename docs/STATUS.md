@@ -48,7 +48,10 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
   by the same id the push used (asserted against a real vault), changing the
   flag without a strictly later `updatedAt` throws in every build (an assert
   would be stripped from the one users run) rather than silently losing the
-  LWW tie, and excluding on one device removes it from the other.
+  LWW tie — the editor builds the record through the constructor with a fresh
+  `updatedAt`, so the throw guards `copyWith` callers rather than anything a
+  user can reach — and excluding on one device removes it from the other, even
+  when the copy on the sync server outranks the retraction.
 - `seance_core/test/stores_probe_ssh_test.dart` — SecretVault, ConfigStore,
   ProbeService orchestration, `SshSessionManager.verifyHostKey` (TOFU), headless
   engine.
@@ -103,7 +106,7 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
   screen: Ctrl-S save-and-upload (immediate, no dialog; reconcile fallback on
   failure), local-only save without an upload target, open-at-top, monospace
   stack, and the find bar (counts, wrap, case toggle, highlight ranges).
-- `packages/seance_core/test/sync_coordinator_test.dart` — a server's group,
+- `seance_core/test/sync_coordinator_test.dart` — a server's group,
   colour and icon travel between devices, and regrouping converges like a
   rename (a group is a name its members carry, not a record that can dangle).
 - `app/seance_app/test/server_exclude_from_sync_test.dart` — the row's
