@@ -380,6 +380,10 @@ void main() {
     });
   });
 
+  // Pins Dart's zone/timer semantics, not app code: nothing in this group
+  // runs anything from `lib/`. It is the rule `_scheduleAutoSync` depends on,
+  // written down and checked — but it cannot catch a regression there, since
+  // `_scheduleAutoSync` needs an `AppState` no test can construct.
   group('mutation-zone timers', () {
     test('a timer inherits the zone it was created in, not the one it fires in',
         () async {
@@ -391,17 +395,26 @@ void main() {
       // creating it in a captured outer zone is what works.
       final outside = Zone.current;
       final seen = <String, Object?>{};
-      final done = Completer<void>();
+      // One completer each rather than one for the pair: two zero-duration
+      // timers do fire in creation order, so awaiting the second would work
+      // today — but then a later edit that gives either a delay fails on
+      // `seen['inside']` being null, which points at the wrong thing.
+      final insideFired = Completer<void>();
+      final outsideFired = Completer<void>();
 
       runZoned(() {
-        Timer(Duration.zero, () => seen['inside'] = Zone.current[#mutation]);
+        Timer(Duration.zero, () {
+          seen['inside'] = Zone.current[#mutation];
+          insideFired.complete();
+        });
         outside.run(() => Timer(Duration.zero, () {
               seen['outside'] = Zone.current[#mutation];
-              done.complete();
+              outsideFired.complete();
             }));
       }, zoneValues: {#mutation: true});
 
-      await done.future;
+      await insideFired.future;
+      await outsideFired.future;
       expect(seen['inside'], isTrue);
       expect(seen['outside'], isNull);
     });

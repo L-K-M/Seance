@@ -28,6 +28,12 @@ void main() {
     expect(rekeyed.kind, original.kind);
     expect(rekeyed.value, original.value);
     expect(rekeyed.keyPassphrase, original.keyPassphrase);
+    // And the other half of the contract: a parameter that is passed has to
+    // *replace*. Every assertion above is about what `copyWith` carries, so a
+    // body that ignored its argument (`value: this.value`) would pass them
+    // all — and the one caller that matters replaces a field.
+    expect(original.copyWith(value: 'other').value, 'other');
+    expect(original.copyWith(value: 'other').id, original.id);
   });
 
   group('model JSON round-trips', () {

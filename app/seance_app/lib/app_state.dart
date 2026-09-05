@@ -966,6 +966,17 @@ class AppState extends ChangeNotifier {
     // The re-reads are inside it too — outside, a mutation could land while
     // `listServers` was still resolving and then have its own assignment
     // overwritten by this older snapshot.
+    //
+    // That does hold the queue across network I/O, so what bounds it is worth
+    // writing down here rather than leaving to be rediscovered: every request
+    // carries `HttpSyncClient.timeout` (30 s by default), a timeout throws
+    // rather than retrying so the round ends at the first dead request, and
+    // `_mutate` releases in a `finally`. A black-holed network therefore
+    // costs one timeout, not a wedged app. A slow-but-alive one costs more —
+    // `SyncEngine.sync` runs up to five rounds and `SyncCoordinator.run` up
+    // to two passes — and the fix for that is splitting the coordinator's
+    // fetch from its apply so only the apply serializes, which is a change to
+    // `seance_core`, not to this line.
     final outcome = await _mutate(() async {
       final result = await services.runSync();
       servers = await services.configStore.listServers();

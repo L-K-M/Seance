@@ -190,6 +190,18 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     path are all unexercised on a device. If store distribution ever happens,
     revisit whether Play accepts `dataSync` for an indefinite session anchor
     or whether `specialUse` (with its justification form) is the safer fit.
+14. **Split the sync round's fetch from its apply.** `AppState._mutate`
+    serializes store mutations, and a sync round joins the queue because it
+    writes the config store and the vault. That holds the queue across
+    network I/O. It is bounded — `HttpSyncClient` times every request out at
+    30 s, a timeout ends the round rather than retrying, and `_mutate`
+    releases in a `finally` — so a dead network costs one timeout, not a
+    wedged app. A slow-but-alive one costs more, because `SyncEngine.sync`
+    runs up to five rounds and `SyncCoordinator.run` up to two passes. The
+    fix is a `SyncCoordinator` that fetches outside the queue and applies
+    inside it, which preserves the invariant (no store write interleaves with
+    a delete's reference count or a duplicate's plan) while a slow fetch stops
+    stalling saves and deletes.
 
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,

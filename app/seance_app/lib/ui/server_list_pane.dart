@@ -300,9 +300,15 @@ class _ServerListPaneState extends State<ServerListPane> {
       return;
     } catch (error) {
       // The vault throws when the OS keyring is locked. Say so rather than
-      // leaving the menu looking like it did nothing.
+      // leaving the menu looking like it did nothing — and name the server,
+      // because a toast is all the user gets and two rows can fail apart.
+      // The error itself stays verbatim: `VaultLockedException.toString()` is
+      // the sentence that says what to do about it.
       if (context.mounted) {
-        showTopToastIn(context, message: 'Could not duplicate: $error');
+        showTopToastIn(
+          context,
+          message: 'Could not duplicate "${server.label}": $error',
+        );
       }
       return;
     }
