@@ -168,6 +168,10 @@ class SshConnectionLog {
 final RegExp _userauthResponses =
     RegExp(r'Userauth_InfoResponse\(responses: \[.*', dotAll: true);
 
+/// The message whose `responses` list *is* the password for a host doing
+/// password login over keyboard-interactive.
+const String _userauthMessage = 'Userauth_InfoResponse';
+
 /// [line] with any credential dartssh2's trace would otherwise print replaced.
 /// Public so the redaction can be asserted directly rather than only through a
 /// live handshake, which no test performs.
@@ -191,13 +195,10 @@ String redactConnectionTrace(String line) {
   }
   return line.replaceAllMapped(
     _userauthResponses,
-    (_) => 'Userauth_InfoResponse(responses: [redacted]',
+    (_) => 'Userauth_InfoResponse(responses: [redacted])',
   );
 }
 
-/// The message whose `responses` list *is* the password for a host doing
-/// password login over keyboard-interactive.
-const String _userauthMessage = 'Userauth_InfoResponse';
 
 /// Thrown when a connection attempt fails. [message] is a one-line,
 /// user-facing summary; [log] carries the full transcript for a details view;

@@ -147,6 +147,12 @@ Future<ConnectionTestResult> runConnectionTest({
     // Its own summary, verbatim: it already knows which of "unreachable",
     // "wrong key", "PermitRootLogin prohibit-password" applies, and a second
     // wording here would be a second thing to keep true.
+    //
+    // The SSH layer writes that summary into the transcript before throwing,
+    // which is why nothing is appended here — but only `authenticate` goes
+    // through it. A `credentials()` that raises this same type has logged
+    // nothing, and the transcript would end mid-sentence.
+    if (!authenticating) transcript.add(e.message);
     return ConnectionTestResult(
       ok: false,
       summary: e.message,

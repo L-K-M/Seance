@@ -402,10 +402,18 @@ class AppServices {
     // path this branch never runs, so a bookmark passed alone would be
     // silently dropped and the test would resolve the vault credential
     // instead — a green result for a key nobody asked it to try.
-    assert(
-      config.identityFilePath != null || draftIdentityBookmark == null,
-      'draftIdentityBookmark is only honoured alongside identityFilePath',
-    );
+    // A throw, not an assert: stripped from the build users run, the only
+    // symptom of a caller getting this wrong is a green "authenticated" for a
+    // credential nobody asked to test — the same reason the exclusion guard in
+    // `ServerConfig.copyWith` throws.
+    if (config.identityFilePath == null && draftIdentityBookmark != null) {
+      throw ArgumentError.value(
+        draftIdentityBookmark,
+        'draftIdentityBookmark',
+        'only honoured alongside identityFilePath: without the path the '
+            'grant is dropped and the vault credential is tested instead',
+      );
+    }
     // Lazily re-probe a keystore that was down at bootstrap, so a keyring that
     // came back (or just got unlocked) unlocks secrets without an app restart.
     if (config.secretRef != null && vaultKey == null) {
