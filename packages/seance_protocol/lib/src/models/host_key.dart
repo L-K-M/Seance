@@ -57,7 +57,7 @@ class HostKey {
   }
 
   /// Natural key used for storage and record ids.
-  String get locator => '$host:$port';
+  String get locator => hostKeyLocator(host, port);
 
   /// True if [other] is the same host but a different key — the dangerous case.
   bool conflictsWith(HostKey other) =>
@@ -91,3 +91,10 @@ class HostKey {
         pinnedAt: (json['pinnedAt'] as num?)?.toInt() ?? 0,
       );
 }
+
+/// The [HostKey.locator] a given host and port would produce, without a key to
+/// ask. Callers that decide *about* a pin before they hold one — the sync
+/// coordinator matching server configs against pinned hosts — need the same
+/// spelling, and two places building `'$host:$port'` by hand is how they stop
+/// agreeing.
+String hostKeyLocator(String host, int port) => '$host:$port';
