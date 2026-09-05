@@ -397,6 +397,15 @@ class AppServices {
   }) async {
     String? draft(String? value) =>
         (value == null || value.isEmpty) ? null : value;
+    // A cross-file contract with the editor, which builds the grant from the
+    // path it is about (`_bookmarkFor` returns null without one). Without the
+    // path this branch never runs, so a bookmark passed alone would be
+    // silently dropped and the test would resolve the vault credential
+    // instead — a green result for a key nobody asked it to try.
+    assert(
+      config.identityFilePath != null || draftIdentityBookmark == null,
+      'draftIdentityBookmark is only honoured alongside identityFilePath',
+    );
     // Lazily re-probe a keystore that was down at bootstrap, so a keyring that
     // came back (or just got unlocked) unlocks secrets without an app restart.
     if (config.secretRef != null && vaultKey == null) {

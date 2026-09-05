@@ -94,6 +94,15 @@ void main() {
         excludingNeedsConfirmation(existing: existing(), syncConfigured: false),
         isFalse,
       );
+      // Already excluded: the retraction happened the first time, so flipping
+      // the switch off and back on within one editor session asks nothing.
+      expect(
+        excludingNeedsConfirmation(
+          existing: config(excluded: true),
+          syncConfigured: true,
+        ),
+        isFalse,
+      );
     });
   });
 

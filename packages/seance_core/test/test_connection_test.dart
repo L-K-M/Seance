@@ -87,6 +87,9 @@ void main() {
       expect(result.ok, isFalse);
       expect(result.summary, contains('keyring is locked'));
       expect(result.log, contains('keyring is locked'));
+      // And keeps its trace: an Error before the handshake is our bug, which
+      // is the policy the later stack-trace test states in full.
+      expect(result.log, contains('runConnectionTest'));
     });
 
     test('the unimplemented agent path reads as a sentence, not a crash',

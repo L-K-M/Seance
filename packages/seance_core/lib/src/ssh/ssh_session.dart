@@ -98,7 +98,8 @@ class SshConnectionLog {
   /// `UnmodifiableListView` rather than `List.unmodifiable`, which allocates a
   /// fresh copy per read — this is read on every repaint of a live connection
   /// log, and a copy also silently freezes for any caller that holds on to it.
-  List<String> get lines => UnmodifiableListView(_lines);
+  List<String> get lines => _linesView;
+  late final List<String> _linesView = UnmodifiableListView(_lines);
 
   /// Called after every [add] so a live view can repaint. Cleared by [freeze].
   void Function()? onUpdate;
@@ -111,6 +112,10 @@ class SshConnectionLog {
 
   SshConnectionLog({this.onUpdate});
 
+  /// Whole records only. [redactConnectionTrace] scrubs to the end of what it
+  /// is handed, so a producer that split a message on newlines before calling
+  /// this would store the tail past the redaction as a line of its own — and
+  /// nothing here can tell an already-split chunk from a whole one.
   void add(String line) {
     if (_frozen) return;
     _lines.add(redactConnectionTrace(line));
@@ -170,10 +175,29 @@ final RegExp _userauthResponses =
 /// `replaceAllMapped`, not `replaceAll`: Dart's plain replacement takes the
 /// string literally, so a `$1` in it lands in the output as the characters
 /// `$1` and takes the matched prefix with it.
-String redactConnectionTrace(String line) => line.replaceAllMapped(
-      _userauthResponses,
-      (_) => 'Userauth_InfoResponse(responses: [redacted]',
-    );
+String redactConnectionTrace(String line) {
+  // Fail closed on drift. The pattern matches the exact text dartssh2 prints
+  // today (`'$runtimeType(responses: $responses)'`), and every test of it is
+  // written against that same reading — so they pin the regex to itself, not
+  // to the dependency. A `pub upgrade` that renamed the field, quoted the
+  // elements, or printed a count first would make the pattern miss, and the
+  // password would flow into a transcript with a Copy button on it, with
+  // nothing red anywhere. An InfoResponse this does not recognize is
+  // therefore replaced whole: a transcript line lost to caution costs a
+  // diagnosis, and the alternative costs the credential.
+  if (line.contains(_userauthMessage) && !_userauthResponses.hasMatch(line)) {
+    return '$_userauthMessage(redacted: this build does not recognize the '
+        'shape of this message, so all of it is withheld)';
+  }
+  return line.replaceAllMapped(
+    _userauthResponses,
+    (_) => 'Userauth_InfoResponse(responses: [redacted]',
+  );
+}
+
+/// The message whose `responses` list *is* the password for a host doing
+/// password login over keyboard-interactive.
+const String _userauthMessage = 'Userauth_InfoResponse';
 
 /// Thrown when a connection attempt fails. [message] is a one-line,
 /// user-facing summary; [log] carries the full transcript for a details view;

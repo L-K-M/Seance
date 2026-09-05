@@ -11,8 +11,9 @@ import 'top_toast.dart';
 /// Whether turning "exclude from sync" on needs confirming before it takes.
 ///
 /// Only when there is something to retract: a server being added has never
-/// been anywhere, and with no sync account configured there is no other device
-/// that could lose it. Turning the switch back off is never destructive.
+/// been anywhere, one already excluded has been retracted once already, and
+/// with no sync account configured there is no other device that could lose
+/// it. Turning the switch back off is never destructive.
 ///
 /// [syncConfigured] is read as it is *now*, which is not quite the same
 /// question. A server that synced before the account was unlinked still has a
@@ -28,7 +29,7 @@ import 'top_toast.dart';
 bool excludingNeedsConfirmation({
   required ServerConfig? existing,
   required bool syncConfigured,
-}) => existing != null && syncConfigured;
+}) => existing != null && !existing.excludeFromSync && syncConfigured;
 
 /// The dialog [excludingNeedsConfirmation] gates, as a function so a test can
 /// tap its buttons without standing up an editor or an [AppState].
