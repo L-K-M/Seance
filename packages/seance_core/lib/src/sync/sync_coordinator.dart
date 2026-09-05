@@ -31,6 +31,11 @@ class SyncCoordinator {
   /// Optional snippet store. When present, snippets sync like server configs.
   final SnippetStore? snippetStore;
 
+  /// Opt-in assistant-configuration syncing. Null — the default — means the
+  /// record is neither pushed nor applied, so a device that has not opted in
+  /// keeps its own provider, model and keys whatever the account carries.
+  final AssistantSettingsStore? assistantStore;
+
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be
   /// provided so secrets can be sealed into records.
   final bool syncSecrets;
@@ -43,6 +48,7 @@ class SyncCoordinator {
     required this.local,
     required this.deviceId,
     this.snippetStore,
+    this.assistantStore,
     this.syncSecrets = false,
     this.secretVault,
   });
@@ -105,6 +111,19 @@ class SyncCoordinator {
         updatedAt: hk.pinnedAt,
         deviceId: deviceId,
         data: hk.toJson(),
+      )));
+    }
+    final assistant = await assistantStore?.getAssistantSettings();
+    if (assistant != null) {
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        // The settings' own timestamp, not the round's: collectLocal runs
+        // every five minutes, and a moving one would make each round a fresh
+        // winning write and set two devices trading the record forever.
+        updatedAt: assistant.updatedAt,
+        deviceId: deviceId,
+        data: assistant.toJson(),
       )));
     }
     final snippets = snippetStore;
@@ -255,6 +274,13 @@ class SyncCoordinator {
             if (store == null) continue;
 
             await store.putSnippet(Snippet.fromJson(dec.data));
+          case RecordKind.assistantSettings:
+            final store = assistantStore;
+            if (store == null) continue;
+
+            await store.putAssistantSettings(
+              AssistantSettings.fromJson(dec.data),
+            );
           case RecordKind.bookmark:
           case RecordKind.unknown:
             continue;

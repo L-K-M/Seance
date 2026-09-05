@@ -40,6 +40,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   late LlmProviderKind _kind;
   late bool _zai;
+  late bool _syncAssistant;
   late bool _redaction;
   late bool _autoSync;
   late bool _syncSecrets;
@@ -82,6 +83,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _redaction = s.redactionEnabled;
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;
+    _syncAssistant = s.syncAssistant;
     _commandSuggestions = s.commandSuggestions;
     _checkForUpdates = s.checkForUpdates;
     _keepSessionsAlive = s.keepSessionsAliveInBackground;
@@ -633,6 +635,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _persistSyncPrefs(state);
         },
       ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Sync assistant settings'),
+        subtitle: const Text(
+          'Provider, model, endpoint, web search and redaction — with their '
+          'API keys, so the assistant works on the other device. '
+          'End-to-end encrypted. A localhost endpoint will not resolve '
+          'elsewhere.',
+        ),
+        value: _syncAssistant,
+        onChanged: (value) {
+          setState(() => _syncAssistant = value);
+          _persistSyncPrefs(state);
+        },
+      ),
       const SizedBox(height: 8),
       TextField(
         controller: _syncUrl,
@@ -849,6 +866,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await state.services.masterKeys.getApiKey(_zaiKeyRef) == null;
 
     await state.services.saveSettings();
+    // Stamp and publish: this is the edit the synced record's timestamp is
+    // supposed to move for. A no-op when assistant sync is off.
+    await state.assistantSettingsEdited();
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();
     if (mounted) {
@@ -866,10 +886,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// Persist the sync preference toggles and (re)start the auto-sync timer.
   Future<void> _persistSyncPrefs(AppState state) async {
     final s = state.services.settings;
+    final wasSyncingAssistant = s.syncAssistant;
     s.autoSync = _autoSync;
     s.syncSecrets = _syncSecrets;
+    s.syncAssistant = _syncAssistant;
     await state.services.saveSettings();
     state.ensureAutoSyncTimer();
+    // Switching it on publishes what this device already has, rather than
+    // leaving the account with nothing until the next time somebody happens to
+    // edit the assistant.
+    if (_syncAssistant && !wasSyncingAssistant) {
+      await state.assistantSettingsEdited();
+    }
   }
 
   /// Persist the command-suggestions toggle and refresh the current list.

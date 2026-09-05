@@ -864,7 +864,23 @@ class AppState extends ChangeNotifier {
     snippets = await services.snippetStore.listSnippets();
     services.probe.updateServers(servers);
     _recomputeSuggestions();
+    // A pulled assistant configuration changes the provider, the model or the
+    // key, none of which an already-built chat provider notices.
+    if (services.assistantSettingsChanged) await reloadLlmProvider();
     return outcome;
+  }
+
+  /// The assistant's configuration was just edited here: stamp it so the
+  /// synced record has a timestamp that moved for a real reason, and push it.
+  ///
+  /// Called on save and when assistant sync is switched on, so turning it on
+  /// publishes what this device already has rather than leaving the account
+  /// with nothing until the next edit.
+  Future<void> assistantSettingsEdited() async {
+    services.settings.assistantUpdatedAt =
+        DateTime.now().millisecondsSinceEpoch;
+    await services.saveSettings();
+    _scheduleAutoSync();
   }
 
   /// Start (or restart) the periodic auto-sync timer. Safe to call repeatedly —

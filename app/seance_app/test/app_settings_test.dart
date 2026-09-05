@@ -31,6 +31,30 @@ void main() {
     expect(AppSettings.fromJson(legacy).zaiApiKeyRef, isNull);
   });
 
+  test('assistant sync is off by default and round-trips', () {
+    // A new sync surface that carries keys opts in, like syncSecrets.
+    expect(AppSettings().syncAssistant, isFalse);
+    expect(AppSettings().assistantUpdatedAt, 0);
+
+    final on = AppSettings(syncAssistant: true, assistantUpdatedAt: 500);
+    final restored = AppSettings.fromJson(on.toJson());
+    expect(restored.syncAssistant, isTrue);
+    expect(restored.assistantUpdatedAt, 500);
+
+    // containsKey guards the removal: a renamed serialization key must fail
+    // here rather than vacuously testing the default.
+    final json = on.toJson();
+    expect(json.containsKey('syncAssistant'), isTrue);
+    expect(json.containsKey('assistantUpdatedAt'), isTrue);
+    json.remove('syncAssistant');
+    json.remove('assistantUpdatedAt');
+    final legacy = AppSettings.fromJson(json);
+    expect(legacy.syncAssistant, isFalse);
+    // Zero means "never published", so an upgrade does not start pushing a
+    // configuration the user never chose to share.
+    expect(legacy.assistantUpdatedAt, 0);
+  });
+
   test('missing checkForUpdates in stored JSON defaults to on', () {
     final json = AppSettings().toJson()..remove('checkForUpdates');
     expect(AppSettings.fromJson(json).checkForUpdates, isTrue);

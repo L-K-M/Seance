@@ -65,6 +65,16 @@ class AppSettings {
 
   bool redactionEnabled;
 
+  /// When the assistant's configuration was last edited on any device, or 0
+  /// while it has never been published.
+  ///
+  /// It is the synced record's `updatedAt`, so it must move only on a real
+  /// edit: sync re-collects every round, and a "now" timestamp would make each
+  /// one a fresh winning write with two devices trading the record forever.
+  /// Zero also serves as "nothing to publish", which keeps two fresh installs
+  /// from pushing rival defaults before either has configured anything.
+  int assistantUpdatedAt;
+
   // Sync (optional).
   String? syncBaseUrl;
   String? syncUsername;
@@ -73,6 +83,18 @@ class AppSettings {
   /// encrypted, but syncing them widens their blast radius). Only servers whose
   /// own [ServerConfig.syncSecret] flag is set are included.
   bool syncSecrets;
+
+  /// Sync the assistant's configuration — provider, model, endpoint, web
+  /// search and redaction — together with its API keys. Opt-in and off by
+  /// default, like [syncSecrets] and for the same reason: the record is
+  /// end-to-end encrypted, but keys that exist on one device are a smaller
+  /// blast radius than keys that exist on all of them.
+  ///
+  /// The keys travel with the settings rather than behind a second switch. A
+  /// provider and model without the key to use them leaves the other device
+  /// looking configured and answering nothing, which is a worse place to be
+  /// than either syncing or not.
+  bool syncAssistant;
 
   /// Whether sync runs automatically (on startup, after edits, and on a timer).
   /// On by default once sync is set up; the manual "Sync now" button always works.
@@ -142,9 +164,11 @@ class AppSettings {
     this.braveApiKeyRef,
     this.zaiApiKeyRef,
     this.redactionEnabled = true,
+    this.assistantUpdatedAt = 0,
     this.syncBaseUrl,
     this.syncUsername,
     this.syncSecrets = false,
+    this.syncAssistant = false,
     this.autoSync = true,
     this.commandSuggestions = false,
     this.checkForUpdates = true,
@@ -174,9 +198,11 @@ class AppSettings {
     if (braveApiKeyRef != null) 'braveApiKeyRef': braveApiKeyRef,
     if (zaiApiKeyRef != null) 'zaiApiKeyRef': zaiApiKeyRef,
     'redactionEnabled': redactionEnabled,
+    'assistantUpdatedAt': assistantUpdatedAt,
     if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
     if (syncUsername != null) 'syncUsername': syncUsername,
     'syncSecrets': syncSecrets,
+    'syncAssistant': syncAssistant,
     'autoSync': autoSync,
     'commandSuggestions': commandSuggestions,
     'checkForUpdates': checkForUpdates,
@@ -214,9 +240,11 @@ class AppSettings {
     braveApiKeyRef: json['braveApiKeyRef'] as String?,
     zaiApiKeyRef: json['zaiApiKeyRef'] as String?,
     redactionEnabled: json['redactionEnabled'] as bool? ?? true,
+    assistantUpdatedAt: (json['assistantUpdatedAt'] as num?)?.toInt() ?? 0,
     syncBaseUrl: json['syncBaseUrl'] as String?,
     syncUsername: json['syncUsername'] as String?,
     syncSecrets: json['syncSecrets'] as bool? ?? false,
+    syncAssistant: json['syncAssistant'] as bool? ?? false,
     autoSync: json['autoSync'] as bool? ?? true,
     commandSuggestions: json['commandSuggestions'] as bool? ?? false,
     checkForUpdates: json['checkForUpdates'] as bool? ?? true,

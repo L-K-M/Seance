@@ -11,7 +11,15 @@ final Logger _log = Logger(_recordLoggerName);
 /// The category of a synced record. The kind travels *inside* the encrypted
 /// payload, not in the envelope, so the server cannot even tell a server-config
 /// from a stored secret.
-enum RecordKind { serverConfig, hostKey, secret, snippet, bookmark, unknown }
+enum RecordKind {
+  serverConfig,
+  hostKey,
+  secret,
+  snippet,
+  bookmark,
+  assistantSettings,
+  unknown,
+}
 
 RecordKind recordKindFromName(String name) => RecordKind.values.firstWhere(
   (k) => k.name == name,
