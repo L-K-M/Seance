@@ -144,7 +144,12 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
    extraction isn't implemented. Streaming (`streamChat`) exists in the providers
    but the sidebar uses non-streaming `chat()`; switch for nicer UX.
 7. **Provider-native web search** (Anthropic/OpenAI server-side tool) is unused;
-   only client-side SearXNG/Brave. Add the native path for cloud providers.
+   only client-side SearXNG, Brave and Z.AI, queried together and interleaved
+   by `CompositeSearch`. Add the native path for cloud providers. The three
+   backends also own an `http.Client` each with no release path, and the chat
+   controller drops the whole set when the provider version changes rather
+   than closing it — one leak, fixed properly by giving `SearchProvider` and
+   `LlmProvider` a `close()` and disposing the superseded controller.
 8. **Terminal PTY initial size** is 80×24 for the moment between connect and the
    first widget layout, then the xterm `autoResize` fits the grid to the pane and
    forwards it to the remote PTY. (This resize path used to recurse infinitely —

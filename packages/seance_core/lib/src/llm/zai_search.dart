@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:meta/meta.dart';
 
 import 'search.dart';
 
@@ -236,12 +237,19 @@ class ZaiSearch implements SearchProvider {
     final response = await _client.send(request).timeout(timeout);
     // Case-insensitive by contract in package:http, so this is the header the
     // server sent whatever case it used.
+    // Read before the write below: `headers` *is* `session` during a
+    // handshake, so asking it afterwards answers about the id the reply just
+    // issued rather than the one the request carried — and a gateway that
+    // answers `initialize` with both a 404 and a session id would be read as
+    // an expired session, costing a re-handshake and reporting a dropped
+    // session for what is a wrong endpoint.
+    final sentSessionId = headers.containsKey('mcp-session-id');
     final issued = response.headers['mcp-session-id'];
     // Only a staged (in-handshake) map is written to; the published one is
     // replaced wholesale when the handshake completes.
     if (issued != null && session != null) session['mcp-session-id'] = issued;
 
-    if (response.statusCode == 404 && headers.containsKey('mcp-session-id')) {
+    if (response.statusCode == 404 && sentSessionId) {
       await response.stream.drain<void>();
       throw const _SessionExpired();
     }
@@ -260,9 +268,19 @@ class ZaiSearch implements SearchProvider {
       // The send timeout only covers the headers. Streamable HTTP lets a
       // server hold a stream open, so without a deadline here a proxy that
       // answers 200 and then stalls hangs the caller for good.
-      final message =
-          await readSseRpcMessage(response.stream, id).timeout(timeout);
-      if (message == null && id != null) {
+      if (id == null) {
+        // A notification has no reply, so there is nothing to match and
+        // nothing to wait for: reading until "some message" arrives would
+        // burn the whole deadline on a stream carrying only heartbeats.
+        await response.stream.drain<void>().timeout(timeout);
+        return null;
+      }
+      final message = await readSseRpcMessage(
+        response.stream,
+        id,
+        idleTimeout: timeout,
+      ).timeout(timeout);
+      if (message == null) {
         throw http.ClientException(
           'Z.AI closed the search stream before answering.',
         );
@@ -290,17 +308,48 @@ class ZaiSearch implements SearchProvider {
 
   Future<String> _readBounded(Stream<List<int>> bytes) async {
     final buffer = <int>[];
-    await for (final chunk in bytes) {
+    await for (final chunk in bounded(bytes, maxResponseBytes, timeout)) {
       buffer.addAll(chunk);
-      if (buffer.length > maxResponseBytes) {
-        throw http.ClientException('Z.AI search reply was too large.');
-      }
     }
     return utf8.decode(buffer, allowMalformed: true);
   }
 
+  /// [bytes] capped at [maxBytes] and cut off after [idle] without an event.
+  ///
+  /// The cap is counted here, on the bytes, rather than on decoded lines: one
+  /// CJK character is three UTF-8 bytes and a single code unit, so a count
+  /// taken after decoding is three times too generous for exactly the results
+  /// this endpoint returns — and it only trips once the oversized chunk has
+  /// been materialized.
+  ///
+  /// The deadline is here too, rather than only as a `.timeout` on the future
+  /// the caller awaits. That form frees the caller and leaves the subscription
+  /// listening, so a proxy that answers 200 and then stalls keeps a socket and
+  /// its buffer for as long as it likes. Thrown into the stream, it ends the
+  /// `await for` that owns the subscription, which cancels it.
+  @visibleForTesting
+  static Stream<List<int>> bounded(
+    Stream<List<int>> bytes,
+    int maxBytes,
+    Duration idle,
+  ) async* {
+    var read = 0;
+    await for (final chunk in bytes.timeout(idle)) {
+      read += chunk.length;
+      if (read > maxBytes) {
+        throw http.ClientException('Z.AI search reply was too large.');
+      }
+      yield chunk;
+    }
+  }
+
   /// Read a `text/event-stream` reply and return the JSON-RPC message whose
-  /// `id` is [id] (or the first message at all when [id] is null).
+  /// `id` is [id].
+  ///
+  /// [id] is required: with none, every decoded object would end the read, so
+  /// the first heartbeat or notification on the stream would be returned as
+  /// the answer. A request without an id is a notification and has no reply
+  /// to read, which [_send] handles by draining instead.
   ///
   /// Not [parseSseJson]: that yields every `data:` line as its own object,
   /// which is right for a token stream and wrong here. An SSE event's `data`
@@ -309,13 +358,13 @@ class ZaiSearch implements SearchProvider {
   /// past rather than mistaken for the answer.
   static Future<Map<String, dynamic>?> readSseRpcMessage(
     Stream<List<int>> bytes,
-    int? id, {
+    int id, {
     int maxBytes = maxResponseBytes,
+    Duration idleTimeout = const Duration(seconds: 30),
   }) async {
     final data = <String>[];
-    var read = 0;
     final lines = utf8.decoder
-        .bind(bytes)
+        .bind(bounded(bytes, maxBytes, idleTimeout))
         .transform(const LineSplitter());
 
     Map<String, dynamic>? finish() {
@@ -334,15 +383,11 @@ class ZaiSearch implements SearchProvider {
       if (decoded is! Map<String, dynamic>) return null;
       // A server may interleave other messages (a notification, a ping)
       // before the answer; only the matching id ends the read.
-      if (id != null && decoded['id'] != id) return null;
+      if (decoded['id'] != id) return null;
       return decoded;
     }
 
     await for (final line in lines) {
-      read += line.length + 1;
-      if (read > maxBytes) {
-        throw http.ClientException('Z.AI search reply was too large.');
-      }
       if (line.startsWith('data:')) {
         data.add(line.substring(5).trimLeft());
       } else if (line.isEmpty) {
@@ -375,9 +420,17 @@ class ZaiSearch implements SearchProvider {
     }
     if (message['success'] == false) {
       final text = '${message['msg'] ?? ''}'.toLowerCase();
-      if (text.contains('auth') ||
-          text.contains('api key') ||
-          text.contains('token')) {
+      // Quota first: "insufficient token quota" and "token limit reached"
+      // both carry "token", and telling someone with a working key to rotate
+      // it is the exact confusion this branch exists to prevent.
+      final quota = text.contains('quota') ||
+          text.contains('limit') ||
+          text.contains('balance') ||
+          text.contains('insufficient');
+      if (!quota &&
+          (text.contains('auth') ||
+              text.contains('api key') ||
+              text.contains('token'))) {
         throw http.ClientException(
           'Z.AI rejected the search API key. Check the key in Settings.',
         );
@@ -486,10 +539,16 @@ class ZaiSearch implements SearchProvider {
     }
   }
 
-  static void _collect(Object? value, List<SearchResult> out, Set<String> seen) {
+  /// [depth] caps the walk: the payload is server-controlled, and a
+  /// `StackOverflowError` is an `Error`, so it would sail past the
+  /// `on Exception` handling every caller of this class relies on. Thirty-two
+  /// is far past any real result shape.
+  static void _collect(Object? value, List<SearchResult> out, Set<String> seen,
+      [int depth = 0]) {
+    if (depth > 32) return;
     if (value is List) {
       for (final item in value) {
-        _collect(item, out, seen);
+        _collect(item, out, seen, depth + 1);
       }
       return;
     }
@@ -498,7 +557,9 @@ class ZaiSearch implements SearchProvider {
       // report; plain prose simply doesn't decode and is left to the caller.
       try {
         final decoded = jsonDecode(value);
-        if (decoded is Map || decoded is List) _collect(decoded, out, seen);
+        if (decoded is Map || decoded is List) {
+          _collect(decoded, out, seen, depth + 1);
+        }
       } on FormatException {
         // Not JSON. Nothing to collect from it here.
       }
@@ -508,11 +569,22 @@ class ZaiSearch implements SearchProvider {
 
     final url = value['link'] ?? value['url'];
     if (url is String && url.isNotEmpty && seen.add(url)) {
+      // Interpolating whatever is there would put `{lang: en, text: …}` or
+      // `[a, b]` into the UI verbatim: some search APIs return `content` as a
+      // list of paragraphs or `title` as a localized object. The rest of this
+      // function goes out of its way to survive a shape it did not expect,
+      // and these two fields are read by a person.
+      final title = value['title'] ?? value['media'];
+      final snippet =
+          value['content'] ?? value['snippet'] ?? value['description'];
       out.add(SearchResult(
-        title: '${value['title'] ?? value['media'] ?? url}',
+        title: title is String && title.isNotEmpty ? title : url,
         url: url,
-        snippet:
-            '${value['content'] ?? value['snippet'] ?? value['description'] ?? ''}',
+        snippet: switch (snippet) {
+          final String text => text,
+          final List<Object?> parts => parts.whereType<String>().join(' '),
+          _ => '',
+        },
       ));
       return;
     }
@@ -524,7 +596,7 @@ class ZaiSearch implements SearchProvider {
           entry.key == 'site_icon') {
         continue;
       }
-      _collect(entry.value, out, seen);
+      _collect(entry.value, out, seen, depth + 1);
     }
   }
 }

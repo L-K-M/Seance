@@ -70,7 +70,13 @@ class FakeMcpServer {
 
   http.Client get client => MockClient.streaming((request, body) async {
         requests.add(request);
-        headers.add(Map.of(request.headers));
+        headers.add({
+          // Lowercased: HTTP header names are case-insensitive, so a client
+          // that capitalized one would otherwise fail as a null deep inside
+          // this fake rather than as the expectation that meant to catch it.
+          for (final entry in request.headers.entries)
+            entry.key.toLowerCase(): entry.value,
+        });
         final payload =
             jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
         final method = payload['method'] as String;
@@ -113,8 +119,11 @@ class FakeMcpServer {
           ],
         };
       case 'tools/call':
-        lastArguments = ((payload['params'] as Map)['arguments'] as Map)
-            .cast<String, dynamic>();
+        // Null-aware: MCP allows a tools/call with no arguments, and a hard
+        // cast would crash inside this fake instead of failing the assertion
+        // that is watching lastArguments.
+        final params = payload['params'] as Map?;
+        lastArguments = (params?['arguments'] as Map?)?.cast<String, dynamic>();
         return {
           'content': [
             {'type': 'text', 'text': jsonEncode(_results)},
@@ -477,6 +486,34 @@ void main() {
   });
 
   group('parseToolResult', () {
+    test('a title or snippet that is not text does not reach the UI', () {
+      // Some search APIs return `content` as a list of paragraphs, or a
+      // localized object for `title`; interpolating either puts `{lang: en}`
+      // into a result a person reads.
+      final results = ZaiSearch.parseToolResult(const {
+        'content': [
+          {
+            'type': 'text',
+            'text': '[{"link":"https://a.example","title":{"en":"A"},'
+                '"content":["one","two",3]}]',
+          },
+        ],
+      }, 5);
+      expect(results.single.title, 'https://a.example');
+      expect(results.single.snippet, 'one two');
+    });
+
+    test('a payload nested past any real shape is walked, not crashed', () {
+      // Server-controlled, and StackOverflowError is an Error — it would sail
+      // past the `on Exception` handling every caller of this class relies on.
+      var nested = <String, Object?>{'link': 'https://deep.example'};
+      for (var i = 0; i < 5000; i++) {
+        nested = <String, Object?>{'a': nested};
+      }
+      expect(() => ZaiSearch.parseToolResult({'structuredContent': nested}, 5),
+          returnsNormally);
+    });
+
     test('walks into a text block that holds JSON, skipping icons', () {
       final results = ZaiSearch.parseToolResult({
         'content': [
@@ -524,6 +561,47 @@ void main() {
 
     test('an empty result is empty, not a blank row', () {
       expect(ZaiSearch.parseToolResult(const {'content': []}, 5), isEmpty);
+    });
+  });
+
+  group('bounded', () {
+    test('caps on bytes, not on decoded length', () async {
+      // One CJK character is three UTF-8 bytes and a single code unit, so a
+      // count taken after decoding is three times too generous for exactly
+      // the results this endpoint returns.
+      final chunk = utf8.encode('検索' * 100); // 600 bytes, 200 code units.
+      Stream<List<int>> source() =>
+          Stream.fromIterable(List.generate(3, (_) => chunk));
+
+      expect(
+        ZaiSearch.bounded(source(), 500, const Duration(seconds: 1)).toList(),
+        throwsA(isA<http.ClientException>()),
+      );
+      await expectLater(
+        ZaiSearch.bounded(source(), 5000, const Duration(seconds: 1)).toList(),
+        completion(hasLength(3)),
+      );
+    });
+
+    test('a stream that stalls is cut off rather than held open', () async {
+      // The deadline lives here so ending the loop cancels the subscription;
+      // as a `.timeout` on the awaited future it would free the caller and
+      // leave the socket listening.
+      var cancelled = false;
+      final controller = StreamController<List<int>>(
+        onCancel: () => cancelled = true,
+      );
+      controller.add(utf8.encode('first'));
+
+      await expectLater(
+        ZaiSearch.bounded(
+          controller.stream,
+          1024,
+          const Duration(milliseconds: 20),
+        ).toList(),
+        throwsA(isA<TimeoutException>()),
+      );
+      expect(cancelled, isTrue);
     });
   });
 

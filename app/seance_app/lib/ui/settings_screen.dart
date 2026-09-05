@@ -808,9 +808,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // and the settings object is the one the running app reads — leaving it
     // mutated to say "Z.AI is on" behind a key that never landed would make
     // the failed save take effect anyway, until the next launch.
-    if (_zai && _zaiApiKey.text.isNotEmpty) {
+    if (_zai && _zaiApiKey.text.trim().isNotEmpty) {
       try {
-        await state.services.masterKeys.putApiKey(_zaiKeyRef, _zaiApiKey.text);
+        await state.services.masterKeys.putApiKey(
+          _zaiKeyRef,
+          // Trimmed like every other field here: a key pasted from a password
+          // manager carries a trailing newline more often than not, and it
+          // authenticates as garbage that CompositeSearch swallows into a log
+          // line.
+          _zaiApiKey.text.trim(),
+        );
       } catch (e) {
         if (!mounted) return;
         setState(() => _saving = false);
@@ -856,8 +863,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       showTopToastIn(
         context,
         message: zaiWithoutKey
-            ? 'Saved — but Z.AI search has no key stored, so it will be '
-                  'skipped. Enter one above.'
+            ? 'Saved — but no Z.AI key could be read (none stored, or the '
+                  'keyring is locked), so Z.AI search will be skipped.'
             : 'Saved',
       );
     }
