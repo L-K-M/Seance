@@ -476,36 +476,20 @@ class AppState extends ChangeNotifier {
   Future<ServerConfig> duplicateServer(ServerConfig source) async {
     final now = DateTime.now().millisecondsSinceEpoch;
 
-    Secret? secret;
-    final sourceRef = source.secretRef;
-    if (sourceRef != null) {
-      final original = await services.vault.getSecret(sourceRef);
-      // A dangling ref (the vault entry is gone) copies as "no credential"
-      // rather than failing: the original is in that state already, and the
-      // copy is not the place to discover it.
-      if (original != null) {
-        secret = Secret(
-          id: uuidV4(),
-          kind: original.kind,
-          value: original.value,
-          keyPassphrase: original.keyPassphrase,
-        );
-      }
-    }
-
-    final copy = duplicateServerConfig(
+    final plan = await planServerDuplication(
       source,
+      vault: services.vault,
+      takenLabels: servers.map((s) => s.label),
       id: uuidV4(),
-      label: duplicateServerLabel(source.label, servers.map((s) => s.label)),
-      secretRef: secret?.id,
+      secretId: uuidV4(),
       now: now,
     );
     await saveServer(
-      copy,
-      secret: secret,
+      plan.config,
+      secret: plan.secret,
       identityFileBookmark: services.settings.identityFileBookmarks[source.id],
     );
-    return copy;
+    return plan.config;
   }
 
   Future<void> deleteServer(String id) async {
