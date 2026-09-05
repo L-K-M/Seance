@@ -14,6 +14,14 @@ import 'top_toast.dart';
 /// been anywhere, and with no sync account configured there is no other device
 /// that could lose it. Turning the switch back off is never destructive.
 ///
+/// [syncConfigured] is read as it is *now*, which is not quite the same
+/// question. A server that synced before the account was unlinked still has a
+/// copy out there, and the stored exclusion would retract it on the first
+/// round after re-linking, unprompted. Answering that properly needs a "has
+/// ever synced" bit this device does not keep, and the alternative — always
+/// confirming — puts a dialog in front of someone who has never had a sync
+/// account at all. The narrow gap is recorded here rather than papered over.
+///
 /// A top-level function so the rule can be asserted directly — no widget test
 /// in this app stands up an [AppState], and this is the part of the dialog
 /// worth pinning down.

@@ -168,11 +168,12 @@ class ServerConfig {
   /// weaker position than the one the user asked for. Going forward, a pin for
   /// a `host:port` that only excluded servers name is simply not pushed.
   ///
-  /// Any write that *changes* this must carry a fresh [updatedAt]. The
-  /// retraction tombstone is dated from it, so a stale one ties with the copy
-  /// already on the server and loses the tie-break to it — the UI would report
-  /// the server as excluded while its record sat there untouched. [copyWith]
-  /// asserts on that rather than leaving it to be discovered in a sync log.
+  /// Any write that *changes* this must carry a strictly later [updatedAt].
+  /// The retraction tombstone is dated from it, so a stale one — or the
+  /// current one, which ties — loses the tie-break to the copy already on the
+  /// server, and the UI would report the server as excluded while its record
+  /// sat there untouched. [copyWith] throws on that rather than leaving it to
+  /// be discovered in a sync log.
   final bool excludeFromSync;
 
   final int createdAt;
@@ -222,14 +223,22 @@ class ServerConfig {
     bool? excludeFromSync,
     int? updatedAt,
   }) {
-    assert(
-      excludeFromSync == null ||
-          excludeFromSync == this.excludeFromSync ||
-          updatedAt != null,
-      'Changing excludeFromSync needs a fresh updatedAt: the retraction '
-      'tombstone is dated from it, and a stale date ties with the copy '
-      'already on the sync server and loses.',
-    );
+    // A throw rather than an assert, which profile and release builds strip:
+    // the mistake this catches is a record that keeps syncing while the UI
+    // says it does not, and a privacy setting failing silently in the only
+    // build users run is not a trade worth making. `RecordCodec.encrypt`
+    // rejects an impossible kind the same way.
+    if (excludeFromSync != null &&
+        excludeFromSync != this.excludeFromSync &&
+        (updatedAt == null || updatedAt <= this.updatedAt)) {
+      throw ArgumentError.value(
+        updatedAt,
+        'updatedAt',
+        'Changing excludeFromSync needs an updatedAt later than the current '
+            'one: the retraction tombstone is dated from it, and a date that '
+            'ties with the copy already on the sync server loses to it',
+      );
+    }
     return ServerConfig(
       id: id,
       label: label ?? this.label,

@@ -89,11 +89,17 @@ void main() {
             .excludeFromSync,
         isFalse,
       );
-      // The pairing is enforced, not merely documented: a stale tombstone
-      // ties with the record already on the sync server and loses to it.
+      // The pairing is enforced in every build, not merely documented: a
+      // stale tombstone ties with the record already on the sync server and
+      // loses to it, and an assert would be stripped from the build users run.
       expect(
         () => excluded.copyWith(excludeFromSync: false),
-        throwsA(isA<AssertionError>()),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Re-stating the current timestamp ties, which loses the same way.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 3),
+        throwsA(isA<ArgumentError>()),
       );
       // Omitting it leaves it alone, like every other copyWith field.
       expect(excluded.copyWith(label: 'other').excludeFromSync, isTrue);
