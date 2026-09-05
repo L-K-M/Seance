@@ -107,13 +107,19 @@ Future<ConnectionTestResult> runConnectionTest({
   SshConnectionLog? log,
 }) async {
   final transcript = log ?? SshConnectionLog();
-  final notes = <String>[
+  // Read-only: the same instance flows into all three results, and a caller
+  // that sorted or filtered it in place would be editing a result it was
+  // handed rather than a list of its own.
+  final notes = List<String>.unmodifiable(<String>[
     if (config.jumpHostId != null)
       'This server is configured to tunnel through a jump host, which Séance '
           'does not execute yet — the test connected straight to the host.',
-  ];
+  ]);
+  var authenticating = false;
   try {
-    final kind = await authenticate(config, await credentials(), transcript);
+    final resolved = await credentials();
+    authenticating = true;
+    final kind = await authenticate(config, resolved, transcript);
     return ConnectionTestResult(
       ok: true,
       summary:
@@ -139,16 +145,26 @@ Future<ConnectionTestResult> runConnectionTest({
         // ssh-agent path, which the backend does not implement yet.
         ? (error.message?.toString() ?? '$error')
         : '$error';
-    // Nothing has written the failure into the transcript on this path (only
-    // openAuthenticatedClient does that, and we never reached it), so an
-    // expanded log would otherwise stop mid-sentence.
+    // The failure has not written itself into the transcript on the path that
+    // reaches here first — resolving credentials — so an expanded log would
+    // otherwise stop mid-sentence.
     transcript.add(summary);
-    // An `Error` here is a bug rather than a fact about the host, and its
-    // message alone rarely says where it came from. `Exception`s — a locked
-    // keyring, an unreadable identity file — already say everything a person
-    // can act on, and a stack trace under one is noise in a transcript people
-    // read. `UnsupportedError` is an Error but a known, deliberate one.
-    if (error is Error && error is! UnsupportedError) {
+    // An `Error` is a bug rather than a fact about the host, and its message
+    // alone rarely says where it came from. `Exception`s raised while
+    // resolving credentials — a locked keyring, an unreadable identity file —
+    // already say everything a person can act on, and a stack trace under one
+    // is noise in a transcript people read.
+    //
+    // Past that point the calculus flips. `openAuthenticatedClient` wraps
+    // every failure it can name in `SshConnectException` — the key that will
+    // not load, the socket that will not open, everything `client.
+    // authenticated` throws — and that is caught above. So a bare `Exception`
+    // arriving from `authenticate` is one nothing was written to expect,
+    // which is exactly when the trace is the only thing that locates it.
+    //
+    // `UnsupportedError` stays out either way: it is an Error, but a known
+    // and deliberate one (the ssh-agent path the backend does not implement).
+    if (error is! UnsupportedError && (error is Error || authenticating)) {
       transcript.add('$stackTrace');
     }
     return ConnectionTestResult(

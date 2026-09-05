@@ -28,9 +28,14 @@ class ConnectionLogView extends StatelessWidget {
             child: TextButton.icon(
               onPressed: text.isEmpty
                   ? null
-                  : () {
-                      Clipboard.setData(ClipboardData(text: text));
-                      showTopToastIn(context, message: 'Log copied');
+                  // Awaited, and the toast is gated on the result landing
+                  // while this is still on screen: saying "copied" for a write
+                  // that failed sends someone to paste an empty bug report.
+                  : () async {
+                      await Clipboard.setData(ClipboardData(text: text));
+                      if (context.mounted) {
+                        showTopToastIn(context, message: 'Log copied');
+                      }
                     },
               icon: const Icon(Icons.copy, size: 16),
               label: const Text('Copy'),
