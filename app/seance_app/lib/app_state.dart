@@ -378,7 +378,9 @@ class AppState extends ChangeNotifier {
         draftIdentityBookmark: draftIdentityBookmark,
       ),
       authenticate: liveHostAuthenticator(
-        tofu: TofuVerifier(UnpinnedHostKeyStore(services.hostKeyStore)),
+        // Not a verifier: liveHostAuthenticator wraps this in an
+        // UnpinnedHostKeyStore itself, so a trial cannot be wired to pin.
+        hostKeys: services.hostKeyStore,
         onHostKey: _promptForHostKey,
         onKeyboardInteractive: _promptKeyboardInteractive,
       ),

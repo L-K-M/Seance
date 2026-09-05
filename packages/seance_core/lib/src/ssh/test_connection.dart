@@ -19,17 +19,24 @@ typedef HostAuthenticator =
 
 /// A [HostAuthenticator] over the real transport.
 ///
+/// Takes the [hostKeys] store rather than a [TofuVerifier] so it can wrap it
+/// in an [UnpinnedHostKeyStore] itself. A verifier parameter would let a
+/// caller hand over the app's persistent one in a single line and silently
+/// turn every trial approval into permanent trust — the exact thing the
+/// unpinned store exists to prevent. Here that is not expressible.
+///
 /// [timeout] bounds the TCP connect only — dartssh2's authentication wait is a
 /// fixed five minutes inside [openAuthenticatedClient], which is deliberate
 /// there (it leaves room for host-key approval and slow keyboard-interactive
 /// replies) and applies here for the same reason: the trial shows the same
 /// dialogs a real connection does.
 HostAuthenticator liveHostAuthenticator({
-  required TofuVerifier tofu,
+  required HostKeyStore hostKeys,
   required HostKeyPrompter onHostKey,
   KeyboardInteractiveResponder? onKeyboardInteractive,
   Duration timeout = const Duration(seconds: 15),
 }) {
+  final tofu = TofuVerifier(UnpinnedHostKeyStore(hostKeys));
   return (config, credentials, log) async {
     final (client, kind) = await openAuthenticatedClient(
       config: config,
@@ -110,7 +117,7 @@ Future<ConnectionTestResult> runConnectionTest({
       notes: notes,
       log: transcript.toString(),
     );
-  } catch (error) {
+  } catch (error, stackTrace) {
     final summary = error is UnsupportedError
         // "Unsupported operation: …" reads as a crash. The message alone is
         // the sentence the SSH layer wrote for a person to read — this is the
@@ -121,6 +128,14 @@ Future<ConnectionTestResult> runConnectionTest({
     // openAuthenticatedClient does that, and we never reached it), so an
     // expanded log would otherwise stop mid-sentence.
     transcript.add(summary);
+    // An `Error` here is a bug rather than a fact about the host, and its
+    // message alone rarely says where it came from. `Exception`s — a locked
+    // keyring, an unreadable identity file — already say everything a person
+    // can act on, and a stack trace under one is noise in a transcript people
+    // read. `UnsupportedError` is an Error but a known, deliberate one.
+    if (error is Error && error is! UnsupportedError) {
+      transcript.add('$stackTrace');
+    }
     return ConnectionTestResult(
       ok: false,
       summary: summary,
@@ -158,10 +173,16 @@ class UnpinnedHostKeyStore implements HostKeyStore {
       _trial[hostKeyLocator(host, port)] ?? await inner.get(host, port);
 
   @override
-  Future<List<HostKey>> all() async => [
-    ...await inner.all(),
-    ..._trial.values,
-  ];
+  Future<List<HostKey>> all() async {
+    // Merged by locator rather than concatenated, so a host that is both
+    // pinned and re-approved in a trial appears once — and appears as the
+    // trial's version, which is the precedence [get] already establishes.
+    final byLocator = <String, HostKey>{
+      for (final key in await inner.all()) key.locator: key,
+      ..._trial,
+    };
+    return byLocator.values.toList();
+  }
 
   @override
   Future<void> put(HostKey key) async => _trial[key.locator] = key;
