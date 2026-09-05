@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/app_state.dart'
@@ -19,6 +22,11 @@ void main() {
   group('duplicateServerLabel', () {
     test('names the first copy and then numbers the rest', () {
       expect(duplicateServerLabel('web', const []), 'web copy');
+      // Fills from the front rather than continuing past the highest taken
+      // number: with only "web copy 2" in the way, the first copy is still
+      // "web copy". Pinned because both rules are defensible and nothing
+      // else says which one ships.
+      expect(duplicateServerLabel('web', const ['web copy 2']), 'web copy');
       expect(duplicateServerLabel('web', const ['web', 'web copy']),
           'web copy 2');
       expect(
@@ -237,6 +245,38 @@ void main() {
       updatedAt: 2,
     );
 
+    test('planning writes nothing, which is what lets the save be aborted',
+        () async {
+      final writes = <String>[];
+      // The guard runs between the plan and the save, so `SourceServerChanged`
+      // can promise nothing was created — but only while planning stays a
+      // read. A vault write moved in here would strand an entry no server
+      // names, and nothing reference-counts those.
+      final store = SecretVault(_RecordingVaultStore(writes), List.filled(32, 7));
+      await store.putSecret(const Secret(
+        id: 'sec-old',
+        kind: SecretKind.password,
+        value: 'hunter2',
+      ));
+      writes.clear();
+      final plan = await planServerDuplication(
+        source(secretRef: 'sec-old'),
+        vault: store,
+        takenLabels: const [],
+        id: 'copy-1',
+        secretId: 'sec-new',
+        now: 100,
+      );
+
+      expect(plan.secret?.id, 'sec-new');
+      // Every write, not just the one id the plan happens to name: a write
+      // under any other id would strand an entry no server references, and
+      // nothing reference-counts those.
+      expect(writes, isEmpty,
+          reason: 'the planned entry is written by the save, not the plan');
+      expect((await store.getSecret('sec-old'))?.value, 'hunter2');
+    });
+
     test('copies the credential into a vault entry of its own', () async {
       final store = vault();
       await store.putSecret(const Secret(
@@ -339,6 +379,33 @@ void main() {
     });
   });
 
+  group('mutation-zone timers', () {
+    test('a timer inherits the zone it was created in, not the one it fires in',
+        () async {
+      // The rule the auto-sync debounce turns on: `_mutate` marks its zone,
+      // and a timer scheduled from inside a mutation would carry that marker
+      // into a sync round that is not one — tripping the re-entrancy assert on
+      // every save. A `createTimer` override cannot undo it, because the
+      // callback is bound to the creating zone before the override sees it;
+      // creating it in a captured outer zone is what works.
+      final outside = Zone.current;
+      final seen = <String, Object?>{};
+      final done = Completer<void>();
+
+      runZoned(() {
+        Timer(Duration.zero, () => seen['inside'] = Zone.current[#mutation]);
+        outside.run(() => Timer(Duration.zero, () {
+              seen['outside'] = Zone.current[#mutation];
+              done.complete();
+            }));
+      }, zoneValues: {#mutation: true});
+
+      await done.future;
+      expect(seen['inside'], isTrue);
+      expect(seen['outside'], isNull);
+    });
+  });
+
   group('duplicationSourceUnchanged', () {
     ServerConfig at(String? ref) => ServerConfig(
       id: 'original',
@@ -408,3 +475,17 @@ void main() {
     });
   });
 }
+
+/// Records every write so a test can assert a read-only path touched nothing,
+/// under any id rather than only the one it expected.
+class _RecordingVaultStore extends InMemoryVaultStore {
+  _RecordingVaultStore(this.writes);
+  final List<String> writes;
+
+  @override
+  Future<void> putSecretBlob(String id, Uint8List blob) async {
+    writes.add(id);
+    return super.putSecretBlob(id, blob);
+  }
+}
+

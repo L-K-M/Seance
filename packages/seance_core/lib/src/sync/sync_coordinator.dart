@@ -219,6 +219,9 @@ class SyncCoordinator {
     final secretTombstones = <String>[];
     // Live configs for servers this device excluded: see [_rescheduleOutranked].
     final outranked = <DecryptedRecord>[];
+    // Servers this device re-included whose own retraction still outranks
+    // them: see the tombstone branch below.
+    final revived = <(ServerConfig, int)>[];
     final skippedIds = <String>[];
     Object? firstError;
     StackTrace? firstStackTrace;
@@ -238,9 +241,20 @@ class SyncCoordinator {
         // per-kind delete for them.
         if (dec.deleted) {
           if (!dec.id.contains(_recordKindDelimiter)) {
-            if (!excluded.contains(dec.id)) {
-              await configStore.deleteServer(dec.id);
+            if (excluded.contains(dec.id)) continue;
+            // Our own retraction, for a server this device is no longer
+            // excluding: the user turned the switch back off. Deleting here
+            // would honour a decision that has since been reversed — and the
+            // re-included config cannot win it back on its own, because the
+            // tombstone may have been re-dated past this device's clock by
+            // [_rescheduleOutranked]. So the live record is re-dated instead,
+            // the mirror of that escalation, and the delete is skipped.
+            final local = await configStore.getServer(dec.id);
+            if (local != null && dec.deviceId == deviceId) {
+              revived.add((local, dec.updatedAt));
+              continue;
             }
+            await configStore.deleteServer(dec.id);
           } else if (dec.id.startsWith(_secretIdPrefix)) {
             secretTombstones.add(dec.id);
           }
@@ -286,7 +300,33 @@ class SyncCoordinator {
       );
     }
 
-    return _rescheduleOutranked(outranked);
+    return await _rescheduleOutranked(outranked) + await _revive(revived);
+  }
+
+  /// Re-date a re-included server past the retraction it is still losing to.
+  ///
+  /// Excluding under a clock this device runs behind re-dates the tombstone to
+  /// beat the copy that beat it — which can be past this device's own clock.
+  /// Turning the switch back off then stamps an honest "now" that still loses,
+  /// so the server would stay retracted everywhere else and this device would
+  /// apply its own stale retraction and delete the config it had just brought
+  /// back. Persisting the bump is what makes it stick: a fresh timestamp each
+  /// round would be a new winning write every five minutes, which is the churn
+  /// [_retract]'s stable date exists to avoid.
+  Future<int> _revive(List<(ServerConfig, int)> servers) async {
+    for (final (config, retractedAt) in servers) {
+      if (config.updatedAt > retractedAt) continue;
+      final bumped = config.copyWith(updatedAt: retractedAt + 1);
+      await configStore.putServer(bumped);
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: bumped.id,
+        kind: RecordKind.serverConfig,
+        updatedAt: bumped.updatedAt,
+        deviceId: deviceId,
+        data: bumped.toJson(),
+      )));
+    }
+    return servers.length;
   }
 
   /// Store pulled credentials, shielding the ones only excluded servers name.
@@ -366,10 +406,16 @@ class SyncCoordinator {
   /// credential stays on the sync server. The shield protects this device's
   /// vault, not the remote copy.
   Future<int> _rescheduleOutranked(List<DecryptedRecord> records) async {
-    for (final dec in records) {
+    // The kind check is the invariant this doc comment spends a paragraph on,
+    // enforced here rather than left to the call site to preserve: minting a
+    // tombstone one millisecond past a live `secret:` record is exactly the
+    // harm described above, and it should not be a filter away.
+    final configs =
+        records.where((dec) => dec.kind == RecordKind.serverConfig).toList();
+    for (final dec in configs) {
       await _tombstone(dec.id, dec.kind, dec.updatedAt + 1);
     }
-    return records.length;
+    return configs.length;
   }
 
   /// Withdraw vault entries whose records were tombstoned — but only the ones
@@ -405,7 +451,10 @@ class SyncCoordinator {
         if (server.secretRef != null) '$_secretIdPrefix${server.secretRef}',
     };
     for (final id in ids) {
-      if (referenced.contains(id)) continue;
+      // The prefix guard before the strip: this is the one irreversible apply
+      // in the file, and a bare id reaching it would derive a vault key from
+      // the wrong characters and delete whatever it named.
+      if (!id.startsWith(_secretIdPrefix) || referenced.contains(id)) continue;
       // Fail-soft like every other apply: the vault throws when the OS keyring
       // is locked, and one refused delete must not abandon the rest of the
       // batch — nor discard the diagnostics gathered for it.

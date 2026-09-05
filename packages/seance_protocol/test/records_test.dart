@@ -3,6 +3,26 @@ import 'package:seance_protocol/seance_protocol.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('Secret.copyWith carries every field but the one replaced', () {
+    // The app's duplication test compares the same way, but the guard belongs
+    // here too: a field added to Secret and forgotten in copyWith still
+    // compiles, and this package cannot rely on a test in another one that
+    // may be renamed, moved, or absent for a different client.
+    const original = Secret(
+      id: 'source',
+      kind: SecretKind.privateKey,
+      value: 'PEM',
+      keyPassphrase: 'phrase',
+    );
+    final rekeyed = original.copyWith(id: 'copy');
+    expect(rekeyed.id, 'copy');
+    // The comparison below only guards copyWith while toJson writes every
+    // field the fixture sets. Pin that for the nullable one, which is the
+    // field a serializer is most likely to omit.
+    expect(original.toJson(), containsPair('keyPassphrase', 'phrase'));
+    expect({...rekeyed.toJson(), 'id': original.id}, original.toJson());
+  });
+
   group('model JSON round-trips', () {
     test('ServerConfig', () {
       final c = ServerConfig(
