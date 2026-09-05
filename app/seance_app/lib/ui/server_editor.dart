@@ -266,10 +266,14 @@ class _ServerEditorState extends State<_ServerEditor> {
                 DropdownMenuItem(
                     value: AuthMethod.privateKey, child: Text('Private key')),
               ],
-              onChanged: (v) => setState(() {
-                _auth = v ?? AuthMethod.agent;
-                _testResult = null;
-              }),
+              // Through _dropTestResult, not a bare clear: the auth method is
+              // baked into the config a test runs against, so one already in
+              // flight is describing a credential the form no longer holds —
+              // and would otherwise land looking current.
+              onChanged: (v) {
+                setState(() => _auth = v ?? AuthMethod.agent);
+                _dropTestResult();
+              },
             ),
             const SizedBox(height: 8),
             ..._authFields(),
@@ -355,10 +359,13 @@ class _ServerEditorState extends State<_ServerEditor> {
             title: const Text('Reference a key file on disk'),
             subtitle: const Text("Don't store the key — read it at connect"),
             value: _referenceKeyFile,
-            onChanged: (v) => setState(() {
-              _referenceKeyFile = v;
-              _testResult = null;
-            }),
+            // Same as the auth dropdown: this switches the test between the
+            // key on disk and the pasted one, so an attempt already running
+            // is about the other of the two.
+            onChanged: (v) {
+              setState(() => _referenceKeyFile = v);
+              _dropTestResult();
+            },
           ),
           if (_referenceKeyFile)
             Row(

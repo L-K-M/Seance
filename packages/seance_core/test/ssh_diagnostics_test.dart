@@ -327,6 +327,32 @@ void main() {
       expect(log.toString(), contains('[redacted]'));
     });
 
+    test('a password containing a newline does not leak its tail', () {
+      // Same escape as the bracket, through a different door: a value pasted
+      // from a password manager can carry a line break, and `.` does not match
+      // one — so without dotAll the match ends at the break and the rest of
+      // the password lands in the transcript verbatim.
+      for (final breakChar in ['\n', '\r', '\u2028']) {
+        final log = SshConnectionLog();
+        log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+            '(responses: [pas${breakChar}sword])');
+        expect(log.toString(), isNot(contains('sword')),
+            reason: 'leaked past ${breakChar.codeUnitAt(0)}');
+        expect(log.toString(), contains('[redacted]'));
+      }
+    });
+
+    test('the transcript is a view of the log, not a copy of it', () {
+      // Read on every repaint of a live connection, and a copy would also
+      // freeze for anything that held on to it.
+      final log = SshConnectionLog();
+      log.add('first');
+      final lines = log.lines;
+      log.add('second');
+      expect(lines, hasLength(2));
+      expect(() => lines.add('third'), throwsUnsupportedError);
+    });
+
     test('redaction leaves an ordinary trace line untouched', () {
       const line = '  <- sock: SSH_Message_Userauth_Failure('
           'methodsLeft: [publickey], partialSuccess: false)';
