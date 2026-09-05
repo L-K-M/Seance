@@ -115,14 +115,10 @@ Future<ServerDuplication> planServerDuplication(
   final sourceRef = source.secretRef;
   if (sourceRef != null) {
     final original = await vault.getSecret(sourceRef);
-    if (original != null) {
-      secret = Secret(
-        id: secretId,
-        kind: original.kind,
-        value: original.value,
-        keyPassphrase: original.keyPassphrase,
-      );
-    }
+    // copyWith rather than a fresh constructor: listing the fields here would
+    // silently drop anything Secret gains later, which is the same failure
+    // duplicateServerConfig's JSON-compared test exists to catch for configs.
+    if (original != null) secret = original.copyWith(id: secretId);
   }
   return ServerDuplication(
     config: duplicateServerConfig(
