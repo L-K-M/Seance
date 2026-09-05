@@ -108,7 +108,10 @@ so an old client and new server detect a mismatch instead of corrupting data.
 ### Sync transaction semantics
 
 A push resolves LWW, allocates sequences and commits all accepted records in one
-storage transaction. An LWW rejection is a per-record result, not a batch failure.
+storage transaction. Entries run in list order, including repeated ids; empty
+batches return the current watermark. An LWW rejection is a per-record result,
+not a batch failure. Existing request limits apply before storage: by default,
+1,000 records, 1 MiB per blob and 8 MiB per request body.
 A database failure rolls back the batch and its sequence changes. A lost HTTP
 reply can still follow a successful commit; clients must reconcile by pulling.
 
@@ -118,6 +121,11 @@ yet provide pagination, client-side durable revisions or authenticated metadata.
 
 SQLite uses `BEGIN IMMEDIATE` for writes and a read transaction for snapshots.
 Lock contention fails the request rather than falling back to non-atomic writes.
+If transaction cleanup itself fails, SQLite storage fails closed, emits a sanitized
+stderr diagnostic and returns `503 storage_unavailable` on subsequent storage
+requests. Restart after investigating the database failure; automatic reopen could
+silently replace an injected or in-memory database. `/healthz` remains liveness,
+not storage readiness. Closing the disabled connection is safe to repeat.
 The memory backend stages batches without yielding, then swaps state together.
 
 Custom server `Storage` implementations must implement `pushRecords` and

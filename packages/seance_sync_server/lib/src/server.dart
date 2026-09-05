@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show HttpStatus;
 
 import 'package:seance_protocol/seance_protocol.dart';
 import 'package:shelf/shelf.dart';
@@ -274,6 +275,9 @@ class SyncServer {
     return (Request req) async {
       try {
         return await inner(req);
+      } on StorageUnavailableException catch (e) {
+        return _error(
+            HttpStatus.serviceUnavailable, 'storage_unavailable', e.toString());
       } on _PayloadTooLarge {
         return _error(413, 'payload_too_large', 'Request body too large');
       } on FormatException {

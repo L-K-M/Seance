@@ -1,14 +1,21 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:seance_protocol/seance_protocol.dart';
 import 'package:seance_sync_server/seance_sync_server.dart';
+import 'package:shelf/shelf.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
-EncryptedRecord _record(String id, int revision) => EncryptedRecord(
+EncryptedRecord _record(
+  String id,
+  int revision, {
+  String deviceId = 'device',
+}) => EncryptedRecord(
   id: id,
   updatedAt: revision,
-  deviceId: 'device',
+  deviceId: deviceId,
   deleted: false,
   seq: null,
   blob: Uint8List.fromList([revision]),
@@ -50,7 +57,9 @@ class _FaultingDatabase implements Database {
   }
 
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  Never noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    '_FaultingDatabase does not implement ${invocation.memberName}',
+  );
 }
 
 void main() {
@@ -78,7 +87,28 @@ void main() {
           ),
         );
         expect(adapter.disposed, isTrue);
-        await expectLater(storage.pullSnapshot('user', 0), throwsStateError);
+        final handler = SyncServer(
+          storage: storage,
+          settings: const ServerSettings(),
+        ).handler;
+        for (final (method, path) in [
+          ('GET', '/v1/sync'),
+          ('PUT', '/v1/records'),
+        ]) {
+          final response = await handler(
+            Request(
+              method,
+              Uri.parse('http://localhost$path'),
+              headers: {'authorization': 'Bearer unused'},
+            ),
+          );
+          expect(response.statusCode, HttpStatus.serviceUnavailable);
+          expect(
+            jsonDecode(await response.readAsString())['error'],
+            'storage_unavailable',
+          );
+        }
+        expect(storage.close, returnsNormally);
       },
     );
   }
@@ -124,6 +154,38 @@ void main() {
         expect(delta.records.map((r) => r.id), ['new', 'another']);
         expect(delta.latestSeq, 3);
         expect((await storage.pullSnapshot('alice', 3)).records, isEmpty);
+      });
+
+      test('repeated ids resolve against earlier staged writes', () async {
+        final result = await storage.pushRecords('alice', [
+          _record('same', 10),
+          _record('same', 20),
+          _record('same', 15),
+        ]);
+        expect(result.results.map((r) => r.accepted), [true, true, false]);
+        expect(result.results.map((r) => r.seq), [1, 2, 2]);
+        expect(result.latestSeq, 2);
+        expect(
+          (await storage.pullSnapshot('alice', 0)).records.single.updatedAt,
+          20,
+        );
+      });
+
+      test('timestamp ties use device id then server sequence', () async {
+        await storage.pushRecords('alice', [
+          _record('same', 10, deviceId: 'a'),
+        ]);
+        final result = await storage.pushRecords('alice', [
+          _record('same', 10, deviceId: 'z'),
+          _record('same', 10, deviceId: 'b'),
+          _record('same', 10, deviceId: 'z'),
+        ]);
+        expect(result.results.map((r) => r.accepted), [true, false, false]);
+        expect(result.results.map((r) => r.seq), [2, 2, 2]);
+        expect(
+          (await storage.pullSnapshot('alice', 0)).records.single.deviceId,
+          'z',
+        );
       });
 
       test(
@@ -175,10 +237,11 @@ void main() {
       addTearDown(storage.close);
       database.execute('''
       CREATE TRIGGER fail_record BEFORE INSERT ON records
+      WHEN NEW.id = 'poison'
       BEGIN SELECT RAISE(ROLLBACK, 'injected rollback'); END;
     ''');
       await expectLater(
-        storage.pushRecords('user', [_record('record', 10)]),
+        storage.pushRecords('user', [_record('ok', 10), _record('poison', 20)]),
         throwsA(
           isA<SqliteException>().having(
             (e) => e.message,
@@ -188,7 +251,13 @@ void main() {
         ),
       );
       expect(database.autocommit, isTrue);
-      expect((await storage.pullSnapshot('user', 0)).records, isEmpty);
+      final snapshot = await storage.pullSnapshot('user', 0);
+      expect(snapshot.records, isEmpty);
+      expect(snapshot.latestSeq, 0);
+      expect(
+        (await storage.pushRecords('user', [_record('ok', 10)])).latestSeq,
+        1,
+      );
     },
   );
 }

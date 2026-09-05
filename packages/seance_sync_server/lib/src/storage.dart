@@ -38,6 +38,14 @@ class Account {
       );
 }
 
+/// A backend disabled after an unrecoverable transaction failure.
+class StorageUnavailableException implements Exception {
+  const StorageUnavailableException();
+
+  @override
+  String toString() => 'Sync storage unavailable; restart required.';
+}
+
 /// Persistence for the server. Records are stored as opaque [EncryptedRecord]s
 /// (their `blob` is end-to-end encrypted and their `seq` is server-assigned).
 /// Implemented in memory (tests) and over SQLite (production).
@@ -52,6 +60,8 @@ abstract class Storage {
 
   /// Resolve LWW, allocate sequences and commit a whole batch atomically.
   /// A rejected LWW write is a result; a storage failure commits nothing.
+  /// Process entries in list order, including repeated ids. Later entries resolve
+  /// against earlier staged writes. Empty batches return the current watermark.
   Future<PushResponse> pushRecords(
       String username, List<EncryptedRecord> records);
 

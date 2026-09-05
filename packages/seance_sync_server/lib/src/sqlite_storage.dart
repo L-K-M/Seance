@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:seance_protocol/seance_protocol.dart';
@@ -12,10 +13,16 @@ enum _TransactionMode { read, write }
 /// whole deployment is this binary plus a `.sqlite` file. All record blobs are
 /// already end-to-end encrypted; this layer only shuffles opaque bytes.
 class SqliteStorage implements Storage {
-  final Database _db;
+  final Database _connection;
+  bool _available = true;
 
-  SqliteStorage(this._db) {
+  SqliteStorage(this._connection) {
     _migrate();
+  }
+
+  Database get _db {
+    if (!_available) throw const StorageUnavailableException();
+    return _connection;
   }
 
   /// Open (or create) the database at [path]. Use `:memory:` for ephemeral.
@@ -170,8 +177,17 @@ class SqliteStorage implements Storage {
       // Never reuse a connection whose transaction state is uncertain.
     }
 
+    _available = false;
     try {
-      _db.dispose();
+      // Do not log SQL, parameters or ciphertext from the original exception.
+      stderr.writeln('Transaction cleanup failed. '
+          '${const StorageUnavailableException()}');
+    } catch (_) {
+      // Diagnostics must not replace the original failure.
+    }
+
+    try {
+      _connection.dispose();
     } catch (_) {
       // Preserve the original write/commit failure, not a cleanup exception.
     }
@@ -259,5 +275,5 @@ class SqliteStorage implements Storage {
             : Uint8List.fromList((r['blob'] as List).cast<int>()),
       );
 
-  void close() => _db.dispose();
+  void close() => _connection.dispose();
 }
