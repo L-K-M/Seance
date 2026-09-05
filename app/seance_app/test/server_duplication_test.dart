@@ -58,6 +58,14 @@ void main() {
 
     test('leaves a word that merely starts with "copy" alone', () {
       expect(duplicateServerLabel('copyright', const []), 'copyright copy');
+      // A trailing number on its own is not the duplicate series: "web 2" is
+      // a name someone chose, so its first copy is "web 2 copy" rather than
+      // "web copy" (stripped as if it were one) or "web 3" (continued as one).
+      expect(duplicateServerLabel('web 2', const []), 'web 2 copy');
+      expect(
+        duplicateServerLabel('web 2', const ['web 2', 'web 2 copy']),
+        'web 2 copy 2',
+      );
     });
   });
 
@@ -197,7 +205,12 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byType(PopupMenuButton<String>));
+    // Scoped to the tile: any other popup menu pumped beside it would make
+    // this ambiguous, and the failure would not say why.
+    await tester.tap(find.descendant(
+      of: find.byType(ServerTile),
+      matching: find.byType(PopupMenuButton<String>),
+    ));
     await tester.pumpAndSettle();
     expect(find.text('Duplicate'), findsOneWidget);
 
