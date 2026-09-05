@@ -323,16 +323,66 @@ class AppState extends ChangeNotifier {
         _keepAlive = keepAlive ?? BackgroundKeepAlive() {
     _sessionManager = SshSessionManager(
       tofu: services.tofu,
-      onHostKey: (decision) async {
-        final prompt = hostKeyPrompter;
-        return prompt == null ? false : prompt(decision);
-      },
-      onKeyboardInteractive: (prompts, name, instruction) async {
-        final responder = keyboardInteractiveResponder;
-        return responder == null
-            ? const <String>[]
-            : responder(prompts, name, instruction);
-      },
+      onHostKey: _promptForHostKey,
+      onKeyboardInteractive: _promptKeyboardInteractive,
+    );
+  }
+
+  /// The host-key prompt as the SSH layer wants it, reading [hostKeyPrompter]
+  /// at call time so the root widget can wire it after this state exists.
+  /// Denies while it is unwired: refusing an unverified key is the safe answer.
+  Future<bool> _promptForHostKey(HostKeyDecision decision) async {
+    final prompt = hostKeyPrompter;
+    return prompt == null ? false : prompt(decision);
+  }
+
+  Future<List<String>> _promptKeyboardInteractive(
+    List<String> prompts,
+    String name,
+    String instruction,
+  ) async {
+    final responder = keyboardInteractiveResponder;
+    return responder == null
+        ? const <String>[]
+        : responder(prompts, name, instruction);
+  }
+
+  /// Try [config] the way a real connection would — the same host-key and
+  /// keyboard-interactive prompts, the same failure wording — without opening
+  /// a shell, running the login script, or creating a tab.
+  ///
+  /// [config] may be a draft the editor has not saved, so the `draft…`
+  /// arguments carry what its fields hold; see
+  /// [AppServices.resolveCredentials] for why reading the vault alone would
+  /// test the wrong credential.
+  ///
+  /// A host key approved during the attempt is pinned only for its duration
+  /// (see [UnpinnedHostKeyStore]). A form the user may still cancel, naming a
+  /// host they may still retype, is not where trust-on-first-use should be
+  /// granted for good — the first real connection asks once more.
+  Future<ConnectionTestResult> testServerConnection(
+    ServerConfig config, {
+    String? draftPassword,
+    String? draftPrivateKey,
+    String? draftKeyPassphrase,
+    IdentityFileBookmark? draftIdentityBookmark,
+    SshConnectionLog? log,
+  }) {
+    return runConnectionTest(
+      config: config,
+      credentials: () => services.resolveCredentials(
+        config,
+        draftPassword: draftPassword,
+        draftPrivateKey: draftPrivateKey,
+        draftKeyPassphrase: draftKeyPassphrase,
+        draftIdentityBookmark: draftIdentityBookmark,
+      ),
+      authenticate: liveHostAuthenticator(
+        tofu: TofuVerifier(UnpinnedHostKeyStore(services.hostKeyStore)),
+        onHostKey: _promptForHostKey,
+        onKeyboardInteractive: _promptKeyboardInteractive,
+      ),
+      log: log,
     );
   }
 
