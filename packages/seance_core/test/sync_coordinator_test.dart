@@ -7,6 +7,10 @@ class FakeServer implements SyncApi {
   int _seq = 0;
   int pushedRecords = 0;
 
+  /// The last sequence number handed out. Growth across otherwise idle rounds
+  /// is what a record that re-writes itself every time looks like.
+  int get latestSeq => _seq;
+
   @override
   Future<PullResponse> pull({required int since}) async {
     final records = _store.values.where((r) => (r.seq ?? 0) > since).toList()
@@ -826,4 +830,126 @@ void main() {
       expect((await cfgA.getServer('s1'))!.label, 'alpha');
     });
   });
+
+  group('assistant settings', () {
+    AssistantSettings assistant({
+      String model = 'claude-haiku-4-5-20251001',
+      Map<String, String> apiKeys = const {'anthropic': 'sk-1'},
+      int updatedAt = 10,
+    }) => AssistantSettings(
+          providerKind: 'anthropic',
+          baseUrl: 'https://api.anthropic.com',
+          model: model,
+          llmApiKeyRef: 'anthropic',
+          apiKeys: apiKeys,
+          updatedAt: updatedAt,
+        );
+
+    SyncCoordinator coordinator(
+      String deviceId,
+      LocalRecordStore local, {
+      AssistantSettingsStore? store,
+    }) => SyncCoordinator(
+          configStore: InMemoryConfigStore(),
+          hostKeyStore: InMemoryHostKeyStore(),
+          codec: _sharedCodec,
+          local: local,
+          deviceId: deviceId,
+          assistantStore: store,
+        );
+
+    test('the configuration and its keys reach the other device', () async {
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      final storeB = InMemoryAssistantSettingsStore();
+
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+          .run(remote);
+
+      final arrived = storeB.settings!;
+      expect(arrived.model, 'claude-haiku-4-5-20251001');
+      // Without the key, the other device looks configured and answers
+      // nothing — which is why they travel inside the sealed record.
+      expect(arrived.apiKeys, {'anthropic': 'sk-1'});
+      expect(arrived.updatedAt, 10);
+    });
+
+    test('a later edit wins, an unchanged round changes nothing', () async {
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      final storeB = InMemoryAssistantSettingsStore();
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+          .run(remote);
+
+      storeB.settings = assistant(model: 'gpt-5', updatedAt: 20);
+      await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+          .run(remote);
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      expect(storeA.settings!.model, 'gpt-5');
+
+      // The timestamp comes from the edit, not from the round, so re-running
+      // converges instead of the two devices trading the record forever.
+      final pushesBefore = remote.pushedRecords;
+      final seqBefore = remote.latestSeq;
+      for (var round = 0; round < 3; round++) {
+        await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+            .run(remote);
+        await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+            .run(remote);
+      }
+      expect(storeA.settings!.model, 'gpt-5');
+      expect(storeB.settings!.model, 'gpt-5');
+      expect(storeA.settings!.updatedAt, 20);
+      // Not even offered: each round pulls the server's own sequenced copy
+      // first, which matches what was collected and clears it. Stamping from
+      // the edit rather than from the round is what makes that true — a
+      // moving timestamp would win every pull and be pushed every round.
+      expect(remote.pushedRecords, pushesBefore);
+      expect(remote.latestSeq, seqBefore);
+    });
+
+    test('nothing to publish yet is not published', () async {
+      // Two fresh installs must not push rival defaults at each other before
+      // either has configured anything.
+      final remote = FakeServer();
+      final local = InMemoryLocalRecordStore();
+      await coordinator('A', local, store: InMemoryAssistantSettingsStore())
+          .run(remote);
+      expect(await local.allRecords(), isEmpty);
+    });
+
+    test('a device that has not opted in neither pushes nor adopts', () async {
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+
+      // No store means opted out: the record is pulled but never applied, so
+      // this device keeps its own provider, model and keys.
+      final storeB = InMemoryAssistantSettingsStore();
+      await coordinator('B', InMemoryLocalRecordStore()).run(remote);
+      expect(storeB.settings, isNull);
+
+      // And it publishes nothing of its own: the record is in B's local
+      // mirror because B pulled it, but B never marked one dirty, so the
+      // account gains no new write from a device that opted out.
+      final local = InMemoryLocalRecordStore();
+      final seqBefore = remote.latestSeq;
+      await coordinator('B', local).run(remote);
+      expect(
+        (await local.dirtyRecords()).map((r) => r.id),
+        isNot(contains(AssistantSettings.recordId)),
+      );
+      expect(remote.latestSeq, seqBefore);
+    });
+  });
 }
+
+/// One key for every device in this group: they are one account's devices, so
+/// they share a vault key.
+final RecordCodec _sharedCodec = RecordCodec(secureRandomBytes(32));

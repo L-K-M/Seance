@@ -20,6 +20,21 @@ abstract class SnippetStore {
   Future<void> deleteSnippet(String id);
 }
 
+/// Holds the assistant's configuration as a single synced value.
+///
+/// Read/write rather than list/delete: there is exactly one of these, and the
+/// app keeps it inside its own settings file rather than in a store of its
+/// own. The interface exists so [SyncCoordinator] can reach it without knowing
+/// that, and so the sync path is testable without an app.
+///
+/// [getAssistantSettings] returns null when there is nothing to publish yet —
+/// which is what keeps two freshly-installed devices from pushing rival
+/// defaults at each other before either has configured anything.
+abstract class AssistantSettingsStore {
+  Future<AssistantSettings?> getAssistantSettings();
+  Future<void> putAssistantSettings(AssistantSettings settings);
+}
+
 /// Persists opaque, already-encrypted secret blobs keyed by secret id. It never
 /// sees plaintext — [SecretVault] seals before storing and opens after reading.
 abstract class VaultStore {
@@ -71,6 +86,19 @@ class InMemoryConfigStore implements ConfigStore {
 
   @override
   Future<void> deleteServer(String id) async => _servers.remove(id);
+}
+
+class InMemoryAssistantSettingsStore implements AssistantSettingsStore {
+  AssistantSettings? settings;
+
+  InMemoryAssistantSettingsStore([this.settings]);
+
+  @override
+  Future<AssistantSettings?> getAssistantSettings() async => settings;
+
+  @override
+  Future<void> putAssistantSettings(AssistantSettings value) async =>
+      settings = value;
 }
 
 class InMemorySnippetStore implements SnippetStore {
