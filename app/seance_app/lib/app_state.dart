@@ -539,6 +539,18 @@ class AppState extends ChangeNotifier {
     ServerConfig config, {
     Secret? secret,
     IdentityFileBookmark? identityFileBookmark,
+  }) =>
+      _mutate(() => _saveServerNow(
+            config,
+            secret: secret,
+            identityFileBookmark: identityFileBookmark,
+          ));
+
+  /// [saveServer] without the queue, for callers already holding it.
+  Future<void> _saveServerNow(
+    ServerConfig config, {
+    Secret? secret,
+    IdentityFileBookmark? identityFileBookmark,
   }) async {
     if (secret != null) await services.vault.putSecret(secret);
     await services.configStore.putServer(config);
@@ -593,7 +605,9 @@ class AppState extends ChangeNotifier {
       )) {
         throw SourceServerChanged(source.label);
       }
-      await saveServer(
+      // The non-queuing core: this is already inside the queue, and calling
+      // the public one would wait on itself.
+      await _saveServerNow(
         plan.config,
         secret: plan.secret,
         identityFileBookmark: plan.identityFileBookmark,
@@ -616,6 +630,20 @@ class AppState extends ChangeNotifier {
   /// deletes of servers sharing one vault entry, each running that read before
   /// the other's config removal lands, would each see the other as a live
   /// referent and both leave the entry behind with nothing able to name it.
+  ///
+  /// Saving and applying a sync round share it for the same reason from the
+  /// other side: both write the config store and the vault, so either landing
+  /// between a delete's reference count and its vault delete, or between a
+  /// duplicate's plan and its save, is the same read-then-write hazard. With
+  /// them on the queue, a credential rewritten in place under an unchanged
+  /// ref — which is what editing a server's password does — can no longer
+  /// happen while a duplicate is reading it.
+  ///
+  /// No timeout, deliberately. A mutation waiting on an OS keychain prompt
+  /// holds everything queued behind it, deletes included, until the prompt is
+  /// answered; the answer to that is to surface the pending prompt, not to
+  /// time out a queue whose whole job is keeping a check and its write
+  /// together.
   Future<T> _mutate<T>(Future<T> Function() action) async {
     final queued = _mutating;
     final finished = Completer<void>();
@@ -954,7 +982,10 @@ class AppState extends ChangeNotifier {
   /// One sync round + refresh of the domain lists from the (possibly updated)
   /// stores. Shared by manual and automatic sync.
   Future<SyncOutcome> _runSyncAndRefresh() async {
-    final outcome = await services.runSync();
+    // On the mutation queue: a round writes the config store and the vault
+    // (tombstones delete both), so it is a mutation like any other and must
+    // not interleave with a delete's reference count or a duplicate's plan.
+    final outcome = await _mutate(services.runSync);
     servers = await services.configStore.listServers();
     snippets = await services.snippetStore.listSnippets();
     services.probe.updateServers(servers);
