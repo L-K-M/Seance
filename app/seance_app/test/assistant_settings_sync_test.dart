@@ -107,18 +107,37 @@ void main() {
       expect(encoded, isNot(contains('vault')));
     });
 
-    test('a locked keyring publishes the configuration without its keys',
+    test('a locked keyring publishes nothing rather than a keyless copy',
         () async {
-      // getApiKey answers null rather than throwing, so a keystore that is
-      // down costs the keys, not the whole sync round.
+      // getApiKey answers null rather than throwing, so without a check the
+      // round would put a *newer* keyless record over the keyed one on the
+      // account — and never republish the keys, because by then the stamps
+      // agree. A round skipped costs five minutes.
       settings.assistantUpdatedAt = 99;
       settings.llmApiKeyRef = 'anthropic';
       await keys.putApiKey('anthropic', 'sk-llm');
       keystore.locked = true;
 
+      expect(await sync.getAssistantSettings(), isNull);
+
+      // And it catches up on its own once the keyring is back.
+      keystore.locked = false;
+      expect((await sync.getAssistantSettings())!.apiKeys,
+          {'anthropic': 'sk-llm'});
+    });
+
+    test('a reference to a key that was never stored is not a locked keyring',
+        () async {
+      // Same null from getApiKey, opposite meaning: nothing is coming back
+      // for this name, so waiting for it would stop publishing forever.
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = 'anthropic';
+      settings.zaiApiKeyRef = 'zai';
+      await keys.putApiKey('anthropic', 'sk-llm');
+
       final published = (await sync.getAssistantSettings())!;
-      expect(published.apiKeys, isEmpty);
-      expect(published.llmApiKeyRef, 'anthropic');
+      expect(published.apiKeys, {'anthropic': 'sk-llm'});
+      expect(published.zaiApiKeyRef, 'zai');
     });
   });
 
@@ -165,8 +184,18 @@ void main() {
         arriving(providerKind: 'some-future-provider'),
       );
       expect(settings.llmKind, LlmProviderKind.anthropic);
-      // Everything it *could* understand still lands.
-      expect(settings.llmModel, 'gpt-5');
+      // And everything coupled to the provider stays with it. Adopting the
+      // unknown provider's endpoint, model and key reference onto the one
+      // that was kept builds a client neither side can use: Anthropic pointed
+      // at an OpenAI-compatible URL, holding a key filed under another name.
+      expect(settings.llmBaseUrl, 'https://api.anthropic.com');
+      expect(settings.llmModel, 'claude-haiku-4-5-20251001');
+      expect(settings.llmApiKeyRef, isNot('openai'));
+      // What is not provider-coupled still lands: the search backends and
+      // redaction mean the same thing whoever answers the chat.
+      expect(settings.searxngUrl, 'https://searx.example.com');
+      expect(settings.zaiApiKeyRef, 'zai');
+      expect(settings.redactionEnabled, isFalse);
     });
 
     test('a locked keyring still adopts the configuration', () async {
@@ -184,6 +213,46 @@ void main() {
       await keys.putApiKey('openai', 'sk-local');
       await sync.putAssistantSettings(arriving(apiKeys: const {}));
       expect(await keys.getApiKey('openai'), 'sk-local');
+    });
+  });
+
+  group('assistantSyncFingerprint', () {
+    test('covers what travels and nothing else', () {
+      // A Save with nothing changed must not stamp: the stamp is the whole of
+      // the last-write-wins comparison, so a write with no edit behind it
+      // would beat a configuration another device published in the meantime.
+      final before = assistantSyncFingerprint(settings);
+      expect(assistantSyncFingerprint(settings), before);
+
+      // A device-local value is not part of the account-shaped half.
+      settings.terminalFontSize = settings.terminalFontSize + 1;
+      expect(assistantSyncFingerprint(settings), before);
+
+      for (final change in <void Function()>[
+        () => settings.llmKind = LlmProviderKind.openaiCompatible,
+        () => settings.llmBaseUrl = 'https://api.openai.com/v1',
+        () => settings.llmModel = 'gpt-5',
+        () => settings.llmApiKeyRef = 'openai',
+        () => settings.searxngUrl = 'https://searx.example.com',
+        () => settings.braveApiKeyRef = 'brave',
+        () => settings.zaiApiKeyRef = 'zai',
+        () => settings.redactionEnabled = !settings.redactionEnabled,
+      ]) {
+        final was = assistantSyncFingerprint(settings);
+        change();
+        expect(assistantSyncFingerprint(settings), isNot(was));
+      }
+    });
+
+    test('a field ending where the next begins is still a change', () {
+      // Joined rather than concatenated, so "ab" + "" and "a" + "b" cannot
+      // read as the same configuration.
+      settings.llmBaseUrl = 'ab';
+      settings.llmModel = '';
+      final joined = assistantSyncFingerprint(settings);
+      settings.llmBaseUrl = 'a';
+      settings.llmModel = 'b';
+      expect(assistantSyncFingerprint(settings), isNot(joined));
     });
   });
 }

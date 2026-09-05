@@ -56,6 +56,14 @@ class AssistantSettings {
   /// time": the coordinator re-collects every round, so a moving timestamp
   /// would make each five-minute sync a fresh winning write and two devices
   /// would trade the record back and forth forever.
+  ///
+  /// Device wall-clock time, like every other record's, so a device whose
+  /// clock runs fast wins concurrent edits until the others catch up. The app
+  /// clamps its own stamps upward past whatever record it already holds, which
+  /// covers the case that actually bites — an edit losing to the record the
+  /// same device just adopted. Genuine skew between two devices' edits is what
+  /// a hybrid logical clock or a server-assigned sequence would answer, and
+  /// that is a change to how every record resolves, not this one.
   final int updatedAt;
 
   const AssistantSettings({
@@ -139,7 +147,10 @@ class AssistantSettings {
         // Absent means "an older writer that had no such field"; the safe
         // reading of that is the default the app ships with, which is on.
         redactSecrets: json['redactSecrets'] as bool? ?? true,
-        apiKeys: _stringMap(json['apiKeys']),
+        // Unmodifiable so a decoded record cannot have its key material
+        // rewritten through the field it exposes. The const constructor still
+        // aliases a caller-supplied map; callers treat it as read-only.
+        apiKeys: Map.unmodifiable(_stringMap(json['apiKeys'])),
         updatedAt: (json['updatedAt'] as num?)?.toInt() ?? 0,
       );
 

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
 
@@ -6,6 +8,9 @@ class FakeServer implements SyncApi {
   final Map<String, EncryptedRecord> _store = {};
   int _seq = 0;
   int pushedRecords = 0;
+
+  /// The record the server holds under [id], exactly as it was pushed.
+  EncryptedRecord? stored(String id) => _store[id];
 
   /// The last sequence number handed out. Growth across otherwise idle rounds
   /// is what a record that re-writes itself every time looks like.
@@ -1157,23 +1162,50 @@ void main() {
       await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
           .run(remote);
 
-      // No store means opted out: the record is pulled but never applied, so
-      // this device keeps its own provider, model and keys.
-      final storeB = InMemoryAssistantSettingsStore();
-      await coordinator('B', InMemoryLocalRecordStore()).run(remote);
-      expect(storeB.settings, isNull);
-
-      // And it publishes nothing of its own: the record is in B's local
-      // mirror because B pulled it, but B never marked one dirty, so the
-      // account gains no new write from a device that opted out.
+      // No store means opted out. The record still reaches B's mirror — being
+      // opted out is not being blind to it — but there is nothing for the
+      // coordinator to apply it into, and B marks nothing dirty of its own, so
+      // the account gains no write from a device that never asked to share.
       final local = InMemoryLocalRecordStore();
       final seqBefore = remote.latestSeq;
       await coordinator('B', local).run(remote);
+      expect(
+        (await local.allRecords()).map((r) => r.id),
+        contains(AssistantSettings.recordId),
+      );
       expect(
         (await local.dirtyRecords()).map((r) => r.id),
         isNot(contains(AssistantSettings.recordId)),
       );
       expect(remote.latestSeq, seqBefore);
+    });
+
+    test('the keys never reach the server in the clear', () async {
+      // The record is the only one that carries API keys, and it carries them
+      // whatever `syncSecrets` says — so the seal is the whole protection.
+      final remote = FakeServer();
+      await coordinator(
+        'A',
+        InMemoryLocalRecordStore(),
+        store: InMemoryAssistantSettingsStore(assistant()),
+      ).run(remote);
+
+      final pushed = remote.stored(AssistantSettings.recordId)!;
+      final blob = utf8.decode(pushed.blob, allowMalformed: true);
+      for (final plaintext in [
+        'sk-1',
+        'anthropic',
+        'claude-haiku-4-5-20251001',
+      ]) {
+        expect(blob, isNot(contains(plaintext)));
+      }
+      // And it is the account key that opens it, not something device-local.
+      final back = await _sharedCodec.decrypt(pushed);
+      expect(back.kind, RecordKind.assistantSettings);
+      expect(
+        AssistantSettings.fromJson(back.data).apiKeys,
+        {'anthropic': 'sk-1'},
+      );
     });
   });
 }

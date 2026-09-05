@@ -27,9 +27,14 @@ abstract class SnippetStore {
 /// own. The interface exists so [SyncCoordinator] can reach it without knowing
 /// that, and so the sync path is testable without an app.
 ///
-/// [getAssistantSettings] returns null when there is nothing to publish yet —
-/// which is what keeps two freshly-installed devices from pushing rival
-/// defaults at each other before either has configured anything.
+/// [getAssistantSettings] returns null only while this device has nothing to
+/// publish — which is what keeps two freshly-installed devices from pushing
+/// rival defaults at each other before either has configured anything. It is
+/// not how a configuration is withdrawn: clearing one is an edit like any
+/// other, so it still returns a record, with the fields cleared and a fresh
+/// `updatedAt`. Returning null for that would read as "nothing to publish",
+/// and the next pull would re-apply the configuration this device just
+/// removed.
 abstract class AssistantSettingsStore {
   Future<AssistantSettings?> getAssistantSettings();
   Future<void> putAssistantSettings(AssistantSettings settings);

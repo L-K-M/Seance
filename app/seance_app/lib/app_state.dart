@@ -967,15 +967,52 @@ class AppState extends ChangeNotifier {
 
   /// The assistant's configuration was just edited here: stamp it so the
   /// synced record has a timestamp that moved for a real reason, and push it.
-  ///
-  /// Called on save and when assistant sync is switched on, so turning it on
-  /// publishes what this device already has rather than leaving the account
-  /// with nothing until the next edit.
   Future<void> assistantSettingsEdited() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Never below a record this device already holds. The stamp is the whole
+    // of the last-write-wins comparison, so a clock that runs behind the
+    // device this configuration was pulled from would make a fresh edit lose
+    // to the record it had just adopted — and the next round would re-apply
+    // that record over the edit, silently.
     services.settings.assistantUpdatedAt =
-        DateTime.now().millisecondsSinceEpoch;
+        now > services.settings.assistantUpdatedAt
+            ? now
+            : services.settings.assistantUpdatedAt + 1;
     await services.saveSettings();
     _scheduleAutoSync();
+  }
+
+  /// Assistant sync was just switched on here: take whatever the account
+  /// already holds, and publish this device's configuration only if it held
+  /// nothing.
+  ///
+  /// Stamping unconditionally would make this device win. `assistantUpdatedAt`
+  /// would be "now", later than any record on the account, so a laptop that
+  /// has never configured the assistant would push its defaults over a phone's
+  /// real provider, model and keys — leaving every device looking configured
+  /// and answering nothing, which is the outcome the zero stamp exists to
+  /// prevent, arriving through the switch instead.
+  ///
+  /// Adopting first cannot cause the mirror of that. A device that never
+  /// edited the assistant still stamps zero and offers nothing; one that did
+  /// offers a real record and wins the round if its edit was genuinely later.
+  /// Only when the round adopts nothing is there an account with no assistant
+  /// configuration, and then publishing this device's is the point of the
+  /// switch.
+  Future<void> assistantSyncSwitchedOn() async {
+    if (services.isSyncConfigured) {
+      try {
+        await _runSyncAndRefresh();
+      } catch (_) {
+        // Offline, or the server is down: this is the one moment not to
+        // publish on a guess. The switch stays on and the next round settles
+        // it — either by adopting the account's record or, once this device
+        // is edited, by publishing that edit.
+        return;
+      }
+      if (services.assistantSettingsChanged) return;
+    }
+    await assistantSettingsEdited();
   }
 
   /// Start (or restart) the periodic auto-sync timer. Safe to call repeatedly —

@@ -4,6 +4,7 @@ import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../services/assistant_settings_sync.dart';
 import '../services/external_file_opener.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
@@ -642,7 +643,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Provider, model, endpoint, web search and redaction — with their '
           'API keys, so the assistant works on the other device. '
           'End-to-end encrypted. A localhost endpoint will not resolve '
-          'elsewhere.',
+          'elsewhere. Turning this off stops this device sharing further '
+          'changes; it does not remove what was already shared, which the '
+          'other devices are still using.',
         ),
         value: _syncAssistant,
         onChanged: (value) {
@@ -848,6 +851,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     }
 
+    // Taken before the assignments below, so a Save that changes nothing does
+    // not stamp: see [assistantSyncFingerprint].
+    final before = assistantSyncFingerprint(s);
     s.llmKind = _kind;
     s.llmBaseUrl = _baseUrl.text.trim();
     s.llmModel = _model.text.trim();
@@ -867,8 +873,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     await state.services.saveSettings();
     // Stamp and publish: this is the edit the synced record's timestamp is
-    // supposed to move for. A no-op when assistant sync is off.
-    await state.assistantSettingsEdited();
+    // supposed to move for. A no-op when assistant sync is off. A key typed
+    // into the field counts even when every other field matched — the key
+    // travels in the record too, and it is not part of the fingerprint.
+    if (_apiKey.text.isNotEmpty || assistantSyncFingerprint(s) != before) {
+      await state.assistantSettingsEdited();
+    }
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();
     if (mounted) {
@@ -892,11 +902,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     s.syncAssistant = _syncAssistant;
     await state.services.saveSettings();
     state.ensureAutoSyncTimer();
-    // Switching it on publishes what this device already has, rather than
-    // leaving the account with nothing until the next time somebody happens to
-    // edit the assistant.
+    // Switching it on adopts what the account already has, and publishes what
+    // this device has only when there was nothing to adopt.
     if (_syncAssistant && !wasSyncingAssistant) {
-      await state.assistantSettingsEdited();
+      await state.assistantSyncSwitchedOn();
     }
   }
 
