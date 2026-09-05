@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:seance_app/app_state.dart' show TerminalStatus;
+import 'package:seance_app/app_state.dart'
+    show TerminalStatus, secretStillReferenced;
+import 'package:seance_app/services/app_settings.dart'
+    show IdentityFileBookmark;
 import 'package:seance_app/services/app_services.dart' show LockedSecretVault;
 import 'package:seance_app/services/secure_master_key.dart'
     show VaultLockedException;
@@ -282,6 +285,26 @@ void main() {
       );
     });
 
+    test('carries the source grant over to the copy', () async {
+      // The one line this feature's doc calls load-bearing: without it a
+      // duplicate of a Browse…-picked key falls back to the raw path and
+      // cannot open a key outside ~/.ssh. It is planned, not read at the save
+      // site, so it can be asserted without an AppState.
+      const grant = IdentityFileBookmark(path: '/keys/id', bookmark: 'b64');
+      final plan = await planServerDuplication(
+        source(),
+        vault: vault(),
+        takenLabels: const [],
+        id: 'fresh',
+        secretId: 'sec-new',
+        now: 999,
+        bookmarkFor: (id) => id == 'original' ? grant : null,
+      );
+      // Looked up under the *source's* id — the grant is keyed by server, and
+      // the copy does not have one yet.
+      expect(plan.identityFileBookmark, grant);
+    });
+
     test('a server with no credential needs no vault read', () async {
       final plan = await planServerDuplication(
         source(),
@@ -292,6 +315,33 @@ void main() {
         now: 999,
       );
       expect(plan.secret, isNull);
+    });
+  });
+
+  group('secretStillReferenced', () {
+    ServerConfig at(String id, String? secretRef) => ServerConfig(
+      id: id,
+      label: id,
+      host: 'h',
+      username: 'u',
+      secretRef: secretRef,
+      createdAt: 1,
+      updatedAt: 2,
+    );
+
+    test('a credential another server names survives its owner', () {
+      // Nothing stops two configs sharing one vault entry, and deleting it
+      // out from under the survivor is silent credential loss it only
+      // discovers at connect time.
+      final servers = [at('a', 'shared'), at('b', 'shared'), at('c', 'own')];
+      expect(
+        secretStillReferenced('shared', servers, excludingId: 'a'),
+        isTrue,
+      );
+      // The server being deleted does not count as a reference to itself.
+      expect(secretStillReferenced('own', servers, excludingId: 'c'), isFalse);
+      // Nor does a credential nothing names at all.
+      expect(secretStillReferenced('gone', servers, excludingId: 'a'), isFalse);
     });
   });
 }
