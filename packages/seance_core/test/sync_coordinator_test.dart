@@ -592,13 +592,17 @@ void main() {
       );
       final local = InMemoryLocalRecordStore();
       // This device's own retraction, and one from a device whose server the
-      // matching config tombstone has already removed.
-      for (final id in ['secret:sec-kept', 'secret:sec-orphan']) {
+      // matching config tombstone has already removed — a retraction only
+      // honoured for the local device would leave that one orphaned forever.
+      for (final (id, from) in [
+        ('secret:sec-kept', 'A'),
+        ('secret:sec-orphan', 'B'),
+      ]) {
         await local.putRemote(await codec.encrypt(DecryptedRecord(
           id: id,
           kind: RecordKind.secret,
           updatedAt: 20,
-          deviceId: 'A',
+          deviceId: from,
           deleted: true,
         )));
       }
@@ -687,6 +691,26 @@ void main() {
       );
       // Restating the value it already has is not a change and needs nothing.
       expect(synced.copyWith(excludeFromSync: false).excludeFromSync, isFalse);
+      // Re-including has the mirror-image tie: the live record that supersedes
+      // the tombstone has to outrank it, so the guard must fire both ways.
+      final excluded = synced.copyWith(excludeFromSync: true, updatedAt: 11);
+      expect(
+        () => excluded.copyWith(excludeFromSync: false),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 11),
+        throwsA(isA<ArgumentError>()),
+      );
+      // And a strictly older timestamp loses outright, not merely ties.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 5),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
+        excluded.copyWith(excludeFromSync: false, updatedAt: 12).excludeFromSync,
+        isFalse,
+      );
     });
 
     test('a credential a synced server shares is neither withdrawn nor frozen',
@@ -836,7 +860,7 @@ void main() {
         data: server('local-only', 'renamed-elsewhere', 99).toJson(),
       )));
 
-      await SyncCoordinator(
+      final rescheduled = await SyncCoordinator(
         configStore: configs,
         hostKeyStore: InMemoryHostKeyStore(),
         codec: codec,
@@ -848,6 +872,143 @@ void main() {
       expect(after, isNotNull, reason: 'the retraction must not delete it here');
       expect(after!.label, 'beta');
       expect(after.excludeFromSync, isTrue);
+
+      // The copy at 99 could only get here by beating the tombstone dated 21,
+      // so the retraction is re-dated to outrank it instead of being re-minted
+      // at the same losing date every round.
+      expect(rescheduled, 1);
+      final staged = await codec.decrypt((await local.getRecord('local-only'))!);
+      expect(staged.deleted, isTrue);
+      expect(staged.updatedAt, 100);
+    });
+
+    test('a retraction the server outranked still lands', () async {
+      // Device B edits under a clock ahead of A's, so A's exclusion carries a
+      // timestamp that loses last-write-wins to the copy already on the
+      // server. Without re-dating, A would show the server as excluded while
+      // every other device kept it, forever.
+      final remote = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+
+      final cfgA = InMemoryConfigStore();
+      final cfgB = InMemoryConfigStore();
+      SyncCoordinator coord(ConfigStore configs, String device) =>
+          SyncCoordinator(
+            configStore: configs,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: InMemoryLocalRecordStore(),
+            deviceId: device,
+          );
+
+      await cfgA.putServer(server('s1', 'alpha', 10));
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+
+      // B renames it, stamping a timestamp A's clock has not reached yet.
+      await cfgB.putServer(server('s1', 'renamed', 5000));
+      await coord(cfgB, 'B').run(remote);
+
+      // A excludes it before pulling that rename: 31 is A's honest "now".
+      await cfgA.putServer(
+        server('s1', 'alpha', 30).copyWith(excludeFromSync: true, updatedAt: 31),
+      );
+      await coord(cfgA, 'A').run(remote);
+
+      // A keeps its own copy, and B loses it on its next round all the same.
+      expect((await cfgA.getServer('s1'))!.excludeFromSync, isTrue);
+      await coord(cfgB, 'B').run(remote);
+      expect(await cfgB.getServer('s1'), isNull);
+
+      // And it settles there: nothing re-dates once no live copy comes back.
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+      expect(await cfgB.getServer('s1'), isNull);
+      expect((await cfgA.getServer('s1'))!.label, 'alpha');
+    });
+
+    test('re-including a server supersedes its tombstone', () async {
+      // The one transition where a tombstone is already staged locally: the
+      // live record has to replace it rather than be skipped for being deleted.
+      final remote = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+
+      final cfgA = InMemoryConfigStore();
+      final cfgB = InMemoryConfigStore();
+      SyncCoordinator coord(ConfigStore configs, String device) =>
+          SyncCoordinator(
+            configStore: configs,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: InMemoryLocalRecordStore(),
+            deviceId: device,
+          );
+
+      await cfgA.putServer(server('s1', 'alpha', 10)
+          .copyWith(excludeFromSync: true, updatedAt: 11));
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+      expect(await cfgB.getServer('s1'), isNull);
+
+      await cfgA.putServer((await cfgA.getServer('s1'))!
+          .copyWith(excludeFromSync: false, updatedAt: 30));
+      await coord(cfgA, 'A').run(remote);
+      await coord(cfgB, 'B').run(remote);
+
+      final revived = await cfgB.getServer('s1');
+      expect(revived, isNotNull, reason: 're-including must beat the tombstone');
+      expect(revived!.label, 'alpha');
+      expect(revived.excludeFromSync, isFalse);
+    });
+
+    test('a vault that refuses a tombstone does not abandon the batch',
+        () async {
+      // The vault throws when the OS keyring is locked, and the tombstone
+      // stays pending on the server, so an unguarded delete would fail every
+      // round from then on — sync would look permanently broken.
+      final vaultKey = secureRandomBytes(32);
+      final codec = RecordCodec(vaultKey);
+      final vault = _RefusingVault(InMemoryVaultStore(), vaultKey);
+      final configs = InMemoryConfigStore();
+      final hostKeys = InMemoryHostKeyStore();
+      final local = InMemoryLocalRecordStore();
+
+      await local.putRemote(await codec.encrypt(const DecryptedRecord(
+        id: 'secret:sec-1',
+        kind: RecordKind.secret,
+        updatedAt: 20,
+        deviceId: 'B',
+        deleted: true,
+      )));
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: 'hostkey:beta.example.com:22',
+        kind: RecordKind.hostKey,
+        updatedAt: 20,
+        deviceId: 'B',
+        data: const HostKey(
+          host: 'beta.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintSha256: 'SHA256:abc',
+          pinnedAt: 20,
+        ).toJson(),
+      )));
+
+      await expectLater(
+        SyncCoordinator(
+          configStore: configs,
+          hostKeyStore: hostKeys,
+          codec: codec,
+          local: local,
+          deviceId: 'A',
+          syncSecrets: true,
+          secretVault: vault,
+        ).applyToStores(),
+        completion(0),
+      );
+      expect(vault.deletesAttempted, 1);
+      // The rest of the batch still applied.
+      expect((await hostKeys.all()).single.host, 'beta.example.com');
     });
 
     test('excluding on one device removes the server from the other', () async {
@@ -1020,3 +1181,16 @@ void main() {
 /// One key for every device in this group: they are one account's devices, so
 /// they share a vault key.
 final RecordCodec _sharedCodec = RecordCodec(secureRandomBytes(32));
+
+/// A vault whose deletes fail the way a locked OS keyring makes them fail.
+class _RefusingVault extends SecretVault {
+  int deletesAttempted = 0;
+
+  _RefusingVault(super.store, super.key);
+
+  @override
+  Future<void> deleteSecret(String id) async {
+    deletesAttempted++;
+    throw StateError('keyring locked');
+  }
+}

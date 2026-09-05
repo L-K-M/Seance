@@ -235,6 +235,32 @@ class TerminalSession {
   }
 }
 
+/// Whether the server a duplicate was planned from still is what it was.
+///
+/// Only the credential reference matters: the copy carries its own id, label
+/// and timestamps, and a rename or a colour change on the source between the
+/// plan and the save costs nothing. A missing server or a different ref does,
+/// because the credential the plan holds was read against the old one.
+///
+/// A top-level function so the rule can be asserted directly — no test in this
+/// app can construct an [AppState].
+bool duplicationSourceUnchanged(ServerConfig? latest, ServerConfig source) =>
+    latest != null && latest.secretRef == source.secretRef;
+
+/// The source of a duplicate stopped matching what the copy was planned from.
+///
+/// Its [toString] is a sentence because the list pane shows it verbatim, the
+/// way it shows a locked keyring: a user who is told only "could not
+/// duplicate" has nothing to do next.
+class SourceServerChanged implements Exception {
+  final String label;
+  const SourceServerChanged(this.label);
+
+  @override
+  String toString() => '"$label" changed while it was being copied — it was '
+      'deleted, or it now holds a different credential. Nothing was created.';
+}
+
 /// Whether any server other than [excludingId] still points at [secretRef].
 ///
 /// Deleting a server drops its vault entry, and nothing stops two configs
@@ -544,16 +570,7 @@ class AppState extends ChangeNotifier {
   /// quietly lost its password would look identical in the list and only admit
   /// it at connect time.
   Future<ServerConfig> duplicateServer(ServerConfig source) async {
-    // Serialized against any duplicate still running. The vault read can sit
-    // behind an OS keychain prompt for as long as the user takes to answer it
-    // — long enough for a second Duplicate to pick a name from a list that
-    // does not yet contain the first copy, so both land on the same one, which
-    // is the outcome the naming rule exists to prevent.
-    final queued = _duplicating;
-    final finished = Completer<void>();
-    _duplicating = finished.future;
-    await queued;
-    try {
+    return _mutate(() async {
       final plan = await planServerDuplication(
         source,
         vault: services.vault,
@@ -563,38 +580,76 @@ class AppState extends ChangeNotifier {
         now: DateTime.now().millisecondsSinceEpoch,
         bookmarkFor: (id) => services.settings.identityFileBookmarks[id],
       );
+      // The plan describes the source as it was before the vault read, and
+      // that read can wait out a keychain prompt. Deletes are serialized
+      // behind this one, but a sync round is not: it can withdraw the
+      // credential and remove the server in the meantime, and then the plan
+      // holds a null secret it read as "this server has none". Saving it would
+      // create the copy the user asked for without the password they expect it
+      // to have — and resurrect a config another device deleted.
+      if (!duplicationSourceUnchanged(
+        await services.configStore.getServer(source.id),
+        source,
+      )) {
+        throw SourceServerChanged(source.label);
+      }
       await saveServer(
         plan.config,
         secret: plan.secret,
         identityFileBookmark: plan.identityFileBookmark,
       );
       return plan.config;
+    });
+  }
+
+  /// The store mutation currently in flight, so the next one waits for it.
+  Future<void> _mutating = Future<void>.value();
+
+  /// Run [action] after every mutation queued before it has finished.
+  ///
+  /// Duplicating reads the vault, and that read can sit behind an OS keychain
+  /// prompt for as long as the user takes to answer it — long enough for a
+  /// second Duplicate to pick a name from a list that does not yet contain the
+  /// first copy, so both land on the same one, which is the outcome the naming
+  /// rule exists to prevent. Deleting shares the queue because it reads the
+  /// server list to decide whether a credential is still referenced: two
+  /// deletes of servers sharing one vault entry, each running that read before
+  /// the other's config removal lands, would each see the other as a live
+  /// referent and both leave the entry behind with nothing able to name it.
+  Future<T> _mutate<T>(Future<T> Function() action) async {
+    final queued = _mutating;
+    final finished = Completer<void>();
+    _mutating = finished.future;
+    await queued;
+    try {
+      return await action();
     } finally {
       finished.complete();
     }
   }
 
-  /// The duplicate currently in flight, so the next one waits for it. See
-  /// [duplicateServer].
-  Future<void> _duplicating = Future<void>.value();
-
   Future<void> deleteServer(String id) async {
+    // Outside the queue: tearing sessions down touches no store, and holding
+    // the queue across a session teardown would stall every other mutation
+    // behind however long the far end takes to hang up.
     await closeAllTabsForServer(id);
-    final server = await services.configStore.getServer(id);
-    final secretRef = server?.secretRef;
-    if (secretRef != null &&
-        !secretStillReferenced(
-          secretRef,
-          await services.configStore.listServers(),
-          excludingId: id,
-        )) {
-      await services.vault.deleteSecret(secretRef);
-    }
-    if (services.settings.identityFileBookmarks.remove(id) != null) {
-      await services.saveSettings();
-    }
-    await services.configStore.deleteServer(id);
-    servers = await services.configStore.listServers();
+    await _mutate(() async {
+      final server = await services.configStore.getServer(id);
+      final secretRef = server?.secretRef;
+      if (secretRef != null &&
+          !secretStillReferenced(
+            secretRef,
+            await services.configStore.listServers(),
+            excludingId: id,
+          )) {
+        await services.vault.deleteSecret(secretRef);
+      }
+      if (services.settings.identityFileBookmarks.remove(id) != null) {
+        await services.saveSettings();
+      }
+      await services.configStore.deleteServer(id);
+      servers = await services.configStore.listServers();
+    });
     services.probe.updateServers(servers);
     notifyListeners();
     _scheduleAutoSync();

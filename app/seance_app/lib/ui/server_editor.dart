@@ -30,6 +30,37 @@ bool excludingNeedsConfirmation({
   required bool syncConfigured,
 }) => existing != null && syncConfigured;
 
+/// The dialog [excludingNeedsConfirmation] gates, as a function so a test can
+/// tap its buttons without standing up an editor or an [AppState].
+///
+/// Dismissing it — barrier tap, Escape — resolves to null, which has to read
+/// as "no": the caller is about to delete data on other devices, and the one
+/// input that means the user never answered must not be the one that proceeds.
+Future<bool> confirmSyncExclusion(BuildContext context) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Exclude from sync?'),
+      content: const Text(
+        'If this server synced earlier, it is removed from the sync server '
+        'and from your other devices, along with any credential that synced '
+        'with it. This device keeps its copy.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Exclude'),
+        ),
+      ],
+    ),
+  );
+  return confirmed == true;
+}
+
 /// Add or edit a server. Password / private-key material is written to the
 /// encrypted vault; the config stores only a reference.
 Future<void> showServerEditor(
@@ -533,36 +564,12 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// has never been anywhere, and with no sync account configured there is no
   /// other device to lose it. Turning the switch back off is not destructive
   /// either way.
-  Future<bool> _confirmExclusion() async {
-    if (!excludingNeedsConfirmation(
-      existing: widget.existing,
-      syncConfigured: widget.state.services.isSyncConfigured,
-    )) {
-      return true;
-    }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Exclude from sync?'),
-        content: const Text(
-          'If this server synced earlier, it is removed from the sync server '
-          'and from your other devices, along with any credential that synced '
-          'with it. This device keeps its copy.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Exclude'),
-          ),
-        ],
-      ),
-    );
-    return confirmed == true;
-  }
+  Future<bool> _confirmExclusion() => excludingNeedsConfirmation(
+        existing: widget.existing,
+        syncConfigured: widget.state.services.isSyncConfigured,
+      )
+          ? confirmSyncExclusion(context)
+          : Future<bool>.value(true);
 
   /// Pick an identity file. On macOS this also mints the security-scoped
   /// bookmark that keeps a key outside ~/.ssh readable across relaunches.

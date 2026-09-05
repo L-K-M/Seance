@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/app_state.dart'
-    show TerminalStatus, secretStillReferenced;
+    show
+        TerminalStatus,
+        SourceServerChanged,
+        duplicationSourceUnchanged,
+        secretStillReferenced;
 import 'package:seance_app/services/app_settings.dart'
     show IdentityFileBookmark;
 import 'package:seance_app/services/app_services.dart' show LockedSecretVault;
@@ -212,6 +216,9 @@ void main() {
       host: 'web.example.com',
       username: 'deploy',
       authMethod: AuthMethod.privateKey,
+      // A Browse…-picked key always has both a path and a grant, so the
+      // fixture carries both rather than a grant with nothing to open.
+      identityFilePath: '/keys/id_ed25519',
       secretRef: secretRef,
       createdAt: 1,
       updatedAt: 2,
@@ -239,8 +246,9 @@ void main() {
       // credential from the other, and edits would rewrite it in place.
       expect(plan.config.secretRef, 'sec-new');
       // Compared as JSON with only the id overridden, like the config's own
-      // carryover test: a field Secret gains later fails here rather than
-      // being silently dropped from every duplicated credential.
+      // carryover test — and with the same caveat: a field Secret gains later
+      // is only caught here once the fixture above gives it a non-default
+      // value, since one left at its default matches on both sides.
       final original = (await store.getSecret('sec-old'))!;
       expect(
         plan.secret!.toJson(),
@@ -315,6 +323,48 @@ void main() {
         now: 999,
       );
       expect(plan.secret, isNull);
+    });
+  });
+
+  group('duplicationSourceUnchanged', () {
+    ServerConfig at(String? ref) => ServerConfig(
+      id: 'original',
+      label: 'web',
+      host: 'web.example.com',
+      username: 'deploy',
+      secretRef: ref,
+      createdAt: 1,
+      updatedAt: 2,
+    );
+
+    test('only the credential reference decides', () {
+      // The vault read a duplicate plans from can wait out a keychain prompt,
+      // and a sync round is not behind the same queue the UI's own deletes
+      // are: it can withdraw the credential and remove the server first.
+      expect(duplicationSourceUnchanged(at('sec-1'), at('sec-1')), isTrue);
+      expect(duplicationSourceUnchanged(null, at('sec-1')), isFalse);
+      expect(duplicationSourceUnchanged(at('sec-2'), at('sec-1')), isFalse);
+      expect(duplicationSourceUnchanged(at(null), at('sec-1')), isFalse);
+      // A server that never had one is not "changed" for having none now.
+      expect(duplicationSourceUnchanged(at(null), at(null)), isTrue);
+      // A rename between the plan and the save costs the copy nothing: it
+      // carries its own label, and the credential is what was read early.
+      expect(
+        duplicationSourceUnchanged(
+          at('sec-1').copyWith(label: 'renamed', updatedAt: 9),
+          at('sec-1'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('the failure says which server and that nothing was created', () {
+      // The list pane interpolates this into "Could not duplicate: $error",
+      // so it has to read as a sentence rather than a class name.
+      final message = const SourceServerChanged('web').toString();
+      expect(message, contains('"web"'));
+      expect(message, contains('Nothing was created'));
+      expect(message, isNot(contains('Exception')));
     });
   });
 
