@@ -209,7 +209,11 @@ class SyncCoordinator {
   /// A secret record is keyed by the credential, not by the server holding it,
   /// so a tombstone dated at the exclusion would beat that server's own push
   /// of the same id every round — quietly and permanently ending credential
-  /// sync for a server the user never excluded.
+  /// sync for a server the user never excluded. That set counts a sharer
+  /// whose own [ServerConfig.syncSecret] is off too, which is the
+  /// conservative side of the same trade: a credential such a sharer once
+  /// published stays on the server rather than being withdrawn from under a
+  /// server that still holds it.
   Future<void> _retract(
     ServerConfig server,
     Set<String> syncedSecretRefs,
@@ -246,10 +250,25 @@ class SyncCoordinator {
     // on the next pull sequenced by the server), and not a copy another device
     // is still pushing because it has not seen that tombstone yet. Its
     // credential is shielded on the same grounds, in [_applySecretRecords].
+    final servers = await configStore.listServers();
     final excluded = <String>{
-      for (final server in await configStore.listServers())
+      for (final server in servers)
         if (server.excludeFromSync) server.id,
     };
+    // The address rule [collectLocal] applies on the way out, on the way in:
+    // a pin for an address only excluded servers use is withheld from the
+    // account, and the mirror therefore never holds it — so a copy another
+    // device pushes would win last-write-wins by default and overwrite a pin
+    // this device made locally. Nothing pulled may touch a local-only server,
+    // and that includes what this device chose to trust for its address.
+    final excludedLocators = <String>{
+      for (final server in servers)
+        if (server.excludeFromSync) hostKeyLocator(server.host, server.port),
+    }..removeAll(<String>{
+        for (final server in servers)
+          if (!server.excludeFromSync)
+            hostKeyLocator(server.host, server.port),
+      });
     // Credentials are decided after the loop rather than inside it: whether one
     // may be applied or withdrawn depends on which servers still reference it,
     // and a config record in the same batch may be about to add or remove the
@@ -289,6 +308,10 @@ class SyncCoordinator {
         // not a per-apply special case, so the records stay staged for a
         // build that can check them.
         if (dec.deleted) {
+          // Routed on the delimiter alone because a config id never carries
+          // one: every config is minted with `uuidV4()` (the editor's draft
+          // id and the ssh_config import), and the prefixed kinds are the
+          // only ids that contain it.
           if (!dec.id.contains(_recordKindDelimiter)) {
             if (excluded.contains(dec.id)) continue;
             // Our own retraction, for a server this device is no longer
@@ -302,6 +325,14 @@ class SyncCoordinator {
             // writes through, and shadowing it here would let a later edit
             // reach for `local.putLocal` and silently get a ServerConfig.
             final localServer = await configStore.getServer(dec.id);
+            // Only this device's own retraction is revived past. A peer's
+            // tombstone for the same server — both devices excluded it, and
+            // the peer's exclusion outranks this device's re-inclusion —
+            // deletes a config this device just re-included, with nothing to
+            // say so. Dropping the guard would resurrect configs legitimately
+            // deleted elsewhere, so the residual stands until a delete can
+            // carry its intent; pinned by "a peer's later exclusion outranks
+            // a re-inclusion".
             if (localServer != null && dec.deviceId == deviceId) {
               revived.add((localServer, dec.updatedAt));
               continue;
@@ -336,7 +367,24 @@ class SyncCoordinator {
             }
             await configStore.putServer(pulled);
           case RecordKind.hostKey:
-            await hostKeyStore.put(HostKey.fromJson(dec.data));
+            final pin = HostKey.fromJson(dec.data);
+            // The same id invariant the config and secret paths enforce: a
+            // pin is stored under its payload's locator, and a record whose
+            // id names another would plant trust for an address no record
+            // ever named, with nothing in the log to say so.
+            if (dec.id != 'hostkey:${pin.locator}') {
+              skip(
+                dec.id,
+                StateError(
+                  'host key locator ${pin.locator} does not match record id '
+                  '${dec.id}',
+                ),
+                StackTrace.current,
+              );
+              continue;
+            }
+            if (excludedLocators.contains(pin.locator)) continue;
+            await hostKeyStore.put(pin);
           case RecordKind.secret:
             secretRecords.add(dec);
           case RecordKind.snippet:

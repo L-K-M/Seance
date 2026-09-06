@@ -324,31 +324,30 @@ class ZaiSearch implements SearchProvider {
         // Unlike the error drains above there is no status to speak for a
         // stall here — a 200 that never closes is its own failure, so it is
         // named like every other one this class raises.
-        try {
-          await response.stream.drain<void>().timeout(timeout);
-        } on TimeoutException {
-          throw http.ClientException(
-            'Z.AI held the search stream open without replying.',
-          );
-        }
+        // Both deadlines say the same thing here: no reply was ever due, so
+        // "stopped sending the reply" would name one that was never expected.
+        const held = 'Z.AI held the search stream open without replying.';
+        await bounded(
+          response.stream,
+          maxResponseBytes,
+          timeout,
+          total: timeout,
+          idleMessage: held,
+          totalMessage: held,
+        ).drain<void>();
         return null;
       }
-      // Two deadlines, two different failures. `bounded`'s idle one converts
-      // its own; this outer one is the overall cap, for a stream that keeps
-      // trickling without ever answering — and it was reaching the UI as
-      // "Future not completed".
-      final Map<String, dynamic>? message;
-      try {
-        message = await readSseRpcMessage(
-          response.stream,
-          id,
-          idleTimeout: timeout,
-        ).timeout(timeout);
-      } on TimeoutException {
-        throw http.ClientException(
-          'Z.AI never finished answering the search stream.',
-        );
-      }
+      // Two deadlines, two different failures, both enforced inside the
+      // read: `bounded`'s idle one for a stream that goes quiet, the overall
+      // one for a stream that keeps trickling without ever answering. A
+      // `.timeout` on this await used to carry the second, and freed the
+      // caller while the read — and its socket — lived on.
+      final message = await readSseRpcMessage(
+        response.stream,
+        id,
+        idleTimeout: timeout,
+        overallTimeout: timeout,
+      );
       if (message == null) {
         throw http.ClientException(
           'Z.AI closed the search stream before answering.',
@@ -357,12 +356,7 @@ class ZaiSearch implements SearchProvider {
       return message;
     }
 
-    final String body;
-    try {
-      body = await _readBounded(response.stream).timeout(timeout);
-    } on TimeoutException {
-      throw http.ClientException('Z.AI stopped sending the search reply.');
-    }
+    final body = await _readBounded(response.stream);
     if (body.trim().isEmpty) return null;
     final Object? decoded;
     try {
@@ -382,7 +376,12 @@ class ZaiSearch implements SearchProvider {
 
   Future<String> _readBounded(Stream<List<int>> bytes) async {
     final buffer = <int>[];
-    await for (final chunk in bounded(bytes, maxResponseBytes, timeout)) {
+    await for (final chunk in bounded(
+      bytes,
+      maxResponseBytes,
+      timeout,
+      total: timeout,
+    )) {
       buffer.addAll(chunk);
     }
     return utf8.decode(buffer, allowMalformed: true);
@@ -401,15 +400,32 @@ class ZaiSearch implements SearchProvider {
   /// listening, so a proxy that answers 200 and then stalls keeps a socket and
   /// its buffer for as long as it likes. Thrown into the stream, it ends the
   /// `await for` that owns the subscription, which cancels it.
+  ///
+  /// [total] is the overall deadline, enforced in the same place and for the
+  /// same reason: a stream that keeps trickling heartbeats resets the idle
+  /// deadline forever, and a `.timeout` on the future the caller awaits would
+  /// free the caller while the subscription — and its socket — lived on for
+  /// as long as the server cared to trickle. Checked as each chunk arrives,
+  /// which is the only moment a trickling stream offers; a silent one is the
+  /// idle deadline's. [idleMessage] and [totalMessage] are what those two
+  /// failures say, since the three callers describe them differently — for a
+  /// notification drain both mean the same thing, a stream held open.
   @visibleForTesting
   static Stream<List<int>> bounded(
     Stream<List<int>> bytes,
     int maxBytes,
-    Duration idle,
-  ) async* {
+    Duration idle, {
+    Duration? total,
+    String idleMessage = 'Z.AI stopped sending the search reply.',
+    String totalMessage = 'Z.AI stopped sending the search reply.',
+  }) async* {
+    final clock = total == null ? null : (Stopwatch()..start());
     var read = 0;
     try {
       await for (final chunk in bytes.timeout(idle)) {
+        if (clock != null && clock.elapsed > total!) {
+          throw http.ClientException(totalMessage);
+        }
         read += chunk.length;
         if (read > maxBytes) {
           throw http.ClientException('Z.AI search reply was too large.');
@@ -423,7 +439,7 @@ class ZaiSearch implements SearchProvider {
       // case, and both reach the UI, so both say what happened. Nothing in
       // this package retries on the type — the two `on TimeoutException`
       // handlers in `seance_core` are SSH's.
-      throw http.ClientException('Z.AI stopped sending the search reply.');
+      throw http.ClientException(idleMessage);
     }
   }
 
@@ -445,6 +461,7 @@ class ZaiSearch implements SearchProvider {
     int id, {
     int maxBytes = maxResponseBytes,
     Duration idleTimeout = const Duration(seconds: 30),
+    Duration? overallTimeout,
   }) async {
     final data = <String>[];
     // Tolerant, like `_readBounded`'s decode: malformed bytes on an SSE
@@ -452,7 +469,13 @@ class ZaiSearch implements SearchProvider {
     // pipeline that nothing here converts, so the same bad payload fails two
     // different ways depending on which transport carried it.
     final lines = const Utf8Decoder(allowMalformed: true)
-        .bind(bounded(bytes, maxBytes, idleTimeout))
+        .bind(bounded(
+          bytes,
+          maxBytes,
+          idleTimeout,
+          total: overallTimeout,
+          totalMessage: 'Z.AI never finished answering the search stream.',
+        ))
         .transform(const LineSplitter());
 
     Map<String, dynamic>? finish() {
@@ -591,7 +614,16 @@ class ZaiSearch implements SearchProvider {
       if (fallback == null) {
         // Bounded: the name is the gateway's to choose, and this string
         // reaches the UI. Forty-eight characters names any real parameter.
-        final shown = name.length <= 48 ? name : '${name.substring(0, 48)}…';
+        var shown = name;
+        if (name.length > 48) {
+          var cut = name.substring(0, 48);
+          // Back off a lone high surrogate, as the snippet clip does: the
+          // ellipsis must not land between the halves of an emoji.
+          if ((cut.codeUnitAt(cut.length - 1) & 0xFC00) == 0xD800) {
+            cut = cut.substring(0, cut.length - 1);
+          }
+          shown = '$cut…';
+        }
         throw http.ClientException(
           'Z.AI requires a search parameter Séance cannot supply: $shown.',
         );
@@ -733,7 +765,10 @@ class ZaiSearch implements SearchProvider {
     // it, dropping the result — the opposite of the shape-tolerance the rest
     // of this walk is written for.
     final link = value['link'];
-    final url = link is String && link.isNotEmpty ? link : value['url'];
+    // A `link` that is not a web URL — relative, `javascript:`, malformed —
+    // must not hide a usable `url` beside it; `_isWebUrl('')` is false, which
+    // covers the empty one too.
+    final url = link is String && _isWebUrl(link) ? link : value['url'];
     // http(s) only. These strings are chosen by the search gateway, and a
     // result is a web page by definition — so anything else is either not a
     // result or an attempt to hand the app a scheme to launch.

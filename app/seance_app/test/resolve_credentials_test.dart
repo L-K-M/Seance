@@ -55,6 +55,17 @@ void main() {
     );
   });
 
+  test('a stray grant beside a typed PEM is a harmless leftover', () async {
+    // The typed PEM is returned before anything consults a path or a grant,
+    // so the leftover cannot change what is tested here either.
+    final credentials = await services.resolveCredentials(
+      config(AuthMethod.privateKey),
+      draftPrivateKey: 'PEM',
+      draftIdentityBookmark: stray,
+    );
+    expect(credentials.privateKeyPem, 'PEM');
+  });
+
   test('a stray grant under password auth is a harmless leftover', () async {
     // The editor keeps a picked file's grant across an auth-method switch.
     // Under a password it is never consulted, so it cannot change what is

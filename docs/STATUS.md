@@ -227,14 +227,13 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     without retrying a bad key. Worth doing when something actually retries;
     today nothing does.
 
-16. **Cancel the Z.AI read on the overall SSE deadline.** `_send` wraps
-    `readSseRpcMessage` in `.timeout(timeout)`, which frees the caller but
-    does not tear the subscription down — so a stream kept warm by heartbeats
-    never trips `bounded`'s idle deadline and the orphaned read holds its
-    socket for as long as the server keeps trickling. The error message is
-    readable now; the leak needs a total deadline enforced *inside*
-    `readSseRpcMessage` (an explicit `StreamSubscription` plus a `Timer` that
-    cancels), which is a restructure of that function rather than a wrapper.
+16. **Seal tombstones.** A tombstone carries no sealed payload, so its date
+    is the sync server's to choose: a config tombstone is honoured on that
+    say-so today (a hostile server can delete every synced server's *settings*
+    on every device), and `secret:` / `hostkey:` tombstones are refused for
+    the same reason, at the cost of an orphaned vault entry and an
+    unretracted pin on the other devices. An authenticator over id, kind and
+    date keyed like the payload closes all three at once.
 
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
