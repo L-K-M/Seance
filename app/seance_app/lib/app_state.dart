@@ -558,7 +558,10 @@ class AppState extends ChangeNotifier {
         id: uuidV4(),
         secretId: uuidV4(),
         now: DateTime.now().millisecondsSinceEpoch,
-        bookmarkFor: (id) => services.settings.identityFileBookmarks[id],
+        // Keyed by the *source's* id — the planner asks for the grant of the
+        // server being copied; the copy has none yet.
+        bookmarkFor: (sourceId) =>
+            services.settings.identityFileBookmarks[sourceId],
       );
       // The non-queuing core: this is already inside the queue, and calling
       // the public one would wait on itself.
