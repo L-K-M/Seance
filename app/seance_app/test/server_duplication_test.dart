@@ -20,6 +20,21 @@ import 'package:seance_core/seance_core.dart';
 
 void main() {
   group('duplicateServerLabel', () {
+    test('a hand-doubled suffix does not stutter', () {
+      // Stripping only the outermost "copy" leaves "web copy 2", whose first
+      // candidate is the taken name it started from — so the duplicate landed
+      // on "web copy 2 copy 2", the stutter the parser exists to prevent.
+      expect(
+        duplicateServerLabel('web copy 2 copy', const ['web copy 2 copy']),
+        'web copy',
+      );
+      // And the documented edges still hold: a server *named* "copy" leaves
+      // an empty base and gets numbered rather than stuttering, while a word
+      // that merely ends in "copy" is not a suffix at all.
+      expect(duplicateServerLabel('copy copy', const ['copy']), 'copy 2');
+      expect(duplicateServerLabel('photocopy', const []), 'photocopy copy');
+    });
+
     test('names the first copy and then numbers the rest', () {
       expect(duplicateServerLabel('web', const []), 'web copy');
       // Fills from the front rather than continuing past the highest taken
@@ -352,7 +367,11 @@ void main() {
       // duplicate of a Browse…-picked key falls back to the raw path and
       // cannot open a key outside ~/.ssh. It is planned, not read at the save
       // site, so it can be asserted without an AppState.
-      const grant = IdentityFileBookmark(path: '/keys/id', bookmark: 'b64');
+      // Same path the fixture's `identityFilePath` carries: a Browse…-picked
+      // key always has both, and a grant minted for some other path is a
+      // state this test is not about.
+      const grant =
+          IdentityFileBookmark(path: '/keys/id_ed25519', bookmark: 'b64');
       final plan = await planServerDuplication(
         source(),
         vault: vault(),
@@ -380,6 +399,10 @@ void main() {
     });
   });
 
+  // Pins Dart's zone/timer semantics, not app code: nothing in this group
+  // runs anything from `lib/`. It is the rule `_scheduleAutoSync` depends on,
+  // written down and checked — but it cannot catch a regression there, since
+  // `_scheduleAutoSync` needs an `AppState` no test can construct.
   group('mutation-zone timers', () {
     test('a timer inherits the zone it was created in, not the one it fires in',
         () async {
@@ -391,17 +414,26 @@ void main() {
       // creating it in a captured outer zone is what works.
       final outside = Zone.current;
       final seen = <String, Object?>{};
-      final done = Completer<void>();
+      // One completer each rather than one for the pair: two zero-duration
+      // timers do fire in creation order, so awaiting the second would work
+      // today — but then a later edit that gives either a delay fails on
+      // `seen['inside']` being null, which points at the wrong thing.
+      final insideFired = Completer<void>();
+      final outsideFired = Completer<void>();
 
       runZoned(() {
-        Timer(Duration.zero, () => seen['inside'] = Zone.current[#mutation]);
+        Timer(Duration.zero, () {
+          seen['inside'] = Zone.current[#mutation];
+          insideFired.complete();
+        });
         outside.run(() => Timer(Duration.zero, () {
               seen['outside'] = Zone.current[#mutation];
-              done.complete();
+              outsideFired.complete();
             }));
       }, zoneValues: {#mutation: true});
 
-      await done.future;
+      await insideFired.future;
+      await outsideFired.future;
       expect(seen['inside'], isTrue);
       expect(seen['outside'], isNull);
     });
@@ -440,8 +472,10 @@ void main() {
     });
 
     test('the failure says which server and that nothing was created', () {
-      // The list pane interpolates this into "Could not duplicate: $error",
-      // so it has to read as a sentence rather than a class name.
+      // The list pane shows this one verbatim — the "Could not duplicate"
+      // prefix belongs to the generic catch, and doubling it up with
+      // "Nothing was created." is why this branch exists — so it has to read
+      // as a whole sentence rather than a class name.
       final message = const SourceServerChanged('web').toString();
       expect(message, contains('"web"'));
       expect(message, contains('Nothing was created'));

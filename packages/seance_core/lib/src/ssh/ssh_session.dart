@@ -98,7 +98,11 @@ class SshConnectionLog {
   /// `UnmodifiableListView` rather than `List.unmodifiable`, which allocates a
   /// fresh copy per read — this is read on every repaint of a live connection
   /// log, and a copy also silently freezes for any caller that holds on to it.
-  List<String> get lines => _linesView;
+  /// Read-only by *type*, not only at runtime: declared `List<String>`, a
+  /// `log.lines.add(...)` compiled cleanly and threw mid-handshake, which is
+  /// the failure the unmodifiable view was introduced to close off. Nothing
+  /// indexes the transcript, so `Iterable` costs no caller anything.
+  Iterable<String> get lines => _linesView;
   late final List<String> _linesView = UnmodifiableListView(_lines);
 
   /// Called after every [add] so a live view can repaint. Cleared by [freeze].
@@ -165,12 +169,34 @@ class SshConnectionLog {
 /// (dartssh2's `printDebug`/`printTrace` and `note` all pass one message
 /// through) rather than splitting it on newlines first, which would put a
 /// tail past this regex's reach entirely.
-final RegExp _userauthResponses =
-    RegExp(r'Userauth_InfoResponse\(responses: \[.*', dotAll: true);
-
+/// The class name is *optional* so a renamed message is still caught. The
+/// fail-closed branch below keys off the name, and a `pub upgrade` that
+/// renamed the class — `SSH_Message_Userauth_InfoResponse` to anything not
+/// containing `Userauth_InfoResponse` — would defeat both the name check and a
+/// name-anchored pattern, and print the password with nothing red anywhere.
+/// Anchoring on `(responses: [` instead catches it, and catches the same
+/// shape arriving in a chunk that did not carry the name. In an SSH packet
+/// trace that substring belongs to this message alone, so the over-redaction
+/// this admits costs nothing by the standard the paragraph above sets.
+///
+/// The spacing around the colon is loose for the same reason. A named line
+/// whose spacing drifted would at least hit the fail-closed branch below, so
+/// there the cost is only a whole record withheld instead of one field
+/// redacted — but a chunk arriving *without* the name cannot reach that
+/// branch at all, and a `(responses : [pw])` would then match nothing and
+/// print the credential.
 /// The message whose `responses` list *is* the password for a host doing
 /// password login over keyboard-interactive.
 const String _userauthMessage = 'Userauth_InfoResponse';
+
+/// Built from [_userauthMessage] rather than repeating it. The fail-closed
+/// branch below is only coherent while the name it checks for and the name
+/// the pattern accepts are the same string — widening one after a dartssh2
+/// rename and not the other would leave the withhold keying off a name the
+/// pattern no longer matches, which is the drift this whole mechanism exists
+/// to survive.
+final RegExp _userauthResponses =
+    RegExp('($_userauthMessage)?\\(responses\\s*:\\s*\\[.*', dotAll: true);
 
 /// [line] with any credential dartssh2's trace would otherwise print replaced.
 /// Public so the redaction can be asserted directly rather than only through a
@@ -193,9 +219,13 @@ String redactConnectionTrace(String line) {
     return '$_userauthMessage(redacted: this build does not recognize the '
         'shape of this message, so all of it is withheld)';
   }
+  // The name is put back from the match rather than restated, because the
+  // match only includes one when the class still has today's name. Canonical
+  // lines come out byte-identical to before; a renamed class keeps its own
+  // name (which the match did not consume) instead of gaining a second one.
   return line.replaceAllMapped(
     _userauthResponses,
-    (_) => 'Userauth_InfoResponse(responses: [redacted])',
+    (match) => '${match[1] ?? ''}(responses: [redacted])',
   );
 }
 
@@ -723,11 +753,15 @@ class SshSessionManager {
   static String? _offeredKeyFromLog(SshConnectionLog? log) {
     if (log == null) return null;
     const marker = 'Offering key: ';
-    for (final line in log.lines.reversed) {
+    // Forward, keeping the last match, rather than iterating a reversed
+    // view: `lines` is an `Iterable` so mutating it cannot compile, and
+    // `reversed` is a `List` member. Same answer, one pass, no copy.
+    String? offered;
+    for (final line in log.lines) {
       final i = line.indexOf(marker);
-      if (i >= 0) return line.substring(i + marker.length).trim();
+      if (i >= 0) offered = line.substring(i + marker.length).trim();
     }
-    return null;
+    return offered;
   }
 
   /// Scan the trace for the last `methodsLeft: [ … ]` the server sent.
