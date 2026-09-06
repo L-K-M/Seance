@@ -607,6 +607,10 @@ class AppServices {
       '$backend search key unavailable (locked keyring or missing entry); '
       'backend skipped for this session',
       name: 'seance.search',
+      // Warning, like `CompositeSearch`'s record of a backend failing
+      // mid-search: the two are halves of one signal, and a filter at
+      // warning level should see both.
+      level: 900,
     );
   }
 

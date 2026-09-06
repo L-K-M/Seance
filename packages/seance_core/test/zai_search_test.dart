@@ -170,6 +170,17 @@ class FakeMcpServer {
         // cast would crash inside this fake instead of failing the assertion
         // that is watching lastArguments.
         final params = payload['params'] as Map?;
+        // The listing deliberately puts `unrelated_tool` first: a client that
+        // took the first tool, or matched on a prefix, must fail here rather
+        // than be handed a well-formed answer for the wrong tool.
+        if (params?['name'] != 'web_search_prime') {
+          return {
+            'isError': true,
+            'content': [
+              {'type': 'text', 'text': "no such tool: '${params?['name']}'"},
+            ],
+          };
+        }
         lastArguments = (params?['arguments'] as Map?)?.cast<String, dynamic>();
         var reply = _results;
         if (echoQueryInLinks) {
@@ -253,6 +264,9 @@ void main() {
         'count': 5,
         'search_engine': 'search-prime',
       });
+      // `5 == 5.0` under num equality, and jsonDecode keeps the difference:
+      // the schema says integer, so the wire type is pinned too.
+      expect(server.lastArguments?['count'], isA<int>());
 
       expect(server.methods, [
         'initialize',
@@ -284,10 +298,11 @@ void main() {
       );
       // The version the *server* answered with, not the one we proposed, and
       // the session id it handed back in a header.
-      // On every post-handshake request, not only the last: the entries
-      // after the handshake's three are the two tools/call requests.
+      // On every request after `initialize`, not only the last: the
+      // notification, the listing and both tools/call requests all carry
+      // the negotiated version.
       expect(
-        server.headers.skip(3).map((h) => h['mcp-protocol-version']).toSet(),
+        server.headers.skip(1).map((h) => h['mcp-protocol-version']).toSet(),
         {'2025-06-18'},
       );
       expect(server.headers.last['mcp-session-id'], 'session-1');
@@ -312,6 +327,7 @@ void main() {
         // from the schema's enum.
         'search_engine': 'search-prime',
       });
+      expect(server.lastArguments?['count'], isA<int>());
     });
 
     test('reads a reply that arrives as an event stream', () async {
@@ -621,7 +637,10 @@ void main() {
         () async {
       // No status speaks for this one: the gateway answered 200 and held the
       // stream. It is a failure of its own, and reaches the UI as a sentence.
-      final stalled = StreamController<List<int>>();
+      var stalledCancelled = false;
+      final stalled = StreamController<List<int>>(
+        onCancel: () => stalledCancelled = true,
+      );
       addTearDown(stalled.close);
       final client = MockClient.streaming((request, body) async {
         final payload =
@@ -657,6 +676,9 @@ void main() {
           ),
         ),
       );
+      // Failed, and let go of: the deadline is thrown into the stream, so
+      // the subscription — and the socket behind it — is cancelled with it.
+      expect(stalledCancelled, isTrue);
     });
 
     test('a 202 that holds an event stream open is cancelled, not waited out',
@@ -1136,6 +1158,9 @@ void main() {
       drip = Timer.periodic(const Duration(milliseconds: 5), (_) {
         if (!controller.isClosed) controller.add(utf8.encode('.'));
       });
+      // Idempotent, so harmless after `onCancel` ran — and the only thing
+      // that stops the timer when the expectation below fails instead.
+      addTearDown(drip.cancel);
 
       await expectLater(
         ZaiSearch.bounded(
@@ -1291,9 +1316,12 @@ void main() {
     test('all backends failing is an error, not an empty answer', () async {
       // "Nothing found" is a different answer, and a misleading one when the
       // real problem is a wrong key.
+      // The backend's own error object, not a wrapper or a stand-in: one
+      // instance in both backends, so it holds whichever failure escapes.
+      final boom = StateError('bad api key');
       await expectLater(
-        CompositeSearch([_Broken(), _Broken()]).search('q'),
-        throwsA(isA<http.ClientException>()),
+        CompositeSearch([_Broken(boom), _Broken(boom)]).search('q'),
+        throwsA(same(boom)),
       );
     });
 
