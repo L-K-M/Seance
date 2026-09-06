@@ -284,12 +284,19 @@ class ZaiSearch implements SearchProvider {
     // for headers, so a gateway that answers 4xx and then stalls the body
     // would hang here — turning a fast retry into an unbounded wait, on the
     // one path that exists to fail quickly.
+    //
+    // And the deadline's own `TimeoutException` is swallowed on these two:
+    // the status line has already said what went wrong, and a body that
+    // stalls after it is the same failure, not a new one. Letting the raw
+    // exception out replaced "HTTP 502" with "Future not completed" — and on
+    // the 404 branch it displaced the session-expiry signal, so the one retry
+    // that branch exists to trigger never ran.
     if (response.statusCode == 404 && sentSessionId) {
-      await response.stream.drain<void>().timeout(timeout);
+      await _drainQuietly(response.stream);
       throw const _SessionExpired();
     }
     if (response.statusCode >= 400) {
-      await response.stream.drain<void>().timeout(timeout);
+      await _drainQuietly(response.stream);
       // Deliberately without the body, unlike the LLM providers': this is a
       // gateway that can echo the request — including its Authorization
       // header — back in an error page, and this string reaches the UI.
@@ -307,7 +314,16 @@ class ZaiSearch implements SearchProvider {
         // A notification has no reply, so there is nothing to match and
         // nothing to wait for: reading until "some message" arrives would
         // burn the whole deadline on a stream carrying only heartbeats.
-        await response.stream.drain<void>().timeout(timeout);
+        // Unlike the error drains above there is no status to speak for a
+        // stall here — a 200 that never closes is its own failure, so it is
+        // named like every other one this class raises.
+        try {
+          await response.stream.drain<void>().timeout(timeout);
+        } on TimeoutException {
+          throw http.ClientException(
+            'Z.AI held the search stream open without replying.',
+          );
+        }
         return null;
       }
       // Two deadlines, two different failures. `bounded`'s idle one converts
@@ -604,10 +620,6 @@ class ZaiSearch implements SearchProvider {
     }
   }
 
-  /// [depth] caps the walk: the payload is server-controlled, and a
-  /// `StackOverflowError` is an `Error`, so it would sail past the
-  /// `on Exception` handling every caller of this class relies on. Thirty-two
-  /// is far past any real result shape.
   /// Server-supplied JSON read without a cast that can throw.
   ///
   /// `as Map?` on a value the gateway chose raises `TypeError`, which is an
@@ -628,6 +640,35 @@ class ZaiSearch implements SearchProvider {
   ///
   /// Parsed rather than prefix-matched, so `https:evil` and a bare
   /// `https://` do not pass for want of a host.
+  /// The text of a snippet that arrived as an object.
+  ///
+  /// A key that names text is read alone when one is present, so `{lang: en,
+  /// text: hello}` reads "hello" and not "en hello" — the tag is for the
+  /// client, not the reader. With no such key, every string value is joined:
+  /// a shape this list does not anticipate still yields its text rather than
+  /// nothing, which is the tolerance the rest of the walk is written for.
+  static String _snippetText(Map<Object?, Object?> fields) {
+    for (final key in const ['text', 'content', 'snippet', 'description']) {
+      final value = fields[key];
+      if (value is String && value.isNotEmpty) return value;
+    }
+    return fields.values.whereType<String>().join(' ');
+  }
+
+  /// Drain an error response's body without letting a stall speak for it.
+  ///
+  /// Bounded by [timeout] like the SSE read; the difference is what a missed
+  /// deadline means. After a status that already classified the failure, a
+  /// body that never arrives adds nothing, so its `TimeoutException` is
+  /// dropped and the caller throws the error the status line earned.
+  Future<void> _drainQuietly(http.ByteStream stream) async {
+    try {
+      await stream.drain<void>().timeout(timeout);
+    } on TimeoutException {
+      // The caller's exception is the one that describes this failure.
+    }
+  }
+
   static bool _isWebUrl(String value) {
     final uri = Uri.tryParse(value);
     return uri != null &&
@@ -635,6 +676,12 @@ class ZaiSearch implements SearchProvider {
         uri.host.isNotEmpty;
   }
 
+  /// Walk a tool reply of any shape, collecting every result-looking map.
+  ///
+  /// [depth] caps the walk: the payload is server-controlled, and a
+  /// `StackOverflowError` is an `Error`, so it would sail past the
+  /// `on Exception` handling every caller of this class relies on. Thirty-two
+  /// is far past any real result shape.
   static void _collect(Object? value, List<SearchResult> out, Set<String> seen,
       [int depth = 0]) {
     if (depth > 32) return;
@@ -680,8 +727,12 @@ class ZaiSearch implements SearchProvider {
       final title = rawTitle is String && rawTitle.isNotEmpty
           ? rawTitle
           : value['media'];
-      final snippet =
-          value['content'] ?? value['snippet'] ?? value['description'];
+      // Empty falls through here too: an explicitly empty `content` beside
+      // a usable `snippet` was rendering as no snippet at all.
+      final content = value['content'];
+      final snippet = content is String && content.isEmpty
+          ? value['snippet'] ?? value['description']
+          : content ?? value['snippet'] ?? value['description'];
       out.add(SearchResult(
         title: title is String && title.isNotEmpty ? title : url,
         url: url,
@@ -692,8 +743,7 @@ class ZaiSearch implements SearchProvider {
           // text: …}`. The list case is already joined, so dropping the map
           // case to '' was an asymmetry rather than a policy: it vanished the
           // whole snippet for exactly the payload this walk is built for.
-          final Map<Object?, Object?> fields =>
-            fields.values.whereType<String>().join(' '),
+          final Map<Object?, Object?> fields => _snippetText(fields),
           _ => '',
         },
       ));

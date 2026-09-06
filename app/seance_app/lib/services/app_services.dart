@@ -605,9 +605,9 @@ class AppServices {
   /// The chat tool's web search: every configured backend, merged.
   ///
   /// Configured means used, rather than a priority order that would quietly
-  /// ignore the second backend someone took the trouble to set up. Clearing a
-  /// field is how you pick one instead of the other; filling both is how you
-  /// use both (see [CompositeSearch]). Null when nothing is configured, which
+  /// ignore a backend someone took the trouble to set up. Clearing a field is
+  /// how you drop one; filling several is how you use them all (see
+  /// [CompositeSearch]). Null when nothing is configured, which
   /// is what hides the search tool from the assistant.
   Future<SearchProvider?> buildSearchProvider() async {
     final backends = <SearchProvider>[];

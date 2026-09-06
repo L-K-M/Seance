@@ -97,16 +97,6 @@ class BraveSearch implements SearchProvider {
   }
 }
 
-/// Query several backends at once and merge what comes back.
-///
-/// Configured means used: a priority chain would quietly ignore the second key
-/// someone took the trouble to enter, and "use Z.AI as well as my SearXNG" is
-/// a reasonable thing to want. Clearing the other field is how you get "instead
-/// of" — so one control shape covers both, with no mode to keep in step.
-///
-/// Results are interleaved round-robin rather than concatenated, so a fast
-/// backend cannot fill the whole limit before a slower one is heard from, and
-/// deduplicated by URL because two web indexes agreeing is one result, not two.
 /// [url] reduced to the identity two backends should agree on.
 ///
 /// Falls back to the raw string when it will not parse: an unparseable URL is
@@ -118,6 +108,17 @@ String _dedupKey(String url) {
   return withoutFragment.replaceFirst(RegExp(r'/+$'), '');
 }
 
+/// Query several backends at once and merge what comes back.
+///
+/// Configured means used: a priority chain would quietly ignore a second key
+/// someone took the trouble to enter, and "use Z.AI as well as my SearXNG" is
+/// a reasonable thing to want. Clearing a field is how you get "instead of" —
+/// so one control shape covers every combination, with no mode to keep in
+/// step.
+///
+/// Results are interleaved round-robin rather than concatenated, so a fast
+/// backend cannot fill the whole limit before a slower one is heard from, and
+/// deduplicated by URL because two web indexes agreeing is one result, not two.
 class CompositeSearch implements SearchProvider {
   final List<SearchProvider> providers;
 

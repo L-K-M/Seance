@@ -266,8 +266,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         helpTitle: 'Web search backends',
         help:
             'Every backend you configure is used, and their results are '
-            'merged — so filling in both gives you both, and clearing one '
-            'leaves you with the other. With none configured, the assistant '
+            'merged — so filling in more than one uses them all, and '
+            'clearing one leaves the others. With none configured, the '
+            'assistant '
             'has no search tool at all.',
       ),
       TextField(

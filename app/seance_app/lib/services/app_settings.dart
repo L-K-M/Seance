@@ -54,8 +54,8 @@ class AppSettings {
 
   // Web-search backends for the chat tool (local providers have no native
   // one). Every configured backend is used and their results merged, so
-  // leaving one blank is how you get "instead of" and filling both is how you
-  // get "in addition to" — see `CompositeSearch`.
+  // leaving one blank is how you get "instead of" and filling several is how
+  // you get "in addition to" — see `CompositeSearch`.
   String? searxngUrl;
   String? braveApiKeyRef;
 
