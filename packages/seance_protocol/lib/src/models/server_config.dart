@@ -156,6 +156,14 @@ class ServerConfig {
   /// retracted with a tombstone — which also removes it from the other devices
   /// that had pulled it. The local copy is untouched.
   ///
+  /// The tombstone is a last-write-wins record like any other, so a device
+  /// still holding a copy from before the flag went on can push that copy
+  /// dated past it and put the config back on the server — until this device
+  /// syncs again, sees a copy that outranks its retraction, and re-dates the
+  /// retraction past it. And a copy of the credential already sitting in
+  /// another device's vault stays there as an orphan: tombstones for
+  /// credentials are pushed but never honoured (see the sync coordinator).
+  ///
   /// The flag rides on the config rather than in device-local settings because
   /// it is only ever read next to the config it governs, and it costs nothing
   /// to carry: the one record that could publish it is exactly the record it
