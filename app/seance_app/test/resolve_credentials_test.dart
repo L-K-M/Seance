@@ -59,13 +59,15 @@ void main() {
     // The editor keeps a picked file's grant across an auth-method switch.
     // Under a password it is never consulted, so it cannot change what is
     // tested — and a throw here would fail the test for nothing.
-    await expectLater(
-      services.resolveCredentials(
-        config(AuthMethod.password),
-        draftPassword: 'pw',
-        draftIdentityBookmark: stray,
-      ),
-      completes,
+    final credentials = await services.resolveCredentials(
+      config(AuthMethod.password),
+      draftPassword: 'pw',
+      draftIdentityBookmark: stray,
     );
+    // Not merely "did not throw": the password typed is what was resolved,
+    // and nothing of the grant rode along with it.
+    expect(credentials.method, AuthMethod.password);
+    expect(credentials.password, 'pw');
+    expect(credentials.privateKeyPem, isNull);
   });
 }

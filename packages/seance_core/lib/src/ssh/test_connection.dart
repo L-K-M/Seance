@@ -155,16 +155,15 @@ Future<ConnectionTestResult> runConnectionTest({
     // which is why nothing is appended here — but only `authenticate` goes
     // through it. A `credentials()` that raises this same type has logged
     // nothing, and the transcript would end mid-sentence.
-    if (!authenticating) {
-      transcript.add(e.message);
-      // A resolver that raised this type may have written its own detail
-      // into the log it attached — the only place that detail lives, since
-      // nothing here saw it happen. Skipped when it is the transcript
-      // already in hand, which is what `authenticate` always attaches.
-      if (!identical(e.log, transcript)) {
-        for (final line in e.log.lines) {
-          transcript.add(line);
-        }
+    if (!authenticating) transcript.add(e.message);
+    // Whichever stage threw, a log attached to the exception that is not the
+    // transcript in hand holds detail that lives nowhere else: a resolver's
+    // own, or an authenticator's that wrote into a log of its own rather
+    // than the one it was handed. The live one attaches the transcript
+    // itself, and that instance is skipped so nothing is doubled.
+    if (!identical(e.log, transcript)) {
+      for (final line in e.log.lines) {
+        transcript.add(line);
       }
     }
     return ConnectionTestResult(

@@ -127,6 +127,26 @@ void main() {
       expect(result.log, contains('runConnectionTest'));
     });
 
+    test('a log an authenticator attached is kept, not only a resolver\'s',
+        () async {
+      // The live authenticator writes into the transcript it is handed and
+      // attaches that same instance; a double — or a future implementation —
+      // that logs into one of its own would otherwise lose that detail, and
+      // the merge below only ever ran for the resolver.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async => throw SshConnectException(
+          'auth failed',
+          StateError('cause'),
+          SshConnectionLog()..add('the authenticator\'s own detail'),
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.log, contains('the authenticator\'s own detail'));
+    });
+
     test('the unimplemented agent path reads as a sentence, not a crash',
         () async {
       final result = await runConnectionTest(
@@ -521,6 +541,15 @@ void main() {
       if (reoffered) {
         expect(prompts, greaterThan(1),
             reason: 'a changed key must be refused or re-asked, never assumed');
+        // An approved re-ask pins the key that was approved — in the trial
+        // store, and only there. A "yes" that left the old pin standing would
+        // re-prompt on every reconnect, or trust the old key while reporting
+        // the new one verified.
+        expect(
+          (await trial.get('new.example.com', 22))?.fingerprintSha256,
+          'SHA256:attacker',
+          reason: 'an approved re-ask must pin the key that was approved',
+        );
       } else {
         // The prompt above always answers yes, so a refusal can only mean
         // the manager never asked — a prompt that was answered and then
@@ -534,6 +563,22 @@ void main() {
           reason: 'a refused key must not overwrite the approved pin',
         );
       }
+    });
+
+    test('a pin is scoped to the port it was approved on', () async {
+      // Every other test here uses port 22, and the app's own sample config
+      // targets 2222: a store keyed by host alone would let a pin for one
+      // port answer for the other, in either direction, unnoticed.
+      final trial = UnpinnedHostKeyStore(InMemoryHostKeyStore());
+      await trial.put(HostKey(
+        host: 'dual.example.com',
+        port: 22,
+        type: 'ssh-ed25519',
+        fingerprintSha256: 'SHA256:known',
+        pinnedAt: 1,
+      ));
+      expect(await trial.get('dual.example.com', 22), isNotNull);
+      expect(await trial.get('dual.example.com', 2222), isNull);
     });
   });
 }
