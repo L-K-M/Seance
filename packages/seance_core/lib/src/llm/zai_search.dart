@@ -302,6 +302,17 @@ class ZaiSearch implements SearchProvider {
       await _drainQuietly(response.stream);
       throw const _SessionExpired();
     }
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      await _drainQuietly(response.stream);
+      // The gateway's own rejection arrives as a 200 carrying
+      // `{"success": false}` and is named by `readRpcResult`; a plain 401 or
+      // 403 is the same failure from anything else in front of the endpoint,
+      // and "HTTP 401" leaves the user with nothing to act on. Still no body:
+      // an error page here can echo the request, Authorization header and all.
+      throw http.ClientException(
+        'Z.AI rejected the search API key. Check the key in Settings.',
+      );
+    }
     if (response.statusCode >= 400) {
       await _drainQuietly(response.stream);
       // Deliberately without the body, unlike the LLM providers': this is a
@@ -312,7 +323,10 @@ class ZaiSearch implements SearchProvider {
       );
     }
 
-    final contentType = response.headers['content-type'] ?? '';
+    // Lowercased: media types are case-insensitive, and a reply typed
+    // `Text/Event-Stream` would otherwise be read as a JSON body and fail as
+    // an unexpected reply rather than being parsed as the stream it is.
+    final contentType = (response.headers['content-type'] ?? '').toLowerCase();
     if (contentType.contains('text/event-stream')) {
       // The send timeout only covers the headers. Streamable HTTP lets a
       // server hold a stream open, so without a deadline here a proxy that

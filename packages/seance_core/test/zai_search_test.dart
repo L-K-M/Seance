@@ -65,7 +65,10 @@ class FakeMcpServer {
   int _handshakes = 0;
   String? get _issuedSessionId => sessionId == null
       ? null
-      : (_handshakes > 1 ? 'session-$_handshakes' : sessionId);
+      // Derived from the configured base rather than a literal, so a test
+      // that injects its own id gets a replacement anchored to it instead of
+      // a `session-2` that looks like a client bug when the 404s start.
+      : (_handshakes > 1 ? '$sessionId-$_handshakes' : sessionId);
 
   /// Replies substituted for a method, by name (a gateway envelope, an error).
   final Map<String, Map<String, dynamic>> overrides = {};
@@ -94,7 +97,12 @@ class FakeMcpServer {
     this.sse = false,
     this.noise = false,
     this.sessionId = 'session-1',
+    this.streamCase = false,
   });
+
+  /// Answer every reply as SSE typed `Text/Event-Stream`, which is the same
+  /// media type spelled the way RFC 9110 allows and this client once misread.
+  final bool streamCase;
 
   http.Client get client => MockClient.streaming((request, body) async {
         // Kept for this request rather than read back as `headers.last`
@@ -206,7 +214,8 @@ class FakeMcpServer {
   }
 
   http.StreamedResponse _stream(int status, String body) {
-    final text = sse && body.isNotEmpty ? _asSse(body) : body;
+    final streaming = (sse || streamCase) && body.isNotEmpty;
+    final text = streaming ? _asSse(body) : body;
     return http.StreamedResponse(
       status >= 400 && stallErrorBodies
           ? StreamController<List<int>>().stream
@@ -215,8 +224,8 @@ class FakeMcpServer {
               : Stream.value(utf8.encode(text)),
       status,
       headers: {
-        'content-type': sse && body.isNotEmpty
-            ? 'text/event-stream'
+        'content-type': streaming
+            ? (streamCase ? 'Text/Event-Stream' : 'text/event-stream')
             : 'application/json',
         if (_issuedSessionId != null) 'mcp-session-id': _issuedSessionId!,
       },
@@ -489,6 +498,40 @@ void main() {
       );
     });
 
+    test('a rejected key is named as such whatever shape the refusal takes',
+        () async {
+      // The gateway's own rejection is a 200 carrying `{"success": false}`,
+      // which `readRpcResult` names. A plain 401 or 403 — anything else in
+      // front of the endpoint — is the same failure, and "HTTP 401" leaves
+      // the user with nothing to act on.
+      for (final status in [401, 403]) {
+        final client = MockClient.streaming((request, body) async =>
+            http.StreamedResponse(
+              Stream.value(utf8.encode('Bearer zai-secret was rejected')),
+              status,
+            ));
+        await expectLater(
+          ZaiSearch(apiKey: 'zai-secret', client: client).search('dart'),
+          throwsA(
+            isA<http.ClientException>()
+                .having((e) => e.message, 'message', contains('Check the key'))
+                .having((e) => e.message, 'message', isNot(contains('secret'))),
+            ),
+          reason: 'HTTP $status should name the key',
+        );
+      }
+    });
+
+    test('a content type the server spelled differently is still a stream',
+        () async {
+      // Media types are case-insensitive; a reply typed `Text/Event-Stream`
+      // was read as a JSON body and failed as an unexpected reply.
+      final server = FakeMcpServer(streamCase: true);
+      final results =
+          await ZaiSearch(apiKey: 'k', client: server.client).search('dart');
+      expect(results, isNotEmpty);
+    });
+
     test('a paginated tool listing is walked to the end', () async {
       // MCP paginates tool listings; a search tool on page two must still be
       // found rather than reported as "no web search tool".
@@ -675,7 +718,9 @@ void main() {
             contains('held the search stream open'),
           ),
         ),
-      );
+        // Test-side only, like the trickle test's: a deadline that stopped
+        // being enforced would hang this until the runner's own timeout.
+      ).timeout(const Duration(seconds: 5));
       // Failed, and let go of: the deadline is thrown into the stream, so
       // the subscription — and the socket behind it — is cancelled with it.
       expect(stalledCancelled, isTrue);
@@ -1155,6 +1200,7 @@ void main() {
           drip.cancel();
         },
       );
+      addTearDown(controller.close);
       drip = Timer.periodic(const Duration(milliseconds: 5), (_) {
         if (!controller.isClosed) controller.add(utf8.encode('.'));
       });
@@ -1179,7 +1225,6 @@ void main() {
         )),
       );
       expect(cancelled, isTrue);
-      await controller.close();
     });
 
     test('a stream that stalls is cut off rather than held open', () async {
@@ -1190,6 +1235,9 @@ void main() {
       final controller = StreamController<List<int>>(
         onCancel: () => cancelled = true,
       );
+      // Registered rather than closed at the end of the body: a failing
+      // expectation would otherwise leave the controller open.
+      addTearDown(controller.close);
       controller.add(utf8.encode('first'));
 
       await expectLater(
@@ -1210,7 +1258,6 @@ void main() {
         ),
       );
       expect(cancelled, isTrue);
-      await controller.close();
     });
   });
 
@@ -1292,12 +1339,24 @@ void main() {
       // Any backend error is contained, not only the transport ones: a parse
       // failure in one backend is no more the others' problem.
       expect(
-        await CompositeSearch([
+        (await CompositeSearch([
           _Broken(const FormatException('bad payload')),
           _Fixed([_hit('https://a')]),
-        ]).search('q'),
-        isNotEmpty,
+        ]).search('q'))
+            .map((r) => r.url),
+        ['https://a'],
       );
+    });
+
+    test('the caller\'s limit reaches the backends', () async {
+      // Asserted on what the backend was handed, not on the merged list: the
+      // merge caps at the caller's limit either way, so a composite that
+      // dropped the argument would return the same two results.
+      final backend =
+          _Fixed([_hit('https://a'), _hit('https://b'), _hit('https://c')]);
+      final results = await CompositeSearch([backend]).search('q', limit: 2);
+      expect(backend.lastLimit, 2);
+      expect(results.map((r) => r.url), ['https://a', 'https://b']);
     });
 
     test('the raised failure keeps the backend it came from', () async {
@@ -1337,9 +1396,17 @@ SearchResult _hit(String url) =>
 class _Fixed implements SearchProvider {
   final List<SearchResult> results;
   _Fixed(this.results);
+
+  /// The limit this backend was asked for, which is not observable from the
+  /// merged list: the merge caps at the caller's limit either way, so a
+  /// composite that dropped the argument would return the same results.
+  int? lastLimit;
+
   @override
-  Future<List<SearchResult>> search(String query, {int limit = 5}) async =>
-      results.take(limit).toList();
+  Future<List<SearchResult>> search(String query, {int limit = 5}) async {
+    lastLimit = limit;
+    return results.take(limit).toList();
+  }
 }
 
 class _Broken implements SearchProvider {
