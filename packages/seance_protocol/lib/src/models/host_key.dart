@@ -59,6 +59,13 @@ class HostKey {
   /// Natural key used for storage and record ids.
   String get locator => hostKeyLocator(host, port);
 
+  /// The id of this pin's sync record: the [locator] under the `hostkey:`
+  /// prefix that routes it. One builder, because the coordinator both mints
+  /// the id on the way out and checks a pulled record against it on the way
+  /// in — two literals could drift apart, and a drifted check would refuse
+  /// every pin this build ever published.
+  String get recordId => 'hostkey:$locator';
+
   /// True if [other] is the same host but a different key — the dangerous case.
   bool conflictsWith(HostKey other) =>
       host == other.host &&

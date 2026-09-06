@@ -74,6 +74,10 @@ void main() {
       // And edge whitespace is not a difference either.
       expect(duplicateServerLabel('web', const ['  web copy  ']),
           'web copy 2');
+      // The source's own label is matched under the same rules, so a padded
+      // or differently-cased source cannot hand back its own name — while
+      // the casing the user typed is kept.
+      expect(duplicateServerLabel('  WEB COPY ', const []), 'WEB copy 2');
     });
 
     test('a server named "copy" numbers rather than stutters', () {
@@ -408,6 +412,33 @@ void main() {
       expect(plan.identityFileBookmark, grant);
     });
 
+    test('carries the credential and the grant in the same plan', () async {
+      // The two carryovers were only pinned apart: an early return after the
+      // credential copy would pass both of those tests and quietly drop the
+      // grant from the one duplication people actually make — a key server
+      // whose key lives outside ~/.ssh.
+      final store = vault();
+      await store.putSecret(const Secret(
+        id: 'sec-old',
+        kind: SecretKind.privateKey,
+        value: 'PEM',
+      ));
+      const grant =
+          IdentityFileBookmark(path: '/keys/id_ed25519', bookmark: 'b64');
+      final plan = await planServerDuplication(
+        source(secretRef: 'sec-old'),
+        vault: store,
+        takenLabels: const [],
+        id: 'fresh',
+        secretId: 'sec-new',
+        now: 999,
+        bookmarkFor: (id) => id == 'original' ? grant : null,
+      );
+      expect(plan.config.secretRef, 'sec-new');
+      expect(plan.secret?.value, 'PEM');
+      expect(plan.identityFileBookmark, grant);
+    });
+
     test('a server with no credential needs no vault read', () async {
       final plan = await planServerDuplication(
         source(),
@@ -418,6 +449,9 @@ void main() {
         now: 999,
       );
       expect(plan.secret, isNull);
+      // The fixture still carries an identityFilePath; with no grant on
+      // record the plan falls back to the raw path, never to a stale one.
+      expect(plan.identityFileBookmark, isNull);
     });
   });
 

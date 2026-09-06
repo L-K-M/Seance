@@ -213,7 +213,7 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     a delete's reference count or a duplicate's plan) while a slow fetch stops
     stalling saves and deletes.
 
-14. **Seal tombstones.** A tombstone carries no sealed payload, so its date
+15. **Seal tombstones.** A tombstone carries no sealed payload, so its date
     is the sync server's to choose: a config tombstone is honoured on that
     say-so today (a hostile server can delete every synced server's *settings*
     on every device), and `secret:` / `hostkey:` tombstones are refused for
