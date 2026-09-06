@@ -34,6 +34,14 @@ void main() {
     // all — and the one caller that matters replaces a field.
     expect(original.copyWith(value: 'other').value, 'other');
     expect(original.copyWith(value: 'other').id, original.id);
+    // Every replaceable parameter, not just one: `kind: this.kind` would pass
+    // a test that only exercises `value`, and duplication is not the last
+    // caller this method will get.
+    final otherKind =
+        SecretKind.values.firstWhere((k) => k != original.kind);
+    expect(original.copyWith(kind: otherKind).kind, otherKind);
+    expect(original.copyWith(keyPassphrase: 'rekeyed').keyPassphrase,
+        'rekeyed');
   });
 
   group('model JSON round-trips', () {
