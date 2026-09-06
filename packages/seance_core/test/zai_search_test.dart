@@ -73,6 +73,10 @@ class FakeMcpServer {
   /// Answer 404 to this many `tools/call`s, as a retired session id does.
   int expireSession = 0;
 
+  /// Tag each result link with the query it answered, so racing callers can
+  /// be told apart: the same reply handed to both would be wrong for one.
+  bool echoQueryInLinks = false;
+
   /// Hold every error status's body open forever. A gateway that answers
   /// 4xx and then stalls is the shape the error drains' deadline exists for.
   bool stallErrorBodies = false;
@@ -121,7 +125,10 @@ class FakeMcpServer {
         // A retired id answers 404, like the gateway does — so a client that
         // re-handshakes but keeps sending the old id fails here rather than
         // silently passing.
-        if (method == 'tools/call' &&
+        // Every request after the handshake, as the gateway does: a client
+        // that re-initializes but keeps the retired id on its notification or
+        // listing would otherwise pass half the re-handshake conversation.
+        if (method != 'initialize' &&
             sent['mcp-session-id'] != _issuedSessionId) {
           return _stream(404, '');
         }
@@ -164,9 +171,22 @@ class FakeMcpServer {
         // that is watching lastArguments.
         final params = payload['params'] as Map?;
         lastArguments = (params?['arguments'] as Map?)?.cast<String, dynamic>();
+        var reply = _results;
+        if (echoQueryInLinks) {
+          final query = lastArguments?.entries
+              .where((e) => e.key.contains('query') && e.value is String)
+              .map((e) => e.value as String)
+              .firstOrNull;
+          reply = {
+            'search_result': [
+              for (final r in _results['search_result'] as List)
+                {...r as Map, 'link': '${r['link']}?q=$query'},
+            ],
+          };
+        }
         return {
           'content': [
-            {'type': 'text', 'text': jsonEncode(_results)},
+            {'type': 'text', 'text': jsonEncode(reply)},
           ],
         };
       default:
@@ -257,7 +277,12 @@ void main() {
       );
       // The version the *server* answered with, not the one we proposed, and
       // the session id it handed back in a header.
-      expect(server.headers.last['mcp-protocol-version'], '2025-06-18');
+      // On every post-handshake request, not only the last: the entries
+      // after the handshake's three are the two tools/call requests.
+      expect(
+        server.headers.skip(3).map((h) => h['mcp-protocol-version']).toSet(),
+        {'2025-06-18'},
+      );
       expect(server.headers.last['mcp-session-id'], 'session-1');
 
       expect(first.map((r) => r.url), [
@@ -325,7 +350,7 @@ void main() {
       // caller arriving before the first has finished awaits the same
       // attempt. Only ever asserted sequentially before, which the classic
       // racing implementation (`_session ??= await …`) also passes.
-      final server = FakeMcpServer();
+      final server = FakeMcpServer()..echoQueryInLinks = true;
       final search = ZaiSearch(apiKey: 'k', client: server.client);
 
       final results = await Future.wait([
@@ -337,8 +362,12 @@ void main() {
       expect(server.methods.where((m) => m == 'initialize').length, 1);
       // Sharing the handshake must not coalesce the searches: the two
       // queries are different, so one answer handed to both callers would be
-      // wrong for one of them.
+      // wrong for one of them — which two calls alone would not show, so
+      // each caller's links carry the query it asked.
       expect(server.methods.where((m) => m == 'tools/call').length, 2);
+      expect(results[0].map((r) => r.url), everyElement(contains('q=dart')));
+      expect(
+          results[1].map((r) => r.url), everyElement(contains('q=flutter')));
     });
 
     test('a burst of expiries costs one re-handshake, not one each', () async {
@@ -671,6 +700,29 @@ void main() {
     });
   });
 
+  group('parseToolResult shapes', () {
+    test('a non-web link does not hide the usable url beside it', () {
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'search_result': [
+                {
+                  'title': 'Relative',
+                  'link': '/relative',
+                  'url': 'https://example.com/x',
+                  'content': 'text',
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(results.map((r) => r.url), ['https://example.com/x']);
+    });
+  });
+
   group('readRpcResult', () {
     test('a JSON-RPC error names its code and nothing else', () {
       // The number tells a method-not-found from bad params; the server's
@@ -743,6 +795,21 @@ void main() {
           (e) => e.message.length,
           'message length',
           lessThan(160),
+        )),
+      );
+    });
+
+    test('the echoed name is not cut between the halves of an emoji', () {
+      final name = '${'p' * 47}😀tail';
+      expect(
+        () => ZaiSearch.buildArguments({
+          'properties': {name: const {'type': 'string'}},
+          'required': [name],
+        }, 'dart', 5),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(isNot(contains('\uFFFD')), isNot(contains('\uD83D…'))),
         )),
       );
     });
@@ -942,6 +1009,41 @@ void main() {
       );
     });
 
+    test('a stream that trickles past the deadline is cut off too', () async {
+      // Every chunk resets the idle deadline, so a proxy feeding heartbeats
+      // forever never trips it; the overall deadline is checked as each
+      // chunk arrives, thrown into the stream so ending the loop cancels the
+      // subscription — the leak a `.timeout` on the awaited future left.
+      var cancelled = false;
+      late final Timer drip;
+      final controller = StreamController<List<int>>(
+        onCancel: () {
+          cancelled = true;
+          drip.cancel();
+        },
+      );
+      drip = Timer.periodic(const Duration(milliseconds: 5), (_) {
+        if (!controller.isClosed) controller.add(utf8.encode('.'));
+      });
+
+      await expectLater(
+        ZaiSearch.bounded(
+          controller.stream,
+          1 << 20,
+          const Duration(seconds: 1),
+          total: const Duration(milliseconds: 40),
+          totalMessage: 'held open',
+        ).toList(),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          'held open',
+        )),
+      );
+      expect(cancelled, isTrue);
+      await controller.close();
+    });
+
     test('a stream that stalls is cut off rather than held open', () async {
       // The deadline lives here so ending the loop cancels the subscription;
       // as a `.timeout` on the awaited future it would free the caller and
@@ -985,6 +1087,27 @@ void main() {
         _Fixed([_hit('https://x.example/docs#install')]),
       ]).search('q', limit: 5);
       expect(results.map((r) => r.url), ['https://x.example/docs']);
+    });
+
+    test('a slash inside a query value is data, not a trailing slash',
+        () async {
+      // `?next=/docs/` and `?next=/docs` are two different redirects; the
+      // trailing-slash trim applies to a path, not to a query value.
+      final results = await CompositeSearch([
+        _Fixed([_hit('https://x.example/go?next=/docs/')]),
+        _Fixed([_hit('https://x.example/go?next=/docs')]),
+      ]).search('q', limit: 5);
+      expect(results, hasLength(2));
+    });
+
+    test('an explicit default port is the same page', () async {
+      // Pinned either way, so a normalization refactor changes this on
+      // purpose: Dart's `Uri` drops an explicit `:443`.
+      final results = await CompositeSearch([
+        _Fixed([_hit('https://x.example/docs')]),
+        _Fixed([_hit('https://x.example:443/docs')]),
+      ]).search('q', limit: 5);
+      expect(results, hasLength(1));
     });
 
     test('a query string is not a duplicate', () async {

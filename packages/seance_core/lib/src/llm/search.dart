@@ -106,7 +106,12 @@ String _dedupKey(String url) {
   final parsed = Uri.tryParse(url);
   final withoutFragment =
       parsed == null ? url : parsed.removeFragment().toString();
-  return withoutFragment.replaceFirst(RegExp(r'/+$'), '');
+  // A trailing '/' is the path's only when nothing follows the path: inside
+  // a query value (`?next=/docs/`) it is data, and stripping it would merge
+  // two different pages.
+  return withoutFragment.contains('?')
+      ? withoutFragment
+      : withoutFragment.replaceFirst(RegExp(r'/+$'), '');
 }
 
 /// Query several backends at once and merge what comes back.
@@ -184,6 +189,8 @@ class CompositeSearch implements SearchProvider {
         // slashes only. Case and query string stay, because `?id=1` and
         // `?id=2` are genuinely different pages and lowercasing a path can
         // merge two.
+        // An empty key is no identity: the prose fallback carries one, and
+        // two backends' prose are two answers, not one page twice.
         final key = _dedupKey(result.url);
         if (key.isNotEmpty && !seen.add(key)) continue;
         merged.add(result);
