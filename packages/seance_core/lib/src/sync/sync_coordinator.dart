@@ -1,5 +1,6 @@
 import 'dart:developer' as developer;
 
+import 'package:meta/meta.dart';
 import 'package:seance_protocol/seance_protocol.dart';
 
 import '../hostkey/tofu.dart';
@@ -137,8 +138,10 @@ class SyncCoordinator {
 
   /// Retract a server the user has excluded from sync: tombstone its record,
   /// and its credential's, so a copy pushed before the exclusion comes off the
-  /// server — and off the devices that pulled it, which apply both tombstones
-  /// (see [_applySecretTombstones]). Doing nothing instead would leave the
+  /// server — and the server row off the devices that pulled it, which honour
+  /// the config tombstone. They keep their vault entry, because a tombstone is
+  /// unsealed and so is not trusted with a delete; the routing comment in
+  /// [applyToStores] has the reasoning. Doing nothing instead would leave the
   /// blob on the server forever while this device silently stopped updating
   /// it, which is a worse answer than either syncing or not.
   ///
@@ -165,6 +168,16 @@ class SyncCoordinator {
   /// settings already did. Withdrawing a credential that was never there costs
   /// an id-shaped row; leaving one behind because we were unsure costs the
   /// credential.
+  ///
+  /// That row is a real disclosure and worth naming: a credential the user
+  /// never synced has its ref published to the sync server as a tombstone id.
+  /// It is a `uuidV4` minted for the vault, carrying no host, user or label,
+  /// so what the server learns is that a credential exists — and it stops
+  /// there, because the id is not honoured as a delete anywhere. Gating this
+  /// on the current [syncSecrets] instead would trade that for the failure
+  /// that actually matters: a credential the user *did* publish under older
+  /// settings, left on the sync server with nothing that will ever withdraw
+  /// it.
   ///
   /// Unless a still-synced server shares it, which [syncedSecretRefs] names.
   /// A secret record is keyed by the credential, not by the server holding it,
@@ -197,9 +210,10 @@ class SyncCoordinator {
   }
 
   /// Write every record in the local store back into the domain stores,
-  /// honouring tombstones. Returns the number of retractions that had to be
-  /// re-dated (see [_rescheduleOutranked]), so the caller knows a further push
-  /// is worth making.
+  /// honouring tombstones. Returns the number of records that had to be
+  /// re-dated — retractions the server outranked (see [rescheduleOutranked])
+  /// plus servers re-included behind their own retraction (see [_revive]) — so
+  /// the caller knows a further push is worth making.
   Future<int> applyToStores() async {
     // A server excluded from sync is local-only, so nothing pulled may touch
     // it: not the tombstone this device pushed to retract it (which comes back
@@ -216,8 +230,7 @@ class SyncCoordinator {
     // last reference. Record order is not defined, so deciding inline would
     // make the outcome depend on it.
     final secretRecords = <DecryptedRecord>[];
-    final secretTombstones = <String>[];
-    // Live configs for servers this device excluded: see [_rescheduleOutranked].
+    // Live configs for servers this device excluded: see [rescheduleOutranked].
     final outranked = <DecryptedRecord>[];
     // Servers this device re-included whose own retraction still outranks
     // them: see the tombstone branch below.
@@ -236,9 +249,19 @@ class SyncCoordinator {
         final dec = await codec.decrypt(enc);
 
         // Tombstones have no encrypted kind, so the id prefix is what routes
-        // them. Bare ids are the legacy server-deletion form; `secret:` is
-        // handled after the loop; other prefixes remain no-ops pending a
-        // per-kind delete for them.
+        // them. Bare ids are the legacy server-deletion form and still delete.
+        // Every prefixed kind — `secret:`, `hostkey:` — is deliberately a
+        // no-op: `RecordCodec.decrypt` returns a deleted record straight from
+        // the envelope's flag without opening anything, so a tombstone is the
+        // one signal a sync server can assert entirely on its own. Honouring
+        // those would hand it a primitive for emptying the vault (tombstone
+        // the configs first, then the credentials no config still names) and
+        // for stripping this device's TOFU pins. Configs already carried that
+        // exposure before any of this; a credential vault and a set of host
+        // key pins are not where to widen it. The fix is sealing tombstones —
+        // an authenticator over id, kind and date, keyed like the payload —
+        // not a per-apply special case, so the records stay staged for a
+        // build that can check them.
         if (dec.deleted) {
           if (!dec.id.contains(_recordKindDelimiter)) {
             if (excluded.contains(dec.id)) continue;
@@ -247,16 +270,17 @@ class SyncCoordinator {
             // would honour a decision that has since been reversed — and the
             // re-included config cannot win it back on its own, because the
             // tombstone may have been re-dated past this device's clock by
-            // [_rescheduleOutranked]. So the live record is re-dated instead,
+            // [rescheduleOutranked]. So the live record is re-dated instead,
             // the mirror of that escalation, and the delete is skipped.
-            final local = await configStore.getServer(dec.id);
-            if (local != null && dec.deviceId == deviceId) {
-              revived.add((local, dec.updatedAt));
+            // Not named `local`: that is the record store this method
+            // writes through, and shadowing it here would let a later edit
+            // reach for `local.putLocal` and silently get a ServerConfig.
+            final localServer = await configStore.getServer(dec.id);
+            if (localServer != null && dec.deviceId == deviceId) {
+              revived.add((localServer, dec.updatedAt));
               continue;
             }
             await configStore.deleteServer(dec.id);
-          } else if (dec.id.startsWith(_secretIdPrefix)) {
-            secretTombstones.add(dec.id);
           }
           continue;
         }
@@ -268,7 +292,23 @@ class SyncCoordinator {
               continue;
             }
 
-            await configStore.putServer(ServerConfig.fromJson(dec.data));
+            final pulled = ServerConfig.fromJson(dec.data);
+            // The exclusion shield above keys on the *record* id, and this
+            // write would key on the payload's. A record whose two ids
+            // disagree — schema drift, a buggy peer, anything hand-made by a
+            // device that has the key — would slip a config past the shield,
+            // and land under an id no tombstone can ever name.
+            if (pulled.id != dec.id) {
+              skip(
+                dec.id,
+                StateError(
+                  'config id ${pulled.id} does not match record id ${dec.id}',
+                ),
+                StackTrace.current,
+              );
+              continue;
+            }
+            await configStore.putServer(pulled);
           case RecordKind.hostKey:
             await hostKeyStore.put(HostKey.fromJson(dec.data));
           case RecordKind.secret:
@@ -288,7 +328,6 @@ class SyncCoordinator {
     }
 
     await _applySecretRecords(secretRecords, skip);
-    await _applySecretTombstones(secretTombstones, skip);
 
     if (skippedIds.isNotEmpty) {
       developer.log(
@@ -300,7 +339,7 @@ class SyncCoordinator {
       );
     }
 
-    return await _rescheduleOutranked(outranked) + await _revive(revived);
+    return await rescheduleOutranked(outranked, skip) + await _revive(revived, skip);
   }
 
   /// Re-date a re-included server past the retraction it is still losing to.
@@ -313,20 +352,46 @@ class SyncCoordinator {
   /// back. Persisting the bump is what makes it stick: a fresh timestamp each
   /// round would be a new winning write every five minutes, which is the churn
   /// [_retract]'s stable date exists to avoid.
-  Future<int> _revive(List<(ServerConfig, int)> servers) async {
+  Future<int> _revive(
+    List<(ServerConfig, int)> servers,
+    void Function(String, Object, StackTrace) skip,
+  ) async {
+    var bumpedCount = 0;
     for (final (config, retractedAt) in servers) {
       if (config.updatedAt > retractedAt) continue;
-      final bumped = config.copyWith(updatedAt: retractedAt + 1);
-      await configStore.putServer(bumped);
-      await local.putLocal(await codec.encrypt(DecryptedRecord(
-        id: bumped.id,
-        kind: RecordKind.serverConfig,
-        updatedAt: bumped.updatedAt,
-        deviceId: deviceId,
-        data: bumped.toJson(),
-      )));
+      // Fail-soft per record, like the loop that produced this list: a
+      // transient store error on one server would otherwise throw out of
+      // `applyToStores`, discarding the sync outcome the round had already
+      // earned and skipping the second pass — turning one flaky write into a
+      // whole failed round.
+      try {
+        final bumped = config.copyWith(updatedAt: retractedAt + 1);
+        // The staged record first, the store second. The bump is a
+        // deterministic function of the retraction's date, so a failed
+        // `putServer` is retried identically next round — but a failed
+        // `putLocal` *after* a successful `putServer` is never retried,
+        // because the store then reports `updatedAt > retractedAt` and the
+        // guard above drops this server from `revived` forever. The bump
+        // would never reach a peer, while the losing pre-bump record still
+        // would, and the next pull's tombstone would delete the config the
+        // user had just brought back.
+        await local.putLocal(await codec.encrypt(DecryptedRecord(
+          id: bumped.id,
+          kind: RecordKind.serverConfig,
+          updatedAt: bumped.updatedAt,
+          deviceId: deviceId,
+          data: bumped.toJson(),
+        )));
+        await configStore.putServer(bumped);
+        bumpedCount++;
+      } catch (error, stackTrace) {
+        skip(config.id, error, stackTrace);
+      }
     }
-    return servers.length;
+    // What was bumped, not what was offered: a server already outranking its
+    // own retraction needs nothing, and counting it would spend an extra sync
+    // round on a batch that changed nothing.
+    return bumpedCount;
   }
 
   /// Store pulled credentials, shielding the ones only excluded servers name.
@@ -348,7 +413,25 @@ class SyncCoordinator {
     final vault = secretVault;
     if (records.isEmpty || !syncSecrets || vault == null) return;
     final shielded = await _shieldedSecretIds();
-    for (final dec in records) {
+    // The id invariant enforced here rather than left to the call site, like
+    // the kind check in [rescheduleOutranked]: every id this method reasons
+    // about is `secret:` + the vault ref, which is what [_shieldedSecretIds]
+    // builds and what the shield is compared against. A record arriving under
+    // any other id could not be shielded by construction, and would go to
+    // `Secret.fromJson` to either throw into the skip diagnostics or, worse,
+    // parse and be written into the vault as a credential nothing named.
+    for (final dec in records.where((d) => !d.id.startsWith(_secretIdPrefix))) {
+      // Through `skip`, not a log line of its own: correctly not written, but
+      // every other drop in this method lands in `skippedIds`, and a peer
+      // minting secret ids differently should show up where a reader is
+      // already looking rather than in a channel of its own.
+      skip(
+        dec.id,
+        StateError('secret record id is not `$_secretIdPrefix`-prefixed'),
+        StackTrace.current,
+      );
+    }
+    for (final dec in records.where((d) => d.id.startsWith(_secretIdPrefix))) {
       if (shielded.contains(dec.id)) continue;
       try {
         await vault.putSecret(Secret.fromJson(dec.data));
@@ -404,66 +487,53 @@ class SyncCoordinator {
   /// when the live `secret:` record on the server is dated after the
   /// exclusion, the retraction loses and nothing escalates it, so the
   /// credential stays on the sync server. The shield protects this device's
-  /// vault, not the remote copy.
-  Future<int> _rescheduleOutranked(List<DecryptedRecord> records) async {
-    // The kind check is the invariant this doc comment spends a paragraph on,
-    // enforced here rather than left to the call site to preserve: minting a
-    // tombstone one millisecond past a live `secret:` record is exactly the
-    // harm described above, and it should not be a filter away.
-    final configs =
-        records.where((dec) => dec.kind == RecordKind.serverConfig).toList();
-    for (final dec in configs) {
-      await _tombstone(dec.id, dec.kind, dec.updatedAt + 1);
-    }
-    return configs.length;
-  }
-
-  /// Withdraw vault entries whose records were tombstoned — but only the ones
-  /// no local server still points at.
+  /// vault, not the remote copy. And because a `secret:` tombstone is not
+  /// honoured against the vault at all (see the routing comment in
+  /// [applyToStores]), the *other* device keeps its copy of the credential as
+  /// an orphan no config names — inert, and invisible in a UI that lists
+  /// servers, but not gone. Both residuals close the same way: sealed
+  /// tombstones, which let a delete be trusted and so escalated.
   ///
-  /// Deleting a credential is the one apply a later round cannot undo, so it
-  /// is deliberately conservative. On the device that *made* the retraction,
-  /// the excluded server still references its credential, and that reference
-  /// is exactly what keeps it — the whole point is that this device keeps
-  /// working. On the other device the config tombstone in the same batch has
-  /// already removed the last reference, so the credential goes rather than
-  /// lingering as an orphan nothing can name and nothing will ever clean up.
-  ///
-  /// Gated on [syncSecrets] like every other secret path: a user who has
-  /// turned credential sync off has said remote secret records are not to
-  /// touch their vault, and a delete is not the exception to that.
-  /// One caveat this makes newly relevant: a tombstone carries no sealed
-  /// payload — `RecordCodec.decrypt` returns a deleted record straight from
-  /// the envelope's flag, without opening anything — so a deletion is the one
-  /// signal the sync server can assert on its own. Bare-id tombstones already
-  /// deleted configs on that basis; this path extends the reach to the
-  /// credentials no remaining config names. The extra cost is bounded (the
-  /// config has to go first, which was already possible) but the fix is to
-  /// seal tombstones, not to special-case this apply.
-  Future<void> _applySecretTombstones(
-    List<String> ids,
-    void Function(String, Object, StackTrace) skip,
-  ) async {
-    final vault = secretVault;
-    if (ids.isEmpty || !syncSecrets || vault == null) return;
-    final referenced = <String>{
+  /// Visible for testing because the guard below is the whole point: a test
+  /// that can only reach it through [applyToStores] — which filters first —
+  /// proves the filter, never the guard.
+  @visibleForTesting
+  Future<int> rescheduleOutranked(
+    List<DecryptedRecord> records, [
+    void Function(String, Object, StackTrace)? skip,
+  ]) async {
+    // Both invariants this doc comment spends paragraphs on are enforced here
+    // rather than left to the call site to preserve forever. Every record
+    // reaching the loop is re-tombstoned, so an unfiltered list handed in by
+    // some future path would delete every pulled config on every device — the
+    // one mistake in this file whose blast radius is the whole account, and
+    // it should not be a filter away. The kind check is the other half:
+    // minting a tombstone one millisecond past a live `secret:` record is
+    // exactly the harm described above.
+    //
+    // The exclusion is re-read from the store rather than checked against a
+    // staged tombstone, which is what it looks like it should be: by the time
+    // a record is in this list it *beat* that tombstone, so the local store
+    // holds the winning config under that id and the tombstone is gone.
+    final excluded = <String>{
       for (final server in await configStore.listServers())
-        if (server.secretRef != null) '$_secretIdPrefix${server.secretRef}',
+        if (server.excludeFromSync) server.id,
     };
-    for (final id in ids) {
-      // The prefix guard before the strip: this is the one irreversible apply
-      // in the file, and a bare id reaching it would derive a vault key from
-      // the wrong characters and delete whatever it named.
-      if (!id.startsWith(_secretIdPrefix) || referenced.contains(id)) continue;
-      // Fail-soft like every other apply: the vault throws when the OS keyring
-      // is locked, and one refused delete must not abandon the rest of the
-      // batch — nor discard the diagnostics gathered for it.
+    final configs = records
+        .where((dec) =>
+            dec.kind == RecordKind.serverConfig && excluded.contains(dec.id))
+        .toList();
+    var mintedCount = 0;
+    for (final dec in configs) {
       try {
-        await vault.deleteSecret(id.substring(_secretIdPrefix.length));
+        await _tombstone(dec.id, dec.kind, dec.updatedAt + 1);
+        mintedCount++;
       } catch (error, stackTrace) {
-        skip(id, error, stackTrace);
+        if (skip == null) rethrow;
+        skip(dec.id, error, stackTrace);
       }
     }
+    return mintedCount;
   }
 
   /// One full synchronization round.
@@ -475,7 +545,12 @@ class SyncCoordinator {
     // that beat it. Push it now: the next run would only re-mint the same
     // losing date [collectLocal] computes, so waiting never resolves it. One
     // extra pass, never a loop — a second re-dating is left to the next run.
-    if (await applyToStores() == 0) return first;
+    // Named, because the gate only means what the comment above says while
+    // this is the *re-dating* count and not, say, the number of records
+    // applied — which would double every round's traffic on the hot path,
+    // hidden inside the summed outcome.
+    final redated = await applyToStores();
+    if (redated == 0) return first;
     final second = await engine.sync(api);
     await applyToStores();
     return SyncOutcome(

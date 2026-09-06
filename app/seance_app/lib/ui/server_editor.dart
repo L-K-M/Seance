@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -29,6 +31,34 @@ bool excludingNeedsConfirmation({
   required ServerConfig? existing,
   required bool syncConfigured,
 }) => existing != null && !existing.excludeFromSync && syncConfigured;
+
+/// The timestamp a save should carry: the wall clock, but never one this
+/// config has already passed.
+///
+/// `updatedAt` is what orders this edit against every other device's, and a
+/// device whose clock trails the record it pulled — the ordinary case once one
+/// device runs even slightly fast — would otherwise stamp an edit that ties
+/// with, or loses to, the copy it means to replace, and quietly not take
+/// anywhere else.
+///
+/// Exclusion is where that costs most: `SyncCoordinator` dates the retraction
+/// tombstone from this timestamp, so a losing stamp leaves the server and its
+/// credential on the sync server and on every other device while this one
+/// shows the switch on. The coordinator does re-date a retraction it sees
+/// outranked, so the difference is retracting on the first push rather than a
+/// round later — but the first push is where it belongs, and a monotonic stamp
+/// costs one comparison.
+///
+/// It outranks the record *this device has pulled*, which is the whole of what
+/// a local clamp can know. An edit racing a remote change this device has not
+/// seen yet can still tie with it or lose, and lose silently — closing that
+/// needs the coordinator, which re-dates a retraction it sees outranked.
+///
+/// A function rather than an inline `max` so it can be tested: `_save` needs
+/// an [AppState], whose services constructor is private, so nothing reaches it
+/// from a test.
+int nextUpdatedAt(int? existingUpdatedAt, {required int now}) =>
+    math.max(now, (existingUpdatedAt ?? 0) + 1);
 
 /// The dialog [excludingNeedsConfirmation] gates, as a function so a test can
 /// tap its buttons without standing up an editor or an [AppState].
@@ -516,8 +546,11 @@ class _ServerEditorState extends State<_ServerEditor> {
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
-    final now = DateTime.now().millisecondsSinceEpoch;
     final existing = widget.existing;
+    final now = nextUpdatedAt(
+      existing?.updatedAt,
+      now: DateTime.now().millisecondsSinceEpoch,
+    );
     final id = existing?.id ?? uuidV4();
 
     String? secretRef = existing?.secretRef;
