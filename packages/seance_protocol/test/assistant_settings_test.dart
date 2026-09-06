@@ -75,6 +75,7 @@ void main() {
         AssistantSettings.fromJson(settings().toJson()..['apiKeys'] = bad)
             .apiKeys,
         isEmpty,
+        reason: 'apiKeys=$bad should read as no keys',
       );
     }
   });

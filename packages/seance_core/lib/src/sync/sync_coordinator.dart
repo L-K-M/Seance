@@ -34,6 +34,13 @@ class SyncCoordinator {
   /// Opt-in assistant-configuration syncing. Null — the default — means the
   /// record is neither pushed nor applied, so a device that has not opted in
   /// keeps its own provider, model and keys whatever the account carries.
+  ///
+  /// When it is set, the assistant's API keys travel inside the sealed record
+  /// whether or not [syncSecrets] is on. The two switches are about different
+  /// things — [syncSecrets] governs the credentials servers authenticate with
+  /// — but `syncSecrets: false` is the flag a reader would reach for to keep
+  /// key material off the server, so the exception is worth stating here. The
+  /// seal is the protection, the same one synced passwords get.
   final AssistantSettingsStore? assistantStore;
 
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be

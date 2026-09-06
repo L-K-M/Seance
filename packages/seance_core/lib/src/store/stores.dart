@@ -48,6 +48,12 @@ abstract class SnippetStore {
 /// references alone would sync a configuration that looks set up everywhere
 /// and answers nowhere.
 abstract class AssistantSettingsStore {
+  /// The publishable configuration, or null when there is nothing to publish.
+  ///
+  /// Null is reserved for "this device has never configured one" and for
+  /// "the key material cannot be vouched for right now" — the coordinator
+  /// treats both as a round to sit out, and the second is why a locked
+  /// keyring must not publish a keyless copy over a keyed one.
   Future<AssistantSettings?> getAssistantSettings();
 
   /// When this device's stored configuration was last edited — and nothing
@@ -64,6 +70,20 @@ abstract class AssistantSettingsStore {
   /// stamp [getAssistantSettings] treats as "nothing to publish".
   Future<int> assistantSettingsUpdatedAt();
 
+  /// Store a configuration: a local edit, or a record adopted from sync.
+  ///
+  /// Two contracts an implementer cannot infer from the signature. The record
+  /// is stored *as given*, `updatedAt` included — dating it belongs to the
+  /// caller, and re-stamping a pulled record here would corrupt the
+  /// comparison the whole adopt/publish path is ordered by. And a record that
+  /// arrived over the wire carries key *material* inline, which has to be
+  /// moved into the OS keystore with only references kept: keys travel inside
+  /// the sealed record and must not land in the file the settings persist to.
+  ///
+  /// An absent key means "look locally", never "forget the entry you have":
+  /// a configuration that stops naming a key is not an instruction to delete
+  /// it, and another configuration this record does not describe may still
+  /// use it.
   Future<void> putAssistantSettings(AssistantSettings settings);
 }
 

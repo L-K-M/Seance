@@ -872,8 +872,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     }
 
-    // Taken before the assignments below, so a Save that changes nothing does
-    // not stamp: see [assistantSyncFingerprint].
+    // Both taken before the assignments below, and before any `await`, so a
+    // Save that changes nothing does not stamp: see
+    // [assistantSyncFingerprint]. The fields stay editable while a Save is in
+    // flight, so reading `keyEntered` after the keystore and settings writes
+    // would count text typed during them — text that is then cleared below
+    // without ever having been stored, since the storing already happened.
+    //
+    // A key typed into *any* of these fields counts even when every other
+    // field matched: the keys travel in the record too, under refs that do not
+    // change when the value behind them is rotated, so nothing about a
+    // re-entered key moves the fingerprint. Trimmed on both sides, because
+    // whitespace is not a key and treating it as one stamps a write with no
+    // edit behind it.
+    final keyEntered =
+        _apiKey.text.trim().isNotEmpty || _zaiApiKey.text.trim().isNotEmpty;
     final before = assistantSyncFingerprint(s);
     s.llmKind = _kind;
     s.llmBaseUrl = _baseUrl.text.trim();
@@ -895,17 +908,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await state.services.saveSettings();
     // Stamp and publish: this is the edit the synced record's timestamp is
     // supposed to move for. A no-op when assistant sync is off.
-    //
-    // A key typed into *any* of these fields counts even when every other
-    // field matched: the keys travel in the record too, under refs that do not
-    // change when the value behind them is rotated, so nothing about a
-    // re-entered key moves the fingerprint.
-    // Trimmed on both sides: whitespace is not a key, and treating it as one
-    // stamps a write with no edit behind it.
-    final keyEntered =
-        _apiKey.text.trim().isNotEmpty || _zaiApiKey.text.trim().isNotEmpty;
     if (keyEntered || assistantSyncFingerprint(s) != before) {
-      await state.assistantSettingsEdited();
+      try {
+        await state.assistantSettingsEdited();
+      } catch (e) {
+        // The settings are already on disk. A failed publish must not skip
+        // the provider rebuild below and surface as an unhandled async error
+        // that reads like Save itself broke.
+        if (mounted) {
+          showTopToastIn(context, message: 'Assistant sync: $e');
+        }
+      }
     }
     if (keyEntered) {
       // Cleared once stored, or the text left in the field makes every later

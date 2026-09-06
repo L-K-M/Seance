@@ -174,12 +174,13 @@ void main() {
     AssistantSettings arriving({
       String providerKind = 'openaiCompatible',
       String model = 'gpt-5',
+      String llmApiKeyRef = 'openai',
       Map<String, String> apiKeys = const {'openai': 'sk-remote'},
     }) => AssistantSettings(
           providerKind: providerKind,
           baseUrl: 'https://api.openai.com/v1',
           model: model,
-          llmApiKeyRef: 'openai',
+          llmApiKeyRef: llmApiKeyRef,
           searxngUrl: 'https://searx.example.com',
           braveApiKeyRef: 'brave',
           zaiApiKeyRef: 'zai',
@@ -250,6 +251,27 @@ void main() {
       expect(sync.applied, isFalse);
     });
 
+    test('a keyless record is adopted without forgetting a stored key',
+        () async {
+      // The mirror of the publishing group's keyless case, which had none:
+      // another device switching to a local gateway that wants no key. The
+      // reference is dropped, and the key it stopped naming stays — a
+      // configuration that no longer names a key is not an instruction to
+      // delete it.
+      await keys.putApiKey('openai', 'sk-local');
+      await sync.putAssistantSettings(arriving(
+        model: 'keyless-model',
+        llmApiKeyRef: '',
+        apiKeys: const {},
+      ));
+
+      expect(settings.llmApiKeyRef, '');
+      expect(settings.llmModel, 'keyless-model');
+      expect(settings.assistantUpdatedAt, 500);
+      expect(sync.applied, isTrue);
+      expect(await keys.getApiKey('openai'), 'sk-local');
+    });
+
     test('a skipped record clears the applied flag the last one set',
         () async {
       // `applied` is a per-round answer and the coordinator hands a record
@@ -293,7 +315,6 @@ void main() {
       // pulled again every round, and the key write is retried because the
       // stored value still differs from the one the record carries.
       keystore.locked = false;
-      sync.applied = false;
       await sync.putAssistantSettings(arriving());
       expect(await keys.getApiKey('openai'), 'sk-remote');
       expect(sync.applied, isTrue);
@@ -327,7 +348,6 @@ void main() {
       await sync.putAssistantSettings(arriving());
       expect(sync.applied, isTrue);
 
-      sync.applied = false;
       await sync.putAssistantSettings(arriving());
       expect(sync.applied, isFalse);
 
@@ -339,7 +359,6 @@ void main() {
       expect(await keys.getApiKey('openai'), 'sk-rotated');
 
       // And so is a field.
-      sync.applied = false;
       await sync.putAssistantSettings(
         arriving(apiKeys: const {'openai': 'sk-rotated'}, model: 'gpt-5-mini'),
       );

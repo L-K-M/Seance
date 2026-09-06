@@ -371,12 +371,22 @@ class AppServices {
       syncSecrets: settings.syncSecrets,
       secretVault: settings.syncSecrets ? vault : null,
     );
-    final outcome = await _withSyncClient(baseUrl, (client) {
-      client.token = token;
-      return coordinator.run(client);
-    });
-    assistantSettingsChanged = assistant?.applied ?? false;
-    return outcome;
+    try {
+      return await _withSyncClient(baseUrl, (client) {
+        client.token = token;
+        return coordinator.run(client);
+      });
+    } finally {
+      // In a `finally`, because a round can apply the assistant record and
+      // *then* fail — the pull happens first, and a push after it can still
+      // throw. Assigned only on success, that adoption was invisible: the
+      // failed round skipped `reloadLlmProvider`, and the next successful
+      // round found the settings already adopted, so the fingerprint matched,
+      // `applied` was false again, and the chat provider kept answering with
+      // the old model and key until some unrelated edit happened to rebuild
+      // it.
+      assistantSettingsChanged = assistant?.applied ?? false;
+    }
   }
 
   /// Keep connections alive through response/persistence work, including errors.
