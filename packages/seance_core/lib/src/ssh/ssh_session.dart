@@ -185,9 +185,14 @@ class SshConnectionLog {
 /// redacted — but a chunk arriving *without* the name cannot reach that
 /// branch at all, and a `(responses : [pw])` would then match nothing and
 /// print the credential.
-/// The message whose `responses` list *is* the password for a host doing
-/// password login over keyboard-interactive.
 const String _userauthMessage = 'Userauth_InfoResponse';
+
+/// What the fail-closed branch keys on: the part of the name a rename is
+/// least likely to touch. Keying on the whole name left one combination of
+/// the rename matrix open — class *and* field renamed at once, so neither
+/// the shape anchor nor the exact name matched and the credential printed.
+/// `Userauth_InfoRequest` does not contain it, so request lines stay legible.
+const String _infoResponseToken = 'InfoResponse';
 
 /// Built from [_userauthMessage] rather than repeating it. The fail-closed
 /// branch below is only coherent while the name it checks for and the name
@@ -215,7 +220,7 @@ String redactConnectionTrace(String line) {
   // nothing red anywhere. An InfoResponse this does not recognize is
   // therefore replaced whole: a transcript line lost to caution costs a
   // diagnosis, and the alternative costs the credential.
-  if (line.contains(_userauthMessage) && !_userauthResponses.hasMatch(line)) {
+  if (line.contains(_infoResponseToken) && !_userauthResponses.hasMatch(line)) {
     return '$_userauthMessage(redacted: this build does not recognize the '
         'shape of this message, so all of it is withheld)';
   }

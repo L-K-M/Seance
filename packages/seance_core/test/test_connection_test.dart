@@ -127,6 +127,25 @@ void main() {
       expect(result.log, contains('runConnectionTest'));
     });
 
+    test('a resolver\'s own log ends with the summary exactly once', () async {
+      // The summary is appended after the copied lines, where a failure
+      // transcript is documented to end — and not again when the resolver's
+      // log already closes with it.
+      final own = SshConnectionLog()
+        ..add('reading the identity file')
+        ..add('keyring is locked');
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async =>
+            throw SshConnectException('keyring is locked', StateError('x'), own),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      final lines = result.log.trim().split('\n');
+      expect(lines.last, 'keyring is locked');
+      expect(lines.where((l) => l == 'keyring is locked').length, 1);
+      expect(lines, contains('reading the identity file'));
+    });
+
     test('a log an authenticator attached is kept, not only a resolver\'s',
         () async {
       // The live authenticator writes into the transcript it is handed and
@@ -569,13 +588,26 @@ void main() {
       // Every other test here uses port 22, and the app's own sample config
       // targets 2222: a store keyed by host alone would let a pin for one
       // port answer for the other, in either direction, unnoticed.
-      final trial = UnpinnedHostKeyStore(InMemoryHostKeyStore());
+      final real = InMemoryHostKeyStore();
+      await real.put(HostKey(
+        host: 'stored.example.com',
+        port: 2222,
+        type: 'ssh-ed25519',
+        fingerprintSha256: 'SHA256:known',
+        pinnedAt: 1,
+      ));
+      final trial = UnpinnedHostKeyStore(real);
+      // A pin read through from the wrapped store is scoped to its port —
+      // the path every trial takes for the pins it already has…
+      expect(await trial.get('stored.example.com', 2222), isNotNull);
+      expect(await trial.get('stored.example.com', 22), isNull);
+      // …and so is one approved during the trial itself.
       await trial.put(HostKey(
         host: 'dual.example.com',
         port: 22,
         type: 'ssh-ed25519',
         fingerprintSha256: 'SHA256:known',
-        pinnedAt: 1,
+        pinnedAt: 2,
       ));
       expect(await trial.get('dual.example.com', 22), isNotNull);
       expect(await trial.get('dual.example.com', 2222), isNull);
