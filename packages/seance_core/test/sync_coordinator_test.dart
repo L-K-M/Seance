@@ -825,12 +825,11 @@ void main() {
         server('still-synced', 'beta', 20)
             .copyWith(secretRef: 'shared', syncSecret: true),
       );
-      SyncCoordinator coordinator(LocalRecordStore local) => SyncCoordinator(
-            configStore: configs,
-            hostKeyStore: InMemoryHostKeyStore(),
-            codec: codec,
+      SyncCoordinator coordinator(LocalRecordStore local) => coord(
+            codec,
+            configs,
+            'A',
             local: local,
-            deviceId: 'A',
             syncSecrets: true,
             secretVault: vault,
           );
@@ -1221,7 +1220,12 @@ void main() {
       // real re-dating rather than on a batch that failed.
       expect(await coordinator.applyToStores(), 1);
       expect((await configs.getServer('good'))!.updatedAt, 21);
-      expect(await local.getRecord('good'), isNotNull);
+      // The *bump* is what has to be staged: the tombstone seeded above sits
+      // under the same id, so "a record exists" would hold even if nothing
+      // had been written.
+      final staged = await codec.decrypt((await local.getRecord('good'))!);
+      expect(staged.deleted, isFalse);
+      expect(staged.updatedAt, 21);
     });
 
     test('a config whose payload id disagrees is skipped, not written',
