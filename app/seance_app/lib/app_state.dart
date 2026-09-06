@@ -657,10 +657,16 @@ class AppState extends ChangeNotifier {
       // disk naming a credential that was already gone: a dangling reference
       // the user only meets at connect time. Reversed, the worst a failure
       // leaves is a vault entry nothing names — invisible rather than broken.
+      await services.configStore.deleteServer(id);
+      // After the config for the same reason the vault delete is: revoked
+      // first, a throw from `deleteServer` left a live server whose
+      // Browse…-picked key had already lost its security-scoped grant — the
+      // failure the reorder was written to prevent, just moved from the vault
+      // to the bookmark. Reversed, the worst it leaves is a grant filed under
+      // an id nothing names.
       if (services.settings.identityFileBookmarks.remove(id) != null) {
         await services.saveSettings();
       }
-      await services.configStore.deleteServer(id);
       servers = await services.configStore.listServers();
 
       // Against the refreshed list, which no longer holds this server —

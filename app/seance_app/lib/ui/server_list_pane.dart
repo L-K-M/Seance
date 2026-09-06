@@ -300,7 +300,7 @@ class _ServerListPaneState extends State<ServerListPane> {
         showTopToastIn(context, message: '$error');
       }
       return;
-    } catch (error) {
+    } catch (error, stackTrace) {
       // The vault throws when the OS keyring is locked. Say so rather than
       // leaving the menu looking like it did nothing — and name the server,
       // because a toast is all the user gets and two rows can fail apart.
@@ -313,7 +313,16 @@ class _ServerListPaneState extends State<ServerListPane> {
         // The pane went away before this failure landed, so there is nowhere
         // to show it. A vault error that vanishes entirely is what makes
         // "duplicate silently did nothing" impossible to diagnose.
-        developer.log(message, name: 'seance.app', level: 900, error: error);
+        // With the trace: this catch is broad, and for the failures it was
+        // not written for the message names the server and nothing else — no
+        // throw site to tell a locked keyring from a bug in the vault.
+        developer.log(
+          message,
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
       }
       return;
     }

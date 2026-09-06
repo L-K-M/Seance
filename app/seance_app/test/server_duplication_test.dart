@@ -20,6 +20,21 @@ import 'package:seance_core/seance_core.dart';
 
 void main() {
   group('duplicateServerLabel', () {
+    test('a hand-doubled suffix does not stutter', () {
+      // Stripping only the outermost "copy" leaves "web copy 2", whose first
+      // candidate is the taken name it started from — so the duplicate landed
+      // on "web copy 2 copy 2", the stutter the parser exists to prevent.
+      expect(
+        duplicateServerLabel('web copy 2 copy', const ['web copy 2 copy']),
+        'web copy',
+      );
+      // And the documented edges still hold: a server *named* "copy" leaves
+      // an empty base and gets numbered rather than stuttering, while a word
+      // that merely ends in "copy" is not a suffix at all.
+      expect(duplicateServerLabel('copy copy', const ['copy']), 'copy 2');
+      expect(duplicateServerLabel('photocopy', const []), 'photocopy copy');
+    });
+
     test('names the first copy and then numbers the rest', () {
       expect(duplicateServerLabel('web', const []), 'web copy');
       // Fills from the front rather than continuing past the highest taken
@@ -457,8 +472,10 @@ void main() {
     });
 
     test('the failure says which server and that nothing was created', () {
-      // The list pane interpolates this into "Could not duplicate: $error",
-      // so it has to read as a sentence rather than a class name.
+      // The list pane shows this one verbatim — the "Could not duplicate"
+      // prefix belongs to the generic catch, and doubling it up with
+      // "Nothing was created." is why this branch exists — so it has to read
+      // as a whole sentence rather than a class name.
       final message = const SourceServerChanged('web').toString();
       expect(message, contains('"web"'));
       expect(message, contains('Nothing was created'));
