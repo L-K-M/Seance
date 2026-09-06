@@ -132,8 +132,14 @@ void main() {
         () => c.copyWith(excludeFromSync: true),
         throwsA(isA<ArgumentError>()),
       );
-      // Omitting it leaves it alone, like every other copyWith field.
+      // Omitting it leaves it alone, like every other copyWith field — and
+      // that edit may keep a stale timestamp, unlike the flip: losing that
+      // conflict only reverts an edit, it never resurrects a record the user
+      // asked to stop syncing.
       expect(excluded.copyWith(label: 'other').excludeFromSync, isTrue);
+      // Re-stating the current value is not a flip: no tombstone is minted
+      // for it, so it must not demand a fresh timestamp either.
+      expect(excluded.copyWith(excludeFromSync: true).excludeFromSync, isTrue);
     });
 
     test('ServerConfig omits the presentation fields when they are unset', () {

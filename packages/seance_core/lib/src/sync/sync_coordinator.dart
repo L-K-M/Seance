@@ -442,19 +442,39 @@ class SyncCoordinator {
     // keys: fail-soft like every other failure in this method, or one flaky
     // read throws out of `applyToStores` past the re-dating passes and the
     // log, and the round's outcome goes with it.
+    // One predicate, computed once: the two loops below have to agree with
+    // each other and with the check above on what a secret record *is*, and a
+    // copy each would let one be edited without the others.
+    final prefixed =
+        records.where((d) => d.id.startsWith(_secretIdPrefix)).toList();
     final Set<String> shielded;
     try {
       shielded = await _shieldedSecretIds();
     } catch (error, stackTrace) {
-      for (final dec in records.where((d) => d.id.startsWith(_secretIdPrefix))) {
+      for (final dec in prefixed) {
         skip(dec.id, error, stackTrace);
       }
       return;
     }
-    for (final dec in records.where((d) => d.id.startsWith(_secretIdPrefix))) {
+    for (final dec in prefixed) {
       if (shielded.contains(dec.id)) continue;
       try {
-        await vault.putSecret(Secret.fromJson(dec.data));
+        final secret = Secret.fromJson(dec.data);
+        // The shield keys on the record id and the vault write keys on the
+        // payload's: a record whose two disagree would slip a credential past
+        // the shield and land it under a ref the shield never named — the
+        // same hole the config path closes for its own id.
+        if (dec.id != '$_secretIdPrefix${secret.id}') {
+          skip(
+            dec.id,
+            StateError(
+              'secret id ${secret.id} does not match record id ${dec.id}',
+            ),
+            StackTrace.current,
+          );
+          continue;
+        }
+        await vault.putSecret(secret);
       } catch (error, stackTrace) {
         skip(dec.id, error, stackTrace);
       }

@@ -471,6 +471,8 @@ void main() {
       String device, {
       LocalRecordStore? local,
       HostKeyStore? hostKeys,
+      bool syncSecrets = false,
+      SecretVault? secretVault,
     }) =>
         SyncCoordinator(
           configStore: configs,
@@ -478,6 +480,8 @@ void main() {
           codec: codec,
           local: local ?? InMemoryLocalRecordStore(),
           deviceId: device,
+          syncSecrets: syncSecrets,
+          secretVault: secretVault,
         );
 
     test('an excluded server is retracted instead of pushed', () async {
@@ -572,6 +576,52 @@ void main() {
       // Same id, now as a tombstone. A mismatch here would leave the real
       // credential on the server forever.
       expect(retractedIds['secret:sec-1'], isTrue);
+      // And dated past the copy this device pushed: a retraction that ties
+      // or loses against it leaves the credential on the server just as
+      // surely as a mismatched id would.
+      expect(
+        (await retracted.getRecord('secret:sec-1'))!.updatedAt,
+        greaterThan((await pushed.getRecord('secret:sec-1'))!.updatedAt),
+      );
+    });
+
+    test('a secret whose payload names another ref is skipped, not written',
+        () async {
+      // The shield keys on the record id and the vault write keys on the
+      // payload's id, so a record whose two disagree would slip a credential
+      // past the shield — and land it under a ref no shield ever named.
+      final vaultKey = secureRandomBytes(32);
+      final codec = RecordCodec(vaultKey);
+      final vault = SecretVault(InMemoryVaultStore(), vaultKey);
+      await vault.putSecret(const Secret(
+        id: 'sec-shielded',
+        kind: SecretKind.password,
+        value: 'local-only',
+      ));
+      final configs = InMemoryConfigStore();
+      await configs.putServer(
+        server('excluded', 'alpha', 20).copyWith(
+            secretRef: 'sec-shielded', excludeFromSync: true, updatedAt: 21),
+      );
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: 'secret:sec-other',
+        kind: RecordKind.secret,
+        updatedAt: 99,
+        deviceId: 'B',
+        data: const Secret(
+          id: 'sec-shielded',
+          kind: SecretKind.password,
+          value: 'from-the-other-device',
+        ).toJson(),
+      )));
+
+      await coord(codec, configs, 'A',
+              local: local, syncSecrets: true, secretVault: vault)
+          .applyToStores();
+
+      expect((await vault.getSecret('sec-shielded'))?.value, 'local-only');
+      expect(await vault.getSecret('sec-other'), isNull);
     });
 
     test('no tombstone deletes a vault entry, referenced or not', () async {
@@ -623,15 +673,9 @@ void main() {
         )));
       }
 
-      await SyncCoordinator(
-        configStore: configs,
-        hostKeyStore: InMemoryHostKeyStore(),
-        codec: codec,
-        local: local,
-        deviceId: 'A',
-        syncSecrets: true,
-        secretVault: vault,
-      ).applyToStores();
+      await coord(codec, configs, 'A',
+              local: local, syncSecrets: true, secretVault: vault)
+          .applyToStores();
 
       // Referenced by the local-only server, so it stays — this device has to
       // keep working.
@@ -686,15 +730,9 @@ void main() {
         ).toJson(),
       )));
 
-      await SyncCoordinator(
-        configStore: configs,
-        hostKeyStore: InMemoryHostKeyStore(),
-        codec: codec,
-        local: local,
-        deviceId: 'A',
-        syncSecrets: true,
-        secretVault: vault,
-      ).applyToStores();
+      await coord(codec, configs, 'A',
+              local: local, syncSecrets: true, secretVault: vault)
+          .applyToStores();
 
       expect((await vault.getSecret('sec-1'))?.value, 'local-only');
     });
@@ -881,11 +919,12 @@ void main() {
           .copyWith(excludeFromSync: true, updatedAt: 21);
       await configs.putServer(excluded);
 
-      // This device's own retraction, come back from the server sequenced…
+      // This device's own retraction, come back from the server sequenced —
+      // dated at the exclusion, which is where [_retract] dates it…
       await local.putRemote(await codec.encrypt(const DecryptedRecord(
         id: 'local-only',
         kind: RecordKind.serverConfig,
-        updatedAt: 20,
+        updatedAt: 21,
         deviceId: 'A',
         deleted: true,
       )));
