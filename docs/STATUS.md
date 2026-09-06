@@ -200,7 +200,17 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     path are all unexercised on a device. If store distribution ever happens,
     revisit whether Play accepts `dataSync` for an indefinite session anchor
     or whether `specialUse` (with its justification form) is the safer fit.
-14. **Split the sync round's fetch from its apply.** `AppState._mutate`
+14. **A referenced key's passphrase is never saved.** The passphrase box is
+    shown for a private key whichever way it is supplied, but `_save` writes
+    a secret only when the key is *typed* (`!_referenceKeyFile`), so a
+    passphrase entered for an on-disk key is dropped. **Test connection**
+    uses the typed draft and reports green, and the saved server then cannot
+    decrypt the key — the one case where the test does not describe what Save
+    persists. Pre-existing, and deliberately not patched mid-review: the fix
+    has to decide what happens to a PEM already stored under the same ref
+    (switching to a referenced file leaves it unread, not discarded) and how
+    a locked vault is handled without wedging Save.
+15. **Split the sync round's fetch from its apply.** `AppState._mutate`
     serializes store mutations, and a sync round joins the queue because it
     writes the config store and the vault. That holds the queue across
     network I/O. It is bounded — `HttpSyncClient` times every request out at
@@ -213,7 +223,7 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     a delete's reference count or a duplicate's plan) while a slow fetch stops
     stalling saves and deletes.
 
-15. **Seal tombstones.** A tombstone carries no sealed payload, so its date
+16. **Seal tombstones.** A tombstone carries no sealed payload, so its date
     is the sync server's to choose: a config tombstone is honoured on that
     say-so today (a hostile server can delete every synced server's *settings*
     on every device), and `secret:` / `hostkey:` tombstones are refused for
