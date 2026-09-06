@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:seance_core/seance_core.dart';
 
 import 'app_settings.dart';
+import 'assistant_settings_sync.dart';
 import 'command_stats.dart';
 import 'external_file_opener.dart';
 import 'file_stores.dart';
@@ -81,6 +82,17 @@ class AppServices {
   /// [LockedSecretVault] and [unlockVaultFromKeystore]).
   List<int>? vaultKey;
   AppSettings settings;
+
+  /// Whether the last [runSync] adopted a pulled assistant configuration. The
+  /// chat provider is built once per configuration version, so a new model or
+  /// key only takes effect if somebody rebuilds it.
+  ///
+  /// True from the end of a round that adopted until the start of the next
+  /// one, which resets it first thing. Read it right after the round that set
+  /// it, in the same call: rounds are serialized behind `AppState._mutate`,
+  /// but a reader that awaits something else in between can find the next
+  /// round has already begun and cleared it.
+  bool assistantSettingsChanged = false;
 
   AppServices._({
     required this.configStore,
@@ -314,6 +326,12 @@ class AppServices {
 
   /// Run one synchronization round against the configured server.
   Future<SyncOutcome> runSync() async {
+    // First statement, above every guard. The guards below all throw today,
+    // so nothing can read a stale answer — but placing the reset after them
+    // means that stays true only while they keep throwing, and a guard that
+    // is one day changed to return a failure outcome would hand the caller
+    // the previous round's "adopted" answer with nothing to show for it.
+    assistantSettingsChanged = false;
     final baseUrl = settings.syncBaseUrl;
     final token = await masterKeys.getApiKey('sync.token');
     if (baseUrl == null || token == null) {
@@ -340,20 +358,42 @@ class AppServices {
         'and sync again.',
       );
     }
+    // Null unless opted in, which is what makes the assistant record neither
+    // pushed nor applied on a device that has not asked for it.
+    final assistant = settings.syncAssistant
+        ? AssistantSettingsSync(
+            settings: settings,
+            masterKeys: masterKeys,
+            saveSettings: saveSettings,
+          )
+        : null;
     final coordinator = SyncCoordinator(
       configStore: configStore,
       hostKeyStore: hostKeyStore,
       snippetStore: snippetStore,
+      assistantStore: assistant,
       codec: RecordCodec(key),
       local: InMemoryLocalRecordStore(),
       deviceId: settings.deviceId,
       syncSecrets: settings.syncSecrets,
       secretVault: settings.syncSecrets ? vault : null,
     );
-    return _withSyncClient(baseUrl, (client) {
-      client.token = token;
-      return coordinator.run(client);
-    });
+    try {
+      return await _withSyncClient(baseUrl, (client) {
+        client.token = token;
+        return coordinator.run(client);
+      });
+    } finally {
+      // In a `finally`, because a round can apply the assistant record and
+      // *then* fail — the pull happens first, and a push after it can still
+      // throw. Assigned only on success, that adoption was invisible: the
+      // failed round skipped `reloadLlmProvider`, and the next successful
+      // round found the settings already adopted, so the fingerprint matched,
+      // `applied` was false again, and the chat provider kept answering with
+      // the old model and key until some unrelated edit happened to rebuild
+      // it.
+      assistantSettingsChanged = assistant?.applied ?? false;
+    }
   }
 
   /// Keep connections alive through response/persistence work, including errors.

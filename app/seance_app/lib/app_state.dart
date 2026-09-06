@@ -1130,15 +1130,134 @@ class AppState extends ChangeNotifier {
     // to two passes — and the fix for that is splitting the coordinator's
     // fetch from its apply so only the apply serializes, which is a change to
     // `seance_core`, not to this line.
-    final outcome = await _mutate(() async {
-      final result = await services.runSync();
-      servers = await services.configStore.listServers();
-      snippets = await services.snippetStore.listSnippets();
-      return result;
-    });
-    services.probe.updateServers(servers);
-    _recomputeSuggestions();
-    return outcome;
+    var adoptedAssistant = false;
+    try {
+      final outcome = await _mutate(() async {
+        try {
+          final result = await services.runSync();
+          servers = await services.configStore.listServers();
+          snippets = await services.snippetStore.listSnippets();
+          return result;
+        } finally {
+          // Sampled while this round still holds the queue, so the answer
+          // cannot depend on what runs between the release and this method's
+          // continuation. `runSync` resets the flag as its first statement,
+          // and a round queued behind this one — a manual sync during an
+          // automatic one, or the reverse — starts as soon as the queue is
+          // released. Today the caller resumes first (an async return reaches
+          // its awaiter a microtask ahead of the completer's release), so a
+          // read in the outer `finally` happens to see this round's answer;
+          // which of the two gets there first is a scheduling detail nothing
+          // here should rest on.
+          adoptedAssistant = services.assistantSettingsChanged;
+          _lastRoundAdoptedAssistant = adoptedAssistant;
+        }
+      });
+      services.probe.updateServers(servers);
+      _recomputeSuggestions();
+      return outcome;
+    } finally {
+      // A pulled assistant configuration changes the provider, the model or
+      // the key, none of which an already-built chat provider notices.
+      //
+      // In a `finally` because `runSync` sets the flag in one too: a round can
+      // adopt the record and *then* fail, the pull running before the push.
+      // Consumed only on success, that adoption would be invisible — the next
+      // successful round finds the settings already adopted, reports nothing
+      // applied, and the chat provider answers with the old model and key
+      // until some unrelated edit rebuilds it. Every caller of this method
+      // swallows or rethrows the failure without looking at the flag, so this
+      // is the one place that can see both halves of the round.
+      //
+      // Safe in a `finally`: `reloadLlmProvider` bumps a counter and reads the
+      // keystore through the tolerant path (`refreshLlmConfigured` treats a
+      // keystore error as "no key"), so it does not throw over the sync
+      // failure on its way out.
+      if (adoptedAssistant) await reloadLlmProvider();
+    }
+  }
+
+  /// Whether the most recent sync round adopted an assistant configuration
+  /// from the account.
+  ///
+  /// Written inside the round, while it holds the mutation queue, which is
+  /// what makes it safe to read straight after awaiting [_runSyncAndRefresh]
+  /// where `services.assistantSettingsChanged` is not: that flag is reset at
+  /// the *start* of the next round, which can already be running by then,
+  /// while this is only written at the *end* of one — and a queued round
+  /// cannot reach its end, past its own network I/O, before the caller that
+  /// awaited the previous round resumes.
+  bool _lastRoundAdoptedAssistant = false;
+
+  /// The assistant's configuration was just edited here: stamp it so the
+  /// synced record has a timestamp that moved for a real reason, and push it.
+  Future<void> assistantSettingsEdited() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Never below a record this device already holds. The stamp is the whole
+    // of the last-write-wins comparison, so a clock that runs behind the
+    // device this configuration was pulled from would make a fresh edit lose
+    // to the record it had just adopted — and the next round would re-apply
+    // that record over the edit, silently.
+    services.settings.assistantUpdatedAt =
+        now > services.settings.assistantUpdatedAt
+            ? now
+            : services.settings.assistantUpdatedAt + 1;
+    await services.saveSettings();
+    _scheduleAutoSync();
+  }
+
+  /// Assistant sync was just switched on here: take whatever the account
+  /// already holds, and publish this device's configuration only if it held
+  /// nothing.
+  ///
+  /// Stamping unconditionally would make this device win. `assistantUpdatedAt`
+  /// would be "now", later than any record on the account, so a laptop that
+  /// has never configured the assistant would push its defaults over a phone's
+  /// real provider, model and keys — leaving every device looking configured
+  /// and answering nothing, which is the outcome the zero stamp exists to
+  /// prevent, arriving through the switch instead.
+  ///
+  /// Adopting first cannot cause the mirror of that. A device that never
+  /// edited the assistant still stamps zero and offers nothing; one that did
+  /// offers a real record and wins the round if its edit was genuinely later.
+  /// Only when the round adopts nothing is there an account with no assistant
+  /// configuration, and then publishing this device's is the point of the
+  /// switch.
+  Future<void> assistantSyncSwitchedOn() async {
+    // No account attached: nothing to adopt, and nothing worth publishing
+    // either. Falling through would stamp `now` on this device's
+    // configuration, so it would arrive at the account as the newest write
+    // the moment one is attached — without ever having looked at what the
+    // account already held, which is the single guarantee this method exists
+    // to provide.
+    //
+    // And the toggle itself: with it off, `runSync` builds no assistant store,
+    // so a round can adopt nothing — and falling through would still stamp
+    // `now` on this device's configuration and persist it, an inflated stamp
+    // that outranks whatever the account holds when the switch is genuinely
+    // turned on later. The caller persists the toggle before calling; this is
+    // what holds if one ever does not.
+    if (!services.settings.syncAssistant || !services.isSyncConfigured) return;
+    // Offline, or the server is down: this is the one moment not to publish
+    // on a guess, so the failure ends the method here — and reaches the
+    // caller, which shows it. Swallowed, a toggle that did nothing looked
+    // like one that had adopted. The switch stays on and the next round
+    // settles it: by adopting the account's record, or, once this device is
+    // edited, by publishing that edit.
+    await _runSyncAndRefresh();
+    if (_lastRoundAdoptedAssistant) return;
+    // Nothing configured here, so there is nothing worth publishing: stamping
+    // now would turn this device's defaults into the account's newest write
+    // and beat a phone that configured its assistant while sync was off and
+    // enables the switch afterwards. The zero stamp is the whole guard, and
+    // it is this line that would step around it.
+    if (services.settings.assistantUpdatedAt == 0) return;
+    await assistantSettingsEdited();
+    // That hands the publish to the auto-sync debounce, which does not run
+    // with auto-sync off — and this switch is an explicit ask to sync, made
+    // by a user who just watched one round run. Published now in that case;
+    // with auto-sync on, the debounce it just scheduled does it.
+    if (!services.settings.autoSync) await _runSyncAndRefresh();
   }
 
   /// Start (or restart) the periodic auto-sync timer. Safe to call repeatedly —

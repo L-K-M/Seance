@@ -65,6 +65,28 @@ class AppSettings {
 
   bool redactionEnabled;
 
+  /// When the assistant's configuration was last edited on any device, or 0
+  /// while it has never been published.
+  ///
+  /// It is the synced record's `updatedAt`, so it must move only on a real
+  /// edit: sync re-collects every round, and a "now" timestamp would make each
+  /// one a fresh winning write with two devices trading the record forever.
+  /// Zero also serves as "nothing to publish", which keeps two fresh installs
+  /// from pushing rival defaults before either has configured anything.
+  int assistantUpdatedAt;
+
+  /// Keystore entry names this device adopted a *reference* to but could not
+  /// store, because the keyring was locked when the record arrived.
+  ///
+  /// Device-local, never synced: it describes this keystore, not the account.
+  /// Persisted because the hazard it blocks outlives the process. The write is
+  /// retried on a later round, but if the app is stopped before that lands, a
+  /// fresh run reads "reference set, key absent, keystore available" as the
+  /// supported never-stored state and publishes the configuration without the
+  /// key — under the stamp it adopted, which ties with the keyed record it
+  /// came from and is broken by device id.
+  Set<String> unwrittenAssistantKeyRefs;
+
   // Sync (optional).
   String? syncBaseUrl;
   String? syncUsername;
@@ -73,6 +95,23 @@ class AppSettings {
   /// encrypted, but syncing them widens their blast radius). Only servers whose
   /// own [ServerConfig.syncSecret] flag is set are included.
   bool syncSecrets;
+
+  /// Sync the assistant's configuration — provider, model, endpoint, web
+  /// search and redaction — together with its API keys. Opt-in and off by
+  /// default, like [syncSecrets] and for the same reason: the record is
+  /// end-to-end encrypted, but keys that exist on one device are a smaller
+  /// blast radius than keys that exist on all of them.
+  ///
+  /// The keys travel with the settings rather than behind a second switch. A
+  /// provider and model without the key to use them leaves the other device
+  /// looking configured and answering nothing, which is a worse place to be
+  /// than either syncing or not.
+  ///
+  /// Independent of [syncSecrets], which governs the servers' own passwords
+  /// and private keys. Turning that off does not hold the assistant's keys
+  /// back: they are the assistant record, and a record without them is the
+  /// looks-configured-answers-nothing state above.
+  bool syncAssistant;
 
   /// Whether sync runs automatically (on startup, after edits, and on a timer).
   /// On by default once sync is set up; the manual "Sync now" button always works.
@@ -142,9 +181,11 @@ class AppSettings {
     this.braveApiKeyRef,
     this.zaiApiKeyRef,
     this.redactionEnabled = true,
+    this.assistantUpdatedAt = 0,
     this.syncBaseUrl,
     this.syncUsername,
     this.syncSecrets = false,
+    this.syncAssistant = false,
     this.autoSync = true,
     this.commandSuggestions = false,
     this.checkForUpdates = true,
@@ -154,6 +195,7 @@ class AppSettings {
     Map<String, bool>? remoteShowHidden,
     Map<String, IdentityFileBookmark>? identityFileBookmarks,
     Set<String>? collapsedServerGroups,
+    Set<String>? unwrittenAssistantKeyRefs,
     this.terminalFontSize = kDefaultTerminalFontSize,
     this.terminalFontFamily = '',
     this.terminalPalette = TerminalPalette.followApp,
@@ -163,7 +205,8 @@ class AppSettings {
        remotePathBookmarks = remotePathBookmarks ?? {},
        remoteShowHidden = remoteShowHidden ?? {},
        identityFileBookmarks = identityFileBookmarks ?? {},
-       collapsedServerGroups = collapsedServerGroups ?? {};
+       collapsedServerGroups = collapsedServerGroups ?? {},
+       unwrittenAssistantKeyRefs = unwrittenAssistantKeyRefs ?? {};
 
   Map<String, dynamic> toJson() => {
     'llmKind': llmKind.name,
@@ -174,9 +217,14 @@ class AppSettings {
     if (braveApiKeyRef != null) 'braveApiKeyRef': braveApiKeyRef,
     if (zaiApiKeyRef != null) 'zaiApiKeyRef': zaiApiKeyRef,
     'redactionEnabled': redactionEnabled,
+    'assistantUpdatedAt': assistantUpdatedAt,
+    // Sorted for the same reason as [collapsedServerGroups]: an unchanged set
+    // has to write byte-identical JSON.
+    'unwrittenAssistantKeyRefs': unwrittenAssistantKeyRefs.toList()..sort(),
     if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
     if (syncUsername != null) 'syncUsername': syncUsername,
     'syncSecrets': syncSecrets,
+    'syncAssistant': syncAssistant,
     'autoSync': autoSync,
     'commandSuggestions': commandSuggestions,
     'checkForUpdates': checkForUpdates,
@@ -214,9 +262,12 @@ class AppSettings {
     braveApiKeyRef: json['braveApiKeyRef'] as String?,
     zaiApiKeyRef: json['zaiApiKeyRef'] as String?,
     redactionEnabled: json['redactionEnabled'] as bool? ?? true,
+    assistantUpdatedAt: (json['assistantUpdatedAt'] as num?)?.toInt() ?? 0,
+    unwrittenAssistantKeyRefs: _stringSet(json['unwrittenAssistantKeyRefs']),
     syncBaseUrl: json['syncBaseUrl'] as String?,
     syncUsername: json['syncUsername'] as String?,
     syncSecrets: json['syncSecrets'] as bool? ?? false,
+    syncAssistant: json['syncAssistant'] as bool? ?? false,
     autoSync: json['autoSync'] as bool? ?? true,
     commandSuggestions: json['commandSuggestions'] as bool? ?? false,
     checkForUpdates: json['checkForUpdates'] as bool? ?? true,

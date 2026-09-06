@@ -32,8 +32,23 @@ class SyncCoordinator {
   /// Optional snippet store. When present, snippets sync like server configs.
   final SnippetStore? snippetStore;
 
+  /// Opt-in assistant-configuration syncing. Null — the default — means the
+  /// record is neither pushed nor applied, so a device that has not opted in
+  /// keeps its own provider, model and keys whatever the account carries.
+  ///
+  /// When it is set, the assistant's API keys travel inside the sealed record
+  /// whether or not [syncSecrets] is on. The two switches are about different
+  /// things — [syncSecrets] governs the credentials servers authenticate with
+  /// — but `syncSecrets: false` is the flag a reader would reach for to keep
+  /// key material off the server, so the exception is worth stating here. The
+  /// seal is the protection, the same one synced passwords get.
+  final AssistantSettingsStore? assistantStore;
+
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be
   /// provided so secrets can be sealed into records.
+  ///
+  /// Governs server credentials only: the assistant's API keys travel with
+  /// [assistantStore]'s record whatever this says — see there.
   final bool syncSecrets;
   final SecretVault? secretVault;
 
@@ -44,6 +59,7 @@ class SyncCoordinator {
     required this.local,
     required this.deviceId,
     this.snippetStore,
+    this.assistantStore,
     this.syncSecrets = false,
     this.secretVault,
   });
@@ -120,6 +136,25 @@ class SyncCoordinator {
         updatedAt: hk.pinnedAt,
         deviceId: deviceId,
         data: hk.toJson(),
+      )));
+    }
+    final assistant = await assistantStore?.getAssistantSettings();
+    // The apply side's guard, at the boundary where bad data enters: an empty
+    // provider means a payload this build could not read, not a configuration
+    // — the same degradation `fromJson` makes of a missing field can happen
+    // to a device's own settings file — and publishing one would park a
+    // record no device adopts on the account under this device's stamp,
+    // where nothing older can displace it.
+    if (assistant != null && assistant.providerKind.isNotEmpty) {
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        // The settings' own timestamp, not the round's: collectLocal runs
+        // every five minutes, and a moving one would make each round a fresh
+        // winning write and set two devices trading the record forever.
+        updatedAt: assistant.updatedAt,
+        deviceId: deviceId,
+        data: assistant.toJson(),
       )));
     }
     final snippets = snippetStore;
@@ -366,6 +401,42 @@ class SyncCoordinator {
             if (store == null) continue;
 
             await store.putSnippet(Snippet.fromJson(dec.data));
+          case RecordKind.assistantSettings:
+            final store = assistantStore;
+            if (store == null) continue;
+
+            final assistant = AssistantSettings.fromJson(dec.data);
+            // `fromJson` degrades a missing field to '' rather than throwing,
+            // so that a record from a newer build stays readable. A provider
+            // name is the one field that can never legitimately be empty — it
+            // is written from an enum — so an empty one means the payload is
+            // not a configuration, and adopting it would replace a working
+            // assistant with nothing on every device that pulled it.
+            if (assistant.providerKind.isEmpty) continue;
+
+            // This record won last-write-wins against the synced *mirror*,
+            // which is only as fresh as the last [collectLocal]. Unlike a
+            // server config, the assistant configuration is edited straight
+            // into its store between rounds — so an edit made while a round
+            // was already in flight is newer than anything the mirror knows,
+            // and applying an older pulled record over it would lose the edit
+            // silently, then re-collect and publish the loss.
+            //
+            // Strictly older, not older-or-equal: a tie between two records
+            // is already resolved at the record layer by device id and
+            // sequence, and skipping ties here would stop two devices ever
+            // converging on one of them. The tie that resolution never sees is
+            // a local edit that did not reach the mirror this round — made
+            // after [collectLocal] ran, or withheld by it because a key it
+            // references could not be read. That edit loses to a pulled record
+            // sharing its stamp, which is the narrow price of convergence and
+            // why the edit stamp is minted as fine-grained as the clock
+            // allows.
+            if (assistant.updatedAt < await store.assistantSettingsUpdatedAt()) {
+              continue;
+            }
+
+            await store.putAssistantSettings(assistant);
           case RecordKind.bookmark:
           case RecordKind.unknown:
             continue;

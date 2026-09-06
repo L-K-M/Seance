@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
 
@@ -7,6 +9,13 @@ class FakeServer implements SyncApi {
   int _seq = 0;
   int pushedRecords = 0;
   int pulls = 0;
+
+  /// The record the server holds under [id], exactly as it was pushed.
+  EncryptedRecord? stored(String id) => _store[id];
+
+  /// The last sequence number handed out. Growth across otherwise idle rounds
+  /// is what a record that re-writes itself every time looks like.
+  int get latestSeq => _seq;
 
   @override
   Future<PullResponse> pull({required int since}) async {
@@ -1562,7 +1571,270 @@ void main() {
       expect((await cfgA.getServer('s1'))!.label, 'alpha');
     });
   });
+
+  group('assistant settings', () {
+    AssistantSettings assistant({
+      String model = 'claude-haiku-4-5-20251001',
+      Map<String, String> apiKeys = const {'anthropic': 'sk-1'},
+      int updatedAt = 10,
+    }) => AssistantSettings(
+          providerKind: 'anthropic',
+          baseUrl: 'https://api.anthropic.com',
+          model: model,
+          llmApiKeyRef: 'anthropic',
+          apiKeys: apiKeys,
+          updatedAt: updatedAt,
+        );
+
+    SyncCoordinator coordinator(
+      String deviceId,
+      LocalRecordStore local, {
+      AssistantSettingsStore? store,
+    }) => SyncCoordinator(
+          configStore: InMemoryConfigStore(),
+          hostKeyStore: InMemoryHostKeyStore(),
+          codec: _sharedCodec,
+          local: local,
+          deviceId: deviceId,
+          assistantStore: store,
+        );
+
+    test('the configuration and its keys reach the other device', () async {
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      final storeB = InMemoryAssistantSettingsStore();
+
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+          .run(remote);
+
+      final arrived = storeB.settings!;
+      expect(arrived.model, 'claude-haiku-4-5-20251001');
+      // Without the key, the other device looks configured and answers
+      // nothing — which is why they travel inside the sealed record.
+      expect(arrived.apiKeys, {'anthropic': 'sk-1'});
+      expect(arrived.updatedAt, 10);
+    });
+
+    test('a later edit wins, an unchanged round changes nothing', () async {
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      final storeB = InMemoryAssistantSettingsStore();
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+          .run(remote);
+
+      storeB.settings = assistant(model: 'gpt-5', updatedAt: 20);
+      await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+          .run(remote);
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      expect(storeA.settings!.model, 'gpt-5');
+
+      // The timestamp comes from the edit, not from the round, so re-running
+      // converges instead of the two devices trading the record forever.
+      final pushesBefore = remote.pushedRecords;
+      final seqBefore = remote.latestSeq;
+      for (var round = 0; round < 3; round++) {
+        await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+            .run(remote);
+        await coordinator('B', InMemoryLocalRecordStore(), store: storeB)
+            .run(remote);
+      }
+      expect(storeA.settings!.model, 'gpt-5');
+      expect(storeB.settings!.model, 'gpt-5');
+      expect(storeA.settings!.updatedAt, 20);
+      // Not even offered: each round pulls the server's own sequenced copy
+      // first, which matches what was collected and clears it. Stamping from
+      // the edit rather than from the round is what makes that true — a
+      // moving timestamp would win every pull and be pushed every round.
+      expect(remote.pushedRecords, pushesBefore);
+      expect(remote.latestSeq, seqBefore);
+    });
+
+    test('nothing to publish yet is not published', () async {
+      // Two fresh installs must not push rival defaults at each other before
+      // either has configured anything.
+      final remote = FakeServer();
+      final local = InMemoryLocalRecordStore();
+      await coordinator('A', local, store: InMemoryAssistantSettingsStore())
+          .run(remote);
+      expect(await local.allRecords(), isEmpty);
+    });
+
+    test('a configuration this build could not read is not published',
+        () async {
+      // The apply side refuses a record with an empty provider as "not a
+      // configuration". The same degradation — `fromJson` turning a missing
+      // field into '' — can happen to a device's own settings file, and
+      // publishing it would park a record no device adopts on the account
+      // under this device's stamp, where nothing older can displace it.
+      final remote = FakeServer();
+      final local = InMemoryLocalRecordStore();
+      await coordinator(
+        'A',
+        local,
+        store: InMemoryAssistantSettingsStore(
+          assistant().copyWith(providerKind: ''),
+        ),
+      ).run(remote);
+      expect(await local.allRecords(), isEmpty);
+      expect(remote.stored(AssistantSettings.recordId), isNull);
+    });
+
+    test('a device that has not opted in neither pushes nor adopts', () async {
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+
+      // No store means opted out. The record still reaches B's mirror — being
+      // opted out is not being blind to it — but there is nothing for the
+      // coordinator to apply it into, and B marks nothing dirty of its own, so
+      // the account gains no write from a device that never asked to share.
+      final local = InMemoryLocalRecordStore();
+      final seqBefore = remote.latestSeq;
+      await coordinator('B', local).run(remote);
+      expect(
+        (await local.allRecords()).map((r) => r.id),
+        contains(AssistantSettings.recordId),
+      );
+      expect(
+        (await local.dirtyRecords()).map((r) => r.id),
+        isNot(contains(AssistantSettings.recordId)),
+      );
+      expect(remote.latestSeq, seqBefore);
+    });
+
+    test('a record with no provider is not a configuration', () async {
+      // fromJson degrades a missing field to '' so a record from a newer
+      // build stays readable; a provider name is written from an enum and can
+      // never legitimately be empty, so an empty one means the payload is not
+      // a configuration — and adopting it would leave every device that
+      // pulled it with an assistant that answers nothing.
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 99,
+        deviceId: 'B',
+        data: assistant().copyWith(providerKind: '').toJson(),
+      )));
+      final store = InMemoryAssistantSettingsStore(assistant());
+      await coordinator('A', local, store: store).applyToStores();
+      expect(store.settings!.providerKind, 'anthropic');
+      expect(store.settings!.updatedAt, 10);
+      // And it is not marked for pushing onward, which is what would carry a
+      // payload this build could not read to every other device.
+      expect(
+        (await local.dirtyRecords()).map((r) => r.id),
+        isNot(contains(AssistantSettings.recordId)),
+      );
+    });
+
+    test('a pulled record never overwrites a newer local edit', () async {
+      // The assistant configuration is edited straight into its store between
+      // rounds, so the synced mirror can be older than the store by a whole
+      // debounce. A record pulled mid-round wins last-write-wins against that
+      // stale mirror while still losing to the store — and applying it would
+      // drop the edit, then re-collect and publish the loss.
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        // Matched to the payload's own stamp, like collectLocal does — the
+        // envelope date is derived from it, so a fixture where they disagree
+        // is a state production cannot reach.
+        updatedAt: 20,
+        deviceId: 'B',
+        data: assistant(model: 'from-B', updatedAt: 20).toJson(),
+      )));
+      final store = InMemoryAssistantSettingsStore(
+        assistant(model: 'local-edit', updatedAt: 30),
+      );
+
+      await coordinator('A', local, store: store).applyToStores();
+      expect(store.settings!.model, 'local-edit');
+      expect(store.settings!.updatedAt, 30);
+    });
+
+    test('a pulled record that ties is still applied', () async {
+      // Ties are resolved at the record layer by device id and sequence, so
+      // refusing them here would stop two devices ever converging on one.
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 30,
+        deviceId: 'B',
+        data: assistant(model: 'from-B', updatedAt: 30).toJson(),
+      )));
+      final store = InMemoryAssistantSettingsStore(assistant(updatedAt: 30));
+
+      await coordinator('A', local, store: store).applyToStores();
+      expect(store.settings!.model, 'from-B');
+    });
+
+    test('a cleared configuration propagates as an edit, not a withdrawal',
+        () async {
+      // Clearing everything but the provider still publishes, under the new
+      // stamp: a store that answered null for it instead would leave the old
+      // record standing on the account, and B's next pull would resurrect
+      // the model and keys A had just removed.
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      final storeB = InMemoryAssistantSettingsStore();
+      final localB = InMemoryLocalRecordStore();
+      await coordinator('B', localB, store: storeB).run(remote);
+      expect(storeB.settings!.model, isNotEmpty);
+
+      storeA.settings = assistant(model: '', apiKeys: const {}, updatedAt: 40);
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      await coordinator('B', localB, store: storeB).run(remote);
+
+      expect(storeB.settings!.model, '');
+      expect(storeB.settings!.apiKeys, isEmpty);
+      expect(storeB.settings!.updatedAt, 40);
+    });
+
+    test('the keys never reach the server in the clear', () async {
+      // The record is the only one that carries API keys, and it carries them
+      // whatever `syncSecrets` says — so the seal is the whole protection.
+      final remote = FakeServer();
+      await coordinator(
+        'A',
+        InMemoryLocalRecordStore(),
+        store: InMemoryAssistantSettingsStore(assistant()),
+      ).run(remote);
+
+      final pushed = remote.stored(AssistantSettings.recordId)!;
+      final blob = utf8.decode(pushed.blob, allowMalformed: true);
+      for (final plaintext in [
+        'sk-1',
+        'anthropic',
+        'claude-haiku-4-5-20251001',
+      ]) {
+        expect(blob, isNot(contains(plaintext)));
+      }
+      // And it is the account key that opens it, not something device-local.
+      final back = await _sharedCodec.decrypt(pushed);
+      expect(back.kind, RecordKind.assistantSettings);
+      expect(
+        AssistantSettings.fromJson(back.data).apiKeys,
+        {'anthropic': 'sk-1'},
+      );
+    });
+  });
 }
+
+/// One key for every device in this group: they are one account's devices, so
+/// they share a vault key.
+final RecordCodec _sharedCodec = RecordCodec(secureRandomBytes(32));
 
 /// A local store that refuses to stage one record, to prove the post-loop
 /// re-dating is fail-soft per record like the loop that feeds it.
