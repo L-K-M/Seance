@@ -162,19 +162,26 @@ void main() {
       expect(result.notes.single, contains('jump host'));
     });
 
-    test('a bug keeps its stack trace, an expected failure stays readable',
+    // One test per branch of the Error-vs-Exception trace policy: as a single
+    // sequential test the first failure aborted the rest, so a regression
+    // showed one red branch and three unverified ones under a name that said
+    // which none of them.
+    test('an Error while resolving credentials keeps its stack trace',
         () async {
       // An Error here is our bug, and its message alone rarely says where it
-      // came from. An Exception — a locked keyring, an unreadable key file —
-      // already says everything a person can act on, and a stack trace under
-      // one is noise in a transcript people read.
+      // came from.
       final bug = await runConnectionTest(
         config: config(),
         credentials: () async => throw StateError('bad state'),
         authenticate: (_, _, _) async => fail('must not be reached'),
       );
       expect(bug.log, contains('runConnectionTest'));
+    });
 
+    test('an Exception while resolving credentials stays readable', () async {
+      // A locked keyring, an unreadable key file: it already says everything
+      // a person can act on, and a stack trace under one is noise in a
+      // transcript people read.
       final expected = await runConnectionTest(
         config: config(),
         credentials: () async =>
@@ -183,7 +190,9 @@ void main() {
       );
       expect(expected.log, contains('unreadable identity file'));
       expect(expected.log, isNot(contains('runConnectionTest')));
+    });
 
+    test('a bare Exception from authenticate keeps its stack trace', () async {
       // Past the credentials call the calculus flips. openAuthenticatedClient
       // wraps every failure it can name in SshConnectException, so a bare
       // Exception from authenticate is one nothing was written to expect —
@@ -196,9 +205,11 @@ void main() {
       );
       expect(unexpected.log, contains('unwrapped transport failure'));
       expect(unexpected.log, contains('runConnectionTest'));
+    });
 
-      // The one Error that stays quiet, wherever it comes from: the ssh-agent
-      // path the backend deliberately does not implement.
+    test('UnsupportedError stays quiet wherever it is thrown', () async {
+      // The one Error that stays quiet: the ssh-agent path the backend
+      // deliberately does not implement.
       final unsupported = await runConnectionTest(
         config: config(),
         credentials: () async => const SshCredentials.password('pw'),
@@ -451,11 +462,14 @@ void main() {
         type: 'ssh-ed25519',
         fingerprintBytes: fingerprint('attacker'),
       );
-      expect(
-        reoffered && prompts == 1,
-        isFalse,
-        reason: 'a changed key must be refused or re-asked, never assumed',
-      );
+      // Written as an implication rather than a compound boolean: the
+      // compound form also passes when the key was refused *and* the prompt
+      // count drifted, and fails with an opaque "Expected: false" that cannot
+      // say which of the two happened.
+      if (reoffered) {
+        expect(prompts, greaterThan(1),
+            reason: 'a changed key must be refused or re-asked, never assumed');
+      }
     });
   });
 }

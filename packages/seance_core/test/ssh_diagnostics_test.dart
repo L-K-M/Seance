@@ -435,6 +435,30 @@ void main() {
       expect(log.toString(), contains('(responses: [redacted])'));
     });
 
+    test('spacing drift around the anchor still redacts', () {
+      // A named line whose spacing drifted would at least reach the
+      // fail-closed branch, so the cost there is a whole record withheld. A
+      // chunk arriving without the name cannot reach that branch at all —
+      // this is the case the loose spacing is actually for.
+      expect(
+        redactConnectionTrace('(responses : [hunter2])'),
+        '(responses: [redacted])',
+      );
+      final log = SshConnectionLog();
+      log.add('-> sock: SSHMsgUserauthInfoResponse(responses:[hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+    });
+
+    test('a renamed field still hits the fail-closed branch', () {
+      // Loose spacing must not loosen the shape: `answers:` is a rename, not
+      // a spacing tweak, and it has to be withheld whole rather than pass.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(answers: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('does not recognize'));
+    });
+
     test('the canonical line still redacts to exactly what it always did', () {
       // Pinned as a whole string, not as a `contains`: making the class name
       // optional must not change the canonical output by a byte, and a field

@@ -174,8 +174,15 @@ class SshConnectionLog {
 /// shape arriving in a chunk that did not carry the name. In an SSH packet
 /// trace that substring belongs to this message alone, so the over-redaction
 /// this admits costs nothing by the standard the paragraph above sets.
+///
+/// The spacing around the colon is loose for the same reason. A named line
+/// whose spacing drifted would at least hit the fail-closed branch below, so
+/// there the cost is only a whole record withheld instead of one field
+/// redacted — but a chunk arriving *without* the name cannot reach that
+/// branch at all, and a `(responses : [pw])` would then match nothing and
+/// print the credential.
 final RegExp _userauthResponses =
-    RegExp(r'(Userauth_InfoResponse)?\(responses: \[.*', dotAll: true);
+    RegExp(r'(Userauth_InfoResponse)?\(responses\s*:\s*\[.*', dotAll: true);
 
 /// The message whose `responses` list *is* the password for a host doing
 /// password login over keyboard-interactive.

@@ -159,13 +159,12 @@ class _ServerEditorState extends State<_ServerEditor> {
     // passwords & keys" is on); existing servers keep their stored choice.
     _syncSecret = e?.syncSecret ?? true;
     _excludeFromSync = e?.excludeFromSync ?? false;
-    for (final field in _fields) {
+    for (final field in _connectionFields) {
       field.addListener(_dropTestResult);
     }
   }
 
-  /// Every text field in the form, so the connection test's result can be
-  /// invalidated whenever one of them changes.
+  /// Every text field in the form, so [dispose] releases them all.
   List<TextEditingController> get _fields => [
         _label,
         _host,
@@ -177,6 +176,25 @@ class _ServerEditorState extends State<_ServerEditor> {
         _keyPath,
         _keyPassphrase,
         _loginScript,
+      ];
+
+  /// The fields a connection test's outcome actually depends on.
+  ///
+  /// Narrower than [_fields] because [_dropTestResult] does not merely grey
+  /// out a stale result — it bumps `_testAttempt`, which abandons a test
+  /// still in flight. Renaming a server, moving it to another group or
+  /// editing its login script cannot change what a connection does (the
+  /// script is never executed, which the disclaimer beside it says), so
+  /// discarding a result the user waited minutes for over a typo in the name
+  /// is a cost with nothing bought for it.
+  List<TextEditingController> get _connectionFields => [
+        _host,
+        _port,
+        _user,
+        _password,
+        _keyPem,
+        _keyPath,
+        _keyPassphrase,
       ];
 
   /// Forget the last test result, and abandon one still running, because the
