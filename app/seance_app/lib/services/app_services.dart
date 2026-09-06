@@ -414,9 +414,11 @@ class AppServices {
     // Only under key auth: for a password or the agent the bookmark is never
     // consulted, so a stale one left over from an auth-method switch cannot
     // change what is tested, and throwing would turn a harmless leftover
-    // into a failed test.
+    // into a failed test. A typed PEM is the same case under key auth: it is
+    // returned before anything consults a path or a grant.
     if (config.authMethod == AuthMethod.privateKey &&
         config.identityFilePath == null &&
+        draft(draftPrivateKey) == null &&
         draftIdentityBookmark != null) {
       throw ArgumentError.value(
         draftIdentityBookmark,

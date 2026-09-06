@@ -353,7 +353,7 @@ void main() {
         log.add('-> sock: SSH_Message_Userauth_InfoResponse'
             '(responses: [pas${breakChar}sword])');
         expect(log.toString(), isNot(contains('sword')),
-            reason: 'leaked past ${breakChar.codeUnitAt(0)}');
+            reason: 'leaked past U+${breakChar.runes.first.toRadixString(16).padLeft(4, '0')}');
         expect(log.toString(), contains('[redacted])'));
       }
     });
@@ -373,6 +373,20 @@ void main() {
       // may append past the redaction in `add`.
       expect(() => (lines as List<String>).add('third'),
           throwsUnsupportedError);
+    });
+
+    test('a renamed class and a renamed field together still never leak', () {
+      // The one cell of the rename matrix the tests above left open: neither
+      // the shape anchor nor the exact class name matches this line, so the
+      // fail-closed branch has to trigger on the part of the name a rename is
+      // least likely to touch.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSHMsgUserauthInfoResponse(answers: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      // And a request line, which shares everything but that part, stays.
+      final request = SshConnectionLog();
+      request.add('-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])');
+      expect(request.toString(), contains('Password:'));
     });
 
     test('an InfoResponse this build cannot parse is withheld whole', () {

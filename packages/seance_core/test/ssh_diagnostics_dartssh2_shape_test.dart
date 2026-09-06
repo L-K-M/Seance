@@ -51,6 +51,10 @@ void main() {
           )}');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('deploy'));
+      // The mechanism, pinned like the InfoResponse test pins its own: the
+      // password is absent because dartssh2 omits it, not because the log
+      // scrubbed it — a scrub here would mean the assumption above moved.
+      expect(log.toString(), isNot(contains('[redacted]')));
     });
   });
 }

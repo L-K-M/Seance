@@ -754,8 +754,18 @@ class _ServerEditorState extends State<_ServerEditor> {
       // away everything just typed — as the only way out.
       log.freeze();
       if (!mounted || attempt != _testAttempt) return;
-      setState(() => _testing = false);
-      showTopToastIn(context, message: 'Could not test the connection: $error');
+      // The same inline report an expected failure gets, not a toast: what
+      // went wrong is by definition unexpected, so it is the detail worth
+      // keeping — and a toast fades with it.
+      setState(() {
+        _testing = false;
+        _testResult = ConnectionTestResult(
+          ok: false,
+          summary: 'Could not test the connection.',
+          notes: ['$error'],
+          log: log.toString(),
+        );
+      });
       return;
     }
     log.freeze();

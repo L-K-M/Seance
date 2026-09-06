@@ -155,7 +155,6 @@ Future<ConnectionTestResult> runConnectionTest({
     // which is why nothing is appended here — but only `authenticate` goes
     // through it. A `credentials()` that raises this same type has logged
     // nothing, and the transcript would end mid-sentence.
-    if (!authenticating) transcript.add(e.message);
     // Whichever stage threw, a log attached to the exception that is not the
     // transcript in hand holds detail that lives nowhere else: a resolver's
     // own, or an authenticator's that wrote into a log of its own rather
@@ -165,6 +164,12 @@ Future<ConnectionTestResult> runConnectionTest({
       for (final line in e.log.lines) {
         transcript.add(line);
       }
+    }
+    // A failure before the handshake has written nothing of its own, so its
+    // summary goes in last — where a failure transcript is documented to end
+    // — unless the log just copied already ends with it.
+    if (!authenticating && transcript.lines.lastOrNull != e.message) {
+      transcript.add(e.message);
     }
     return ConnectionTestResult(
       ok: false,
