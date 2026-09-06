@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
@@ -251,6 +253,7 @@ class _ServerListPaneState extends State<ServerListPane> {
       onTap: () => widget.onOpen(server),
       onNewTab: () => state.newTab(server),
       onEdit: () => _editServer(context, state, server),
+      onDuplicate: () => _duplicateServer(context, state, server),
       onDelete: () => _deleteServer(context, state, server),
       // Disconnect every live tab; reconnect the lone dead tab.
       onDisconnect: () {
@@ -277,6 +280,70 @@ class _ServerListPaneState extends State<ServerListPane> {
     ServerConfig? server,
   ) async {
     await showServerEditor(context, state, server);
+  }
+
+  /// Copy a server, then offer the editor — duplicating is almost always the
+  /// first half of "…and change one thing", and the toast's action is a
+  /// shorter route back than finding the new row and reopening its menu.
+  Future<void> _duplicateServer(
+    BuildContext context,
+    AppState state,
+    ServerConfig server,
+  ) async {
+    final ServerConfig copy;
+    try {
+      copy = await state.duplicateServer(server);
+    } on SourceServerChanged catch (error) {
+      // Verbatim: this one is written as a whole sentence *for* this toast,
+      // and "Could not duplicate: …Nothing was created." says it twice.
+      if (context.mounted) {
+        showTopToastIn(context, message: '$error');
+      } else {
+        // Nowhere to show it. Logged so the refusal is not the failure that
+        // vanished — the same reason the branch below logs.
+        developer.log(
+          'Could not duplicate "${server.label}": $error',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+        );
+      }
+      return;
+    } catch (error, stackTrace) {
+      // The vault throws when the OS keyring is locked. Say so rather than
+      // leaving the menu looking like it did nothing — and name the server,
+      // because a toast is all the user gets and two rows can fail apart.
+      // The error itself stays verbatim: `VaultLockedException.toString()` is
+      // the sentence that says what to do about it.
+      final message = 'Could not duplicate "${server.label}": $error';
+      // Logged whether or not there is a toast to show: the toast and the
+      // log are for different readers. With the trace, because this catch is
+      // broad, and for the failures it was not written for the message names
+      // the server and nothing else — no throw site to tell a locked keyring
+      // from a bug in the vault.
+      developer.log(
+        message,
+        name: 'seance.app',
+        level: 900,
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (context.mounted) showTopToastIn(context, message: message);
+      return;
+    }
+    if (!context.mounted) return;
+    showTopToastIn(
+      context,
+      message: 'Duplicated as "${copy.label}"',
+      actionLabel: 'Edit',
+      // Checked again inside the closure, not only before showing the toast:
+      // the action fires whenever the user taps it, which can be after this
+      // pane is gone, and a defunct context reaches showDialog as an ancestor
+      // lookup on a deactivated widget.
+      onAction: () {
+        if (context.mounted) _editServer(context, state, copy);
+      },
+    );
   }
 
   Future<void> _deleteServer(
@@ -479,6 +546,7 @@ class ServerTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onNewTab;
   final VoidCallback onEdit;
+  final VoidCallback onDuplicate;
   final VoidCallback onDelete;
   final VoidCallback onDisconnect;
 
@@ -496,6 +564,7 @@ class ServerTile extends StatelessWidget {
     required this.onTap,
     required this.onNewTab,
     required this.onEdit,
+    required this.onDuplicate,
     required this.onDelete,
     required this.onDisconnect,
     required this.onReconnect,
@@ -540,6 +609,8 @@ class ServerTile extends StatelessWidget {
                   onNewTab();
                 case 'edit':
                   onEdit();
+                case 'duplicate':
+                  onDuplicate();
                 case 'delete':
                   onDelete();
                 case 'disconnect':
@@ -561,6 +632,10 @@ class ServerTile extends StatelessWidget {
                   child: Text('Reconnect'),
                 ),
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
+              const PopupMenuItem(
+                value: 'duplicate',
+                child: Text('Duplicate'),
+              ),
               const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),

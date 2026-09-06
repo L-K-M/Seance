@@ -23,6 +23,32 @@ class Secret {
     this.keyPassphrase,
   });
 
+  /// This secret with the given fields replaced; a null argument keeps the
+  /// current value — [id] included, so a caller re-keying a credential has to
+  /// pass a fresh one. Two secrets sharing an id collide in the vault and
+  /// across sync, where a record is keyed by the credential.
+  ///
+  /// Exists so duplicating a server can re-key a credential without listing
+  /// this class's fields at the call site. It is not itself a safety net: a
+  /// field added to [Secret] has to be wired in here too, and the guard that
+  /// actually catches a missed one is a JSON comparison — one in this
+  /// package's `records_test.dart`, so it cannot go missing with a client,
+  /// and one in the app's `server_duplication_test.dart` covering the call
+  /// site. And since a null argument means "keep",
+  /// [keyPassphrase] cannot be cleared through this.
+  Secret copyWith({
+    String? id,
+    SecretKind? kind,
+    String? value,
+    String? keyPassphrase,
+  }) =>
+      Secret(
+        id: id ?? this.id,
+        kind: kind ?? this.kind,
+        value: value ?? this.value,
+        keyPassphrase: keyPassphrase ?? this.keyPassphrase,
+      );
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'kind': kind.name,
