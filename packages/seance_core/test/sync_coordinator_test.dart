@@ -788,6 +788,13 @@ void main() {
             .excludeFromSync,
         isFalse,
       );
+      // And restating an exclusion the record already carries is the same
+      // no-op, stale clock or not: only a *change* of the flag needs the
+      // fresh timestamp.
+      expect(
+        excluded.copyWith(excludeFromSync: true, updatedAt: 5).excludeFromSync,
+        isTrue,
+      );
     });
 
     test('a credential a synced server shares is neither withdrawn nor frozen',
@@ -991,6 +998,62 @@ void main() {
       expect((await cfgA.getServer('s1'))!.label, 'alpha');
       expect((await remote.pull(since: 0)).latestSeq, settled,
           reason: 'a settled round must not sequence anything new');
+    });
+
+    test('two devices that both exclude the same server settle', () async {
+      // Each pulls the other's tombstone for an id it excludes itself, and
+      // the shield skips it before anything could re-date it — so neither
+      // bids past the other, and both keep their local-only copy.
+      final remote = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfgA = InMemoryConfigStore();
+      final cfgB = InMemoryConfigStore();
+      await cfgA.putServer(server('s1', 'alpha', 10));
+      await coord(codec, cfgA, 'A').run(remote);
+      await coord(codec, cfgB, 'B').run(remote);
+
+      await cfgA.putServer(
+        server('s1', 'alpha', 10).copyWith(excludeFromSync: true, updatedAt: 31),
+      );
+      await coord(codec, cfgA, 'A').run(remote);
+      await cfgB.putServer(
+        server('s1', 'alpha', 10).copyWith(excludeFromSync: true, updatedAt: 40),
+      );
+      await coord(codec, cfgB, 'B').run(remote);
+      await coord(codec, cfgA, 'A').run(remote);
+
+      final settled = (await remote.pull(since: 0)).latestSeq;
+      await coord(codec, cfgB, 'B').run(remote);
+      await coord(codec, cfgA, 'A').run(remote);
+      await coord(codec, cfgB, 'B').run(remote);
+      expect((await remote.pull(since: 0)).latestSeq, settled,
+          reason: 'two exclusions must not re-date each other');
+      expect((await cfgA.getServer('s1'))!.excludeFromSync, isTrue);
+      expect((await cfgB.getServer('s1'))!.excludeFromSync, isTrue);
+    });
+
+    test('rescheduleOutranked never re-dates a tombstone', () async {
+      // The call site only ever hands it live records, and a pulled tombstone
+      // carries no kind — but the invariant is enforced where the minting
+      // happens, like the kind check beside it.
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      await configs.putServer(
+        server('s1', 'alpha', 10).copyWith(excludeFromSync: true, updatedAt: 11),
+      );
+      final local = InMemoryLocalRecordStore();
+      final minted = await coord(codec, configs, 'A', local: local)
+          .rescheduleOutranked([
+        const DecryptedRecord(
+          id: 's1',
+          kind: RecordKind.serverConfig,
+          updatedAt: 20,
+          deviceId: 'B',
+          deleted: true,
+        ),
+      ]);
+      expect(minted, 0);
+      expect(await local.allRecords(), isEmpty);
     });
 
     test('a host key whose payload names another locator is skipped', () async {
