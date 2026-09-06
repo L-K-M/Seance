@@ -115,7 +115,7 @@ class SyncCoordinator {
         continue;
       }
       await local.putLocal(await codec.encrypt(DecryptedRecord(
-        id: 'hostkey:${hk.locator}',
+        id: hk.recordId,
         kind: RecordKind.hostKey,
         updatedAt: hk.pinnedAt,
         deviceId: deviceId,
@@ -346,7 +346,7 @@ class SyncCoordinator {
             // pin is stored under its payload's locator, and a record whose
             // id names another would plant trust for an address no record
             // ever named, with nothing in the log to say so.
-            if (dec.id != 'hostkey:${pin.locator}') {
+            if (dec.id != pin.recordId) {
               skip(
                 dec.id,
                 StateError(
