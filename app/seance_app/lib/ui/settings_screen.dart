@@ -22,11 +22,16 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
+/// Keystore entry name for the Z.AI search key. A constant rather than a typed
+/// value: settings hold key *names*, never keys.
+const String _zaiKeyRef = 'zai';
+
 class _SettingsScreenState extends State<SettingsScreen> {
   late final _baseUrl = TextEditingController();
   late final _model = TextEditingController();
   late final _apiKey = TextEditingController();
   late final _searxng = TextEditingController();
+  final _zaiApiKey = TextEditingController();
   late final _syncUrl = TextEditingController();
   late final _syncUser = TextEditingController();
   final _syncPassword = TextEditingController();
@@ -34,6 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _syncEncryptionPassphraseConfirm = TextEditingController();
 
   late LlmProviderKind _kind;
+  late bool _zai;
   late bool _redaction;
   late bool _autoSync;
   late bool _syncSecrets;
@@ -70,6 +76,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrl.text = s.llmBaseUrl;
     _model.text = s.llmModel;
     _searxng.text = s.searxngUrl ?? '';
+    // Only whether it is on — never the key itself, which stays in the OS
+    // keystore and is not something a settings screen should be able to show.
+    _zai = s.zaiApiKeyRef != null && s.zaiApiKeyRef!.isNotEmpty;
     _redaction = s.redactionEnabled;
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;
@@ -91,6 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _model,
       _apiKey,
       _searxng,
+      _zaiApiKey,
       _syncUrl,
       _syncUser,
       _syncPassword,
@@ -251,7 +261,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
       const SizedBox(height: 16),
-      _section('Web search (chat tool)'),
+      _section(
+        'Web search (chat tool)',
+        helpTitle: 'Web search backends',
+        help:
+            'Every backend you configure is used, and their results are '
+            'merged — so filling in more than one uses them all, and '
+            'clearing one leaves the others. With none configured, the '
+            'assistant '
+            'has no search tool at all.',
+      ),
       TextField(
         controller: _searxng,
         decoration: const InputDecoration(
@@ -259,6 +278,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
           hintText: 'https://searx.example.com',
         ),
       ),
+      const SizedBox(height: 8),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Z.AI Web Search Prime'),
+        subtitle: const Text('Needs a Z.AI key with a GLM Coding Plan.'),
+        value: _zai,
+        onChanged: (v) => setState(() => _zai = v),
+      ),
+      if (_zai)
+        TextField(
+          controller: _zaiApiKey,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Z.AI API key (stored in OS keystore, never synced)',
+            hintText: 'leave blank to keep the existing key',
+          ),
+        ),
       const SizedBox(height: 8),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
@@ -766,32 +802,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _save(AppState state) async {
     setState(() => _saving = true);
     final s = state.services.settings;
-    s.llmKind = _kind;
-    s.llmBaseUrl = _baseUrl.text.trim();
-    s.llmModel = _model.text.trim();
-    s.redactionEnabled = _redaction;
-    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
     // Store the API key under a per-provider name.
     final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
-    s.llmApiKeyRef = ref;
-    if (_apiKey.text.isNotEmpty) {
+
+    // Keys first, settings after. A keystore failure returns without saving,
+    // and the settings object is the one the running app reads — leaving it
+    // mutated to say "Z.AI is on" behind a key that never landed would make
+    // the failed save take effect anyway, until the next launch.
+    if (_zai && _zaiApiKey.text.trim().isNotEmpty) {
       try {
-        await state.services.masterKeys.putApiKey(ref, _apiKey.text);
+        await state.services.masterKeys.putApiKey(
+          _zaiKeyRef,
+          // Trimmed like every other field here: a key pasted from a password
+          // manager carries a trailing newline more often than not, and it
+          // authenticates as garbage that CompositeSearch swallows into a log
+          // line.
+          _zaiApiKey.text.trim(),
+        );
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _saving = false);
+        // Named like the LLM key's failure below: the same class of error
+        // otherwise produced a bare `KeystoreException` string with nothing
+        // saying which of the two keys failed to save.
+        showTopToastIn(
+          context,
+          message: 'Settings not saved — could not store the Z.AI key: $e',
+        );
+        return;
+      }
+    }
+    // Trimmed and tested trimmed, for the same reason as the Z.AI key above —
+    // and it matters more here: a search backend that authenticates as
+    // garbage leaves the others working, while this key is the assistant's
+    // only one. A whitespace-only paste is no key at all, so it does not
+    // overwrite the stored one.
+    if (_apiKey.text.trim().isNotEmpty) {
+      try {
+        await state.services.masterKeys.putApiKey(ref, _apiKey.text.trim());
       } catch (e) {
         // KeystoreException: the OS keyring is unavailable — don't report
         // "Saved" for a key that never landed.
         if (!mounted) return;
         setState(() => _saving = false);
-        showTopToastIn(context, message: '$e');
+        showTopToastIn(
+          context,
+          message: 'Settings not saved — could not store the API key: $e',
+        );
         return;
       }
     }
+
+    s.llmKind = _kind;
+    s.llmBaseUrl = _baseUrl.text.trim();
+    s.llmModel = _model.text.trim();
+    s.llmApiKeyRef = ref;
+    s.redactionEnabled = _redaction;
+    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
+    // The reference is what switches the backend on; turning it off leaves the
+    // key in the keystore rather than deleting it, like every other key here.
+    s.zaiApiKeyRef = _zai ? _zaiKeyRef : null;
+    // Turning the switch on with the field left blank and nothing stored is
+    // the one way to end up with a backend that reads as on and is silently
+    // skipped on every search. Reported rather than blocked: the rest of this
+    // page has been saved, and a locked keyring — which also answers null —
+    // is not a reason to refuse a model change.
+    final zaiWithoutKey = _zai &&
+        await state.services.masterKeys.getApiKey(_zaiKeyRef) == null;
+
     await state.services.saveSettings();
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();
     if (mounted) {
       setState(() => _saving = false);
-      showTopToastIn(context, message: 'Saved');
+      showTopToastIn(
+        context,
+        message: zaiWithoutKey
+            ? 'Saved — but no Z.AI key could be read (none stored, or the '
+                  'keyring is locked), so Z.AI search will be skipped.'
+            : 'Saved',
+      );
     }
   }
 

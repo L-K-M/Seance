@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
@@ -595,17 +596,58 @@ class AppServices {
     }
   }
 
-  /// Build the web-search backend for the chat tool, if one is configured.
+  /// A backend the user configured that this launch could not build.
+  ///
+  /// `CompositeSearch` logs a backend that fails mid-search "because this is
+  /// the only record it happened"; one dropped before the search starts leaves
+  /// exactly the same symptom — quietly worse results — and deserves the same
+  /// record. Never the key or the ref, only which backend and why.
+  static void _searchBackendUnavailable(String backend) {
+    developer.log(
+      '$backend search key unavailable (locked keyring or missing entry); '
+      'backend skipped for this session',
+      name: 'seance.search',
+      // Warning, like `CompositeSearch`'s record of a backend failing
+      // mid-search: the two are halves of one signal, and a filter at
+      // warning level should see both.
+      level: 900,
+    );
+  }
+
+  /// The chat tool's web search: every configured backend, merged.
+  ///
+  /// Configured means used, rather than a priority order that would quietly
+  /// ignore a backend someone took the trouble to set up. Clearing a field is
+  /// how you drop one; filling several is how you use them all (see
+  /// [CompositeSearch]). Null when nothing is configured, which
+  /// is what hides the search tool from the assistant.
   Future<SearchProvider?> buildSearchProvider() async {
+    final backends = <SearchProvider>[];
     if (settings.searxngUrl != null && settings.searxngUrl!.isNotEmpty) {
-      return SearxngSearch(baseUrl: settings.searxngUrl!);
+      backends.add(SearxngSearch(baseUrl: settings.searxngUrl!));
     }
     if (settings.braveApiKeyRef != null &&
         settings.braveApiKeyRef!.isNotEmpty) {
+      // getApiKey answers null on a locked keyring rather than throwing, so a
+      // keystore that is down reads as "this backend is not available" and the
+      // others still work.
       final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
-      if (key != null) return BraveSearch(apiKey: key);
+      if (key != null) {
+        backends.add(BraveSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Brave');
+      }
     }
-    return null;
+    if (settings.zaiApiKeyRef != null && settings.zaiApiKeyRef!.isNotEmpty) {
+      final key = await masterKeys.getApiKey(settings.zaiApiKeyRef!);
+      if (key != null) {
+        backends.add(ZaiSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Z.AI');
+      }
+    }
+    if (backends.isEmpty) return null;
+    return backends.length == 1 ? backends.single : CompositeSearch(backends);
   }
 
   /// A caller-owned sync client, or null if sync isn't set up. Close after use.

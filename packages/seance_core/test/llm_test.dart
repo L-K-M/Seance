@@ -502,4 +502,51 @@ void main() {
       );
     });
   });
+
+  group('clipSearchSnippets', () {
+    SearchResult hit(String snippet) =>
+        SearchResult(title: 't', url: 'https://x.example', snippet: snippet);
+
+    test('a snippet under the cap is passed through untouched', () {
+      final result = ChatController.clipSearchSnippets([hit('short')]).single;
+      expect(result.snippet, 'short');
+    });
+
+    test('a snippet exactly at the cap is passed through untouched', () {
+      // The boundary itself: a `>=` in place of `>` would clip a snippet that
+      // fits, and neither neighbour above or below can tell.
+      final edge = 'y' * ChatController.maxSnippetChars;
+      final result = ChatController.clipSearchSnippets([hit(edge)]).single;
+      expect(result.snippet, edge);
+    });
+
+    test('the cut never splits a surrogate pair', () {
+      // The cap counts UTF-16 code units, and an emoji is two of them. A cut
+      // between its halves leaves a lone high surrogate that serializes into
+      // the tool result as U+FFFD.
+      final long = '${'x' * (ChatController.maxSnippetChars - 1)}😀 and more';
+      final result = ChatController.clipSearchSnippets([hit(long)]).single;
+      expect(result.snippet.endsWith('…'), isTrue);
+      final beforeEllipsis =
+          result.snippet.codeUnitAt(result.snippet.length - 2);
+      expect(beforeEllipsis & 0xFC00, isNot(0xD800));
+      expect(result.snippet, '${'x' * (ChatController.maxSnippetChars - 1)}…');
+    });
+
+    test('an over-long snippet is clipped, and says it was', () {
+      // Every backend is unbounded in the same way: a snippet is whatever
+      // text the search service put in the field. Z.AI's prose fallback can
+      // hand back a whole tool reply — its byte cap is 2 MiB, which protects
+      // memory rather than the token bill — and SearXNG and Brave copy their
+      // `content` through verbatim. This is where they converge before being
+      // serialized into a tool result, so it is where the cap belongs.
+      final long = 'x' * (ChatController.maxSnippetChars + 500);
+      final result = ChatController.clipSearchSnippets([hit(long)]).single;
+      expect(result.snippet.length, ChatController.maxSnippetChars + 1);
+      expect(result.snippet.endsWith('…'), isTrue);
+      // Only the snippet is touched.
+      expect(result.title, 't');
+      expect(result.url, 'https://x.example');
+    });
+  });
 }

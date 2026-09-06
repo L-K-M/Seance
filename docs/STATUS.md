@@ -154,7 +154,12 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
    extraction isn't implemented. Streaming (`streamChat`) exists in the providers
    but the sidebar uses non-streaming `chat()`; switch for nicer UX.
 7. **Provider-native web search** (Anthropic/OpenAI server-side tool) is unused;
-   only client-side SearXNG/Brave. Add the native path for cloud providers.
+   only client-side SearXNG, Brave and Z.AI, queried together and interleaved
+   by `CompositeSearch`. Add the native path for cloud providers. The three
+   backends also own an `http.Client` each with no release path, and the chat
+   controller drops the whole set when the provider version changes rather
+   than closing it — one leak, fixed properly by giving `SearchProvider` and
+   `LlmProvider` a `close()` and disposing the superseded controller.
 8. **Terminal PTY initial size** is 80×24 for the moment between connect and the
    first widget layout, then the xterm `autoResize` fits the grid to the pane and
    forwards it to the remote PTY. (This resize path used to recurse infinitely —
@@ -213,7 +218,16 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     a delete's reference count or a duplicate's plan) while a slow fetch stops
     stalling saves and deletes.
 
-15. **Seal tombstones.** A tombstone carries no sealed payload, so its date
+15. **A domain exception type for search failures.** `ZaiSearch` and
+    `CompositeSearch` raise `http.ClientException` for everything — a 502, a
+    rejected key, a missing search tool, a reply of the wrong shape — so the
+    only way to tell a user-fixable failure from a transient one is matching
+    the message string, which the tests already do. A dedicated type carrying
+    the backend and the reason would let a caller retry transport blips
+    without retrying a bad key. Worth doing when something actually retries;
+    today nothing does.
+
+16. **Seal tombstones.** A tombstone carries no sealed payload, so its date
     is the sync server's to choose: a config tombstone is honoured on that
     say-so today (a hostile server can delete every synced server's *settings*
     on every device), and `secret:` / `hostkey:` tombstones are refused for
