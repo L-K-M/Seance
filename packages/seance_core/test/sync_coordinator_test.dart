@@ -6,9 +6,11 @@ class FakeServer implements SyncApi {
   final Map<String, EncryptedRecord> _store = {};
   int _seq = 0;
   int pushedRecords = 0;
+  int pulls = 0;
 
   @override
   Future<PullResponse> pull({required int since}) async {
+    pulls++;
     final records = _store.values.where((r) => (r.seq ?? 0) > since).toList()
       ..sort((a, b) => (a.seq ?? 0).compareTo(b.seq ?? 0));
     return PullResponse(records: records, latestSeq: _seq);
@@ -466,13 +468,15 @@ void main() {
     SyncCoordinator coord(
       RecordCodec codec,
       ConfigStore configs,
-      String device,
-    ) =>
+      String device, {
+      LocalRecordStore? local,
+      HostKeyStore? hostKeys,
+    }) =>
         SyncCoordinator(
           configStore: configs,
-          hostKeyStore: InMemoryHostKeyStore(),
+          hostKeyStore: hostKeys ?? InMemoryHostKeyStore(),
           codec: codec,
-          local: InMemoryLocalRecordStore(),
+          local: local ?? InMemoryLocalRecordStore(),
           deviceId: device,
         );
 
@@ -490,13 +494,7 @@ void main() {
       );
 
       final records = await collected(
-        SyncCoordinator(
-          configStore: configs,
-          hostKeyStore: InMemoryHostKeyStore(),
-          codec: codec,
-          local: local,
-          deviceId: 'A',
-        ),
+        coord(codec, configs, 'A', local: local),
         local,
       );
 
@@ -518,13 +516,7 @@ void main() {
         server('local-only', 'beta', 4242)
             .copyWith(excludeFromSync: true, updatedAt: 4243),
       );
-      final coordinator = SyncCoordinator(
-        configStore: configs,
-        hostKeyStore: InMemoryHostKeyStore(),
-        codec: codec,
-        local: local,
-        deviceId: 'A',
-      );
+      final coordinator = coord(codec, configs, 'A', local: local);
 
       await coordinator.collectLocal();
       final tombstone = await local.getRecord('local-only');
@@ -659,6 +651,8 @@ void main() {
         // what a sealed-tombstone build inherits has to be the deletion
         // itself, or there is nothing left to verify.
         expect(staged!.deleted, isTrue);
+        expect(staged.updatedAt, 99,
+            reason: 'the apply must not rewrite a tombstone it refused');
       }
     });
 
@@ -855,13 +849,7 @@ void main() {
       }
 
       var records = await collected(
-        SyncCoordinator(
-          configStore: configs,
-          hostKeyStore: hostKeys,
-          codec: codec,
-          local: local,
-          deviceId: 'A',
-        ),
+        coord(codec, configs, 'A', local: local, hostKeys: hostKeys),
         local,
       );
       expect(records.containsKey('hostkey:beta.example.com:22'), isTrue);
@@ -870,15 +858,14 @@ void main() {
       await configs.deleteServer('shared');
       final second = InMemoryLocalRecordStore();
       records = await collected(
-        SyncCoordinator(
-          configStore: configs,
-          hostKeyStore: hostKeys,
-          codec: codec,
-          local: second,
-          deviceId: 'A',
-        ),
+        coord(codec, configs, 'A', local: second, hostKeys: hostKeys),
         second,
       );
+      // Withheld, not retracted — unlike the config and the credential. A
+      // pin is keyed by `host:port`, so a tombstone for it would delete the
+      // pin on every other device and drop them back to trust-on-first-use
+      // for a host they may still reach through a server of their own. The
+      // copy already on the server stays; only new pins stop going out.
       expect(records.containsKey('hostkey:beta.example.com:22'), isFalse);
       // A host no excluded server names is unaffected either way.
       expect(records.containsKey('hostkey:gamma.example.com:22'), isTrue);
@@ -912,13 +899,7 @@ void main() {
         data: server('local-only', 'renamed-elsewhere', 99).toJson(),
       )));
 
-      final rescheduled = await SyncCoordinator(
-        configStore: configs,
-        hostKeyStore: InMemoryHostKeyStore(),
-        codec: codec,
-        local: local,
-        deviceId: 'A',
-      ).applyToStores();
+      final rescheduled = await coord(codec, configs, 'A', local: local).applyToStores();
 
       final after = await configs.getServer('local-only');
       expect(after, isNotNull,
@@ -967,10 +948,35 @@ void main() {
       expect(await cfgB.getServer('s1'), isNull);
 
       // And it settles there: nothing re-dates once no live copy comes back.
+      // Pinned by the server's sequence, which every accepted push advances:
+      // a tombstone re-dated on every round would produce the same end state
+      // and a new sequence number each time.
+      final settled = (await remote.pull(since: 0)).latestSeq;
       await coord(codec, cfgA, 'A').run(remote);
       await coord(codec, cfgB, 'B').run(remote);
       expect(await cfgB.getServer('s1'), isNull);
       expect((await cfgA.getServer('s1'))!.label, 'alpha');
+      expect((await remote.pull(since: 0)).latestSeq, settled,
+          reason: 'a settled round must not sequence anything new');
+    });
+
+    test('a round that re-dates nothing makes one engine pass', () async {
+      // The second pass is gated on the *re-dating* count. Were
+      // `applyToStores` ever to answer with the number of records applied,
+      // the gate would open on every round that pulled anything, and the
+      // extra pass would hide inside the summed outcome — so the pull count
+      // is pinned: one to find the record, one to see nothing follows it.
+      final codec = RecordCodec(secureRandomBytes(32));
+      final remote = FakeServer();
+      final cfgA = InMemoryConfigStore();
+      final cfgB = InMemoryConfigStore();
+      await cfgA.putServer(server('s1', 'alpha', 22));
+      await coord(codec, cfgA, 'A').run(remote);
+
+      remote.pulls = 0;
+      await coord(codec, cfgB, 'B').run(remote);
+      expect(await cfgB.getServer('s1'), isNotNull);
+      expect(remote.pulls, 2);
     });
 
     test('the credential is retracted end to end, without emptying B\'s vault',
@@ -1065,13 +1071,7 @@ void main() {
         )));
       }
 
-      final coordinator = SyncCoordinator(
-        configStore: configs,
-        hostKeyStore: InMemoryHostKeyStore(),
-        codec: codec,
-        local: local,
-        deviceId: 'A',
-      );
+      final coordinator = coord(codec, configs, 'A', local: local);
       // 'good' is revived even though 'bad' threw, and the count reports only
       // what actually landed — the caller spends its extra push round on a
       // real re-dating rather than on a batch that failed.
@@ -1096,13 +1096,7 @@ void main() {
         data: server('payload-id', 'alpha', 10).toJson(),
       )));
 
-      await SyncCoordinator(
-        configStore: configs,
-        hostKeyStore: InMemoryHostKeyStore(),
-        codec: codec,
-        local: local,
-        deviceId: 'A',
-      ).applyToStores();
+      await coord(codec, configs, 'A', local: local).applyToStores();
 
       expect(await configs.listServers(), isEmpty);
     });
@@ -1183,13 +1177,7 @@ void main() {
         deleted: true,
       )));
 
-      final coordinator = SyncCoordinator(
-        configStore: configs,
-        hostKeyStore: InMemoryHostKeyStore(),
-        codec: codec,
-        local: local,
-        deviceId: 'A',
-      );
+      final coordinator = coord(codec, configs, 'A', local: local);
       expect(await coordinator.applyToStores(), 0);
       // Still there, still on its own timestamp — no bump was needed and none
       // was made.
