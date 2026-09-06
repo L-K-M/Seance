@@ -554,15 +554,9 @@ void main() {
         server('s1', 'alpha', 10)
             .copyWith(secretRef: 'sec-1', syncSecret: true),
       );
-      SyncCoordinator coordinator(LocalRecordStore local) => SyncCoordinator(
-            configStore: configs,
-            hostKeyStore: InMemoryHostKeyStore(),
-            codec: codec,
-            local: local,
-            deviceId: 'A',
-            syncSecrets: true,
-            secretVault: vault,
-          );
+      SyncCoordinator coordinator(LocalRecordStore local) =>
+          coord(codec, configs, 'A',
+              local: local, syncSecrets: true, secretVault: vault);
 
       final pushed = InMemoryLocalRecordStore();
       final pushedIds = await collected(coordinator(pushed), pushed);
@@ -838,7 +832,7 @@ void main() {
       // one that no longer does: a tombstone dated at the exclusion would beat
       // that server's own push of the same id every round, ending credential
       // sync for a server the user never excluded.
-      expect(collectedRecords['secret:shared'], isFalse);
+      expect(collectedRecords, containsPair('secret:shared', isFalse));
 
       // And an update arriving for it is applied rather than shielded.
       final incoming = InMemoryLocalRecordStore();
@@ -938,7 +932,8 @@ void main() {
         data: server('local-only', 'renamed-elsewhere', 99).toJson(),
       )));
 
-      final rescheduled = await coord(codec, configs, 'A', local: local).applyToStores();
+      final rescheduled =
+          await coord(codec, configs, 'A', local: local).applyToStores();
 
       final after = await configs.getServer('local-only');
       expect(after, isNotNull,
@@ -997,6 +992,107 @@ void main() {
       expect((await cfgA.getServer('s1'))!.label, 'alpha');
       expect((await remote.pull(since: 0)).latestSeq, settled,
           reason: 'a settled round must not sequence anything new');
+    });
+
+    test('a host key whose payload names another locator is skipped', () async {
+      // The pin would be stored under the payload's locator, planting trust
+      // for an address no record ever named — the hole the config and secret
+      // paths close for their own ids.
+      final codec = RecordCodec(secureRandomBytes(32));
+      final pins = InMemoryHostKeyStore();
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: 'hostkey:a.example.com:22',
+        kind: RecordKind.hostKey,
+        updatedAt: 10,
+        deviceId: 'B',
+        data: HostKey(
+          host: 'b.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintSha256: 'SHA256:planted',
+          pinnedAt: 10,
+        ).toJson(),
+      )));
+
+      await coord(codec, InMemoryConfigStore(), 'A',
+              local: local, hostKeys: pins)
+          .applyToStores();
+
+      expect(await pins.get('b.example.com', 22), isNull);
+      expect(await pins.get('a.example.com', 22), isNull);
+    });
+
+    test('a pin pulled for an address only excluded servers use stays out',
+        () async {
+      // Withheld on the way out, so the mirror never holds this device's own
+      // pin — a pulled copy would win by default and overwrite it. One
+      // included server on the same address keeps pins flowing, as it keeps
+      // them pushed.
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      await configs.putServer(server('only', 'alpha', 20)
+          .copyWith(excludeFromSync: true, updatedAt: 21));
+      await configs.putServer(
+        server('shared', 'beta', 20).copyWith(host: 'both.example.com'),
+      );
+      await configs.putServer(server('shared-excluded', 'gamma', 20).copyWith(
+          host: 'both.example.com', excludeFromSync: true, updatedAt: 21));
+      final pins = InMemoryHostKeyStore();
+      final local = InMemoryLocalRecordStore();
+      for (final host in ['alpha.example.com', 'both.example.com']) {
+        await local.putRemote(await codec.encrypt(DecryptedRecord(
+          id: 'hostkey:$host:22',
+          kind: RecordKind.hostKey,
+          updatedAt: 10,
+          deviceId: 'B',
+          data: HostKey(
+            host: host,
+            port: 22,
+            type: 'ssh-ed25519',
+            fingerprintSha256: 'SHA256:from-b',
+            pinnedAt: 10,
+          ).toJson(),
+        )));
+      }
+
+      await coord(codec, configs, 'A', local: local, hostKeys: pins)
+          .applyToStores();
+
+      expect(await pins.get('alpha.example.com', 22), isNull);
+      expect(await pins.get('both.example.com', 22), isNotNull);
+    });
+
+    test('a peer\'s later exclusion outranks a re-inclusion', () async {
+      // The residual the revival guard leaves: both devices exclude, A
+      // re-includes, and B's re-dated retraction — not A's own, so not
+      // revived past — deletes the config A just took back. Pinned so a
+      // change here is a decision, not a drift.
+      final remote = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfgA = InMemoryConfigStore();
+      final cfgB = InMemoryConfigStore();
+      await cfgA.putServer(server('s1', 'alpha', 10));
+      await coord(codec, cfgA, 'A').run(remote);
+      await coord(codec, cfgB, 'B').run(remote);
+
+      await cfgA.putServer(server('s1', 'alpha', 10)
+          .copyWith(excludeFromSync: true, updatedAt: 20));
+      await coord(codec, cfgA, 'A').run(remote);
+      await cfgB.putServer(server('s1', 'alpha', 10)
+          .copyWith(excludeFromSync: true, updatedAt: 25));
+      await coord(codec, cfgB, 'B').run(remote);
+
+      await cfgA.putServer(server('s1', 'alpha', 10)
+          .copyWith(excludeFromSync: false, updatedAt: 30));
+      await coord(codec, cfgA, 'A').run(remote);
+      expect((await cfgA.getServer('s1'))?.excludeFromSync, isFalse);
+
+      // B's shield re-dates its retraction past A's live copy…
+      await coord(codec, cfgB, 'B').run(remote);
+      // …and A, pulling a retraction that is not its own, honours it.
+      await coord(codec, cfgA, 'A').run(remote);
+      expect(await cfgA.getServer('s1'), isNull);
     });
 
     test('a round that re-dates nothing makes one engine pass', () async {

@@ -213,6 +213,14 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     a delete's reference count or a duplicate's plan) while a slow fetch stops
     stalling saves and deletes.
 
+14. **Seal tombstones.** A tombstone carries no sealed payload, so its date
+    is the sync server's to choose: a config tombstone is honoured on that
+    say-so today (a hostile server can delete every synced server's *settings*
+    on every device), and `secret:` / `hostkey:` tombstones are refused for
+    the same reason, at the cost of an orphaned vault entry and an
+    unretracted pin on the other devices. An authenticator over id, kind and
+    date keyed like the payload closes all three at once.
+
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
 terminal **splits** (multiple panes visible at once), OIDC on the sync server,
