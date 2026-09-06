@@ -29,17 +29,14 @@ void main() {
     expect(back.updatedAt, 42);
   });
 
-  test('a record with no keys is byte-identical to one that dropped them', () {
-    // So a device that syncs keys and one that does not produce the same
-    // record for the same configuration, rather than one carrying an empty
-    // map that reads as a difference.
+  test('an empty key map is omitted rather than serialized', () {
+    // A configuration that references no keys — a local gateway that wants
+    // none — must produce the same record as one whose keys were dropped,
+    // rather than one carrying an empty map that reads as a difference.
     final withKeys = settings(apiKeys: const {'anthropic': 'sk-1'});
     expect(withKeys.toJson().containsKey('apiKeys'), isTrue);
-    expect(withKeys.withoutKeys().toJson(), settings().toJson());
+    expect(withKeys.copyWith(apiKeys: const {}).toJson(), settings().toJson());
     expect(settings().toJson().containsKey('apiKeys'), isFalse);
-    // Dropping nothing is the same object rather than a copy.
-    final bare = settings();
-    expect(bare.withoutKeys(), same(bare));
   });
 
   test('a cleared field arrives cleared, not as an empty endpoint', () {

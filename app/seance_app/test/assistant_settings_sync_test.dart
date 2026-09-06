@@ -251,6 +251,29 @@ void main() {
       expect(sync.applied, isFalse);
     });
 
+    test('a key this device failed to store suspends publishing', () async {
+      // The adoption keeps the configuration and its stamp when the keyring
+      // is locked, retrying the key later. But `collectLocal` runs before
+      // `applyToStores`, so the first round after the keyring recovers would
+      // republish that same stamp minus the missing key — and an equal stamp
+      // is broken by device id, so the keyless copy can evict the keyed one
+      // it came from.
+      keystore.locked = true;
+      await sync.putAssistantSettings(arriving());
+      expect(settings.assistantUpdatedAt, 500,
+          reason: 'the configuration is still adopted');
+
+      // Keyring back, key still missing: this device must not publish yet.
+      keystore.locked = false;
+      expect(await sync.getAssistantSettings(), isNull);
+
+      // Once the retry lands, publishing resumes.
+      await sync.putAssistantSettings(arriving());
+      expect(await keys.getApiKey('openai'), 'sk-remote');
+      expect((await sync.getAssistantSettings())!.apiKeys,
+          containsPair('openai', 'sk-remote'));
+    });
+
     test('a keyless record is adopted without forgetting a stored key',
         () async {
       // The mirror of the publishing group's keyless case, which had none:

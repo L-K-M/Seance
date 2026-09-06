@@ -46,6 +46,24 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   /// already-constructed one.
   bool applied = false;
 
+  /// Keystore entries this device adopted a *reference* to but could not
+  /// store, because the keyring was locked when the record arrived.
+  ///
+  /// The adoption deliberately keeps the configuration and its stamp in that
+  /// case, retrying the key on a later round. What that leaves behind is a
+  /// device whose refs name entries it does not hold — and once the keyring
+  /// comes back, `collectLocal` runs before `applyToStores`, so this device
+  /// would republish the *same* stamp minus the missing key before the retry
+  /// ever happens. Equal stamps are broken by device id, so that keyless copy
+  /// can evict the keyed one from the account.
+  ///
+  /// Naming them is what makes the two nulls distinguishable. A reference to
+  /// a key that was simply never stored is a supported state — the Z.AI
+  /// switch can be on with the field left blank — and must not stop this
+  /// device publishing forever. A reference this device *knows* it failed to
+  /// write is the one that must.
+  final Set<String> _unwritten = {};
+
   AssistantSettingsSync({
     required this.settings,
     required this.masterKeys,
@@ -85,6 +103,10 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // to authenticate them — and nothing would republish the keys, because
       // by then the stamps agree. A round skipped costs five minutes.
       final value = await masterKeys.getApiKey(name);
+      // A key this device adopted a reference to and failed to store. Until
+      // the retry lands, publishing would put a keyless record on the account
+      // under a stamp that can evict the keyed one it came from.
+      if (value == null && _unwritten.contains(name)) return null;
       // Anything but a positively readable keystore: `unknown` and any state
       // added later mean the same thing here — this null is not evidence the
       // key is gone.
@@ -173,11 +195,15 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         // moved.
         if (await masterKeys.getApiKey(entry.key) == entry.value) continue;
         await masterKeys.putApiKey(entry.key, entry.value);
+        _unwritten.remove(entry.key);
         keysChanged = true;
       } on KeystoreException {
         // The keyring is locked or missing. The configuration is still worth
         // keeping — the key is re-applied on the next round once the keystore
-        // is back, because the record is pulled again every time.
+        // is back, because the record is pulled again every time. Remembered
+        // so this device does not publish over the keyed record in the
+        // meantime; see [_unwritten].
+        _unwritten.add(entry.key);
       }
     }
 

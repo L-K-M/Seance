@@ -43,7 +43,19 @@ class AssistantSettings {
   /// of surprise. Nothing here can turn it off without the user turning it off.
   final bool redactSecrets;
 
-  /// API keys by keystore entry name, or empty when they are not being synced.
+  /// API keys by keystore entry name, empty when this configuration
+  /// references none.
+  ///
+  /// Empty is a real state rather than an opt-out: a local gateway that wants
+  /// no key at all leaves every reference blank. There is no switch for
+  /// syncing the configuration *without* its keys — that would publish a
+  /// setup which looks configured everywhere and answers nowhere — so
+  /// assistant sync is all-or-nothing by design.
+  ///
+  /// Absent from this map means "look locally", never "forget the entry you
+  /// have": a record that cleared local keys would break the assistant on
+  /// every device that adopted it, which is why the apply path only ever
+  /// writes the keys a record carries.
   ///
   /// Keys travel *inside* the record, which is sealed with the vault key
   /// before it leaves — the same protection a synced password gets. The map is
@@ -114,17 +126,6 @@ class AssistantSettings {
         apiKeys: apiKeys ?? this.apiKeys,
         updatedAt: updatedAt ?? this.updatedAt,
       );
-
-  /// The same settings with no key material, for a device that has opted out
-  /// of syncing them.
-  ///
-  /// The key *references* stay, so a receiver resolves them against its own
-  /// keystore: absent from [apiKeys] means "look locally", never "forget the
-  /// entry you have". A record that cleared local keys would break the
-  /// assistant on every device that adopted it, which is why the apply path
-  /// only ever writes the keys a record carries.
-  AssistantSettings withoutKeys() =>
-      apiKeys.isEmpty ? this : copyWith(apiKeys: const {});
 
   Map<String, dynamic> toJson() => {
         'providerKind': providerKind,
