@@ -19,6 +19,14 @@ import 'package:seance_core/seance_core.dart';
 
 void main() {
   group('duplicateServerLabel', () {
+    test('a source already named as a copy never gets its own label back',
+        () {
+      // Even when the caller did not list the source among the taken
+      // labels; the listed variants are pinned further down.
+      expect(duplicateServerLabel('web copy', const []), 'web copy 2');
+      expect(duplicateServerLabel('copy', const []), 'copy 2');
+    });
+
     test('a hand-doubled suffix does not stutter', () {
       // Stripping only the outermost "copy" leaves "web copy 2", whose first
       // candidate is the taken name it started from — so the duplicate landed
@@ -342,13 +350,6 @@ void main() {
         now: 999,
       );
       expect(numbered.config.label, 'web copy 2');
-    });
-
-    test('a source already named as a copy never gets its own label back',
-        () {
-      // Whether or not the caller lists the source among the taken labels.
-      expect(duplicateServerLabel('web copy', const []), 'web copy 2');
-      expect(duplicateServerLabel('copy', const []), 'copy 2');
     });
 
     test('a dangling reference plans as no credential, not as a failure',

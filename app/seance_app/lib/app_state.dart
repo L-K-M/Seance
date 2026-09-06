@@ -542,7 +542,9 @@ class AppState extends ChangeNotifier {
       // and resurrect a config another device deleted.
       final latest = await services.configStore.getServer(source.id);
       if (!duplicationSourceUnchanged(latest, source)) {
-        throw SourceServerChanged(source.label);
+        // Named as it appears in the list now, not as the caller's snapshot
+        // had it: a rename is one of the edits that can land in between.
+        throw SourceServerChanged(latest?.label ?? source.label);
       }
       final plan = await planServerDuplication(
         // The store's copy, not the caller's: `source` was captured before
@@ -704,7 +706,25 @@ class AppState extends ChangeNotifier {
           );
         }
       }
-      servers = await services.configStore.listServers();
+      // Fail-soft like the two writes above it, and for the same reason: the
+      // delete has landed, and a read that throws here would skip the
+      // reference check, the probe and the notify, leaving the UI showing a
+      // server the store no longer has. The fallback is the list this
+      // method started from minus the row it just removed — equivalent for
+      // the reference check, since nothing else can write while the queue is
+      // held.
+      try {
+        servers = await services.configStore.listServers();
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not refresh the server list after deleting $id',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+        servers = servers.where((s) => s.id != id).toList();
+      }
 
       // Against the refreshed list, which no longer holds this server —
       // `excludingId` is redundant now and kept because the predicate
@@ -732,6 +752,11 @@ class AppState extends ChangeNotifier {
     services.probe.updateServers(servers);
     notifyListeners();
     _scheduleAutoSync();
+    // A tab opened on this server while the delete waited — behind the
+    // teardown above, or behind an earlier mutation — would outlive it.
+    // Swept again here, outside the queue like the first sweep and for the
+    // same reason.
+    await closeAllTabsForServer(id);
   }
 
   /// Server-list group sections currently folded away, keyed by
@@ -1080,7 +1105,10 @@ class AppState extends ChangeNotifier {
     // Reached from inside `_mutate` (every save schedules one), and a timer's
     // callback runs in the zone it was created in — which is fine: the guard
     // in [_mutate] asks whether the *running* action's zone is an ancestor,
-    // and by the time this fires that action is long over.
+    // and the action that scheduled this is over before it can fire. That is
+    // ordering, not timing: this call is the last statement of every
+    // mutation that makes it, so nothing of that action — a keychain prompt
+    // included — remains to be waited on after the timer exists.
     _syncDebounce = Timer(_syncDebounceDelay, _autoSync);
   }
 

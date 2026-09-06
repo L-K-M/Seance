@@ -51,12 +51,30 @@ void main() {
     // fire-and-forget one, so it refuses every queued call made from inside
     // the running action — and a listener fires inside it, which is the one
     // shape a test can produce without a seam into the action body.
-    Future<void>? inner;
-    void reenter() => inner ??= state.saveServer(server('b'));
+    // A closure rather than the future: `throwsStateError` invokes it, so a
+    // guard that ever threw synchronously would still be caught here instead
+    // of escaping into the running mutation and failing at the matcher.
+    Future<void> Function()? inner;
+    void reenter() => inner ??= () => state.saveServer(server('b'));
     state.addListener(reenter);
     await state.saveServer(server('a'));
     state.removeListener(reenter);
     await expectLater(inner, throwsStateError);
+  });
+
+  test('a changed source is named as it appears in the list now', () async {
+    // The caller's snapshot can be stale in every field, the label included:
+    // an error naming a server the list no longer shows sends the user
+    // looking for a row that is not there.
+    await state.saveServer(server('a'));
+    final snapshot = (await services.configStore.getServer('a'))!;
+    await services.configStore.putServer(
+      snapshot.copyWith(label: 'renamed', secretRef: 'moved', updatedAt: 2),
+    );
+    await expectLater(
+      state.duplicateServer(snapshot),
+      throwsA(predicate((e) => '$e'.contains('renamed'))),
+    );
   });
 
   test('a callback carrying a finished mutation\'s zone may queue', () async {
