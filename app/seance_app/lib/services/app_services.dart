@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
@@ -409,7 +410,11 @@ class AppServices {
   /// vault yet, so resolving from storage alone would quietly test the *old*
   /// credential — or an empty one for a server being added. A blank draft
   /// field falls back to the vault, which is how an unchanged credential is
-  /// re-tested, and matches what saving does with a blank field.
+  /// re-tested, and matches what saving does with a blank field — with one
+  /// exception the blanket claim was hiding: a typed draft PEM is new key
+  /// material by construction (the editor passes null whenever the key is
+  /// referenced from disk or held in the vault), so a blank passphrase beside
+  /// one means "no passphrase" rather than "the stored one".
   ///
   /// Precedence, since it is not obvious from the branches: a configured
   /// [ServerConfig.identityFilePath] wins over [draftPrivateKey]. The editor
@@ -507,8 +512,8 @@ class AppServices {
     // Dart's File does not expand `~`, but the editor hint invites it.
     var readPath = _expandHome(config.identityFilePath!);
     ResolvedIdentityFile? scoped;
-    final entry =
-        bookmarkOverride ?? settings.identityFileBookmarks[config.id];
+    final saved = settings.identityFileBookmarks[config.id];
+    final entry = bookmarkOverride ?? saved;
     // The grant counts only while it was minted for the configured path: a
     // synced edit (say, a key rotation on another device) changes the path
     // without touching this device's bookmark map, and the new path must win
@@ -524,8 +529,14 @@ class AppServices {
         // what the editor does for a server it did not re-Browse) may refresh
         // in place, or a stale bookmark would be re-minted on every attempt
         // and never kept.
-        final refreshable = bookmarkOverride == null ||
-            bookmarkOverride == settings.identityFileBookmarks[config.id];
+        //
+        // Compared with `==`, which `IdentityFileBookmark` overrides over the
+        // path and the bookmark payload, so a grant reconstructed with the
+        // same contents still counts — the editor is not obliged to hand back
+        // the identical instance. Read once, above, rather than looked up
+        // again here.
+        final refreshable =
+            bookmarkOverride == null || bookmarkOverride == saved;
         if (scoped.refreshedBookmark != null && refreshable) {
           // The stored bookmark went stale (key moved/replaced); persist the
           // re-minted one so the grant keeps surviving relaunches.
@@ -611,6 +622,20 @@ class AppServices {
     }
   }
 
+  /// A backend the user configured that this launch could not build.
+  ///
+  /// `CompositeSearch` logs a backend that fails mid-search "because this is
+  /// the only record it happened"; one dropped before the search starts leaves
+  /// exactly the same symptom — quietly worse results — and deserves the same
+  /// record. Never the key or the ref, only which backend and why.
+  static void _searchBackendUnavailable(String backend) {
+    developer.log(
+      '$backend search key unavailable (locked keyring or missing entry); '
+      'backend skipped for this session',
+      name: 'seance.search',
+    );
+  }
+
   /// The chat tool's web search: every configured backend, merged.
   ///
   /// Configured means used, rather than a priority order that would quietly
@@ -629,11 +654,19 @@ class AppServices {
       // keystore that is down reads as "this backend is not available" and the
       // others still work.
       final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
-      if (key != null) backends.add(BraveSearch(apiKey: key));
+      if (key != null) {
+        backends.add(BraveSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Brave');
+      }
     }
     if (settings.zaiApiKeyRef != null && settings.zaiApiKeyRef!.isNotEmpty) {
       final key = await masterKeys.getApiKey(settings.zaiApiKeyRef!);
-      if (key != null) backends.add(ZaiSearch(apiKey: key));
+      if (key != null) {
+        backends.add(ZaiSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Z.AI');
+      }
     }
     if (backends.isEmpty) return null;
     return backends.length == 1 ? backends.single : CompositeSearch(backends);

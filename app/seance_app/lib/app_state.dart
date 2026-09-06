@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
@@ -678,8 +679,17 @@ class AppState extends ChangeNotifier {
     final queued = _mutating;
     final finished = Completer<void>();
     _mutating = finished.future;
-    await queued;
     try {
+      // Inside the try, so `finished` is completed even if awaiting the
+      // predecessor throws. Nothing can make it throw today — `_mutating`
+      // only ever holds a future completed with `complete()` — but this token
+      // is the whole chain's link, and a predecessor that rejected before the
+      // try would have left every later mutation waiting on it forever, which
+      // is the silent wedge the guard above crashes to avoid. Not
+      // `catchError`, which would be a no-op now and swallow a real error
+      // later; the failing caller's own error still propagates from the
+      // action below.
+      await queued;
       return await runZoned(action, zoneValues: {#seanceMutation: true});
     } finally {
       finished.complete();
@@ -693,20 +703,46 @@ class AppState extends ChangeNotifier {
     await closeAllTabsForServer(id);
     await _mutate(() async {
       final server = await services.configStore.getServer(id);
-      final secretRef = server?.secretRef;
-      if (secretRef != null &&
-          !secretStillReferenced(
-            secretRef,
-            await services.configStore.listServers(),
-            excludingId: id,
-          )) {
-        await services.vault.deleteSecret(secretRef);
-      }
+      // The config goes first, and the credential after it — the order
+      // `SyncCoordinator` states for the same pair. Dropping the vault entry
+      // first meant a throw from either write below left the server row on
+      // disk naming a credential that was already gone: a dangling reference
+      // the user only meets at connect time. Reversed, the worst a failure
+      // leaves is a vault entry nothing names — invisible rather than broken.
+      await services.configStore.deleteServer(id);
+      // After the config for the same reason the vault delete is: revoked
+      // first, a throw from `deleteServer` left a live server whose
+      // Browse…-picked key had already lost its security-scoped grant — the
+      // failure the reorder was written to prevent, just moved from the vault
+      // to the bookmark. Reversed, the worst it leaves is a grant filed under
+      // an id nothing names.
       if (services.settings.identityFileBookmarks.remove(id) != null) {
         await services.saveSettings();
       }
-      await services.configStore.deleteServer(id);
       servers = await services.configStore.listServers();
+
+      // Against the refreshed list, which no longer holds this server —
+      // `excludingId` is redundant now and kept because the predicate
+      // requires it, and because it stays correct if the read ever moves.
+      final secretRef = server?.secretRef;
+      if (secretRef != null &&
+          !secretStillReferenced(secretRef, servers, excludingId: id)) {
+        // Fail-soft, like the coordinator's own secret deletes: the vault
+        // throws when the OS keyring is locked, and letting that escape now
+        // would skip the list refresh and leave the UI showing a server that
+        // no longer exists.
+        try {
+          await services.vault.deleteSecret(secretRef);
+        } catch (error, stackTrace) {
+          developer.log(
+            'Could not remove the credential for the deleted server $id',
+            name: 'seance.app',
+            level: 900,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+      }
     });
     services.probe.updateServers(servers);
     notifyListeners();
@@ -1018,6 +1054,17 @@ class AppState extends ChangeNotifier {
     // The re-reads are inside it too — outside, a mutation could land while
     // `listServers` was still resolving and then have its own assignment
     // overwritten by this older snapshot.
+    //
+    // That does hold the queue across network I/O, so what bounds it is worth
+    // writing down here rather than leaving to be rediscovered: every request
+    // carries `HttpSyncClient.timeout` (30 s by default), a timeout throws
+    // rather than retrying so the round ends at the first dead request, and
+    // `_mutate` releases in a `finally`. A black-holed network therefore
+    // costs one timeout, not a wedged app. A slow-but-alive one costs more —
+    // `SyncEngine.sync` runs up to five rounds and `SyncCoordinator.run` up
+    // to two passes — and the fix for that is splitting the coordinator's
+    // fetch from its apply so only the apply serializes, which is a change to
+    // `seance_core`, not to this line.
     try {
       final outcome = await _mutate(() async {
         final result = await services.runSync();

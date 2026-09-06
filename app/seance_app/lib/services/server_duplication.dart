@@ -34,8 +34,20 @@ String duplicateServerLabel(String label, Iterable<String> taken) {
 final RegExp _copySuffix =
     RegExp(r'(^|\s+)copy(\s+\d+)?$', caseSensitive: false);
 
-String _withoutCopySuffix(String label) =>
-    label.replaceFirst(_copySuffix, '').trim();
+/// Strips repeatedly, because one pass leaves the stutter it exists to
+/// prevent: a server hand-named "web copy 2 copy" reduces to "web copy 2",
+/// whose first candidate is the taken name it started from, so the duplicate
+/// lands on "web copy 2 copy 2". Stripping to "web" gives the next free
+/// number instead. Terminating, since each pass either shortens the string
+/// or returns.
+String _withoutCopySuffix(String label) {
+  var base = label.trim();
+  while (true) {
+    final stripped = base.replaceFirst(_copySuffix, '').trim();
+    if (stripped == base) return base;
+    base = stripped;
+  }
+}
 
 /// [source] as a new server: its own id, its own timestamps, a [label] of its
 /// own, and a [secretRef] pointing at its own copy of the credential.

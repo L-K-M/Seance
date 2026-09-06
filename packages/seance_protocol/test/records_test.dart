@@ -28,6 +28,20 @@ void main() {
     expect(rekeyed.kind, original.kind);
     expect(rekeyed.value, original.value);
     expect(rekeyed.keyPassphrase, original.keyPassphrase);
+    // And the other half of the contract: a parameter that is passed has to
+    // *replace*. Every assertion above is about what `copyWith` carries, so a
+    // body that ignored its argument (`value: this.value`) would pass them
+    // all — and the one caller that matters replaces a field.
+    expect(original.copyWith(value: 'other').value, 'other');
+    expect(original.copyWith(value: 'other').id, original.id);
+    // Every replaceable parameter, not just one: `kind: this.kind` would pass
+    // a test that only exercises `value`, and duplication is not the last
+    // caller this method will get.
+    final otherKind =
+        SecretKind.values.firstWhere((k) => k != original.kind);
+    expect(original.copyWith(kind: otherKind).kind, otherKind);
+    expect(original.copyWith(keyPassphrase: 'rekeyed').keyPassphrase,
+        'rekeyed');
   });
 
   group('model JSON round-trips', () {

@@ -855,13 +855,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } catch (e) {
         if (!mounted) return;
         setState(() => _saving = false);
-        showTopToastIn(context, message: '$e');
+        // Named like the LLM key's failure below: the same class of error
+        // otherwise produced a bare `KeystoreException` string with nothing
+        // saying which of the two keys failed to save.
+        showTopToastIn(context, message: 'Failed to save the Z.AI key: $e');
         return;
       }
     }
-    if (_apiKey.text.isNotEmpty) {
+    // Trimmed and tested trimmed, for the same reason as the Z.AI key above —
+    // and it matters more here: a search backend that authenticates as
+    // garbage leaves the others working, while this key is the assistant's
+    // only one. A whitespace-only paste is no key at all, so it does not
+    // overwrite the stored one.
+    if (_apiKey.text.trim().isNotEmpty) {
       try {
-        await state.services.masterKeys.putApiKey(ref, _apiKey.text);
+        await state.services.masterKeys.putApiKey(ref, _apiKey.text.trim());
       } catch (e) {
         // KeystoreException: the OS keyring is unavailable — don't report
         // "Saved" for a key that never landed.

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -94,7 +95,21 @@ class ZaiSearch implements SearchProvider {
   }
 
   /// Forget the negotiated session so the next search starts a new one.
+  ///
+  /// No-op when the session is already cleared, which is what keeps a burst of
+  /// concurrent expiries to one re-handshake. N callers sharing one session
+  /// all see the same 404: without this, the first would clear and install a
+  /// fresh attempt, the second would null *that* still-in-flight attempt and
+  /// start another, and so on — N handshakes, N abandoned server-side
+  /// sessions, and `_session` left to whichever orphan finished last.
+  ///
+  /// Sound because [_runHandshake] stages its headers locally and publishes
+  /// `_session` only on success: while an attempt is in flight the published
+  /// session is empty, so an empty one never means "a live session still
+  /// needs clearing". It is the same identity reasoning [_ensureHandshake]
+  /// already uses when clearing a failed attempt.
   void _reset() {
+    if (_session.isEmpty) return;
     _session = const {};
     _handshake = null;
   }
@@ -107,7 +122,7 @@ class ZaiSearch implements SearchProvider {
     final result = await _call('tools/call', {
       'name': tool['name'],
       'arguments': buildArguments(
-        (tool['inputSchema'] as Map?)?.cast<String, dynamic>() ?? const {},
+        _asStringMap(tool['inputSchema']),
         query,
         limit,
       ),
@@ -162,8 +177,14 @@ class ZaiSearch implements SearchProvider {
       },
       session: staged,
     );
+    // Read with `is`, not `as`. These values are the gateway's, and a failed
+    // cast throws `TypeError` — an `Error`, which sails past the `on
+    // Exception` handling every caller of this class relies on and reaches
+    // the UI raw, instead of the deliberately body-free message every other
+    // malformed-reply path produces. Same reasoning as `_collect`'s depth cap.
+    final negotiated = initialized['protocolVersion'];
     staged['mcp-protocol-version'] =
-        initialized['protocolVersion'] as String? ?? protocolVersion;
+        negotiated is String ? negotiated : protocolVersion;
     // A notification: no id, so no reply to match. The server acknowledges
     // with 202 and an empty body.
     await _send(
@@ -181,9 +202,19 @@ class ZaiSearch implements SearchProvider {
         cursor == null ? const <String, dynamic>{} : {'cursor': cursor},
         session: staged,
       );
-      tools.addAll(((listing['tools'] as List?) ?? const []).whereType<Map>());
-      cursor = listing['nextCursor'] as String?;
+      tools.addAll(_asList(listing['tools']).whereType<Map>());
+      final next = listing['nextCursor'];
+      cursor = next is String ? next : null;
       if (cursor == null || cursor.isEmpty) break;
+    }
+    if (cursor != null && cursor.isNotEmpty) {
+      // Falling out of the loop still holding a cursor means the listing was
+      // truncated. Searching the partial list anyway would report "no search
+      // tool… needs a GLM Coding Plan" for what is a pagination anomaly —
+      // sending the user to check their plan and key over a transport fault.
+      throw http.ClientException(
+        'Z.AI kept paginating tools/list; stopped after $maxToolPages pages.',
+      );
     }
 
     for (final name in toolNames) {
@@ -249,12 +280,16 @@ class ZaiSearch implements SearchProvider {
     // replaced wholesale when the handshake completes.
     if (issued != null && session != null) session['mcp-session-id'] = issued;
 
+    // Both drains are deadlined like the SSE one: `send` only bounds the wait
+    // for headers, so a gateway that answers 4xx and then stalls the body
+    // would hang here — turning a fast retry into an unbounded wait, on the
+    // one path that exists to fail quickly.
     if (response.statusCode == 404 && sentSessionId) {
-      await response.stream.drain<void>();
+      await response.stream.drain<void>().timeout(timeout);
       throw const _SessionExpired();
     }
     if (response.statusCode >= 400) {
-      await response.stream.drain<void>();
+      await response.stream.drain<void>().timeout(timeout);
       // Deliberately without the body, unlike the LLM providers': this is a
       // gateway that can echo the request — including its Authorization
       // header — back in an error page, and this string reaches the UI.
@@ -275,11 +310,22 @@ class ZaiSearch implements SearchProvider {
         await response.stream.drain<void>().timeout(timeout);
         return null;
       }
-      final message = await readSseRpcMessage(
-        response.stream,
-        id,
-        idleTimeout: timeout,
-      ).timeout(timeout);
+      // Two deadlines, two different failures. `bounded`'s idle one converts
+      // its own; this outer one is the overall cap, for a stream that keeps
+      // trickling without ever answering — and it was reaching the UI as
+      // "Future not completed".
+      final Map<String, dynamic>? message;
+      try {
+        message = await readSseRpcMessage(
+          response.stream,
+          id,
+          idleTimeout: timeout,
+        ).timeout(timeout);
+      } on TimeoutException {
+        throw http.ClientException(
+          'Z.AI never finished answering the search stream.',
+        );
+      }
       if (message == null) {
         throw http.ClientException(
           'Z.AI closed the search stream before answering.',
@@ -288,7 +334,12 @@ class ZaiSearch implements SearchProvider {
       return message;
     }
 
-    final body = await _readBounded(response.stream).timeout(timeout);
+    final String body;
+    try {
+      body = await _readBounded(response.stream).timeout(timeout);
+    } on TimeoutException {
+      throw http.ClientException('Z.AI stopped sending the search reply.');
+    }
     if (body.trim().isEmpty) return null;
     final Object? decoded;
     try {
@@ -334,12 +385,22 @@ class ZaiSearch implements SearchProvider {
     Duration idle,
   ) async* {
     var read = 0;
-    await for (final chunk in bytes.timeout(idle)) {
-      read += chunk.length;
-      if (read > maxBytes) {
-        throw http.ClientException('Z.AI search reply was too large.');
+    try {
+      await for (final chunk in bytes.timeout(idle)) {
+        read += chunk.length;
+        if (read > maxBytes) {
+          throw http.ClientException('Z.AI search reply was too large.');
+        }
+        yield chunk;
       }
-      yield chunk;
+    } on TimeoutException {
+      // The byte cap already throws something a person can read; the idle
+      // deadline was raising a bare `TimeoutException` whose message is
+      // "Future not completed". Both guards exist for the same 200-then-stall
+      // case, and both reach the UI, so both say what happened. Nothing in
+      // this package retries on the type — the two `on TimeoutException`
+      // handlers in `seance_core` are SSH's.
+      throw http.ClientException('Z.AI stopped sending the search reply.');
     }
   }
 
@@ -363,7 +424,11 @@ class ZaiSearch implements SearchProvider {
     Duration idleTimeout = const Duration(seconds: 30),
   }) async {
     final data = <String>[];
-    final lines = utf8.decoder
+    // Tolerant, like `_readBounded`'s decode: malformed bytes on an SSE
+    // stream would otherwise raise a `FormatException` from inside the line
+    // pipeline that nothing here converts, so the same bad payload fails two
+    // different ways depending on which transport carried it.
+    final lines = const Utf8Decoder(allowMalformed: true)
         .bind(bounded(bytes, maxBytes, idleTimeout))
         .transform(const LineSplitter());
 
@@ -468,9 +533,9 @@ class ZaiSearch implements SearchProvider {
     int limit,
   ) {
     final properties =
-        (schema['properties'] as Map?)?.cast<String, dynamic>() ?? const {};
+        _asStringMap(schema['properties']);
     final required =
-        ((schema['required'] as List?) ?? const []).whereType<String>();
+        _asList(schema['required']).whereType<String>();
 
     String? pick(List<String> candidates) {
       for (final name in candidates) {
@@ -491,9 +556,9 @@ class ZaiSearch implements SearchProvider {
 
     for (final name in required) {
       if (arguments.containsKey(name)) continue;
-      final property = (properties[name] as Map?)?.cast<String, dynamic>();
+      final property = _asStringMapOrNull(properties[name]);
       final fallback =
-          property?['default'] ?? (property?['enum'] as List?)?.firstOrNull;
+          property?['default'] ?? _asList(property?['enum']).firstOrNull;
       if (fallback == null) {
         throw http.ClientException(
           'Z.AI requires a search parameter Séance cannot supply: $name.',
@@ -543,6 +608,33 @@ class ZaiSearch implements SearchProvider {
   /// `StackOverflowError` is an `Error`, so it would sail past the
   /// `on Exception` handling every caller of this class relies on. Thirty-two
   /// is far past any real result shape.
+  /// Server-supplied JSON read without a cast that can throw.
+  ///
+  /// `as Map?` on a value the gateway chose raises `TypeError`, which is an
+  /// `Error`: it escapes the `on Exception` handling around this class and
+  /// reaches the UI as "type 'String' is not a subtype of type 'Map?'"
+  /// instead of the readable, body-free `ClientException` every other
+  /// malformed-reply path here produces.
+  static Map<String, dynamic> _asStringMap(Object? value) =>
+      value is Map ? value.cast<String, dynamic>() : const {};
+
+  static Map<String, dynamic>? _asStringMapOrNull(Object? value) =>
+      value is Map ? value.cast<String, dynamic>() : null;
+
+  static List<Object?> _asList(Object? value) =>
+      value is List ? value : const [];
+
+  /// A URL a search result may legitimately carry: a web page, with a host.
+  ///
+  /// Parsed rather than prefix-matched, so `https:evil` and a bare
+  /// `https://` do not pass for want of a host.
+  static bool _isWebUrl(String value) {
+    final uri = Uri.tryParse(value);
+    return uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty;
+  }
+
   static void _collect(Object? value, List<SearchResult> out, Set<String> seen,
       [int depth = 0]) {
     if (depth > 32) return;
@@ -567,14 +659,27 @@ class ZaiSearch implements SearchProvider {
     }
     if (value is! Map) return;
 
-    final url = value['link'] ?? value['url'];
-    if (url is String && url.isNotEmpty && seen.add(url)) {
+    // `??` alone would keep an empty `link` and hide a usable `url` beside
+    // it, dropping the result — the opposite of the shape-tolerance the rest
+    // of this walk is written for.
+    final link = value['link'];
+    final url = link is String && link.isNotEmpty ? link : value['url'];
+    // http(s) only. These strings are chosen by the search gateway, and a
+    // result is a web page by definition — so anything else is either not a
+    // result or an attempt to hand the app a scheme to launch.
+    if (url is String && _isWebUrl(url) && seen.add(url)) {
       // Interpolating whatever is there would put `{lang: en, text: …}` or
       // `[a, b]` into the UI verbatim: some search APIs return `content` as a
       // list of paragraphs or `title` as a localized object. The rest of this
       // function goes out of its way to survive a shape it did not expect,
       // and these two fields are read by a person.
-      final title = value['title'] ?? value['media'];
+      // Empty falls through, like `link` two lines up: `??` only handles
+      // null, so an explicitly empty title would keep the empty string and
+      // render the raw URL with a perfectly good `media` name beside it.
+      final rawTitle = value['title'];
+      final title = rawTitle is String && rawTitle.isNotEmpty
+          ? rawTitle
+          : value['media'];
       final snippet =
           value['content'] ?? value['snippet'] ?? value['description'];
       out.add(SearchResult(
@@ -583,6 +688,12 @@ class ZaiSearch implements SearchProvider {
         snippet: switch (snippet) {
           final String text => text,
           final List<Object?> parts => parts.whereType<String>().join(' '),
+          // The localized-object shape the comment above names — `{lang: en,
+          // text: …}`. The list case is already joined, so dropping the map
+          // case to '' was an asymmetry rather than a policy: it vanished the
+          // whole snippet for exactly the payload this walk is built for.
+          final Map<Object?, Object?> fields =>
+            fields.values.whereType<String>().join(' '),
           _ => '',
         },
       ));

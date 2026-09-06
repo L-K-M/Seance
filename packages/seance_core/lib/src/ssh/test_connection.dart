@@ -128,7 +128,10 @@ Future<ConnectionTestResult> runConnectionTest({
   final notes = List<String>.unmodifiable(<String>[
     if (config.jumpHostId != null)
       'This server is configured to tunnel through a jump host, which Séance '
-          'does not execute yet — the test connected straight to the host.',
+          // Present tense on purpose: this note rides every result,
+          // including the failures it exists to explain, and "connected"
+          // would assert a connection next to "could not reach the host".
+          'does not execute yet — this test goes straight to the host.',
   ]);
   var authenticating = false;
   try {
