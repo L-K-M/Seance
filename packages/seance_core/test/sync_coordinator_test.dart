@@ -620,7 +620,12 @@ void main() {
         await local.putRemote(await codec.encrypt(DecryptedRecord(
           id: id,
           kind: RecordKind.secret,
-          updatedAt: 20,
+          // Newer than the exclusion at 21, deliberately. Dated older, a
+          // shield that merely refused tombstones *losing* last-write-wins
+          // would pass this — and the point is that the refusal is
+          // unconditional, because the date on an unsealed tombstone is the
+          // sync server's to choose.
+          updatedAt: 99,
           deviceId: from,
           deleted: true,
         )));
@@ -1015,6 +1020,10 @@ void main() {
       final secretRecord =
           onServer.records.where((r) => r.id == 'secret:sec-1').last;
       expect(secretRecord.deleted, isTrue);
+      // Payload-free, observed after a real push/pull round trip rather than
+      // straight off the local store: the config and secret retraction paths
+      // are written apart, and only the config one was pinned.
+      expect(secretRecord.blob, isEmpty);
 
       // A keeps working, which is the point of excluding rather than deleting.
       expect((await vaultA.getSecret('sec-1'))?.value, 'hunter2');
@@ -1022,6 +1031,43 @@ void main() {
       // because the tombstone that says so is unsealed. Stated as an
       // assertion so the residual is visible rather than folklore.
       expect((await vaultB.getSecret('sec-1'))?.value, 'hunter2');
+    });
+
+    test('one refused write does not sink the whole re-dating pass', () async {
+      // The record loop is fail-soft per record; the post-loop re-dating was
+      // not, so a transient store error on one server threw out of
+      // applyToStores — discarding the sync outcome the round had earned and
+      // skipping its second pass.
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      final local = _RefusingLocalStore(InMemoryLocalRecordStore(), 'bad');
+
+      // Both re-included behind this device's own retraction, so both need a
+      // bump — and staging 'bad' throws.
+      for (final id in ['bad', 'good']) {
+        await configs.putServer(server(id, id, 10));
+        await local.putRemote(await codec.encrypt(DecryptedRecord(
+          id: id,
+          kind: RecordKind.serverConfig,
+          updatedAt: 20,
+          deviceId: 'A',
+          deleted: true,
+        )));
+      }
+
+      final coordinator = SyncCoordinator(
+        configStore: configs,
+        hostKeyStore: InMemoryHostKeyStore(),
+        codec: codec,
+        local: local,
+        deviceId: 'A',
+      );
+      // 'good' is revived even though 'bad' threw, and the count reports only
+      // what actually landed — the caller spends its extra push round on a
+      // real re-dating rather than on a batch that failed.
+      expect(await coordinator.applyToStores(), 1);
+      expect((await configs.getServer('good'))!.updatedAt, 21);
+      expect(await local.getRecord('good'), isNotNull);
     });
 
     test('a server nobody excluded is never re-tombstoned', () async {
@@ -1292,6 +1338,36 @@ void main() {
 }
 
 /// A vault whose deletes fail the way a locked OS keyring makes them fail.
+/// A local store that refuses to stage one record, to prove the post-loop
+/// re-dating is fail-soft per record like the loop that feeds it.
+class _RefusingLocalStore implements LocalRecordStore {
+  final LocalRecordStore inner;
+  final String refuseId;
+
+  _RefusingLocalStore(this.inner, this.refuseId);
+
+  @override
+  Future<void> putLocal(EncryptedRecord record) async {
+    if (record.id == refuseId) throw StateError('store is down');
+    return inner.putLocal(record);
+  }
+
+  @override
+  Future<List<EncryptedRecord>> allRecords() => inner.allRecords();
+  @override
+  Future<EncryptedRecord?> getRecord(String id) => inner.getRecord(id);
+  @override
+  Future<void> putRemote(EncryptedRecord record) => inner.putRemote(record);
+  @override
+  Future<List<EncryptedRecord>> dirtyRecords() => inner.dirtyRecords();
+  @override
+  Future<void> markSynced(String id, int seq) => inner.markSynced(id, seq);
+  @override
+  Future<int> highWaterSeq() => inner.highWaterSeq();
+  @override
+  Future<void> setHighWaterSeq(int seq) => inner.setHighWaterSeq(seq);
+}
+
 class _RefusingVault extends SecretVault {
   int deletesAttempted = 0;
 

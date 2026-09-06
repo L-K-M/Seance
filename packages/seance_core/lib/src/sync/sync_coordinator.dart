@@ -323,7 +323,7 @@ class SyncCoordinator {
       );
     }
 
-    return await rescheduleOutranked(outranked) + await _revive(revived);
+    return await rescheduleOutranked(outranked, skip) + await _revive(revived, skip);
   }
 
   /// Re-date a re-included server past the retraction it is still losing to.
@@ -336,20 +336,32 @@ class SyncCoordinator {
   /// back. Persisting the bump is what makes it stick: a fresh timestamp each
   /// round would be a new winning write every five minutes, which is the churn
   /// [_retract]'s stable date exists to avoid.
-  Future<int> _revive(List<(ServerConfig, int)> servers) async {
+  Future<int> _revive(
+    List<(ServerConfig, int)> servers,
+    void Function(String, Object, StackTrace) skip,
+  ) async {
     var bumpedCount = 0;
     for (final (config, retractedAt) in servers) {
       if (config.updatedAt > retractedAt) continue;
-      final bumped = config.copyWith(updatedAt: retractedAt + 1);
-      await configStore.putServer(bumped);
-      await local.putLocal(await codec.encrypt(DecryptedRecord(
-        id: bumped.id,
-        kind: RecordKind.serverConfig,
-        updatedAt: bumped.updatedAt,
-        deviceId: deviceId,
-        data: bumped.toJson(),
-      )));
-      bumpedCount++;
+      // Fail-soft per record, like the loop that produced this list: a
+      // transient store error on one server would otherwise throw out of
+      // `applyToStores`, discarding the sync outcome the round had already
+      // earned and skipping the second pass — turning one flaky write into a
+      // whole failed round.
+      try {
+        final bumped = config.copyWith(updatedAt: retractedAt + 1);
+        await configStore.putServer(bumped);
+        await local.putLocal(await codec.encrypt(DecryptedRecord(
+          id: bumped.id,
+          kind: RecordKind.serverConfig,
+          updatedAt: bumped.updatedAt,
+          deviceId: deviceId,
+          data: bumped.toJson(),
+        )));
+        bumpedCount++;
+      } catch (error, stackTrace) {
+        skip(config.id, error, stackTrace);
+      }
     }
     // What was bumped, not what was offered: a server already outranking its
     // own retraction needs nothing, and counting it would spend an extra sync
@@ -383,6 +395,19 @@ class SyncCoordinator {
     // any other id could not be shielded by construction, and would go to
     // `Secret.fromJson` to either throw into the skip diagnostics or, worse,
     // parse and be written into the vault as a credential nothing named.
+    final unexpected =
+        records.where((d) => !d.id.startsWith(_secretIdPrefix)).toList();
+    if (unexpected.isNotEmpty) {
+      // Correctly not written, but every other skip in this method leaves a
+      // record — and a peer minting secret ids wrongly would otherwise be
+      // invisible in the field.
+      developer.log(
+        'Dropped secret records with unexpected ids: '
+        '${unexpected.map((d) => d.id).join(', ')}',
+        name: _syncLoggerName,
+        level: _warningLogLevel,
+      );
+    }
     for (final dec in records.where((d) => d.id.startsWith(_secretIdPrefix))) {
       if (shielded.contains(dec.id)) continue;
       try {
@@ -450,7 +475,10 @@ class SyncCoordinator {
   /// that can only reach it through [applyToStores] — which filters first —
   /// proves the filter, never the guard.
   @visibleForTesting
-  Future<int> rescheduleOutranked(List<DecryptedRecord> records) async {
+  Future<int> rescheduleOutranked(
+    List<DecryptedRecord> records, [
+    void Function(String, Object, StackTrace)? skip,
+  ]) async {
     // Both invariants this doc comment spends paragraphs on are enforced here
     // rather than left to the call site to preserve forever. Every record
     // reaching the loop is re-tombstoned, so an unfiltered list handed in by
@@ -472,10 +500,17 @@ class SyncCoordinator {
         .where((dec) =>
             dec.kind == RecordKind.serverConfig && excluded.contains(dec.id))
         .toList();
+    var mintedCount = 0;
     for (final dec in configs) {
-      await _tombstone(dec.id, dec.kind, dec.updatedAt + 1);
+      try {
+        await _tombstone(dec.id, dec.kind, dec.updatedAt + 1);
+        mintedCount++;
+      } catch (error, stackTrace) {
+        if (skip == null) rethrow;
+        skip(dec.id, error, stackTrace);
+      }
     }
-    return configs.length;
+    return mintedCount;
   }
 
   /// One full synchronization round.
