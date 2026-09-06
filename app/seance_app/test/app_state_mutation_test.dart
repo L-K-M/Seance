@@ -1,0 +1,92 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:seance_app/app_state.dart';
+import 'package:seance_app/services/app_services.dart';
+import 'package:seance_core/seance_core.dart';
+
+const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+/// The mutation queue's re-entrancy guard: it must catch the one shape of
+/// call that deadlocks the queue, and nothing else.
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory directory;
+  late AppServices services;
+  late AppState state;
+
+  setUp(() async {
+    directory = await Directory.systemTemp.createTemp('seance-mutation-');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_pathChannel, (call) async => directory.path);
+    FlutterSecureStorage.setMockInitialValues({});
+    services = await AppServices.initialize();
+    state = AppState(services);
+  });
+
+  tearDown(() async {
+    state.dispose();
+    await services.probe.dispose();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_pathChannel, null);
+    FlutterSecureStorage.setMockInitialValues({});
+    await directory.delete(recursive: true);
+  });
+
+  ServerConfig server(String id) => ServerConfig(
+        id: id,
+        label: id,
+        host: '$id.example.com',
+        username: 'deploy',
+        createdAt: 1,
+        updatedAt: 1,
+      );
+
+  test('a queued call from inside a running action is refused', () async {
+    // The deadlock is an action awaiting a mutation queued behind itself,
+    // forever and silently. The guard cannot tell an awaited call from a
+    // fire-and-forget one, so it refuses every queued call made from inside
+    // the running action — and a listener fires inside it, which is the one
+    // shape a test can produce without a seam into the action body.
+    Future<void>? inner;
+    void reenter() => inner ??= state.saveServer(server('b'));
+    state.addListener(reenter);
+    await state.saveServer(server('a'));
+    state.removeListener(reenter);
+    await expectLater(inner, throwsStateError);
+  });
+
+  test('a callback carrying a finished mutation\'s zone may queue', () async {
+    // A listener's microtask or a timer is bound to the zone it was created
+    // in, and keeps it after the mutation ends. Refusing it then guarded
+    // against a deadlock that cannot happen: the queue is idle, or running
+    // some other action this call would simply wait behind.
+    Zone? insideMutation;
+    void capture() => insideMutation ??= Zone.current;
+    state.addListener(capture);
+    await state.saveServer(server('a'));
+    state.removeListener(capture);
+    expect(insideMutation, isNotNull);
+
+    await expectLater(
+      insideMutation!.run(() => state.saveServer(server('b'))),
+      completes,
+    );
+    expect(state.servers.map((s) => s.id), containsAll(['a', 'b']));
+  });
+
+  test('two callers arriving while an action is suspended are serialized',
+      () async {
+    // The normal case the queue exists for, which a plain busy flag would
+    // have read as re-entry.
+    await Future.wait([
+      state.saveServer(server('a')),
+      state.saveServer(server('b')),
+      state.saveServer(server('c')),
+    ]);
+    expect(state.servers.map((s) => s.id).toSet(), {'a', 'b', 'c'});
+  });
+}

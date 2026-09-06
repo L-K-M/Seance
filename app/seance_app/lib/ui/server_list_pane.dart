@@ -298,6 +298,15 @@ class _ServerListPaneState extends State<ServerListPane> {
       // and "Could not duplicate: …Nothing was created." says it twice.
       if (context.mounted) {
         showTopToastIn(context, message: '$error');
+      } else {
+        // Nowhere to show it. Logged so the refusal is not the failure that
+        // vanished — the same reason the branch below logs.
+        developer.log(
+          'Could not duplicate "${server.label}": $error',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+        );
       }
       return;
     } catch (error, stackTrace) {
@@ -307,23 +316,19 @@ class _ServerListPaneState extends State<ServerListPane> {
       // The error itself stays verbatim: `VaultLockedException.toString()` is
       // the sentence that says what to do about it.
       final message = 'Could not duplicate "${server.label}": $error';
-      if (context.mounted) {
-        showTopToastIn(context, message: message);
-      } else {
-        // The pane went away before this failure landed, so there is nowhere
-        // to show it. A vault error that vanishes entirely is what makes
-        // "duplicate silently did nothing" impossible to diagnose.
-        // With the trace: this catch is broad, and for the failures it was
-        // not written for the message names the server and nothing else — no
-        // throw site to tell a locked keyring from a bug in the vault.
-        developer.log(
-          message,
-          name: 'seance.app',
-          level: 900,
-          error: error,
-          stackTrace: stackTrace,
-        );
-      }
+      // Logged whether or not there is a toast to show: the toast and the
+      // log are for different readers. With the trace, because this catch is
+      // broad, and for the failures it was not written for the message names
+      // the server and nothing else — no throw site to tell a locked keyring
+      // from a bug in the vault.
+      developer.log(
+        message,
+        name: 'seance.app',
+        level: 900,
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (context.mounted) showTopToastIn(context, message: message);
       return;
     }
     if (!context.mounted) return;
