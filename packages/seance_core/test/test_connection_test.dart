@@ -279,6 +279,47 @@ void main() {
       expect(result.log, contains('The identity file could not be read'));
     });
 
+    test('a resolver failure keeps the transcript it brought', () async {
+      // The SSH layer writes into the transcript it is handed, so on that
+      // path the exception's log *is* the transcript. A resolver that raised
+      // the same type attached a log of its own, and that log was the only
+      // place its detail lived — appending the summary alone dropped it.
+      final carried = SshConnectionLog()
+        ..add('identity file: ~/.ssh/id_ed25519')
+        ..add('permission denied reading it');
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw SshConnectException(
+          'The identity file could not be read',
+          const FormatException('bad key'),
+          carried,
+        ),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(result.ok, isFalse);
+      expect(result.log, contains('The identity file could not be read'));
+      expect(result.log, contains('permission denied reading it'));
+    });
+
+    test('an authenticate failure does not repeat its transcript', () async {
+      // The other half: the log `authenticate` attaches is the transcript
+      // itself, and appending that to itself would double every line.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, transcript) async {
+          transcript.add('only once');
+          throw SshConnectException(
+            'refused',
+            const FormatException('no'),
+            transcript,
+          );
+        },
+      );
+      expect(result.ok, isFalse);
+      expect('only once'.allMatches(result.log).length, 1);
+    });
+
     test('the notes a result carries cannot be edited through it', () async {
       // The same instance flows into all three results, and a caller that
       // sorted or filtered it in place would be editing what it was handed.
@@ -480,6 +521,18 @@ void main() {
       if (reoffered) {
         expect(prompts, greaterThan(1),
             reason: 'a changed key must be refused or re-asked, never assumed');
+      } else {
+        // The prompt above always answers yes, so a refusal can only mean
+        // the manager never asked — a prompt that was answered and then
+        // ignored would be a bug wearing the safe outcome's clothes. And a
+        // refused key must not have replaced the approved pin.
+        expect(prompts, 1,
+            reason: 'a silent refusal must not consume a yes-answered prompt');
+        expect(
+          (await trial.get('new.example.com', 22))?.fingerprintSha256,
+          'SHA256:new',
+          reason: 'a refused key must not overwrite the approved pin',
+        );
       }
     });
   });

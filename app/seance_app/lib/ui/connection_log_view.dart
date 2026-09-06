@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -38,7 +40,16 @@ class ConnectionLogView extends StatelessWidget {
                       var copied = true;
                       try {
                         await Clipboard.setData(ClipboardData(text: text));
-                      } catch (_) {
+                      } catch (error, stackTrace) {
+                        // The toast says it failed; this says why, for the
+                        // report that follows it.
+                        developer.log(
+                          'Could not copy the connection log',
+                          name: 'seance.app',
+                          level: 900,
+                          error: error,
+                          stackTrace: stackTrace,
+                        );
                         copied = false;
                       }
                       if (context.mounted) {
