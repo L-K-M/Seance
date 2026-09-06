@@ -821,7 +821,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } catch (e) {
         if (!mounted) return;
         setState(() => _saving = false);
-        showTopToastIn(context, message: '$e');
+        // Named like the LLM key's failure below: the same class of error
+        // otherwise produced a bare `KeystoreException` string with nothing
+        // saying which of the two keys failed to save.
+        showTopToastIn(context, message: 'Failed to save the Z.AI key: $e');
         return;
       }
     }

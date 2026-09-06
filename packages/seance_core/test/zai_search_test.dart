@@ -56,6 +56,17 @@ class FakeMcpServer {
   int _toolPagesServed = 0;
   Map<String, dynamic>? lastArguments;
 
+  /// Handshakes served, so each `initialize` can hand out a *different* id.
+  ///
+  /// The real gateway mints a fresh one per handshake. Re-issuing the same
+  /// constant let a client that re-initializes correctly but keeps sending
+  /// the retired id pass the re-handshake tests — which is exactly the
+  /// production failure they exist to simulate.
+  int _handshakes = 0;
+  String? get _issuedSessionId => sessionId == null
+      ? null
+      : (_handshakes > 1 ? 'session-$_handshakes' : sessionId);
+
   /// Replies substituted for a method, by name (a gateway envelope, an error).
   final Map<String, Map<String, dynamic>> overrides = {};
 
@@ -82,8 +93,17 @@ class FakeMcpServer {
         final method = payload['method'] as String;
         methods.add(method);
 
+        if (method == 'initialize') _handshakes++;
+
         if (expireSession > 0 && method == 'tools/call') {
           expireSession--;
+          return _stream(404, '');
+        }
+        // A retired id answers 404, like the gateway does — so a client that
+        // re-handshakes but keeps sending the old id fails here rather than
+        // silently passing.
+        if (method == 'tools/call' &&
+            headers.last['mcp-session-id'] != _issuedSessionId) {
           return _stream(404, '');
         }
 
@@ -143,7 +163,7 @@ class FakeMcpServer {
         'content-type': sse && body.isNotEmpty
             ? 'text/event-stream'
             : 'application/json',
-        if (sessionId != null) 'mcp-session-id': sessionId!,
+        if (_issuedSessionId != null) 'mcp-session-id': _issuedSessionId!,
       },
     );
   }
@@ -191,7 +211,14 @@ void main() {
         // The handshake is cached: the second search is one request.
         'tools/call',
       ]);
-      expect(server.headers.first['authorization'], 'Bearer zai-key');
+      // Every request, not just the handshake: the gateway authenticates each
+      // POST independently, and the header is built by spreading `...headers`
+      // over a literal, so a session map that ever gained an `authorization`
+      // key would silently override the bearer token.
+      expect(
+        server.headers.map((h) => h['authorization']).toSet(),
+        {'Bearer zai-key'},
+      );
       // Every MCP message is a POST to the one endpoint. Without this, a
       // refactor that changed either would surface as an opaque crash inside
       // the fake rather than as a failed expectation.
@@ -284,6 +311,10 @@ void main() {
 
       expect(results, everyElement(isNotEmpty));
       expect(server.methods.where((m) => m == 'initialize').length, 1);
+      // Sharing the handshake must not coalesce the searches: the two
+      // queries are different, so one answer handed to both callers would be
+      // wrong for one of them.
+      expect(server.methods.where((m) => m == 'tools/call').length, 2);
     });
 
     test('a burst of expiries costs one re-handshake, not one each', () async {
@@ -441,7 +472,15 @@ void main() {
           client: client,
           timeout: const Duration(milliseconds: 50),
         ).search('dart'),
-        throwsA(isA<TimeoutException>()),
+        // A sentence, not "Future not completed": the deadline reaches the
+        // UI, so it says what happened like every other failure here does.
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('stopped sending'),
+          ),
+        ),
       );
     });
 
@@ -577,6 +616,40 @@ void main() {
       );
     });
 
+    test('an empty title falls back to the media name', () {
+      // `??` only handles null, so an explicitly empty title kept the empty
+      // string and rendered the raw URL with a usable name beside it — the
+      // same trap `link` was already fixed for two lines up.
+      final results = ZaiSearch.parseToolResult(const {
+        'structuredContent': {
+          'results': [
+            {'link': 'https://a.example', 'title': '', 'media': 'Example News'},
+            {'link': 'https://b.example', 'title': 42, 'media': 'Fallback'},
+          ],
+        },
+      }, 5);
+      expect(results.map((r) => r.title), ['Example News', 'Fallback']);
+    });
+
+    test('a localized snippet object is read, not dropped', () {
+      // The shape the comment beside it names. The list case is already
+      // joined, so returning '' for a map was an asymmetry rather than a
+      // policy — it vanished the whole snippet for the payload this walk
+      // exists to survive.
+      final results = ZaiSearch.parseToolResult(const {
+        'structuredContent': {
+          'results': [
+            {
+              'link': 'https://a.example',
+              'title': 'A',
+              'content': {'lang': 'en', 'text': 'hello'},
+            },
+          ],
+        },
+      }, 5);
+      expect(results.single.snippet, 'en hello');
+    });
+
     test('only http(s) URLs with a host become results', () {
       // These strings are the gateway's, and a search result is a web page by
       // definition — so anything else is either not a result or a scheme
@@ -708,11 +781,41 @@ void main() {
   });
 
   group('CompositeSearch', () {
+    test('one page reported three ways is one result', () async {
+      // Two indexes agreeing is one result. A trailing slash and a fragment
+      // are the same page by any reading, and letting each take a slot makes
+      // the merge look worse than it is.
+      final results = await CompositeSearch([
+        _Fixed([_hit('https://x.example/docs')]),
+        _Fixed([_hit('https://x.example/docs/')]),
+        _Fixed([_hit('https://x.example/docs#install')]),
+      ]).search('q', limit: 5);
+      expect(results.map((r) => r.url), ['https://x.example/docs']);
+    });
+
+    test('a query string is not a duplicate', () async {
+      // Deliberately conservative: `?id=1` and `?id=2` are different pages,
+      // so normalization stops at the fragment and trailing slashes.
+      final results = await CompositeSearch([
+        _Fixed([_hit('https://x.example/p?id=1')]),
+        _Fixed([_hit('https://x.example/p?id=2')]),
+      ]).search('q', limit: 5);
+      expect(results, hasLength(2));
+    });
+
     test('interleaves backends and drops duplicate URLs', () async {
       // Round-robin, not concatenation: a fast backend must not fill the whole
       // limit before a slower one is heard from.
       final results = await CompositeSearch([
-        _Fixed([_hit('https://a'), _hit('https://b'), _hit('https://c')]),
+        _Fixed([
+          _hit('https://a'),
+          _hit('https://b'),
+          _hit('https://c'),
+          // A fifth unique URL, so the deduped union exceeds the limit: with
+          // exactly four, an implementation ignoring `limit` produced the
+          // same expected list and truncation went untested.
+          _hit('https://e'),
+        ]),
         _Fixed([_hit('https://b'), _hit('https://d')]),
       ]).search('q', limit: 4);
 

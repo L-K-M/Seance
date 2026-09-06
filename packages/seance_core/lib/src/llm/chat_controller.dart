@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:meta/meta.dart';
+
 import '../terminal/paste_sanitizer.dart';
 import 'provider.dart';
 import 'redaction.dart';
@@ -222,6 +224,35 @@ class ChatController {
     }
   }
 
+  /// The longest snippet worth spending on a search result.
+  ///
+  /// Generous for a search excerpt and small next to a context window: a few
+  /// hundred tokens each.
+  static const int maxSnippetChars = 2000;
+
+  /// [results] with over-long snippets clipped.
+  ///
+  /// Applied here rather than in any one backend because every backend is
+  /// unbounded in the same way and for the same reason: a snippet is whatever
+  /// text the search service put in the field. `ZaiSearch`'s prose fallback
+  /// can hand back a whole tool reply (its byte cap is 2 MiB, which protects
+  /// memory, not the token bill), and SearXNG and Brave copy their `content`
+  /// through verbatim. This is the one place they converge before being
+  /// serialized into a tool result and sent to the model, so it is the one
+  /// place a cap covers all of them.
+  @visibleForTesting
+  static List<SearchResult> clipSearchSnippets(List<SearchResult> results) => [
+        for (final r in results)
+          if (r.snippet.length <= maxSnippetChars)
+            r
+          else
+            SearchResult(
+              title: r.title,
+              url: r.url,
+              snippet: '${r.snippet.substring(0, maxSnippetChars)}…',
+            ),
+      ];
+
   Future<List<SearchResult>> _runSearch(String query) async {
     final provider = searchProvider;
     if (provider == null) {
@@ -233,7 +264,7 @@ class ChatController {
         )
       ];
     }
-    return provider.search(query);
+    return clipSearchSnippets(await provider.search(query));
   }
 
   void reset() => _history.clear();

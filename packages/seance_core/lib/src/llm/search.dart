@@ -107,6 +107,17 @@ class BraveSearch implements SearchProvider {
 /// Results are interleaved round-robin rather than concatenated, so a fast
 /// backend cannot fill the whole limit before a slower one is heard from, and
 /// deduplicated by URL because two web indexes agreeing is one result, not two.
+/// [url] reduced to the identity two backends should agree on.
+///
+/// Falls back to the raw string when it will not parse: an unparseable URL is
+/// still a distinct result, and collapsing every one of them onto `''` would
+/// let the first swallow the rest.
+String _dedupKey(String url) {
+  final parsed = Uri.tryParse(url);
+  final withoutFragment = parsed == null ? url : parsed.removeFragment().toString();
+  return withoutFragment.replaceFirst(RegExp(r'/+$'), '');
+}
+
 class CompositeSearch implements SearchProvider {
   final List<SearchProvider> providers;
 
@@ -165,7 +176,14 @@ class CompositeSearch implements SearchProvider {
         if (rank >= list.length) continue;
         exhausted = false;
         final result = list[rank];
-        if (result.url.isNotEmpty && !seen.add(result.url)) continue;
+        // Normalized before the set, so two indexes reporting one page as
+        // `…/docs`, `…/docs/` and `…/docs#section` spend one slot rather than
+        // three. Deliberately conservative — the fragment and trailing
+        // slashes only. Case and query string stay, because `?id=1` and
+        // `?id=2` are genuinely different pages and lowercasing a path can
+        // merge two.
+        final key = _dedupKey(result.url);
+        if (key.isNotEmpty && !seen.add(key)) continue;
         merged.add(result);
         if (merged.length == limit) break;
       }

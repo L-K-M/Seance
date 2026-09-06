@@ -205,6 +205,15 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     without retrying a bad key. Worth doing when something actually retries;
     today nothing does.
 
+16. **Cancel the Z.AI read on the overall SSE deadline.** `_send` wraps
+    `readSseRpcMessage` in `.timeout(timeout)`, which frees the caller but
+    does not tear the subscription down — so a stream kept warm by heartbeats
+    never trips `bounded`'s idle deadline and the orphaned read holds its
+    socket for as long as the server keeps trickling. The error message is
+    readable now; the leak needs a total deadline enforced *inside*
+    `readSseRpcMessage` (an explicit `StreamSubscription` plus a `Timer` that
+    cancels), which is a restructure of that function rather than a wrapper.
+
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
 terminal **splits** (multiple panes visible at once), OIDC on the sync server,

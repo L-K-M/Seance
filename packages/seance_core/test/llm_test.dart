@@ -502,4 +502,30 @@ void main() {
       );
     });
   });
+
+  group('clipSearchSnippets', () {
+    SearchResult hit(String snippet) =>
+        SearchResult(title: 't', url: 'https://x.example', snippet: snippet);
+
+    test('a snippet under the cap is passed through untouched', () {
+      final result = ChatController.clipSearchSnippets([hit('short')]).single;
+      expect(result.snippet, 'short');
+    });
+
+    test('an over-long snippet is clipped, and says it was', () {
+      // Every backend is unbounded in the same way: a snippet is whatever
+      // text the search service put in the field. Z.AI's prose fallback can
+      // hand back a whole tool reply — its byte cap is 2 MiB, which protects
+      // memory rather than the token bill — and SearXNG and Brave copy their
+      // `content` through verbatim. This is where they converge before being
+      // serialized into a tool result, so it is where the cap belongs.
+      final long = 'x' * (ChatController.maxSnippetChars + 500);
+      final result = ChatController.clipSearchSnippets([hit(long)]).single;
+      expect(result.snippet.length, ChatController.maxSnippetChars + 1);
+      expect(result.snippet.endsWith('…'), isTrue);
+      // Only the snippet is touched.
+      expect(result.title, 't');
+      expect(result.url, 'https://x.example');
+    });
+  });
 }
