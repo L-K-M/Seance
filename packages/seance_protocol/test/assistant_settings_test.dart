@@ -135,6 +135,49 @@ void main() {
     }
   });
 
+  test('a wrong-typed field decodes to its default rather than throwing', () {
+    // Every other field here is deliberately tolerant, and the apply loop
+    // skips one record per failure — so a strict cast on these four made a
+    // divergent build's record fail differently from every other malformed
+    // one. An empty provider is refused by the publish and apply sides alike.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['providerKind'] = 42
+        ..['baseUrl'] = true
+        ..['model'] = const {'en': 'gpt-5'}
+        ..['redactSecrets'] = 'yes',
+    );
+    expect(decoded.providerKind, '');
+    expect(decoded.baseUrl, '');
+    expect(decoded.model, '');
+    expect(decoded.redactSecrets, isTrue);
+  });
+
+  test('a padded field is normalized on the way in', () {
+    // It passes the blank check, travels verbatim, and then matches no
+    // keystore entry on the device that adopts it.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['llmApiKeyRef'] = '  anthropic  '
+        ..['searxngUrl'] = ' https://searx.example.com ',
+    );
+    expect(decoded.llmApiKeyRef, 'anthropic');
+    expect(decoded.searxngUrl, 'https://searx.example.com');
+    // And a second decode of the same record changes nothing further.
+    expect(AssistantSettings.fromJson(decoded.toJson()).toJson(),
+        decoded.toJson());
+  });
+
+  test('updatedAt degrades the way Lww needs it to', () {
+    // A record decoding to 0 loses to everything, which is what an absent
+    // stamp should do; a double is the shape a JSON round-trip can produce.
+    final json = settings().toJson();
+    expect(AssistantSettings.fromJson({...json}..remove('updatedAt')).updatedAt,
+        0);
+    expect(
+        AssistantSettings.fromJson({...json, 'updatedAt': 42.0}).updatedAt, 42);
+  });
+
   test('copyWith clears the optional refs and keeps everything else', () {
     // The clear flags are the one place a nullable copyWith can silently turn
     // "cleared here" back into "kept", and nothing exercised them.

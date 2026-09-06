@@ -134,8 +134,12 @@ void main() {
       await keys.putApiKey('sync.token', 'tok');
       settings.assistantUpdatedAt = 99;
       settings.llmApiKeyRef = 'sync.token';
-      final published = (await sync.getAssistantSettings())!;
-      expect(published.apiKeys, isNot(contains('sync.token')));
+      // Withheld rather than published without the key: a record naming the
+      // token as a ref is refused whole by every peer, so publishing one
+      // would park a record on the account that nothing adopts while this
+      // device's configuration silently never propagated.
+      expect(await sync.getAssistantSettings(), isNull);
+      settings.llmApiKeyRef = 'anthropic';
 
       await sync.putAssistantSettings(AssistantSettings(
         providerKind: 'openaiCompatible',
@@ -421,6 +425,25 @@ void main() {
       expect(sync.applied, isFalse);
     });
 
+    test('a record older than the stamp this device holds is refused',
+        () async {
+      // The coordinator compares stamps as well, but its comparison and this
+      // write are an await apart, and an assistant edit does not take the
+      // mutation queue — so an edit landing in that window would be
+      // overwritten here and the loss published on the next round.
+      await sync.putAssistantSettings(arriving());
+      final savesAfterAdopt = saves;
+
+      await sync.putAssistantSettings(
+        arriving(model: 'older').copyWith(updatedAt: 100),
+      );
+
+      expect(settings.llmModel, 'gpt-5');
+      expect(settings.assistantUpdatedAt, 500);
+      expect(saves, savesAfterAdopt);
+      expect(sync.applied, isFalse);
+    });
+
     test('a stamp that moves alone saves but rebuilds nothing', () async {
       // Two devices making the same edit, or a revert on the publishing one:
       // every field the chat provider reads is already what the record says.
@@ -525,6 +548,9 @@ void main() {
       // device published in the meantime — the exact bug this whole
       // fingerprint exists to prevent.
       settings.assistantUpdatedAt = settings.assistantUpdatedAt + 1;
+      // Nor is the sync layer's own bookkeeping: a pending key retry landing
+      // would otherwise make an unchanged Save read as an edit and stamp.
+      settings.unwrittenAssistantKeyRefs.add('openai');
       expect(assistantSyncFingerprint(settings), before);
 
       for (final change in <void Function()>[

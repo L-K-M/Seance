@@ -225,6 +225,9 @@ void main() {
     // Rebuilt exactly once: by the round that adopted, not by the one that
     // found nothing new.
     expect(state.llmConfigVersion, versionBefore + 1);
+    // And the flag is the queued round's by the end — which is the whole
+    // reason the adopting round samples it before releasing the queue.
+    expect(services.assistantSettingsChanged, isFalse);
   });
 
   test('switching on with the toggle still off neither syncs nor stamps',

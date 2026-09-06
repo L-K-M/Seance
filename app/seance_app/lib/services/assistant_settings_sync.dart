@@ -108,6 +108,19 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // each other and one would overwrite the other before either was touched.
     if (settings.assistantUpdatedAt == 0) return null;
 
+    // Symmetric with the refusal on the way in: a configuration naming a
+    // reserved entry is refused whole by every peer, so publishing it would
+    // park a record on the account that nothing adopts while this device's
+    // configuration silently never propagates. Withholding says the same
+    // thing without the litter. Reachable only by hand-editing
+    // `settings.json` — the screen writes the provider's own name — which is
+    // exactly the case a deny-list is for.
+    if (reservedKeyNames.contains(settings.llmApiKeyRef) ||
+        reservedKeyNames.contains(settings.braveApiKeyRef) ||
+        reservedKeyNames.contains(settings.zaiApiKeyRef)) {
+      return null;
+    }
+
     final keys = <String, String>{};
     for (final name in _referencedKeys) {
       // getApiKey answers null on a locked keyring rather than throwing, and
@@ -152,6 +165,20 @@ class AssistantSettingsSync implements AssistantSettingsStore {
 
   @override
   Future<void> putAssistantSettings(AssistantSettings value) async {
+    // The coordinator refuses an older record too, but its comparison and
+    // this write are an await apart — and an assistant edit does not take the
+    // app's mutation queue (`assistantSettingsEdited` stamps `settings`
+    // directly), so an edit landing in that window would be overwritten by
+    // the older record and the loss re-collected and published. Re-read here,
+    // where the comparison and the assignments below are one synchronous run.
+    //
+    // Strictly older, like the coordinator's, and for its reason: a tie is
+    // resolved at the record layer by device id and sequence, and refusing
+    // ties here would stop two devices ever converging on one of them.
+    if (value.updatedAt < settings.assistantUpdatedAt) {
+      applied = false;
+      return;
+    }
     final before = assistantSyncFingerprint(settings);
     final stampBefore = settings.assistantUpdatedAt;
     // A provider this build has never heard of keeps the one already

@@ -152,16 +152,22 @@ class AssistantSettings {
 
   factory AssistantSettings.fromJson(Map<String, dynamic> json) =>
       AssistantSettings(
-        providerKind: json['providerKind'] as String? ?? '',
-        baseUrl: json['baseUrl'] as String? ?? '',
-        model: json['model'] as String? ?? '',
+        // Read as leniently as every other field here: a wrong-typed value
+        // from a divergent build or a corrupted entry lands on the same
+        // "unknown, keep what you have" path an unknown provider name takes,
+        // rather than throwing out of the decode. An empty provider is
+        // refused by both the publish and the apply side.
+        providerKind: _blankToNull(json['providerKind']) ?? '',
+        baseUrl: _blankToNull(json['baseUrl']) ?? '',
+        model: _blankToNull(json['model']) ?? '',
         llmApiKeyRef: _blankToNull(json['llmApiKeyRef']) ?? '',
         searxngUrl: _blankToNull(json['searxngUrl']),
         braveApiKeyRef: _blankToNull(json['braveApiKeyRef']),
         zaiApiKeyRef: _blankToNull(json['zaiApiKeyRef']),
         // Absent means "an older writer that had no such field"; the safe
         // reading of that is the default the app ships with, which is on.
-        redactSecrets: json['redactSecrets'] as bool? ?? true,
+        redactSecrets:
+            json['redactSecrets'] is bool ? json['redactSecrets'] as bool : true,
         // Unmodifiable so a decoded record cannot have its key material
         // rewritten through the field it exposes. The const constructor still
         // aliases a caller-supplied map; callers treat it as read-only.
@@ -180,8 +186,14 @@ class AssistantSettings {
 /// blank: a field cleared down to a stray space is a cleared field, and
 /// keeping it would hand the request layer a URL made of nothing at all.
 String? _blankToNull(Object? value) {
-  if (value is! String || value.trim().isEmpty) return null;
-  return value;
+  if (value is! String) return null;
+  // Trimmed, not merely tested for blankness: a padded ` anthropic ` passes
+  // the blank check, travels verbatim, and then matches no keystore entry on
+  // any device that adopts it — a configuration that looks set everywhere and
+  // works nowhere. The decode is where it is cheapest to normalize, and doing
+  // it here makes a second decode of the same record a no-op.
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 /// The writer's half of [_blankToNull] — the two have to agree, or a record
