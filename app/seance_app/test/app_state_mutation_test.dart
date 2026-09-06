@@ -51,11 +51,14 @@ void main() {
     // fire-and-forget one, so it refuses every queued call made from inside
     // the running action — and a listener fires inside it, which is the one
     // shape a test can produce without a seam into the action body.
-    // A closure rather than the future: `throwsStateError` invokes it, so a
-    // guard that ever threw synchronously would still be caught here instead
-    // of escaping into the running mutation and failing at the matcher.
-    Future<void> Function()? inner;
-    void reenter() => inner ??= () => state.saveServer(server('b'));
+    // The call has to be *made* inside the listener — a closure handed to the
+    // matcher would run after the mutation ended, outside the guard. Through
+    // `Future.sync` so a guard that ever threw synchronously would still
+    // arrive here as a rejected future rather than escaping into the running
+    // mutation.
+    Future<void>? inner;
+    void reenter() =>
+        inner ??= Future.sync(() => state.saveServer(server('b')));
     state.addListener(reenter);
     await state.saveServer(server('a'));
     state.removeListener(reenter);
