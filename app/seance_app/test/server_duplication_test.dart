@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -153,7 +152,11 @@ void main() {
       // `source()` fixture above gives it a non-default value, since a field
       // left at its default matches on both sides. Set it there when you add
       // one, or it is silently reset on every copy.
-      final original = source(secretRef: 'sec-old', syncSecret: true);
+      final original = source(
+        secretRef: 'sec-old',
+        syncSecret: true,
+        excludeFromSync: true,
+      );
       final copy = duplicateServerConfig(
         original,
         id: 'fresh',
@@ -328,6 +331,24 @@ void main() {
       expect(plan.secret!.value, 'PEM');
       expect(plan.secret!.keyPassphrase, 'phrase');
       expect(plan.config.label, 'web copy');
+      // The plan consults the whole taken set, not just the source's name: a
+      // plan that appended " copy" would pass every other test in this group.
+      final numbered = await planServerDuplication(
+        source(secretRef: 'sec-old'),
+        vault: store,
+        takenLabels: const ['web', 'web copy'],
+        id: 'fresh-2',
+        secretId: 'sec-new-2',
+        now: 999,
+      );
+      expect(numbered.config.label, 'web copy 2');
+    });
+
+    test('a source already named as a copy never gets its own label back',
+        () {
+      // Whether or not the caller lists the source among the taken labels.
+      expect(duplicateServerLabel('web copy', const []), 'web copy 2');
+      expect(duplicateServerLabel('copy', const []), 'copy 2');
     });
 
     test('a dangling reference plans as no credential, not as a failure',
@@ -396,46 +417,6 @@ void main() {
         now: 999,
       );
       expect(plan.secret, isNull);
-    });
-  });
-
-  // Pins Dart's zone/timer semantics, not app code: nothing in this group
-  // runs anything from `lib/`. It is the rule `_scheduleAutoSync` depends on,
-  // written down and checked — but it cannot catch a regression there, since
-  // `_scheduleAutoSync` needs an `AppState` no test can construct.
-  group('mutation-zone timers', () {
-    test('a timer inherits the zone it was created in, not the one it fires in',
-        () async {
-      // The rule the auto-sync debounce turns on: `_mutate` marks its zone,
-      // and a timer scheduled from inside a mutation would carry that marker
-      // into a sync round that is not one — tripping the re-entrancy assert on
-      // every save. A `createTimer` override cannot undo it, because the
-      // callback is bound to the creating zone before the override sees it;
-      // creating it in a captured outer zone is what works.
-      final outside = Zone.current;
-      final seen = <String, Object?>{};
-      // One completer each rather than one for the pair: two zero-duration
-      // timers do fire in creation order, so awaiting the second would work
-      // today — but then a later edit that gives either a delay fails on
-      // `seen['inside']` being null, which points at the wrong thing.
-      final insideFired = Completer<void>();
-      final outsideFired = Completer<void>();
-
-      runZoned(() {
-        Timer(Duration.zero, () {
-          seen['inside'] = Zone.current[#mutation];
-          insideFired.complete();
-        });
-        outside.run(() => Timer(Duration.zero, () {
-              seen['outside'] = Zone.current[#mutation];
-              outsideFired.complete();
-            }));
-      }, zoneValues: {#mutation: true});
-
-      await insideFired.future;
-      await outsideFired.future;
-      expect(seen['inside'], isTrue);
-      expect(seen['outside'], isNull);
     });
   });
 

@@ -771,8 +771,17 @@ class _ServerEditorState extends State<_ServerEditor> {
     if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
     final existing = widget.existing;
+    // Against the freshest copy this device holds, not the one captured when
+    // the editor opened: a round that pulled a newer record meanwhile is
+    // exactly the record this stamp has to outrank.
+    final latest = existing == null
+        ? null
+        : widget.state.servers
+            .where((s) => s.id == existing.id)
+            .map((s) => s.updatedAt)
+            .fold<int>(existing.updatedAt, math.max);
     final now = nextUpdatedAt(
-      existing?.updatedAt,
+      latest,
       now: DateTime.now().millisecondsSinceEpoch,
     );
 

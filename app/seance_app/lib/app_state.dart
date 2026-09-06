@@ -270,9 +270,10 @@ class SourceServerChanged implements Exception {
 /// ref by hand. Dropping it out from under a server that still names it is
 /// silent credential loss the survivor only discovers at connect time.
 ///
-/// The same check `SyncCoordinator` makes before applying a `secret:`
-/// tombstone. A top-level function so the rule can be asserted directly — no
-/// test in this app can construct an [AppState].
+/// The sync coordinator no longer honours a `secret:` tombstone at all (an
+/// unsealed one is the sync server's to forge), so this is the only place the
+/// rule lives. A top-level function so it can be asserted on its own, apart
+/// from the delete that applies it.
 bool secretStillReferenced(
   String secretRef,
   Iterable<ServerConfig> servers, {
@@ -623,16 +624,6 @@ class AppState extends ChangeNotifier {
   /// The store mutation currently in flight, so the next one waits for it.
   Future<void> _mutating = Future<void>.value();
 
-  /// The zone this object was built in, i.e. one no mutation is running in.
-  ///
-  /// A `Timer` runs its callback in the zone it was *created* in, and the
-  /// callback is bound there before any `createTimer` override sees it — so a
-  /// zone specification cannot hand it back. A timer scheduled from inside a
-  /// mutation (every save schedules the auto-sync debounce) therefore has to
-  /// be created out here, or its round runs carrying the mutation marker and
-  /// trips the assert in [_mutate].
-  final Zone _outsideMutations = Zone.current;
-
   /// Run [action] after every mutation queued before it has finished.
   ///
   /// Duplicating reads the vault, and that read can sit behind an OS keychain
@@ -661,11 +652,17 @@ class AppState extends ChangeNotifier {
   Future<T> _mutate<T>(Future<T> Function() action) async {
     // A queued action that calls a queued method waits on its own completion,
     // and since the queue has no timeout the app's mutations simply stop with
-    // no error to find. The marker is a zone value rather than a field: a
-    // field would read as "set" for an unrelated second caller arriving while
-    // the first action is suspended at an await, which is the normal case
-    // this queue exists to serialize, not a bug.
-    if (Zone.current[#seanceMutation] != null) {
+    // no error to find. Detected by zone: an unrelated second caller arriving
+    // while the first action is suspended at an await is the normal case this
+    // queue exists to serialize, and a plain "busy" flag would read as
+    // re-entry for it too. Zone *identity* rather than a marker value: a
+    // marker attaches to every callback registered inside the action —
+    // a listener's microtask, a timer — and outlives the mutation, so such a
+    // callback calling `saveServer` after the queue had gone idle was
+    // refused for a deadlock that could not happen. Walked up the parents so
+    // a nested zone inside the action (a `runZonedGuarded` in a library) is
+    // still seen as inside it.
+    if (_insideRunningMutation) {
       // A throw, not an assert. What an assert buys is a debug-only warning
       // for a failure whose release-build symptom is every store mutation in
       // the app stopping forever with nothing in the logs — which is the one
@@ -690,10 +687,34 @@ class AppState extends ChangeNotifier {
       // later; the failing caller's own error still propagates from the
       // action below.
       await queued;
-      return await runZoned(action, zoneValues: {#seanceMutation: true});
+      // `runZoned` for the fresh zone alone; nothing is read from it. Set
+      // and cleared around the action, never around the wait above: while
+      // this call is queued behind another, it is that one's zone that is
+      // running.
+      return await runZoned(() async {
+        _activeMutationZone = Zone.current;
+        try {
+          return await action();
+        } finally {
+          _activeMutationZone = null;
+        }
+      });
     } finally {
       finished.complete();
     }
+  }
+
+  /// The zone of the action currently between its start and its end, or
+  /// null while the queue is idle or between actions.
+  Zone? _activeMutationZone;
+
+  bool get _insideRunningMutation {
+    final active = _activeMutationZone;
+    if (active == null) return false;
+    for (Zone? zone = Zone.current; zone != null; zone = zone.parent) {
+      if (identical(zone, active)) return true;
+    }
+    return false;
   }
 
   Future<void> deleteServer(String id) async {
@@ -717,7 +738,23 @@ class AppState extends ChangeNotifier {
       // to the bookmark. Reversed, the worst it leaves is a grant filed under
       // an id nothing names.
       if (services.settings.identityFileBookmarks.remove(id) != null) {
-        await services.saveSettings();
+        // Fail-soft like the vault delete below, and for the same reason: a
+        // throw here skips the list refresh and leaves the UI showing a
+        // server the store no longer has. The grant is already gone from
+        // memory; what a failed write leaves is a stale entry in a file that
+        // the next successful save rewrites.
+        try {
+          await services.saveSettings();
+        } catch (error, stackTrace) {
+          developer.log(
+            'Could not persist the identity file grant removal for the '
+            'deleted server $id',
+            name: 'seance.app',
+            level: 900,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
       }
       servers = await services.configStore.listServers();
 
@@ -1082,8 +1119,8 @@ class AppState extends ChangeNotifier {
     _autoSyncTimer?.cancel();
     _autoSyncTimer = null;
     if (services.settings.autoSync && services.isSyncConfigured) {
-      _autoSyncTimer = _outsideMutations
-          .run(() => Timer.periodic(_autoSyncInterval, (_) => _autoSync()));
+      _autoSyncTimer =
+          Timer.periodic(_autoSyncInterval, (_) => _autoSync());
     }
   }
 
@@ -1092,12 +1129,11 @@ class AppState extends ChangeNotifier {
   void _scheduleAutoSync() {
     if (!services.settings.autoSync || !services.isSyncConfigured) return;
     _syncDebounce?.cancel();
-    // Created in [_outsideMutations]: this is reached from inside `_mutate`
-    // (every save schedules one), and a timer's callback runs in the zone it
-    // was created in — so the debounce would fire a sync round carrying the
-    // mutation marker and trip the re-entrancy assert on every save.
-    _syncDebounce =
-        _outsideMutations.run(() => Timer(_syncDebounceDelay, _autoSync));
+    // Reached from inside `_mutate` (every save schedules one), and a timer's
+    // callback runs in the zone it was created in — which is fine: the guard
+    // in [_mutate] asks whether the *running* action's zone is an ancestor,
+    // and by the time this fires that action is long over.
+    _syncDebounce = Timer(_syncDebounceDelay, _autoSync);
   }
 
   /// Best-effort background sync. Errors are captured into [lastSyncError]
