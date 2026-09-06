@@ -295,9 +295,9 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 ## 4. How things were verified (so you can re-verify)
 
 - 181 Dart tests + 107 Flutter tests, all analyze clean.
-- Sync correctness is proven two ways: `seance_core/test/sync_test.dart` (engine,
+- Sync correctness is proven two ways: `packages/seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and
-  `seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +
+  `packages/seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +
   `SyncEngine` against a live server over a socket).
 - The server was compiled to a native binary and smoke-tested with `curl`:
   register → login (accept correct verifier, reject wrong) → push (assigns seq)
