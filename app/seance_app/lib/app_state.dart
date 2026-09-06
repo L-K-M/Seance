@@ -270,9 +270,10 @@ class SourceServerChanged implements Exception {
 /// ref by hand. Dropping it out from under a server that still names it is
 /// silent credential loss the survivor only discovers at connect time.
 ///
-/// The same check `SyncCoordinator` makes before applying a `secret:`
-/// tombstone. A top-level function so the rule can be asserted directly — no
-/// test in this app can construct an [AppState].
+/// The sync coordinator no longer honours a `secret:` tombstone at all (an
+/// unsealed one is the sync server's to forge), so this is the only place the
+/// rule lives. A top-level function so it can be asserted on its own, apart
+/// from the delete that applies it.
 bool secretStillReferenced(
   String secretRef,
   Iterable<ServerConfig> servers, {
@@ -570,9 +571,6 @@ class AppState extends ChangeNotifier {
 
   /// The store mutation currently in flight, so the next one waits for it.
   Future<void> _mutating = Future<void>.value();
-
-  /// The zone this object was built in, i.e. one no mutation is running in.
-  ///
 
   /// Run [action] after every mutation queued before it has finished.
   ///

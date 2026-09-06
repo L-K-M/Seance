@@ -64,12 +64,16 @@ void main() {
     // in, and keeps it after the mutation ends. Refusing it then guarded
     // against a deadlock that cannot happen: the queue is idle, or running
     // some other action this call would simply wait behind.
+    final outerZone = Zone.current;
     Zone? insideMutation;
     void capture() => insideMutation ??= Zone.current;
     state.addListener(capture);
     await state.saveServer(server('a'));
     state.removeListener(capture);
-    expect(insideMutation, isNotNull);
+    // Not merely captured: captured *inside* the mutation's zone. From the
+    // test's own zone the call below is the ordinary allowed path, and the
+    // guard would go unexercised.
+    expect(insideMutation, allOf(isNotNull, isNot(same(outerZone))));
 
     await expectLater(
       insideMutation!.run(() => state.saveServer(server('b'))),

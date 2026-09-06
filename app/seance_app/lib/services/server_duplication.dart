@@ -13,8 +13,12 @@ import 'app_settings.dart';
 /// Nothing enforces unique labels; this only avoids handing the user two rows
 /// they cannot tell apart, which is the whole reason a copy needs a new name.
 String duplicateServerLabel(String label, Iterable<String> taken) {
+  // The source's own label counts as taken whether or not the caller listed
+  // it: a source named "web copy" would otherwise get "web copy" back — the
+  // one label this function exists never to return.
   final used = {
     for (final name in taken) name.trim().toLowerCase(),
+    label.trim().toLowerCase(),
   };
   final base = _withoutCopySuffix(label.trim());
   // Trimmed because `base` is empty for a server named "copy" (and for an

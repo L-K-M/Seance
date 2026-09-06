@@ -152,7 +152,11 @@ void main() {
       // `source()` fixture above gives it a non-default value, since a field
       // left at its default matches on both sides. Set it there when you add
       // one, or it is silently reset on every copy.
-      final original = source(secretRef: 'sec-old', syncSecret: true);
+      final original = source(
+        secretRef: 'sec-old',
+        syncSecret: true,
+        excludeFromSync: true,
+      );
       final copy = duplicateServerConfig(
         original,
         id: 'fresh',
@@ -327,6 +331,24 @@ void main() {
       expect(plan.secret!.value, 'PEM');
       expect(plan.secret!.keyPassphrase, 'phrase');
       expect(plan.config.label, 'web copy');
+      // The plan consults the whole taken set, not just the source's name: a
+      // plan that appended " copy" would pass every other test in this group.
+      final numbered = await planServerDuplication(
+        source(secretRef: 'sec-old'),
+        vault: store,
+        takenLabels: const ['web', 'web copy'],
+        id: 'fresh-2',
+        secretId: 'sec-new-2',
+        now: 999,
+      );
+      expect(numbered.config.label, 'web copy 2');
+    });
+
+    test('a source already named as a copy never gets its own label back',
+        () {
+      // Whether or not the caller lists the source among the taken labels.
+      expect(duplicateServerLabel('web copy', const []), 'web copy 2');
+      expect(duplicateServerLabel('copy', const []), 'copy 2');
     });
 
     test('a dangling reference plans as no credential, not as a failure',
