@@ -66,6 +66,14 @@ void main() {
       // what it did.
       final legacy = {...c.toJson()}..remove('excludeFromSync');
       expect(ServerConfig.fromJson(legacy).excludeFromSync, isFalse);
+      // An explicit null reads like an absent key, and a legacy record writes
+      // the explicit answer back out on its next save.
+      expect(
+        ServerConfig.fromJson({...c.toJson(), 'excludeFromSync': null})
+            .excludeFromSync,
+        isFalse,
+      );
+      expect(ServerConfig.fromJson(legacy).toJson()['excludeFromSync'], isFalse);
       // Including one built here rather than read back: if the field were
       // stored tri-state and only normalized on the way in, a record this app
       // wrote would still be silent about it.
@@ -94,7 +102,9 @@ void main() {
       );
       final excluded = c.copyWith(excludeFromSync: true, updatedAt: 3);
       expect(excluded.excludeFromSync, isTrue);
-      // "Without touching anything else" is the name's promise; assert it.
+      // "Without touching anything else" is the name's promise; assert it —
+      // the id first, since a copy under another id splits the record.
+      expect(excluded.id, c.id);
       expect(excluded.label, c.label);
       expect(excluded.host, c.host);
       expect(excluded.username, c.username);
