@@ -62,7 +62,12 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   /// switch can be on with the field left blank — and must not stop this
   /// device publishing forever. A reference this device *knows* it failed to
   /// write is the one that must.
-  final Set<String> _unwritten = {};
+  ///
+  /// Held in [AppSettings] rather than in this object, because the app can be
+  /// stopped between the failed write and the round that retries it, and a
+  /// set that starts empty on the next launch answers "never stored" for a
+  /// key it knows it dropped.
+  Set<String> get _unwritten => settings.unwrittenAssistantKeyRefs;
 
   AssistantSettingsSync({
     required this.settings,
@@ -185,6 +190,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // dropped here may still be referenced by settings this record does not
     // describe. A key that stops being referenced stops being read.
     final referenced = _referencedKeys.toSet();
+    // A name this configuration no longer references is never read again, so
+    // carrying it would grow a persisted set for the life of the install.
+    final unwrittenBefore = _unwritten.length;
+    _unwritten.retainWhere(referenced.contains);
+    var unwrittenChanged = _unwritten.length != unwrittenBefore;
     var keysChanged = false;
     for (final entry in value.apiKeys.entries) {
       if (!referenced.contains(entry.key)) continue;
@@ -193,9 +203,15 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         // writing unconditionally would rewrite the keystore — and rebuild the
         // chat provider — every five minutes for a configuration that has not
         // moved.
-        if (await masterKeys.getApiKey(entry.key) == entry.value) continue;
+        if (await masterKeys.getApiKey(entry.key) == entry.value) {
+          // The key is demonstrably there — whatever put it there. Leaving the
+          // name listed would go on blocking this device from publishing on
+          // evidence the keystore has just contradicted.
+          if (_unwritten.remove(entry.key)) unwrittenChanged = true;
+          continue;
+        }
         await masterKeys.putApiKey(entry.key, entry.value);
-        _unwritten.remove(entry.key);
+        if (_unwritten.remove(entry.key)) unwrittenChanged = true;
         keysChanged = true;
       } on KeystoreException {
         // The keyring is locked or missing. The configuration is still worth
@@ -203,7 +219,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         // is back, because the record is pulled again every time. Remembered
         // so this device does not publish over the keyed record in the
         // meantime; see [_unwritten].
-        _unwritten.add(entry.key);
+        if (_unwritten.add(entry.key)) unwrittenChanged = true;
       }
     }
 
@@ -216,7 +232,12 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // a live session to arrive at the same client.
     final contentChanged =
         keysChanged || assistantSyncFingerprint(settings) != before;
-    if (contentChanged || settings.assistantUpdatedAt != stampBefore) {
+    // `unwrittenChanged` joins the save condition and not `applied`: it is a
+    // fact about this keystore that has to survive a restart, and nothing
+    // about it changes what the chat provider would be built from.
+    if (contentChanged ||
+        unwrittenChanged ||
+        settings.assistantUpdatedAt != stampBefore) {
       await saveSettings();
     }
     applied = contentChanged;

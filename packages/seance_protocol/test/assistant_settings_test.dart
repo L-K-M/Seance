@@ -76,4 +76,49 @@ void main() {
       );
     }
   });
+
+  test('a degenerate key entry is dropped rather than adopted', () {
+    // The apply path writes exactly the keys a record carries, so a blank
+    // value would overwrite a working key with nothing on every device that
+    // adopted the record — the failure "an absent key means look locally"
+    // exists to prevent, arriving as a present key instead. A blank name
+    // addresses no keystore entry at all.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['apiKeys'] = {'anthropic': '', '': 'sk-1', 'zai': 'z'},
+    );
+    expect(decoded.apiKeys, {'zai': 'z'});
+  });
+
+  test('a blank optional field is written as unset, not as blank', () {
+    // fromJson reads a blank as "not set", so writing one out would be a
+    // field the writer calls set and every reader — this class re-reading its
+    // own record included — calls unset. Whitespace is blank: clearing a text
+    // box down to a stray space is clearing it.
+    for (final blank in ['', '   ']) {
+      final json = settings(searxngUrl: blank).toJson();
+      expect(json.containsKey('searxngUrl'), isFalse,
+          reason: 'searxngUrl=${json['searxngUrl']} should be omitted');
+      expect(AssistantSettings.fromJson(json).searxngUrl, isNull);
+    }
+  });
+
+  test('copyWith clears the optional refs and keeps everything else', () {
+    // The clear flags are the one place a nullable copyWith can silently turn
+    // "cleared here" back into "kept", and nothing exercised them.
+    final cleared = settings(apiKeys: const {'zai': 'z'})
+        .copyWith(clearSearxngUrl: true)
+        .copyWith(clearZaiApiKeyRef: true);
+
+    expect(cleared.searxngUrl, isNull);
+    expect(cleared.zaiApiKeyRef, isNull);
+    expect(cleared.toJson().containsKey('searxngUrl'), isFalse);
+    expect(cleared.toJson().containsKey('zaiApiKeyRef'), isFalse);
+    // Everything the flags do not name survives them.
+    expect(cleared.providerKind, 'anthropic');
+    expect(cleared.llmApiKeyRef, 'anthropic');
+    expect(cleared.redactSecrets, isFalse);
+    expect(cleared.apiKeys, {'zai': 'z'});
+    expect(cleared.updatedAt, 42);
+  });
 }

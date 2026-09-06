@@ -132,9 +132,13 @@ class AssistantSettings {
         'baseUrl': baseUrl,
         'model': model,
         'llmApiKeyRef': llmApiKeyRef,
-        if (searxngUrl != null) 'searxngUrl': searxngUrl,
-        if (braveApiKeyRef != null) 'braveApiKeyRef': braveApiKeyRef,
-        if (zaiApiKeyRef != null) 'zaiApiKeyRef': zaiApiKeyRef,
+        // Blank is the same as absent on the way *in* (see [_blankToNull]),
+        // so writing one out would be a field the writer calls set and every
+        // reader — including this class re-reading its own record — calls
+        // unset. A cleared text box is the ordinary way to produce one.
+        if (_isSet(searxngUrl)) 'searxngUrl': searxngUrl,
+        if (_isSet(braveApiKeyRef)) 'braveApiKeyRef': braveApiKeyRef,
+        if (_isSet(zaiApiKeyRef)) 'zaiApiKeyRef': zaiApiKeyRef,
         'redactSecrets': redactSecrets,
         // Omitted rather than written empty, so a record from a device that
         // does not sync keys is byte-identical to one that has none.
@@ -168,17 +172,30 @@ class AssistantSettings {
 }
 
 /// A blank string reads as "not set", so a cleared field on one device does
-/// not arrive on another as an endpoint made of nothing.
+/// not arrive on another as an endpoint made of nothing. Whitespace counts as
+/// blank: a field cleared down to a stray space is a cleared field, and
+/// keeping it would hand the request layer a URL made of nothing at all.
 String? _blankToNull(Object? value) {
-  if (value is! String || value.isEmpty) return null;
+  if (value is! String || value.trim().isEmpty) return null;
   return value;
 }
+
+/// The writer's half of [_blankToNull] — the two have to agree, or a record
+/// fails to round-trip through its own encoder.
+bool _isSet(String? value) => value != null && value.trim().isNotEmpty;
 
 Map<String, String> _stringMap(Object? value) {
   if (value is! Map) return const {};
   return {
     for (final entry in value.entries)
-      if (entry.key is String && entry.value is String)
+      // A blank name addresses no keystore entry, and a blank value would
+      // overwrite a working key with nothing on every device that adopted
+      // the record — the one outcome "an absent key means look locally"
+      // exists to prevent, arriving as a present one instead.
+      if (entry.key is String &&
+          entry.value is String &&
+          (entry.key as String).isNotEmpty &&
+          (entry.value as String).isNotEmpty)
         entry.key as String: entry.value as String,
   };
 }

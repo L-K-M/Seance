@@ -84,6 +84,16 @@ abstract class AssistantSettingsStore {
   /// a configuration that stops naming a key is not an instruction to delete
   /// it, and another configuration this record does not describe may still
   /// use it.
+  ///
+  /// Third contract, for the keystore write failing — a locked keyring, say.
+  /// Keep the configuration and its stamp and retry the key on a later round:
+  /// the record is delivered again every round, and throwing here would only
+  /// abandon the rest of the round's records. What an implementation must not
+  /// then do is publish the configuration back without that key, because the
+  /// stamp it kept ties with the keyed record it came from and a tie is broken
+  /// by device id — so the keyless copy can evict the keyed one. Remembering
+  /// which names were dropped, durably enough to survive a restart, is what
+  /// makes that distinguishable from a key that was simply never stored.
   Future<void> putAssistantSettings(AssistantSettings settings);
 }
 

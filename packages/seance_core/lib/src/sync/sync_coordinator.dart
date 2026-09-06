@@ -325,9 +325,16 @@ class SyncCoordinator {
             // and applying an older pulled record over it would lose the edit
             // silently, then re-collect and publish the loss.
             //
-            // Strictly older, not older-or-equal: a tie is already resolved at
-            // the record layer by device id and sequence, and skipping ties
-            // here would stop two devices ever converging on one of them.
+            // Strictly older, not older-or-equal: a tie between two records
+            // is already resolved at the record layer by device id and
+            // sequence, and skipping ties here would stop two devices ever
+            // converging on one of them. The tie that resolution never sees is
+            // a local edit that did not reach the mirror this round — made
+            // after [collectLocal] ran, or withheld by it because a key it
+            // references could not be read. That edit loses to a pulled record
+            // sharing its stamp, which is the narrow price of convergence and
+            // why the edit stamp is minted as fine-grained as the clock
+            // allows.
             if (assistant.updatedAt < await store.assistantSettingsUpdatedAt()) {
               continue;
             }

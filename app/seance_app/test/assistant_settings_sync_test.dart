@@ -227,6 +227,9 @@ void main() {
       settings.searxngUrl = 'https://prior-searx.example.com';
       settings.braveApiKeyRef = 'prior-brave';
       settings.zaiApiKeyRef = 'prior-zai';
+      // Set rather than left at the shipped default, which is the same value:
+      // an apply that wrote the default here would otherwise pass.
+      settings.redactionEnabled = true;
       await sync.putAssistantSettings(
         arriving(providerKind: 'some-future-provider'),
       );
@@ -272,6 +275,58 @@ void main() {
       expect(await keys.getApiKey('openai'), 'sk-remote');
       expect((await sync.getAssistantSettings())!.apiKeys,
           containsPair('openai', 'sk-remote'));
+    });
+
+    test('the suspension survives a restart', () async {
+      // The set naming those keys lives in the settings file, not in this
+      // object: the app can be stopped between the failed write and the round
+      // that retries it, and a set that starts empty on the next launch reads
+      // "reference set, key absent, keystore fine" as the supported
+      // never-stored state — and publishes the keyless copy the guard exists
+      // to hold back.
+      keystore.locked = true;
+      await sync.putAssistantSettings(arriving());
+      keystore.locked = false;
+
+      // A second adapter over the same persisted settings is what a restart
+      // looks like from here: same keystore, same settings.json, new object.
+      final afterRestart = AssistantSettingsSync(
+        settings: AppSettings.fromJson(settings.toJson()),
+        masterKeys: keys,
+        saveSettings: () async {},
+      );
+      expect(await afterRestart.getAssistantSettings(), isNull);
+    });
+
+    test('a key that reads back correct clears its suspension', () async {
+      // Whatever put the key there — a retry, another screen, the user — the
+      // keystore has just contradicted the record of the failed write. Going
+      // on blocking publication on it would be blocking on stale evidence,
+      // and the evidence is persisted now, so it would not clear itself.
+      keystore.locked = true;
+      await sync.putAssistantSettings(arriving());
+      keystore.locked = false;
+      await keys.putApiKey('openai', 'sk-remote');
+      expect(settings.unwrittenAssistantKeyRefs, contains('openai'));
+
+      // Same value as the record carries, so the write is skipped entirely.
+      await sync.putAssistantSettings(arriving());
+      expect(settings.unwrittenAssistantKeyRefs, isEmpty);
+      expect(await sync.getAssistantSettings(), isNotNull);
+    });
+
+    test('a name the configuration stops referencing is dropped', () async {
+      // The set is persisted, so an entry nothing will ever consult again
+      // would sit in the settings file for the life of the install.
+      keystore.locked = true;
+      await sync.putAssistantSettings(arriving());
+      keystore.locked = false;
+      expect(settings.unwrittenAssistantKeyRefs, contains('openai'));
+
+      await sync.putAssistantSettings(
+        arriving(llmApiKeyRef: 'elsewhere', apiKeys: const {}),
+      );
+      expect(settings.unwrittenAssistantKeyRefs, isEmpty);
     });
 
     test('a keyless record is adopted without forgetting a stored key',
@@ -354,10 +409,18 @@ void main() {
       // record happens to carry would give that care straight back.
       await sync.putAssistantSettings(arriving(apiKeys: const {
         'openai': 'sk-remote',
+        // The search keys are referenced too, and only the LLM key was ever
+        // asserted to arrive — an import that wrote that one and dropped
+        // these would leave every adopting device with search references it
+        // holds no keys for, and this suite green.
+        'brave': 'sk-brave',
+        'zai': 'sk-zai',
         'sync.token': 'stolen',
         'unrelated': 'sk-other',
       }));
       expect(await keys.getApiKey('openai'), 'sk-remote');
+      expect(await keys.getApiKey('brave'), 'sk-brave');
+      expect(await keys.getApiKey('zai'), 'sk-zai');
       expect(await keys.getApiKey('sync.token'), isNull);
       expect(await keys.getApiKey('unrelated'), isNull);
     });

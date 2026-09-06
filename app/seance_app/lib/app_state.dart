@@ -1018,18 +1018,35 @@ class AppState extends ChangeNotifier {
     // The re-reads are inside it too — outside, a mutation could land while
     // `listServers` was still resolving and then have its own assignment
     // overwritten by this older snapshot.
-    final outcome = await _mutate(() async {
-      final result = await services.runSync();
-      servers = await services.configStore.listServers();
-      snippets = await services.snippetStore.listSnippets();
-      return result;
-    });
-    services.probe.updateServers(servers);
-    _recomputeSuggestions();
-    // A pulled assistant configuration changes the provider, the model or the
-    // key, none of which an already-built chat provider notices.
-    if (services.assistantSettingsChanged) await reloadLlmProvider();
-    return outcome;
+    try {
+      final outcome = await _mutate(() async {
+        final result = await services.runSync();
+        servers = await services.configStore.listServers();
+        snippets = await services.snippetStore.listSnippets();
+        return result;
+      });
+      services.probe.updateServers(servers);
+      _recomputeSuggestions();
+      return outcome;
+    } finally {
+      // A pulled assistant configuration changes the provider, the model or
+      // the key, none of which an already-built chat provider notices.
+      //
+      // In a `finally` because `runSync` sets the flag in one too: a round can
+      // adopt the record and *then* fail, the pull running before the push.
+      // Consumed only on success, that adoption would be invisible — the next
+      // successful round finds the settings already adopted, reports nothing
+      // applied, and the chat provider answers with the old model and key
+      // until some unrelated edit rebuilds it. Every caller of this method
+      // swallows or rethrows the failure without looking at the flag, so this
+      // is the one place that can see both halves of the round.
+      //
+      // Safe in a `finally`: `reloadLlmProvider` bumps a counter and reads the
+      // keystore through the tolerant path (`refreshLlmConfigured` treats a
+      // keystore error as "no key"), so it does not throw over the sync
+      // failure on its way out.
+      if (services.assistantSettingsChanged) await reloadLlmProvider();
+    }
   }
 
   /// The assistant's configuration was just edited here: stamp it so the

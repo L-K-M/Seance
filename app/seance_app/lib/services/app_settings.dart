@@ -75,6 +75,18 @@ class AppSettings {
   /// from pushing rival defaults before either has configured anything.
   int assistantUpdatedAt;
 
+  /// Keystore entry names this device adopted a *reference* to but could not
+  /// store, because the keyring was locked when the record arrived.
+  ///
+  /// Device-local, never synced: it describes this keystore, not the account.
+  /// Persisted because the hazard it blocks outlives the process. The write is
+  /// retried on a later round, but if the app is stopped before that lands, a
+  /// fresh run reads "reference set, key absent, keystore available" as the
+  /// supported never-stored state and publishes the configuration without the
+  /// key — under the stamp it adopted, which ties with the keyed record it
+  /// came from and is broken by device id.
+  Set<String> unwrittenAssistantKeyRefs;
+
   // Sync (optional).
   String? syncBaseUrl;
   String? syncUsername;
@@ -94,6 +106,11 @@ class AppSettings {
   /// provider and model without the key to use them leaves the other device
   /// looking configured and answering nothing, which is a worse place to be
   /// than either syncing or not.
+  ///
+  /// Independent of [syncSecrets], which governs the servers' own passwords
+  /// and private keys. Turning that off does not hold the assistant's keys
+  /// back: they are the assistant record, and a record without them is the
+  /// looks-configured-answers-nothing state above.
   bool syncAssistant;
 
   /// Whether sync runs automatically (on startup, after edits, and on a timer).
@@ -178,6 +195,7 @@ class AppSettings {
     Map<String, bool>? remoteShowHidden,
     Map<String, IdentityFileBookmark>? identityFileBookmarks,
     Set<String>? collapsedServerGroups,
+    Set<String>? unwrittenAssistantKeyRefs,
     this.terminalFontSize = kDefaultTerminalFontSize,
     this.terminalFontFamily = '',
     this.terminalPalette = TerminalPalette.followApp,
@@ -187,7 +205,8 @@ class AppSettings {
        remotePathBookmarks = remotePathBookmarks ?? {},
        remoteShowHidden = remoteShowHidden ?? {},
        identityFileBookmarks = identityFileBookmarks ?? {},
-       collapsedServerGroups = collapsedServerGroups ?? {};
+       collapsedServerGroups = collapsedServerGroups ?? {},
+       unwrittenAssistantKeyRefs = unwrittenAssistantKeyRefs ?? {};
 
   Map<String, dynamic> toJson() => {
     'llmKind': llmKind.name,
@@ -199,6 +218,9 @@ class AppSettings {
     if (zaiApiKeyRef != null) 'zaiApiKeyRef': zaiApiKeyRef,
     'redactionEnabled': redactionEnabled,
     'assistantUpdatedAt': assistantUpdatedAt,
+    // Sorted for the same reason as [collapsedServerGroups]: an unchanged set
+    // has to write byte-identical JSON.
+    'unwrittenAssistantKeyRefs': unwrittenAssistantKeyRefs.toList()..sort(),
     if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
     if (syncUsername != null) 'syncUsername': syncUsername,
     'syncSecrets': syncSecrets,
@@ -241,6 +263,7 @@ class AppSettings {
     zaiApiKeyRef: json['zaiApiKeyRef'] as String?,
     redactionEnabled: json['redactionEnabled'] as bool? ?? true,
     assistantUpdatedAt: (json['assistantUpdatedAt'] as num?)?.toInt() ?? 0,
+    unwrittenAssistantKeyRefs: _stringSet(json['unwrittenAssistantKeyRefs']),
     syncBaseUrl: json['syncBaseUrl'] as String?,
     syncUsername: json['syncUsername'] as String?,
     syncSecrets: json['syncSecrets'] as bool? ?? false,
