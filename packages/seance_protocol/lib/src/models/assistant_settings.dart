@@ -131,7 +131,9 @@ class AssistantSettings {
         'providerKind': providerKind,
         'baseUrl': baseUrl,
         'model': model,
-        'llmApiKeyRef': llmApiKeyRef,
+        // Blank reads as empty (see [fromJson]); written the same way so the
+        // record round-trips.
+        'llmApiKeyRef': _isSet(llmApiKeyRef) ? llmApiKeyRef : '',
         // Blank is the same as absent on the way *in* (see [_blankToNull]),
         // so writing one out would be a field the writer calls set and every
         // reader — including this class re-reading its own record — calls
@@ -142,7 +144,9 @@ class AssistantSettings {
         'redactSecrets': redactSecrets,
         // Omitted rather than written empty, so a record from a device that
         // does not sync keys is byte-identical to one that has none.
-        if (apiKeys.isNotEmpty) 'apiKeys': apiKeys,
+        // Through the same filter [fromJson] applies, so a degenerate entry
+        // a caller built by hand is not written as set and read back as gone.
+        if (_stringMap(apiKeys).isNotEmpty) 'apiKeys': _stringMap(apiKeys),
         'updatedAt': updatedAt,
       };
 
@@ -151,7 +155,7 @@ class AssistantSettings {
         providerKind: json['providerKind'] as String? ?? '',
         baseUrl: json['baseUrl'] as String? ?? '',
         model: json['model'] as String? ?? '',
-        llmApiKeyRef: json['llmApiKeyRef'] as String? ?? '',
+        llmApiKeyRef: _blankToNull(json['llmApiKeyRef']) ?? '',
         searxngUrl: _blankToNull(json['searxngUrl']),
         braveApiKeyRef: _blankToNull(json['braveApiKeyRef']),
         zaiApiKeyRef: _blankToNull(json['zaiApiKeyRef']),

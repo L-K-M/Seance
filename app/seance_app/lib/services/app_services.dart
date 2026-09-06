@@ -86,6 +86,12 @@ class AppServices {
   /// Whether the last [runSync] adopted a pulled assistant configuration. The
   /// chat provider is built once per configuration version, so a new model or
   /// key only takes effect if somebody rebuilds it.
+  ///
+  /// True from the end of a round that adopted until the start of the next
+  /// one, which resets it first thing. Read it right after the round that set
+  /// it, in the same call: rounds are serialized behind `AppState._mutate`,
+  /// but a reader that awaits something else in between can find the next
+  /// round has already begun and cleared it.
   bool assistantSettingsChanged = false;
 
   AppServices._({

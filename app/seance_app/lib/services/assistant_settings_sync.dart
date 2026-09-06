@@ -88,7 +88,14 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       settings.braveApiKeyRef!,
     if (settings.zaiApiKeyRef != null && settings.zaiApiKeyRef!.isNotEmpty)
       settings.zaiApiKeyRef!,
-  };
+  }..removeAll(reservedKeyNames);
+
+  /// Keystore entries that share the API-key namespace but are the account's
+  /// own protection, never an assistant key: a record naming one as a ref
+  /// would otherwise publish this device's sync token, or overwrite it on
+  /// adoption. Held out here rather than trusted to the record, since a
+  /// record is exactly as careful as the device that wrote it.
+  static const Set<String> reservedKeyNames = {'sync.token'};
 
   @override
   Future<AssistantSettings?> getAssistantSettings() async {

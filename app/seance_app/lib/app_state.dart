@@ -1175,17 +1175,13 @@ class AppState extends ChangeNotifier {
     // account already held, which is the single guarantee this method exists
     // to provide.
     if (!services.isSyncConfigured) return;
-    try {
-      await _runSyncAndRefresh();
-    } on Exception {
-      // Offline, or the server is down: this is the one moment not to publish
-      // on a guess. An `Error` is a bug in this path rather than a fact about
-      // the network, and swallowing one here would leave a toggle that quietly
-      // does nothing with no trace of why. The switch stays on and the next
-      // round settles it — either by adopting the account's record or, once
-      // this device is edited, by publishing that edit.
-      return;
-    }
+    // Offline, or the server is down: this is the one moment not to publish
+    // on a guess, so the failure ends the method here — and reaches the
+    // caller, which shows it. Swallowed, a toggle that did nothing looked
+    // like one that had adopted. The switch stays on and the next round
+    // settles it: by adopting the account's record, or, once this device is
+    // edited, by publishing that edit.
+    await _runSyncAndRefresh();
     if (services.assistantSettingsChanged) return;
     // Nothing configured here, so there is nothing worth publishing: stamping
     // now would turn this device's defaults into the account's newest write
@@ -1194,6 +1190,11 @@ class AppState extends ChangeNotifier {
     // it is this line that would step around it.
     if (services.settings.assistantUpdatedAt == 0) return;
     await assistantSettingsEdited();
+    // That hands the publish to the auto-sync debounce, which does not run
+    // with auto-sync off — and this switch is an explicit ask to sync, made
+    // by a user who just watched one round run. Published now in that case;
+    // with auto-sync on, the debounce it just scheduled does it.
+    if (!services.settings.autoSync) await _runSyncAndRefresh();
   }
 
   /// Start (or restart) the periodic auto-sync timer. Safe to call repeatedly —

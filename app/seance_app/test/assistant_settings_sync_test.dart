@@ -79,6 +79,10 @@ void main() {
 
     test('publishes the configuration with the keys it references', () async {
       settings.assistantUpdatedAt = 99;
+      // Off the defaults, or an encoder that always wrote the default
+      // provider — or dropped the endpoint — would pass.
+      settings.llmKind = LlmProviderKind.openaiCompatible;
+      settings.llmBaseUrl = 'https://api.openai.com/v1';
       settings.llmApiKeyRef = 'anthropic';
       settings.llmModel = 'claude-custom';
       settings.braveApiKeyRef = 'brave';
@@ -96,7 +100,8 @@ void main() {
 
       final published = (await sync.getAssistantSettings())!;
 
-      expect(published.providerKind, 'anthropic');
+      expect(published.providerKind, 'openaiCompatible');
+      expect(published.baseUrl, 'https://api.openai.com/v1');
       expect(published.model, 'claude-custom');
       expect(published.braveApiKeyRef, 'brave');
       expect(published.searxngUrl, 'https://searx.example.com');
@@ -113,6 +118,29 @@ void main() {
       final encoded = published.toJson().toString();
       expect(encoded, isNot(contains('tok')));
       expect(encoded, isNot(contains('vault')));
+    });
+
+    test('the sync token is never a key reference, published or adopted',
+        () async {
+      // It shares the API-key namespace with the assistant's keys, and a
+      // record is exactly as careful as the device that wrote it: one naming
+      // it as a ref would publish this device's token, or overwrite it.
+      await keys.putApiKey('sync.token', 'tok');
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = 'sync.token';
+      final published = (await sync.getAssistantSettings())!;
+      expect(published.apiKeys, isNot(contains('sync.token')));
+
+      await sync.putAssistantSettings(AssistantSettings(
+        providerKind: 'openaiCompatible',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        llmApiKeyRef: 'sync.token',
+        redactSecrets: true,
+        apiKeys: const {'sync.token': 'stolen'},
+        updatedAt: 500,
+      ));
+      expect(await keys.getApiKey('sync.token'), 'tok');
     });
 
     test('a locked keyring publishes nothing rather than a keyless copy',

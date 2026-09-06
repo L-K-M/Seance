@@ -123,17 +123,38 @@ void main() {
     });
 
     final state = AppState(services);
+    addTearDown(state.dispose);
+    final versionBefore = state.llmConfigVersion;
     await http.runWithClient(
       () => expectLater(state.syncNow(), throwsA(isA<ApiError>())),
       () => transport,
     );
 
+    // The failure came from the pull after the adoption, not from an earlier
+    // request — otherwise the assertions below would fail for the wrong
+    // reason.
+    expect(gets, greaterThanOrEqualTo(3));
     // Adopted, as the round's first half managed.
     expect(services.settings.llmModel, 'gpt-5');
     expect(services.assistantSettingsChanged, isTrue);
     // And consumed, which is the whole point: an already-built chat provider
     // notices none of a new provider, model or key on its own.
-    expect(state.llmConfigVersion, 1);
-    state.dispose();
+    expect(state.llmConfigVersion, versionBefore + 1);
+  });
+
+  test('an edit never stamps below the record this device holds', () async {
+    // The stamp is the whole of the last-write-wins comparison. A clock that
+    // runs behind the device this configuration was pulled from would make a
+    // fresh edit lose to the record it had just adopted — and the next round
+    // would re-apply that record over the edit, silently.
+    final state = AppState(services);
+    addTearDown(state.dispose);
+    final ahead = DateTime.now().millisecondsSinceEpoch +
+        const Duration(days: 365).inMilliseconds;
+    services.settings.assistantUpdatedAt = ahead;
+
+    await state.assistantSettingsEdited();
+
+    expect(services.settings.assistantUpdatedAt, greaterThan(ahead));
   });
 }

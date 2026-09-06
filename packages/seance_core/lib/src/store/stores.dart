@@ -66,7 +66,8 @@ abstract class AssistantSettingsStore {
   /// synced mirror has seen yet, and paying for key material to read a number
   /// would put secrets on a path that has no use for them.
   ///
-  /// Zero when nothing has been published from this device, matching the
+  /// Zero while this device holds nothing — no local edit and nothing adopted
+  /// from sync, since an adopted record keeps its own stamp — matching the
   /// stamp [getAssistantSettings] treats as "nothing to publish".
   Future<int> assistantSettingsUpdatedAt();
 

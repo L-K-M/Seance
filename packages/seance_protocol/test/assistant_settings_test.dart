@@ -90,6 +90,30 @@ void main() {
     expect(decoded.apiKeys, {'zai': 'z'});
   });
 
+  test('a degenerate key entry is not written either', () {
+    // The reader drops it; a writer that kept it would produce a record its
+    // own reader disagrees with.
+    final json = settings(apiKeys: const {'anthropic': '', '': 'x', 'zai': 'z'})
+        .toJson();
+    expect(json['apiKeys'], {'zai': 'z'});
+    expect(settings(apiKeys: const {'anthropic': ''}).toJson(),
+        isNot(contains('apiKeys')));
+  });
+
+  test('a blank LLM key reference reads and writes as empty', () {
+    // Like its optional siblings: a stray space is not a keystore entry.
+    expect(
+      AssistantSettings.fromJson(settings().toJson()..['llmApiKeyRef'] = ' ')
+          .llmApiKeyRef,
+      '',
+    );
+    final blank = AssistantSettings.fromJson(
+      settings().toJson()..['llmApiKeyRef'] = '   ',
+    );
+    expect(blank.toJson()['llmApiKeyRef'], '');
+    expect(AssistantSettings.fromJson(blank.toJson()).toJson(), blank.toJson());
+  });
+
   test('a blank optional field is written as unset, not as blank', () {
     // fromJson reads a blank as "not set", so writing one out would be a
     // field the writer calls set and every reader — this class re-reading its
