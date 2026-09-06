@@ -352,7 +352,11 @@ void main() {
       // duplicate of a Browse…-picked key falls back to the raw path and
       // cannot open a key outside ~/.ssh. It is planned, not read at the save
       // site, so it can be asserted without an AppState.
-      const grant = IdentityFileBookmark(path: '/keys/id', bookmark: 'b64');
+      // Same path the fixture's `identityFilePath` carries: a Browse…-picked
+      // key always has both, and a grant minted for some other path is a
+      // state this test is not about.
+      const grant =
+          IdentityFileBookmark(path: '/keys/id_ed25519', bookmark: 'b64');
       final plan = await planServerDuplication(
         source(),
         vault: vault(),
