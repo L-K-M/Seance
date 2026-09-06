@@ -246,6 +246,13 @@ void main() {
 
       final first = await search.search('dart records', limit: 2);
       await search.search('again');
+      // The no-`limit` shape, pinned too: `count` is the interface's default
+      // of five, sent as a number — not omitted, and never a null.
+      expect(server.lastArguments, {
+        'search_query': 'again',
+        'count': 5,
+        'search_engine': 'search-prime',
+      });
 
       expect(server.methods, [
         'initialize',
@@ -652,6 +659,46 @@ void main() {
       );
     });
 
+    test('a 202 that holds an event stream open is cancelled, not waited out',
+        () async {
+      // 202 is the reply the protocol owes a notification, with no body. A
+      // server that holds an event stream open past it is owed nothing
+      // either; drained to its deadline instead, every handshake would have
+      // paid a full timeout at the notification step.
+      final server = FakeMcpServer();
+      var cancelled = false;
+      final held = StreamController<List<int>>(
+        onCancel: () => cancelled = true,
+      );
+      addTearDown(held.close);
+      final client = MockClient.streaming((request, body) async {
+        final bytes = await body.toBytes();
+        final payload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+        if (!payload.containsKey('id')) {
+          return http.StreamedResponse(
+            held.stream,
+            202,
+            headers: {'content-type': 'text/event-stream'},
+          );
+        }
+        final forwarded = http.Request(request.method, request.url)
+          ..headers.addAll(request.headers)
+          ..bodyBytes = bytes;
+        return server.client.send(forwarded);
+      });
+
+      final clock = Stopwatch()..start();
+      final results = await ZaiSearch(
+        apiKey: 'k',
+        client: client,
+        timeout: const Duration(seconds: 3),
+      ).search('dart');
+
+      expect(results, isNotEmpty);
+      expect(cancelled, isTrue);
+      expect(clock.elapsed, lessThan(const Duration(seconds: 3)));
+    });
+
     test('an errored tool result is a failure, not an empty answer', () async {
       final server = FakeMcpServer();
       server.overrides['tools/call'] = {
@@ -721,6 +768,58 @@ void main() {
       }, 5);
       expect(results.map((r) => r.url), ['https://example.com/x']);
     });
+
+    test('a duplicate result is a leaf, not a container to walk', () {
+      // The first copy is a leaf; the second used to fall through to the
+      // entry walk, so a `content` that happened to be JSON decoded into a
+      // result of its own — and only from the duplicate.
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'search_result': [
+                {
+                  'title': 'Once',
+                  'link': 'https://example.com/a',
+                  'content': 'text',
+                },
+                {
+                  'title': 'Again',
+                  'link': 'https://example.com/a',
+                  'content': jsonEncode({
+                    'title': 'Planted',
+                    'link': 'https://example.com/planted',
+                    'content': 'x',
+                  }),
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(results.map((r) => r.url), ['https://example.com/a']);
+    });
+
+    test('a localized title object is read, like a localized snippet', () {
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'search_result': [
+                {
+                  'title': {'lang': 'en', 'text': 'Real title'},
+                  'link': 'https://example.com/t',
+                  'content': 'text',
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(results.single.title, 'Real title');
+    });
   });
 
   group('readRpcResult', () {
@@ -750,7 +849,7 @@ void main() {
           throwsA(isA<http.ClientException>().having(
             (e) => e.message,
             'message',
-            isNot(contains('(code')),
+            allOf(isNot(contains('(code')), isNotEmpty),
           )),
         );
       }
@@ -809,7 +908,15 @@ void main() {
         throwsA(isA<http.ClientException>().having(
           (e) => e.message,
           'message',
-          allOf(isNot(contains('\uFFFD')), isNot(contains('\uD83D…'))),
+          // Any lone surrogate, not only one followed by the ellipsis: a cut
+          // on raw code units that appended nothing would leave one at the
+          // end, and U+FFFD only appears once such a string is encoded.
+          predicate<String>(
+            (m) =>
+                !m.contains('\uFFFD') &&
+                !m.runes.any((r) => r >= 0xD800 && r <= 0xDFFF),
+            'free of replacement characters and unpaired surrogates',
+          ),
         )),
       );
     });
@@ -839,19 +946,23 @@ void main() {
   group('parseToolResult', () {
     test('a title or snippet that is not text does not reach the UI', () {
       // Some search APIs return `content` as a list of paragraphs, or a
-      // localized object for `title`; interpolating either puts `{lang: en}`
-      // into a result a person reads.
+      // localized object for `title`; interpolating either puts `{en: A}`
+      // into a result a person reads. The text inside is read out instead —
+      // the list joined, the object's strings taken — and a title that
+      // yields nothing that way falls back to the media name, then the URL.
       final results = ZaiSearch.parseToolResult(const {
         'content': [
           {
             'type': 'text',
             'text': '[{"link":"https://a.example","title":{"en":"A"},'
-                '"content":["one","two",3]}]',
+                '"content":["one","two",3]},'
+                '{"link":"https://b.example","title":{"en":7}}]',
           },
         ],
       }, 5);
-      expect(results.single.title, 'https://a.example');
-      expect(results.single.snippet, 'one two');
+      expect(results.first.title, 'A');
+      expect(results.first.snippet, 'one two');
+      expect(results.last.title, 'https://b.example');
     });
 
     test('an empty link falls back to the url beside it', () {
@@ -1033,7 +1144,9 @@ void main() {
           const Duration(seconds: 1),
           total: const Duration(milliseconds: 40),
           totalMessage: 'held open',
-        ).toList(),
+          // Test-side only: a deadline that stopped being enforced would
+          // otherwise hang this until the runner's own timeout.
+        ).toList().timeout(const Duration(seconds: 5)),
         throwsA(isA<http.ClientException>().having(
           (e) => e.message,
           'message',

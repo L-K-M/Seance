@@ -318,6 +318,15 @@ class ZaiSearch implements SearchProvider {
       // server hold a stream open, so without a deadline here a proxy that
       // answers 200 and then stalls hangs the caller for good.
       if (id == null) {
+        if (response.statusCode == 202) {
+          // 202 is the reply the protocol owes a notification, with no body.
+          // A server that holds an event stream open past it is owed nothing
+          // either, so the stream is cancelled rather than drained to its
+          // deadline — which would have cost every handshake a full timeout
+          // at this step.
+          await response.stream.listen(null).cancel();
+          return null;
+        }
         // A notification has no reply, so there is nothing to match and
         // nothing to wait for: reading until "some message" arrives would
         // burn the whole deadline on a stream carrying only heartbeats.
@@ -772,7 +781,12 @@ class ZaiSearch implements SearchProvider {
     // http(s) only. These strings are chosen by the search gateway, and a
     // result is a web page by definition — so anything else is either not a
     // result or an attempt to hand the app a scheme to launch.
-    if (url is String && _isWebUrl(url) && seen.add(url)) {
+    if (url is String && _isWebUrl(url)) {
+      // A result-shaped map is a leaf whether or not it is new. Walked into,
+      // a duplicate's `content` that happened to be JSON decoded into a
+      // result of its own, and anything nested under a result was collected
+      // from the second copy only — output by arrival order, not content.
+      if (!seen.add(url)) return;
       // Interpolating whatever is there would put `{lang: en, text: …}` or
       // `[a, b]` into the UI verbatim: some search APIs return `content` as a
       // list of paragraphs or `title` as a localized object. The rest of this
@@ -782,9 +796,16 @@ class ZaiSearch implements SearchProvider {
       // null, so an explicitly empty title would keep the empty string and
       // render the raw URL with a perfectly good `media` name beside it.
       final rawTitle = value['title'];
-      final title = rawTitle is String && rawTitle.isNotEmpty
-          ? rawTitle
-          : value['media'];
+      final title = switch (rawTitle) {
+        final String text when text.isNotEmpty => text,
+        // The localized-object shape the snippet case below reads: a title
+        // deserves the same tolerance, one field over, or a result with a
+        // perfectly good title renders as its URL.
+        final Map<Object?, Object?> fields
+            when _snippetText(fields).isNotEmpty =>
+          _snippetText(fields),
+        _ => value['media'],
+      };
       // Empty falls through here too: an explicitly empty `content` beside
       // a usable `snippet` was rendering as no snippet at all.
       final content = value['content'];
