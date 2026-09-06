@@ -49,6 +49,11 @@ bool excludingNeedsConfirmation({
 /// round later — but the first push is where it belongs, and a monotonic stamp
 /// costs one comparison.
 ///
+/// It outranks the record *this device has pulled*, which is the whole of what
+/// a local clamp can know. An edit racing a remote change this device has not
+/// seen yet can still tie with it or lose, and lose silently — closing that
+/// needs the coordinator, which re-dates a retraction it sees outranked.
+///
 /// A function rather than an inline `max` so it can be tested: `_save` needs
 /// an [AppState], whose services constructor is private, so nothing reaches it
 /// from a test.

@@ -292,7 +292,23 @@ class SyncCoordinator {
               continue;
             }
 
-            await configStore.putServer(ServerConfig.fromJson(dec.data));
+            final pulled = ServerConfig.fromJson(dec.data);
+            // The exclusion shield above keys on the *record* id, and this
+            // write would key on the payload's. A record whose two ids
+            // disagree — schema drift, a buggy peer, anything hand-made by a
+            // device that has the key — would slip a config past the shield,
+            // and land under an id no tombstone can ever name.
+            if (pulled.id != dec.id) {
+              skip(
+                dec.id,
+                StateError(
+                  'config id ${pulled.id} does not match record id ${dec.id}',
+                ),
+                StackTrace.current,
+              );
+              continue;
+            }
+            await configStore.putServer(pulled);
           case RecordKind.hostKey:
             await hostKeyStore.put(HostKey.fromJson(dec.data));
           case RecordKind.secret:
@@ -350,7 +366,15 @@ class SyncCoordinator {
       // whole failed round.
       try {
         final bumped = config.copyWith(updatedAt: retractedAt + 1);
-        await configStore.putServer(bumped);
+        // The staged record first, the store second. The bump is a
+        // deterministic function of the retraction's date, so a failed
+        // `putServer` is retried identically next round — but a failed
+        // `putLocal` *after* a successful `putServer` is never retried,
+        // because the store then reports `updatedAt > retractedAt` and the
+        // guard above drops this server from `revived` forever. The bump
+        // would never reach a peer, while the losing pre-bump record still
+        // would, and the next pull's tombstone would delete the config the
+        // user had just brought back.
         await local.putLocal(await codec.encrypt(DecryptedRecord(
           id: bumped.id,
           kind: RecordKind.serverConfig,
@@ -358,6 +382,7 @@ class SyncCoordinator {
           deviceId: deviceId,
           data: bumped.toJson(),
         )));
+        await configStore.putServer(bumped);
         bumpedCount++;
       } catch (error, stackTrace) {
         skip(config.id, error, stackTrace);
@@ -395,17 +420,15 @@ class SyncCoordinator {
     // any other id could not be shielded by construction, and would go to
     // `Secret.fromJson` to either throw into the skip diagnostics or, worse,
     // parse and be written into the vault as a credential nothing named.
-    final unexpected =
-        records.where((d) => !d.id.startsWith(_secretIdPrefix)).toList();
-    if (unexpected.isNotEmpty) {
-      // Correctly not written, but every other skip in this method leaves a
-      // record — and a peer minting secret ids wrongly would otherwise be
-      // invisible in the field.
-      developer.log(
-        'Dropped secret records with unexpected ids: '
-        '${unexpected.map((d) => d.id).join(', ')}',
-        name: _syncLoggerName,
-        level: _warningLogLevel,
+    for (final dec in records.where((d) => !d.id.startsWith(_secretIdPrefix))) {
+      // Through `skip`, not a log line of its own: correctly not written, but
+      // every other drop in this method lands in `skippedIds`, and a peer
+      // minting secret ids differently should show up where a reader is
+      // already looking rather than in a channel of its own.
+      skip(
+        dec.id,
+        StateError('secret record id is not `$_secretIdPrefix`-prefixed'),
+        StackTrace.current,
       );
     }
     for (final dec in records.where((d) => d.id.startsWith(_secretIdPrefix))) {
@@ -522,7 +545,12 @@ class SyncCoordinator {
     // that beat it. Push it now: the next run would only re-mint the same
     // losing date [collectLocal] computes, so waiting never resolves it. One
     // extra pass, never a loop — a second re-dating is left to the next run.
-    if (await applyToStores() == 0) return first;
+    // Named, because the gate only means what the comment above says while
+    // this is the *re-dating* count and not, say, the number of records
+    // applied — which would double every round's traffic on the hot path,
+    // hidden inside the summed outcome.
+    final redated = await applyToStores();
+    if (redated == 0) return first;
     final second = await engine.sync(api);
     await applyToStores();
     return SyncOutcome(

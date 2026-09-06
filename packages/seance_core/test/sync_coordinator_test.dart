@@ -653,7 +653,12 @@ void main() {
       // And both stay staged, so a build that can verify them still has them:
       // pulls are incremental, and a dropped record is never redelivered.
       for (final id in ['secret:sec-kept', 'secret:sec-orphan']) {
-        expect(await local.getRecord(id), isNotNull);
+        final staged = await local.getRecord(id);
+        expect(staged, isNotNull);
+        // Still the tombstone as received, not a record the apply rewrote:
+        // what a sealed-tombstone build inherits has to be the deletion
+        // itself, or there is nothing left to verify.
+        expect(staged!.deleted, isTrue);
       }
     });
 
@@ -715,6 +720,11 @@ void main() {
       // ties with the record on the server and loses the tie-break to it.
       expect(
         () => synced.copyWith(excludeFromSync: true, updatedAt: 10),
+        throwsA(isA<ArgumentError>()),
+      );
+      // And strictly older, which loses outright rather than on a tie-break.
+      expect(
+        () => synced.copyWith(excludeFromSync: true, updatedAt: 9),
         throwsA(isA<ArgumentError>()),
       );
       expect(
@@ -1070,6 +1080,33 @@ void main() {
       expect(await local.getRecord('good'), isNotNull);
     });
 
+    test('a config whose payload id disagrees is skipped, not written',
+        () async {
+      // The exclusion shield keys on the record id and the write would key on
+      // the payload's, so a record whose two ids disagree slips past it — and
+      // lands under an id no tombstone can name.
+      final codec = RecordCodec(secureRandomBytes(32));
+      final configs = InMemoryConfigStore();
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: 'envelope-id',
+        kind: RecordKind.serverConfig,
+        updatedAt: 10,
+        deviceId: 'B',
+        data: server('payload-id', 'alpha', 10).toJson(),
+      )));
+
+      await SyncCoordinator(
+        configStore: configs,
+        hostKeyStore: InMemoryHostKeyStore(),
+        codec: codec,
+        local: local,
+        deviceId: 'A',
+      ).applyToStores();
+
+      expect(await configs.listServers(), isEmpty);
+    });
+
     test('a server nobody excluded is never re-tombstoned', () async {
       // [_rescheduleOutranked] mints a deletion for every record it is given,
       // so its safety used to rest entirely on the call site handing it only
@@ -1337,7 +1374,6 @@ void main() {
   });
 }
 
-/// A vault whose deletes fail the way a locked OS keyring makes them fail.
 /// A local store that refuses to stage one record, to prove the post-loop
 /// re-dating is fail-soft per record like the loop that feeds it.
 class _RefusingLocalStore implements LocalRecordStore {
@@ -1368,6 +1404,7 @@ class _RefusingLocalStore implements LocalRecordStore {
   Future<void> setHighWaterSeq(int seq) => inner.setHighWaterSeq(seq);
 }
 
+/// A vault whose deletes fail the way a locked OS keyring makes them fail.
 class _RefusingVault extends SecretVault {
   int deletesAttempted = 0;
 
