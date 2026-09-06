@@ -42,11 +42,6 @@ void main() {
     expect(original.copyWith(kind: otherKind).kind, otherKind);
     expect(original.copyWith(keyPassphrase: 'rekeyed').keyPassphrase,
         'rekeyed');
-    // The nullable field has a clear flag, because a null argument means
-    // keep — and a caller switching a key to a bare one would otherwise
-    // carry the old passphrase, into the vault and through sync.
-    expect(original.copyWith(clearKeyPassphrase: true).keyPassphrase, isNull);
-    expect(original.copyWith(clearKeyPassphrase: true).value, original.value);
   });
 
   group('model JSON round-trips', () {

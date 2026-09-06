@@ -34,22 +34,19 @@ class Secret {
   /// actually catches a missed one is a JSON comparison — one in this
   /// package's `records_test.dart`, so it cannot go missing with a client,
   /// and one in the app's `server_duplication_test.dart` covering the call
-  /// site. A null argument means "keep", so clearing [keyPassphrase] is a
-  /// flag — the shape `ServerConfig.copyWith` uses for its nullable fields.
+  /// site. And since a null argument means "keep",
+  /// [keyPassphrase] cannot be cleared through this.
   Secret copyWith({
     String? id,
     SecretKind? kind,
     String? value,
     String? keyPassphrase,
-    bool clearKeyPassphrase = false,
   }) =>
       Secret(
         id: id ?? this.id,
         kind: kind ?? this.kind,
         value: value ?? this.value,
-        keyPassphrase: clearKeyPassphrase
-            ? null
-            : (keyPassphrase ?? this.keyPassphrase),
+        keyPassphrase: keyPassphrase ?? this.keyPassphrase,
       );
 
   Map<String, dynamic> toJson() => {
