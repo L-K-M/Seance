@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
@@ -304,11 +306,14 @@ class _ServerListPaneState extends State<ServerListPane> {
       // because a toast is all the user gets and two rows can fail apart.
       // The error itself stays verbatim: `VaultLockedException.toString()` is
       // the sentence that says what to do about it.
+      final message = 'Could not duplicate "${server.label}": $error';
       if (context.mounted) {
-        showTopToastIn(
-          context,
-          message: 'Could not duplicate "${server.label}": $error',
-        );
+        showTopToastIn(context, message: message);
+      } else {
+        // The pane went away before this failure landed, so there is nowhere
+        // to show it. A vault error that vanishes entirely is what makes
+        // "duplicate silently did nothing" impossible to diagnose.
+        developer.log(message, name: 'seance.app', level: 900, error: error);
       }
       return;
     }
