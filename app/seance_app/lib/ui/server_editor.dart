@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -6,6 +8,88 @@ import '../services/app_settings.dart';
 import 'server_appearance.dart';
 import 'server_grouping.dart';
 import 'top_toast.dart';
+
+/// Whether turning "exclude from sync" on needs confirming before it takes.
+///
+/// Only when there is something to retract: a server being added has never
+/// been anywhere, one already excluded has been retracted once already, and
+/// with no sync account configured there is no other device that could lose
+/// it. Turning the switch back off is never destructive.
+///
+/// [syncConfigured] is read as it is *now*, which is not quite the same
+/// question. A server that synced before the account was unlinked still has a
+/// copy out there, and the stored exclusion would retract it on the first
+/// round after re-linking, unprompted. Answering that properly needs a "has
+/// ever synced" bit this device does not keep, and the alternative — always
+/// confirming — puts a dialog in front of someone who has never had a sync
+/// account at all. The narrow gap is recorded here rather than papered over.
+///
+/// A top-level function so the rule can be asserted directly — no widget test
+/// in this app stands up an [AppState], and this is the part of the dialog
+/// worth pinning down.
+bool excludingNeedsConfirmation({
+  required ServerConfig? existing,
+  required bool syncConfigured,
+}) => existing != null && !existing.excludeFromSync && syncConfigured;
+
+/// The timestamp a save should carry: the wall clock, but never one this
+/// config has already passed.
+///
+/// `updatedAt` is what orders this edit against every other device's, and a
+/// device whose clock trails the record it pulled — the ordinary case once one
+/// device runs even slightly fast — would otherwise stamp an edit that ties
+/// with, or loses to, the copy it means to replace, and quietly not take
+/// anywhere else.
+///
+/// Exclusion is where that costs most: `SyncCoordinator` dates the retraction
+/// tombstone from this timestamp, so a losing stamp leaves the server and its
+/// credential on the sync server and on every other device while this one
+/// shows the switch on. The coordinator does re-date a retraction it sees
+/// outranked, so the difference is retracting on the first push rather than a
+/// round later — but the first push is where it belongs, and a monotonic stamp
+/// costs one comparison.
+///
+/// It outranks the record *this device has pulled*, which is the whole of what
+/// a local clamp can know. An edit racing a remote change this device has not
+/// seen yet can still tie with it or lose, and lose silently — closing that
+/// needs the coordinator, which re-dates a retraction it sees outranked.
+///
+/// A function rather than an inline `max` so it can be tested: `_save` needs
+/// an [AppState], whose services constructor is private, so nothing reaches it
+/// from a test.
+int nextUpdatedAt(int? existingUpdatedAt, {required int now}) =>
+    math.max(now, (existingUpdatedAt ?? 0) + 1);
+
+/// The dialog [excludingNeedsConfirmation] gates, as a function so a test can
+/// tap its buttons without standing up an editor or an [AppState].
+///
+/// Dismissing it — barrier tap, Escape — resolves to null, which has to read
+/// as "no": the caller is about to delete data on other devices, and the one
+/// input that means the user never answered must not be the one that proceeds.
+Future<bool> confirmSyncExclusion(BuildContext context) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Exclude from sync?'),
+      content: const Text(
+        'If this server synced earlier, it is removed from the sync server '
+        'and from your other devices, along with any credential that synced '
+        'with it. This device keeps its copy.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Exclude'),
+        ),
+      ],
+    ),
+  );
+  return confirmed == true;
+}
 
 /// Add or edit a server. Password / private-key material is written to the
 /// encrypted vault; the config stores only a reference.
@@ -49,6 +133,7 @@ class _ServerEditorState extends State<_ServerEditor> {
   late ServerIcon? _icon;
   bool _referenceKeyFile = true;
   late bool _syncSecret;
+  late bool _excludeFromSync;
   bool _busy = false;
 
   /// The security-scoped bookmark backing [_keyPath]'s current text, and the
@@ -88,6 +173,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     // New credentials default to syncable (a no-op until the global "sync saved
     // passwords & keys" is on); existing servers keep their stored choice.
     _syncSecret = e?.syncSecret ?? true;
+    _excludeFromSync = e?.excludeFromSync ?? false;
   }
 
   @override
@@ -169,6 +255,8 @@ class _ServerEditorState extends State<_ServerEditor> {
             ),
             const SizedBox(height: 8),
             ..._authFields(),
+            const SizedBox(height: 20),
+            ..._syncFields(),
             const SizedBox(height: 20),
             ..._loginScriptFields(),
             const SizedBox(height: 20),
@@ -374,15 +462,65 @@ class _ServerEditorState extends State<_ServerEditor> {
 
   /// Per-server opt-in for including this credential in sync. Gated globally by
   /// the "Sync saved passwords & keys" setting, so it's a no-op until that's on.
+  ///
+  /// Excluding the whole server settles the question, so the switch reads off
+  /// and takes no input then. What it *stores* is still the user's own choice
+  /// ([_syncSecret]) rather than the displayed false: clearing the exclusion
+  /// has to give them back the answer they picked, not silently opt their
+  /// credential out on the way through.
   Widget _syncSecretToggle() => SwitchListTile(
         contentPadding: EdgeInsets.zero,
         title: const Text('Allow this credential to sync'),
-        subtitle: const Text(
-            'End-to-end encrypted. Also needs sync set up with '
-            '"Sync saved passwords & keys" enabled.'),
-        value: _syncSecret,
-        onChanged: (v) => setState(() => _syncSecret = v),
+        subtitle: Text(_excludeFromSync
+            ? 'Not used while this server is excluded from sync.'
+            : 'End-to-end encrypted. Also needs sync set up with '
+                '"Sync saved passwords & keys" enabled.'),
+        value: _syncSecret && !_excludeFromSync,
+        onChanged:
+            _excludeFromSync ? null : (v) => setState(() => _syncSecret = v),
       );
+
+  /// Whether this server takes part in sync at all.
+  ///
+  /// Worth saying out loud in the subtitle, because "exclude" understates what
+  /// the switch does to a server that has already synced: the retraction is a
+  /// tombstone, so the other devices lose their copy. Only this device keeps
+  /// one, which is the point — but it is not something to find out afterwards.
+  List<Widget> _syncFields() => [
+        const Divider(),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Exclude from sync'),
+          subtitle: Text(_excludeFromSync
+              ? 'Kept on this device only. A copy that synced earlier is '
+                  'removed from the sync server and from your other devices.'
+              : 'Keep this server on this device only — never upload it.'),
+          value: _excludeFromSync,
+          onChanged: (v) async {
+            if (v && !await _confirmExclusion()) return;
+            if (mounted) setState(() => _excludeFromSync = v);
+          },
+        ),
+      ];
+
+  /// Ask before an exclusion that reaches other devices.
+  ///
+  /// Turning this on for a server that may already have synced is the one
+  /// thing this editor does that deletes data somewhere else, and the switch
+  /// sits a few rows from the login script and the colour picker, which lowers
+  /// the stakes it looks like it carries. Subtitles get skimmed; a dialog does
+  /// not.
+  ///
+  /// Nothing is asked when there is nothing to retract — a server being added
+  /// has never been anywhere, and with no sync account configured there is no
+  /// other device to lose it. Turning the switch back off is not destructive
+  /// either way.
+  Future<bool> _confirmExclusion() => excludingNeedsConfirmation(
+        existing: widget.existing,
+        syncConfigured: widget.state.services.isSyncConfigured,
+      )
+          ? confirmSyncExclusion(context)
+          : Future<bool>.value(true);
 
   /// Pick an identity file. On macOS this also mints the security-scoped
   /// bookmark that keeps a key outside ~/.ssh readable across relaunches.
@@ -408,8 +546,20 @@ class _ServerEditorState extends State<_ServerEditor> {
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
-    final now = DateTime.now().millisecondsSinceEpoch;
     final existing = widget.existing;
+    // Against the freshest copy this device holds, not the one captured when
+    // the editor opened: a round that pulled a newer record meanwhile is
+    // exactly the record this stamp has to outrank.
+    final latest = existing == null
+        ? null
+        : widget.state.servers
+            .where((s) => s.id == existing.id)
+            .map((s) => s.updatedAt)
+            .fold<int>(existing.updatedAt, math.max);
+    final now = nextUpdatedAt(
+      latest,
+      now: DateTime.now().millisecondsSinceEpoch,
+    );
     final id = existing?.id ?? uuidV4();
 
     String? secretRef = existing?.secretRef;
@@ -456,6 +606,7 @@ class _ServerEditorState extends State<_ServerEditor> {
       color: _color,
       icon: _icon,
       loginScript: normalizeLoginScript(_loginScript.text),
+      excludeFromSync: _excludeFromSync,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     );

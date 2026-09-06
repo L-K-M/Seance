@@ -41,6 +41,117 @@ void main() {
       expect(back.icon, ServerIcon.rocket);
     });
 
+    test('ServerConfig carries excludeFromSync explicitly', () {
+      final c = ServerConfig(
+        id: 's1',
+        label: 'laptop',
+        host: 'localhost',
+        username: 'me',
+        excludeFromSync: true,
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      final back = ServerConfig.fromJson(c.toJson());
+      expect(back.toJson(), equals(c.toJson()));
+      expect(back.excludeFromSync, isTrue);
+      // Both answers are written, so a record can say "sync me" rather than
+      // only ever being silent about it.
+      expect(c.toJson()['excludeFromSync'], isTrue);
+      expect(
+        ServerConfig.fromJson({...c.toJson(), 'excludeFromSync': false})
+            .toJson()['excludeFromSync'],
+        isFalse,
+      );
+      // A config written before the field existed reads as "syncs", which is
+      // what it did.
+      final legacy = {...c.toJson()}..remove('excludeFromSync');
+      expect(ServerConfig.fromJson(legacy).excludeFromSync, isFalse);
+      // An explicit null reads like an absent key, and a legacy record writes
+      // the explicit answer back out on its next save.
+      expect(
+        ServerConfig.fromJson({...c.toJson(), 'excludeFromSync': null})
+            .excludeFromSync,
+        isFalse,
+      );
+      expect(ServerConfig.fromJson(legacy).toJson()['excludeFromSync'], isFalse);
+      // Including one built here rather than read back: if the field were
+      // stored tri-state and only normalized on the way in, a record this app
+      // wrote would still be silent about it.
+      expect(
+        ServerConfig(
+          id: 's2',
+          label: 'laptop',
+          host: 'localhost',
+          username: 'me',
+          createdAt: 1,
+          updatedAt: 2,
+        ).toJson()['excludeFromSync'],
+        isFalse,
+      );
+    });
+
+    test('copyWith flips excludeFromSync without touching anything else', () {
+      final c = ServerConfig(
+        id: 's1',
+        label: 'laptop',
+        host: 'localhost',
+        username: 'me',
+        syncSecret: true,
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      final excluded = c.copyWith(excludeFromSync: true, updatedAt: 3);
+      expect(excluded.excludeFromSync, isTrue);
+      // "Without touching anything else" is the name's promise; assert it —
+      // the id first, since a copy under another id splits the record.
+      expect(excluded.id, c.id);
+      expect(excluded.label, c.label);
+      expect(excluded.host, c.host);
+      expect(excluded.username, c.username);
+      expect(excluded.createdAt, c.createdAt);
+      expect(excluded.updatedAt, 3);
+      // The credential's own opt-in survives the exclusion, so clearing it
+      // gives the user back the answer they picked rather than a silent no.
+      expect(excluded.syncSecret, isTrue);
+      expect(
+        excluded
+            .copyWith(excludeFromSync: false, updatedAt: 4)
+            .excludeFromSync,
+        isFalse,
+      );
+      // The pairing is enforced in every build, not merely documented: a
+      // stale tombstone ties with the record already on the sync server and
+      // loses to it, and an assert would be stripped from the build users run.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Re-stating the current timestamp ties, which loses the same way.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 3),
+        throwsA(isA<ArgumentError>()),
+      );
+      // A strictly older timestamp loses outright rather than merely tying.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 2),
+        throwsA(isA<ArgumentError>()),
+      );
+      // And the guard is symmetric: raising the flag without a fresh
+      // timestamp ships a tombstone the server's copy already outranks.
+      expect(
+        () => c.copyWith(excludeFromSync: true),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Omitting it leaves it alone, like every other copyWith field — and
+      // that edit may keep a stale timestamp, unlike the flip: losing that
+      // conflict only reverts an edit, it never resurrects a record the user
+      // asked to stop syncing.
+      expect(excluded.copyWith(label: 'other').excludeFromSync, isTrue);
+      // Re-stating the current value is not a flip: no tombstone is minted
+      // for it, so it must not demand a fresh timestamp either.
+      expect(excluded.copyWith(excludeFromSync: true).excludeFromSync, isTrue);
+    });
+
     test('ServerConfig omits the presentation fields when they are unset', () {
       final json = ServerConfig(
         id: 's1',

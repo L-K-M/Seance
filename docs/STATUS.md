@@ -3,8 +3,8 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-08-31 — sync skips and preserves unknown or malformed
-records; the shared protocol now defines bookmarks._
+_Last updated: 2026-09-05 — a server can be excluded from sync and kept on
+one device._
 
 ## Done (implemented + verified)
 
@@ -13,7 +13,7 @@ records; the shared protocol now defines bookmarks._
 | `seance_protocol` | Complete. Models (incl. strict Bookmark, Snippet with `{{placeholder}}` parsing/fill, and `ServerConfig`'s optional `group`/`color`/`icon`/`loginScript` — named accents and icons rather than raw values, so they render per theme and an unknown name decodes to "none"), E2E crypto, forward-compatible records (serverConfig/hostKey/secret/snippet/bookmark/unknown), LWW, sync DTOs. |
 | `seance_core` | Complete. SSH+TOFU, ssh_config import, prober, sync engine + fail-soft coordinator, LLM providers + chat tools, danger linter, redaction, paste sanitizer, stores; per-server login script typed into the shell once it opens. |
 | `seance_sync_server` | Complete. 7 endpoints, in-memory + SQLite storage, rate limiting, Dockerfile + compose. |
-| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the top-level list; each server can hold several sessions shown as a per-server tab strip (a strip appears only at 2+ tabs, so a single session looks title-bar-less as before), with ⌘T/Ctrl+Shift+T + a "New tab" affordance, status dot: green/grey/red + connecting spinner; resizable tiled panes); right-hand utility panel with Assistant + Snippets + **Files** tabs. Files is session-scoped SFTP over the existing SSH transport: responsive navigation, OSC 7 follow mode, picker/desktop-drop upload, local open + conflict-checked upload-back, mkdir/rename/delete, progress/cancel; narrow/Android gets a full-screen route. See [`docs/SFTP.md`](SFTP.md) for implementation state and remaining real-device work. Snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends; inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. **Automatic sync** runs at startup, after any server/snippet add/edit/delete (debounced), and every 5 min, with a live header/settings status; the "Sync now" button remains. **Credential sync** is opt-in (global toggle × per-server "allow this credential to sync"; E2E-encrypted). The **built-in text editor** opens at the top with the app's monospace stack, has an in-file find bar (⌘F/Ctrl+F; Enter/F3/⌘G cycle, match-case toggle, all matches highlighted) and basic syntax highlighting (shell, python, js/ts, dart, json, yaml, ini/conf, dockerfile, sql, c-family, xml, markdown — detected by name/extension/shebang); for a server file ⌘S/Ctrl+S saves **and uploads immediately** (⇧⌘S keeps it local; conflicts still prompt). Transient notices app-wide use **top toasts**, never bottom SnackBars, so they can't cover the shell prompt at the bottom of the terminal. On **touch platforms** the terminal shows an on-screen key row (Esc/Tab/Ctrl [sticky]/^C/arrows/Home/End/PgUp/PgDn/`|` `/` `-` `~` + hide-keyboard) and reflows above the soft keyboard. **Command suggestions** (opt-in, local only) surface frequently-run commands in the Snippets tab to save as snippets. **Server groups, colours and icons** are per-server and synced: the list files servers into collapsible sections (alphabetical, ungrouped last; no headers at all until something is grouped, and a live filter overrides collapsed sections so it can never hide a match), each row carries a badge of the server's icon on its accent with the connection dot in the corner, and the accent also rules the terminal's tab strip. Folded sections are device-local (settings), the grouping itself syncs. On **Android**, backgrounding no longer kills the sessions: a `dataSync` foreground service anchors the process while any session is connecting/connected (ongoing notification with the live count, opt-out in Settings ▸ General; `BackgroundKeepAlive` drives it through the `seance/keepalive` channel — on other platforms it is a no-op). Default desktop window 1800×1600. Platform folders committed. |
+| `seance_app` | Complete; `flutter analyze` clean, widget tests pass. Server list is the top-level list; each server can hold several sessions shown as a per-server tab strip (a strip appears only at 2+ tabs, so a single session looks title-bar-less as before), with ⌘T/Ctrl+Shift+T + a "New tab" affordance, status dot: green/grey/red + connecting spinner; resizable tiled panes); right-hand utility panel with Assistant + Snippets + **Files** tabs. Files is session-scoped SFTP over the existing SSH transport: responsive navigation, OSC 7 follow mode, picker/desktop-drop upload, local open + conflict-checked upload-back, mkdir/rename/delete, progress/cancel; narrow/Android gets a full-screen route. See [`docs/SFTP.md`](SFTP.md) for implementation state and remaining real-device work. Snippets are synced command templates with `{{placeholder}}` fill-in dialogs; assistant chat when configured, ⌘/Ctrl+↵ sends; inline command generator (⌘K / Ctrl+Shift+K, prefilled from the current shell line, Enter generates+inserts+closes) turns NL into a reviewed command; the native macOS menu is kept intact (Edit/Window/…) with Settings wired to ⌘, and a Terminal ▸ Generate Command… (⌘K) item; Settings is still an in-app route; settings suggest models from the endpoint with manual fallback; failed connections show a summary + expandable connection log. **Automatic sync** runs at startup, after any server/snippet add/edit/delete (debounced), and every 5 min, with a live header/settings status; the "Sync now" button remains. **Credential sync** is opt-in (global toggle × per-server "allow this credential to sync"; E2E-encrypted). A server can also be **excluded from sync** outright (per-server switch in the editor, confirmed when there is something to retract; `cloud_off` mark on its row): its config is never pushed, and a copy pushed before the switch went on is retracted with a tombstone — so it also leaves the other devices, which the switch's subtitle says. A retraction the copy on the sync server outranks (another device's clock running ahead of this one's, or an edit made while this one was offline) is re-dated one millisecond past the record that beat it and pushed again in the same run: re-minting the same losing date every five minutes would leave the switch on here and the config on every other device forever, which is the multi-device case the switch exists for. Turning the switch back off is the mirror: the retraction it revokes may have been re-dated past this device's own clock, so an honest re-inclusion stamp would still lose — the live record is re-dated past its own tombstone instead, and the device stops applying a retraction it has withdrawn rather than deleting the server it just brought back. Its credential is retracted with it, off the sync server — unless a still-synced server shares that vault entry, in which case it is neither withdrawn nor frozen, since a secret record is keyed by the credential rather than by the server holding it. What a `secret:` tombstone does *not* do is delete anything from a vault: it is staged and pushed, never honoured on apply. A tombstone carries no sealed payload — `RecordCodec.decrypt` reads the envelope's flag without opening anything — so a delete is the one signal a sync server can assert entirely on its own, and honouring these would hand it a way to empty the vault (tombstone the configs, then the credentials no config still names). The cost is that the other devices keep an orphaned vault entry no config names, invisible in a UI that lists servers; the fix is sealing tombstones, not trusting this one — and until then a config tombstone is honoured on the same say-so, as it always has been, so a hostile sync server can still delete every synced server's *settings* on every device (never a credential or a pin); sealing closes that too. A pinned host key is withheld for the same reason (it is keyed by `host:port`, and deleting it elsewhere would drop that device back to trust-on-first-use), though new pins for an address only excluded servers use are no longer pushed. The **built-in text editor** opens at the top with the app's monospace stack, has an in-file find bar (⌘F/Ctrl+F; Enter/F3/⌘G cycle, match-case toggle, all matches highlighted) and basic syntax highlighting (shell, python, js/ts, dart, json, yaml, ini/conf, dockerfile, sql, c-family, xml, markdown — detected by name/extension/shebang); for a server file ⌘S/Ctrl+S saves **and uploads immediately** (⇧⌘S keeps it local; conflicts still prompt). Transient notices app-wide use **top toasts**, never bottom SnackBars, so they can't cover the shell prompt at the bottom of the terminal. On **touch platforms** the terminal shows an on-screen key row (Esc/Tab/Ctrl [sticky]/^C/arrows/Home/End/PgUp/PgDn/`\|` `/` `-` `~` + hide-keyboard) and reflows above the soft keyboard. **Command suggestions** (opt-in, local only) surface frequently-run commands in the Snippets tab to save as snippets. **Server groups, colours and icons** are per-server and synced: the list files servers into collapsible sections (alphabetical, ungrouped last; no headers at all until something is grouped, and a live filter overrides collapsed sections so it can never hide a match), each row carries a badge of the server's icon on its accent with the connection dot in the corner, and the accent also rules the terminal's tab strip. Folded sections are device-local (settings), the grouping itself syncs. On **Android**, backgrounding no longer kills the sessions: a `dataSync` foreground service anchors the process while any session is connecting/connected (ongoing notification with the live count, opt-out in Settings ▸ General; `BackgroundKeepAlive` drives it through the `seance/keepalive` channel — on other platforms it is a no-op). Default desktop window 1800×1600. Platform folders committed. |
 | Linux packaging | `scripts/package-linux.sh` turns a built Flutter Linux bundle into `seance_<version>-1_<arch>.deb` and `seance-linux-x64.AppImage`. The .deb's `Depends` is derived from the bundle's actual ELF headers (readelf NEEDED → a soname→package table incl. Ubuntu 24.04 `t64` renames as dpkg alternatives, glibc/libstdc++ floors from symbol versions; a documented optional-soname list covers lazily-loaded native assets like package:jni's `libjvm.so`), the AppImage is built with a pinned appimagetool. Wired into `scripts/build.sh` (Linux `app` target), `ci.yml` (builds + uploads the packages every run), and `release.yml` (x64 assets). **x64 only**: Flutter publishes no linux-arm64 host artifacts (`releases_linux.json` is x64-only), so no arm runner can `flutter build linux` — revisit when that changes. The glibc floor tracks the CI toolchain (currently
 2.38, from building on ubuntu-24.04) — dpkg enforces it via `Depends`, and
 AppImage users on older distros get a clear loader error instead. Deliberately
@@ -22,30 +22,57 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
 
 ## Test inventory (what proves what)
 
-- `seance_protocol/test/crypto_test.dart` — KDF determinism + domain separation,
+- `packages/seance_protocol/test/crypto_test.dart` — KDF determinism + domain separation,
   seal/open round-trip, wrong-key & tamper rejection, auth-verifier hashing,
   recovery-code round-trip + corruption detection.
-- `seance_protocol/test/records_test.dart` — model JSON, record codec opacity,
+- `packages/seance_protocol/test/records_test.dart` — model JSON, record codec opacity,
   unknown-kind logging/refusal, LWW tie-breaking, DTO round-trips.
-- `seance_protocol/test/bookmark_test.dart` — every bookmark kind round-trips;
+- `packages/seance_protocol/test/bookmark_test.dart` — every bookmark kind round-trips;
   strict unions, kind fields, ids, dates, and immutable rules.
-- `seance_core/test/pure_logic_test.dart` — ssh_config import, TOFU verdicts,
+- `packages/seance_core/test/pure_logic_test.dart` — ssh_config import, TOFU verdicts,
   danger linter, paste sanitizer, secret redaction.
-- `seance_core/test/llm_test.dart` — Anthropic/OpenAI request build + response
+- `packages/seance_core/test/llm_test.dart` — Anthropic/OpenAI request build + response
   parse, command JSON extraction, SSE parse, chat tool loop (paste + search),
   redaction of outbound context.
-- `seance_core/test/sync_test.dart` — engine: push, two-device convergence,
+- `packages/seance_core/test/sync_test.dart` — engine: push, two-device convergence,
   concurrent-edit LWW, tombstones.
-- `seance_core/test/sync_coordinator_test.dart` — domain⇄record mapping,
-  unknown-kind preservation, fail-soft apply, and tombstone dispatch.
-- `seance_core/test/stores_probe_ssh_test.dart` — SecretVault, ConfigStore,
+- `packages/seance_core/test/sync_coordinator_test.dart` — domain⇄record
+  mapping, unknown-kind preservation, fail-soft apply, tombstone dispatch, and
+  that a server's group, colour and icon travel between devices with
+  regrouping converging like a rename (a group is a name its members carry,
+  not a record that can dangle). Plus exclude-from-sync, one bullet per
+  invariant:
+  - an excluded server is retracted rather than pushed, credential included,
+    and the retraction is dated at the exclusion so repeat rounds are no-ops;
+  - the credential is retracted under the same id the push used, asserted
+    against a real vault, and the tombstone that leaves carries no payload;
+  - a `secret:` tombstone is staged and pushed but never honoured against a
+    vault — unsealed, so the date on it is the sync server's to choose, which
+    is why the refusal is unconditional rather than last-write-wins;
+  - a host key is withheld only when no synced server shares the address;
+  - a credential a still-synced server shares is neither withdrawn nor frozen;
+  - an excluded server survives both its own retraction and another device's
+    stale copy, config *and* credential;
+  - excluding on one device removes it from the other, even when the copy on
+    the sync server outranks the retraction — and re-including supersedes the
+    retraction, even one already re-dated past this device's clock;
+  - a server nobody excluded is never re-tombstoned, checked against
+    `rescheduleOutranked` directly, since reaching it through `applyToStores`
+    proves the caller's filter and never the guard;
+  - one refused write does not sink the whole re-dating pass;
+  - changing the flag without a strictly later `updatedAt` throws in every
+    build — a real throw, not an assert, since asserts are stripped from the
+    release build users run. The editor builds
+    its record through the constructor with a monotonic `updatedAt`, so that
+    throw guards `copyWith` callers rather than anything a user can reach.
+- `packages/seance_core/test/stores_probe_ssh_test.dart` — SecretVault, ConfigStore,
   ProbeService orchestration, `SshSessionManager.verifyHostKey` (TOFU), headless
   engine.
-- `seance_sync_server/test/server_test.dart` — all endpoints, auth, rate limit,
+- `packages/seance_sync_server/test/server_test.dart` — all endpoints, auth, rate limit,
   protocol-version + open-registration gating, per-account isolation.
-- `seance_sync_server/test/sqlite_storage_test.dart` — real SQLite round-trips +
+- `packages/seance_sync_server/test/sqlite_storage_test.dart` — real SQLite round-trips +
   durability across reopen.
-- `seance_sync_server/test/integration_test.dart` — real client vs live server,
+- `packages/seance_sync_server/test/integration_test.dart` — real client vs live server,
   two devices converge over HTTP; bad-login rejection.
 - `app/seance_app/test/host_key_dialog_test.dart` — TOFU dialog first-use +
   hard changed-key block.
@@ -56,13 +83,13 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
   probes return null, reads degrade to "not set", writes fail with a clear
   message, the locked vault throws instead of mis-decrypting, and recovery
   works when the keystore comes back.
-- `seance_core/test/ssh_diagnostics_test.dart` — connection-log capture and the
+- `packages/seance_core/test/ssh_diagnostics_test.dart` — connection-log capture and the
   readable `SshConnectException` summary; agent-auth rejected pre-network; the
   login-script keystroke shape (one Enter, edges trimmed, interior newlines
   and non-ASCII kept).
-- `seance_core/test/http_sync_client_test.dart` — sync base-URL normalization
+- `packages/seance_core/test/http_sync_client_test.dart` — sync base-URL normalization
   (trailing slash / whitespace tolerated).
-- `seance_core/test/remote_file_system_test.dart` — remote POSIX paths, sticky
+- `packages/seance_core/test/remote_file_system_test.dart` — remote POSIX paths, sticky
   cancellation, POSIX metadata, chmod, readlink, and symlink creation.
 - `app/seance_app/test/remote_files_controller_test.dart` — SFTP browser home,
   sorting/filtering/selection/bookmarks, OSC-directory follow, aggregate
@@ -92,9 +119,12 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
   screen: Ctrl-S save-and-upload (immediate, no dialog; reconcile fallback on
   failure), local-only save without an upload target, open-at-top, monospace
   stack, and the find bar (counts, wrap, case toggle, highlight ranges).
-- `packages/seance_core/test/sync_coordinator_test.dart` — a server's group,
-  colour and icon travel between devices, and regrouping converges like a
-  rename (a group is a name its members carry, not a record that can dangle).
+- `app/seance_app/test/server_exclude_from_sync_test.dart` — the row's
+  exclusion mark appears only for an excluded server, and describes itself as
+  a label rather than a tooltip (a `ListTile` merge keeps one tooltip and
+  every label, so a tooltip there would be silently dropped); plus when
+  excluding asks for confirmation (only when another device could lose the
+  server).
 
 ## Open items (roughly prioritized)
 
@@ -170,6 +200,14 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     path are all unexercised on a device. If store distribution ever happens,
     revisit whether Play accepts `dataSync` for an indefinite session anchor
     or whether `specialUse` (with its justification form) is the safer fit.
+
+14. **Seal tombstones.** A tombstone carries no sealed payload, so its date
+    is the sync server's to choose: a config tombstone is honoured on that
+    say-so today (a hostile server can delete every synced server's *settings*
+    on every device), and `secret:` / `hostkey:` tombstones are refused for
+    the same reason, at the cost of an orphaned vault entry and an
+    unretracted pin on the other devices. An authenticator over id, kind and
+    date keyed like the payload closes all three at once.
 
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
