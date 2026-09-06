@@ -607,9 +607,16 @@ class SyncCoordinator {
       for (final server in await configStore.listServers())
         if (server.excludeFromSync) server.id,
     };
+    // Live records only, checked here for the same reason as the kind: a
+    // tombstone re-dated past itself would be a bid two excluding devices
+    // could trade forever. A pulled tombstone never carries a kind (decrypt
+    // returns `unknown` for one), so the kind check already refuses it; the
+    // flag is the invariant stated in its own words.
     final configs = records
         .where((dec) =>
-            dec.kind == RecordKind.serverConfig && excluded.contains(dec.id))
+            dec.kind == RecordKind.serverConfig &&
+            !dec.deleted &&
+            excluded.contains(dec.id))
         .toList();
     var mintedCount = 0;
     for (final dec in configs) {
