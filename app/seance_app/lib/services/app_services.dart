@@ -369,7 +369,63 @@ class AppServices {
   }
 
   /// Resolve connection credentials for [config] from the vault / on-disk key.
-  Future<SshCredentials> resolveCredentials(ServerConfig config) async {
+  ///
+  /// The `draft…` arguments are the server editor's own fields, for testing a
+  /// connection before saving. Material typed into the form is not in the
+  /// vault yet, so resolving from storage alone would quietly test the *old*
+  /// credential — or an empty one for a server being added. A blank draft
+  /// field falls back to the vault, which is how an unchanged credential is
+  /// re-tested, and matches what saving does with a blank field — with one
+  /// exception the blanket claim was hiding: a typed draft PEM is new key
+  /// material by construction (the editor passes null whenever the key is
+  /// referenced from disk or held in the vault), so a blank passphrase beside
+  /// one means "no passphrase" rather than "the stored one".
+  ///
+  /// Precedence, since it is not obvious from the branches: a configured
+  /// [ServerConfig.identityFilePath] wins over [draftPrivateKey]. The editor
+  /// cannot produce both — it sets the path only while the key is referenced
+  /// from disk, and passes the draft PEM as null in exactly that case — so
+  /// the order is unreachable from there today, and a caller that populates
+  /// both is asking to test the file.
+  ///
+  /// [draftIdentityBookmark] plays the same role for a Browse…-picked identity
+  /// file: its macOS security-scoped grant is keyed by server id and is not
+  /// written to settings until save, so without it a key outside `~/.ssh`
+  /// would fall back to the raw path and fail with EPERM.
+  Future<SshCredentials> resolveCredentials(
+    ServerConfig config, {
+    String? draftPassword,
+    String? draftPrivateKey,
+    String? draftKeyPassphrase,
+    IdentityFileBookmark? draftIdentityBookmark,
+  }) async {
+    String? draft(String? value) =>
+        (value == null || value.isEmpty) ? null : value;
+    // A cross-file contract with the editor, which builds the grant from the
+    // path it is about (`_bookmarkFor` returns null without one). Without the
+    // path this branch never runs, so a bookmark passed alone would be
+    // silently dropped and the test would resolve the vault credential
+    // instead — a green result for a key nobody asked it to try.
+    // A throw, not an assert: stripped from the build users run, the only
+    // symptom of a caller getting this wrong is a green "authenticated" for a
+    // credential nobody asked to test — the same reason the exclusion guard in
+    // `ServerConfig.copyWith` throws.
+    // Only under key auth: for a password or the agent the bookmark is never
+    // consulted, so a stale one left over from an auth-method switch cannot
+    // change what is tested, and throwing would turn a harmless leftover
+    // into a failed test. A typed PEM is the same case under key auth: it is
+    // returned before anything consults a path or a grant.
+    if (config.authMethod == AuthMethod.privateKey &&
+        config.identityFilePath == null &&
+        draft(draftPrivateKey) == null &&
+        draftIdentityBookmark != null) {
+      throw ArgumentError.value(
+        draftIdentityBookmark,
+        'draftIdentityBookmark',
+        'only honoured alongside identityFilePath: without the path the '
+            'grant is dropped and the vault credential is tested instead',
+      );
+    }
     // Lazily re-probe a keystore that was down at bootstrap, so a keyring that
     // came back (or just got unlocked) unlocks secrets without an app restart.
     if (config.secretRef != null && vaultKey == null) {
@@ -379,6 +435,8 @@ class AppServices {
       case AuthMethod.agent:
         return const SshCredentials.agent();
       case AuthMethod.password:
+        final typed = draft(draftPassword);
+        if (typed != null) return SshCredentials.password(typed);
         final secret = config.secretRef == null
             ? null
             : await vault.getSecret(config.secretRef!);
@@ -386,18 +444,31 @@ class AppServices {
       case AuthMethod.privateKey:
         // "Reference, don't store": read the key from disk at connect time.
         if (config.identityFilePath != null) {
-          final pem = await _readIdentityFile(config);
+          final pem = await _readIdentityFile(
+            config,
+            bookmarkOverride: draftIdentityBookmark,
+          );
           final storedPass = config.secretRef == null
               ? null
               : (await vault.getSecret(config.secretRef!))?.keyPassphrase;
-          return SshCredentials.privateKey(pem, keyPassphrase: storedPass);
+          return SshCredentials.privateKey(
+            pem,
+            keyPassphrase: draft(draftKeyPassphrase) ?? storedPass,
+          );
+        }
+        final typedPem = draft(draftPrivateKey);
+        if (typedPem != null) {
+          return SshCredentials.privateKey(
+            typedPem,
+            keyPassphrase: draft(draftKeyPassphrase),
+          );
         }
         final secret = config.secretRef == null
             ? null
             : await vault.getSecret(config.secretRef!);
         return SshCredentials.privateKey(
           secret?.value ?? '',
-          keyPassphrase: secret?.keyPassphrase,
+          keyPassphrase: draft(draftKeyPassphrase) ?? secret?.keyPassphrase,
         );
     }
   }
@@ -407,11 +478,15 @@ class AppServices {
   /// outside ~/.ssh is only readable inside that grant), falling back to the
   /// plain expanded path. Every attempt lands in the audit log; audit failures
   /// never block connecting.
-  Future<String> _readIdentityFile(ServerConfig config) async {
+  Future<String> _readIdentityFile(
+    ServerConfig config, {
+    IdentityFileBookmark? bookmarkOverride,
+  }) async {
     // Dart's File does not expand `~`, but the editor hint invites it.
     var readPath = _expandHome(config.identityFilePath!);
     ResolvedIdentityFile? scoped;
-    final entry = settings.identityFileBookmarks[config.id];
+    final saved = settings.identityFileBookmarks[config.id];
+    final entry = bookmarkOverride ?? saved;
     // The grant counts only while it was minted for the configured path: a
     // synced edit (say, a key rotation on another device) changes the path
     // without touching this device's bookmark map, and the new path must win
@@ -420,7 +495,22 @@ class AppServices {
       scoped = await identityBookmarks.resolveAndStart(entry.bookmark);
       if (scoped != null) {
         readPath = scoped.path;
-        if (scoped.refreshedBookmark != null) {
+        // Only a grant that came *from* settings is refreshed back into
+        // them. A draft override of a *newly picked* file is not persisted —
+        // that would file a grant under a server that may never exist — but
+        // an override that is simply the saved grant passed back in (which is
+        // what the editor does for a server it did not re-Browse) may refresh
+        // in place, or a stale bookmark would be re-minted on every attempt
+        // and never kept.
+        //
+        // Compared with `==`, which `IdentityFileBookmark` overrides over the
+        // path and the bookmark payload, so a grant reconstructed with the
+        // same contents still counts — the editor is not obliged to hand back
+        // the identical instance. Read once, above, rather than looked up
+        // again here.
+        final refreshable =
+            bookmarkOverride == null || bookmarkOverride == saved;
+        if (scoped.refreshedBookmark != null && refreshable) {
           // The stored bookmark went stale (key moved/replaced); persist the
           // re-minted one so the grant keeps surviving relaunches.
           settings.identityFileBookmarks[config.id] = IdentityFileBookmark(

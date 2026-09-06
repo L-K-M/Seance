@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -88,7 +89,21 @@ Future<bool> _verifyHostKey({
 /// which the server actually accepts — instead of a bare
 /// `SSHAuthFailError(All authentication methods failed)`.
 class SshConnectionLog {
-  final List<String> lines = [];
+  final List<String> _lines = [];
+
+  /// The transcript so far. A view, not a copy: every line has to come through
+  /// [add], which is where credentials are redacted out, and a publicly
+  /// mutable list is a one-character way past that.
+  ///
+  /// `UnmodifiableListView` rather than `List.unmodifiable`, which allocates a
+  /// fresh copy per read — this is read on every repaint of a live connection
+  /// log, and a copy also silently freezes for any caller that holds on to it.
+  /// Read-only by *type*, not only at runtime: declared `List<String>`, a
+  /// `log.lines.add(...)` compiled cleanly and threw mid-handshake, which is
+  /// the failure the unmodifiable view was introduced to close off. Nothing
+  /// indexes the transcript, so `Iterable` costs no caller anything.
+  Iterable<String> get lines => _linesView;
+  late final List<String> _linesView = UnmodifiableListView(_lines);
 
   /// Called after every [add] so a live view can repaint. Cleared by [freeze].
   void Function()? onUpdate;
@@ -101,11 +116,15 @@ class SshConnectionLog {
 
   SshConnectionLog({this.onUpdate});
 
+  /// Whole records only. [redactConnectionTrace] scrubs to the end of what it
+  /// is handed, so a producer that split a message on newlines before calling
+  /// this would store the tail past the redaction as a line of its own — and
+  /// nothing here can tell an already-split chunk from a whole one.
   void add(String line) {
     if (_frozen) return;
-    lines.add(line);
-    if (lines.length > _maxLines) {
-      lines.removeRange(0, lines.length - _maxLines);
+    _lines.add(redactConnectionTrace(line));
+    if (_lines.length > _maxLines) {
+      _lines.removeRange(0, _lines.length - _maxLines);
     }
     onUpdate?.call();
   }
@@ -122,8 +141,116 @@ class SshConnectionLog {
   }
 
   @override
-  String toString() => lines.join('\n');
+  String toString() => _lines.join('\n');
 }
+
+/// The one shape in dartssh2's packet trace that carries a secret.
+///
+/// Every message it traces goes through `toString`, and most of them are
+/// careful — `SSH_Message_Userauth_Request` prints its user and method and
+/// deliberately not its password. `SSH_Message_Userauth_InfoResponse` is not:
+/// it prints `responses: [...]`, and for a host that does password login over
+/// keyboard-interactive (the OpenSSH default on many distributions) that list
+/// *is* the password, in plaintext.
+///
+/// The transcript is shown in the UI with a Copy button beside it and is meant
+/// to be pasted into a bug report, so this is neutralised where it is
+/// captured — one place every producer passes through — rather than wherever
+/// it happens to be displayed.
+/// Matched greedily to the end of what it is handed, rather than to a closing
+/// bracket or a line break: a Dart list's `toString` does not escape its
+/// elements, so a password containing `]` prints as `responses: [pas]sword])`
+/// and a bracket-bounded match would stop after `[pas]`; one containing a
+/// newline — a value pasted from a password manager with a trailing return —
+/// would end a `.`-bounded match the same way and leave its tail behind.
+/// Hence `dotAll`. Over-redacting costs nothing here: the responses list is
+/// the last thing the message prints, so there is nothing after it to
+/// preserve, and every producer hands [SshConnectionLog.add] a whole record
+/// (dartssh2's `printDebug`/`printTrace` and `note` all pass one message
+/// through) rather than splitting it on newlines first, which would put a
+/// tail past this regex's reach entirely.
+/// The class name is *optional* so a renamed message is still caught. The
+/// fail-closed branch below keys off the name, and a `pub upgrade` that
+/// renamed the class — `SSH_Message_Userauth_InfoResponse` to anything not
+/// containing `Userauth_InfoResponse` — would defeat both the name check and a
+/// name-anchored pattern, and print the password with nothing red anywhere.
+/// Anchoring on `(responses: [` instead catches it, and catches the same
+/// shape arriving in a chunk that did not carry the name. In an SSH packet
+/// trace that substring belongs to this message alone, so the over-redaction
+/// this admits costs nothing by the standard the paragraph above sets.
+///
+/// The spacing around the colon is loose for the same reason. A named line
+/// whose spacing drifted would at least hit the fail-closed branch below, so
+/// there the cost is only a whole record withheld instead of one field
+/// redacted — but a chunk arriving *without* the name cannot reach that
+/// branch at all, and a `(responses : [pw])` would then match nothing and
+/// print the credential.
+const String _userauthMessage = 'Userauth_InfoResponse';
+
+/// What the fail-closed branch keys on: the part of the name a rename is
+/// least likely to touch. Keying on the whole name left one combination of
+/// the rename matrix open — class *and* field renamed at once, so neither
+/// the shape anchor nor the exact name matched and the credential printed.
+/// `Userauth_InfoRequest` does not contain it, so request lines stay legible.
+const String _infoResponseToken = 'InfoResponse';
+
+/// Built from [_userauthMessage] rather than repeating it. The fail-closed
+/// branch below is only coherent while the name it checks for and the name
+/// the pattern accepts are the same string — widening one after a dartssh2
+/// rename and not the other would leave the withhold keying off a name the
+/// pattern no longer matches, which is the drift this whole mechanism exists
+/// to survive.
+final RegExp _userauthResponses =
+    RegExp('($_userauthMessage)?\\(responses\\s*:\\s*\\[.*', dotAll: true);
+
+/// [line] with any credential dartssh2's trace would otherwise print replaced.
+/// Public so the redaction can be asserted directly rather than only through a
+/// live handshake, which no test performs.
+///
+/// `replaceAllMapped`, not `replaceAll`: Dart's plain replacement takes the
+/// string literally, so a `$1` in it lands in the output as the characters
+/// `$1` and takes the matched prefix with it.
+String redactConnectionTrace(String line) {
+  // Fail closed on drift. The pattern matches the exact text dartssh2 prints
+  // today (`'$runtimeType(responses: $responses)'`), and every test of it is
+  // written against that same reading — so they pin the regex to itself, not
+  // to the dependency. A `pub upgrade` that renamed the field, quoted the
+  // elements, or printed a count first would make the pattern miss, and the
+  // password would flow into a transcript with a Copy button on it, with
+  // nothing red anywhere. An InfoResponse this does not recognize is
+  // therefore replaced whole: a transcript line lost to caution costs a
+  // diagnosis, and the alternative costs the credential.
+  //
+  // Positional, not just "does the pattern match somewhere": the leftmost
+  // match has to belong to the named message. A record carrying a drifted
+  // field name followed by an unrelated `responses: [` — two messages joined
+  // into one chunk — matched on the later one, skipped the withhold, and had
+  // only that occurrence replaced, leaving the credential ahead of it
+  // verbatim.
+  //
+  // "Belongs to it" is `start <= tokenEnd`, which admits both shapes that are
+  // recognized today: the canonical line, where the pattern's optional name
+  // group makes the match start at `Userauth_…` *before* the token, and a
+  // renamed class whose field is still `responses:`, where the match starts
+  // immediately *after* it. Anything further along is another message.
+  final firstResponses = _userauthResponses.firstMatch(line);
+  final tokenAt = line.indexOf(_infoResponseToken);
+  final tokenEnd = tokenAt + _infoResponseToken.length;
+  if (tokenAt >= 0 &&
+      (firstResponses == null || firstResponses.start > tokenEnd)) {
+    return '$_userauthMessage(redacted: this build does not recognize the '
+        'shape of this message, so all of it is withheld)';
+  }
+  // The name is put back from the match rather than restated, because the
+  // match only includes one when the class still has today's name. Canonical
+  // lines come out byte-identical to before; a renamed class keeps its own
+  // name (which the match did not consume) instead of gaining a second one.
+  return line.replaceAllMapped(
+    _userauthResponses,
+    (match) => '${match[1] ?? ''}(responses: [redacted])',
+  );
+}
+
 
 /// Thrown when a connection attempt fails. [message] is a one-line,
 /// user-facing summary; [log] carries the full transcript for a details view;
@@ -648,11 +775,15 @@ class SshSessionManager {
   static String? _offeredKeyFromLog(SshConnectionLog? log) {
     if (log == null) return null;
     const marker = 'Offering key: ';
-    for (final line in log.lines.reversed) {
+    // Forward, keeping the last match, rather than iterating a reversed
+    // view: `lines` is an `Iterable` so mutating it cannot compile, and
+    // `reversed` is a `List` member. Same answer, one pass, no copy.
+    String? offered;
+    for (final line in log.lines) {
       final i = line.indexOf(marker);
-      if (i >= 0) return line.substring(i + marker.length).trim();
+      if (i >= 0) offered = line.substring(i + marker.length).trim();
     }
-    return null;
+    return offered;
   }
 
   /// Scan the trace for the last `methodsLeft: [ … ]` the server sent.

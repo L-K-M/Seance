@@ -292,4 +292,206 @@ void main() {
       expect(keystrokes, utf8.encode('cd work\n'));
     });
   });
+
+  group('connection-log redaction', () {
+    test('a keyboard-interactive answer never reaches the transcript', () {
+      // dartssh2 traces every packet through toString.
+      // SSH_Message_Userauth_Request deliberately omits its password;
+      // SSH_Message_Userauth_InfoResponse prints its `responses` list, and for
+      // a host doing password login over keyboard-interactive that list *is*
+      // the password. The transcript is shown with a Copy button beside it and
+      // is meant for bug reports, so it is neutralised at capture.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(responses: [hunter2, 123456])');
+      log.add('-> sock: SSH_Message_Userauth_Request(user: deploy, '
+          'serviceName: ssh-connection, methodName: password)');
+
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), isNot(contains('123456')));
+      // `lines` is what the transcript view reads on every repaint; pinned to
+      // the same redaction so a scrub moved to render time could not pass
+      // this suite while handing the view the raw answer.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
+      expect(log.lines.join('\n'), isNot(contains('123456')));
+      expect(log.toString(), contains('[redacted])'));
+      // Everything else about the exchange is still legible — the point of
+      // the log is to say what happened.
+      expect(log.toString(), contains('methodName: password'));
+      expect(log.toString(), contains('user: deploy'));
+    });
+
+    test('a password containing a bracket does not leak its tail', () {
+      // A Dart list's toString does not escape its elements, so `pas]sword`
+      // prints as `responses: [pas]sword])`. A bracket-bounded match would
+      // stop after `[pas]` and leave the rest in the transcript.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(responses: [pas]sword])');
+      // The case that tells a greedy match from a lazy one: here the
+      // password *contains* the terminator, so a pattern stopping at the
+      // first `])` would leave `tail])` in the transcript verbatim while
+      // every other case in this group still passed.
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(responses: [secret])tail])');
+      expect(log.toString(), isNot(contains('tail')));
+      expect(log.toString(), isNot(contains('sword')));
+      // And on the view the transcript widget reads, not only on the render:
+      // a scrub that moved to render time would hand this the raw answer.
+      expect(log.lines.join('\n'), isNot(contains('tail')));
+      expect(log.lines.join('\n'), isNot(contains('sword')));
+      expect(log.toString(), contains('[redacted])'));
+    });
+
+    test('a password containing a newline does not leak its tail', () {
+      // Same escape as the bracket, through a different door: a value pasted
+      // from a password manager can carry a line break, and `.` does not match
+      // one — so without dotAll the match ends at the break and the rest of
+      // the password lands in the transcript verbatim.
+      // All four terminators a Dart `.` refuses without dotAll — U+2029
+      // included, since this loop is the specification for what the redaction
+      // has to span and a later "simplification" that enumerated them would
+      // otherwise leave one out.
+      for (final breakChar in ['\n', '\r', '\u2028', '\u2029']) {
+        final log = SshConnectionLog();
+        log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+            '(responses: [pas${breakChar}sword])');
+        final at =
+            'U+${breakChar.runes.first.toRadixString(16).padLeft(4, '0')}';
+        expect(log.toString(), isNot(contains('sword')),
+            reason: 'leaked past $at');
+        expect(log.lines.join('\n'), isNot(contains('sword')),
+            reason: 'view leaked past $at');
+        expect(log.toString(), contains('[redacted])'));
+      }
+    });
+
+    test('the transcript is a view of the log, not a copy of it', () {
+      // Read on every repaint of a live connection, and a copy would also
+      // freeze for anything that held on to it.
+      final log = SshConnectionLog();
+      log.add('first');
+      final lines = log.lines;
+      log.add('second');
+      expect(lines, hasLength(2));
+      // Two layers, and the cast is what makes the second one assertable.
+      // `lines` is typed `Iterable<String>`, so `lines.add('third')` is a
+      // compile error and no call site can reach the runtime guard by
+      // accident. Cast past that and the view still refuses, because nothing
+      // may append past the redaction in `add`.
+      expect(() => (lines as List<String>).add('third'),
+          throwsUnsupportedError);
+    });
+
+    test('a renamed class and a renamed field together still never leak', () {
+      // The one cell of the rename matrix the tests above left open: neither
+      // the shape anchor nor the exact class name matches this line, so the
+      // fail-closed branch has to trigger on the part of the name a rename is
+      // least likely to touch.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSHMsgUserauthInfoResponse(answers: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      // And a request line, which shares everything but that part, stays.
+      final request = SshConnectionLog();
+      request.add('-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])');
+      // Pinned whole, like the canonical-line test: `contains` would pass
+      // just as well if the fail-closed branch had swallowed the record and
+      // echoed the prompt inside its own sentence.
+      expect(
+        redactConnectionTrace(
+          '-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])',
+        ),
+        '-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])',
+      );
+    });
+
+    test('a drifted record is withheld even with a later responses list', () {
+      // The fail-closed branch asked only whether the pattern matched
+      // *somewhere*. A record whose own field had drifted, followed by an
+      // unrelated `responses: [`, matched on the later one, skipped the
+      // withhold, and had only that occurrence replaced — leaving the
+      // credential ahead of it in the transcript verbatim.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse(answers: [hunter2])'
+          ' … then (responses: [ok])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('does not recognize'));
+    });
+
+    test('an InfoResponse this build cannot parse is withheld whole', () {
+      // Every test above is written against the shape dartssh2 prints today,
+      // so they pin the pattern to itself rather than to the dependency. A
+      // pub upgrade that changed it would make the pattern miss silently —
+      // this is what turns that into over-redaction instead of a leak.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(numResponses: 1, answers: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('does not recognize'));
+    });
+
+    test('a renamed InfoResponse class is still redacted', () {
+      // The fail-closed branch keys off the class name, so a `pub upgrade`
+      // that renamed the class would defeat both it and a name-anchored
+      // pattern — printing the password with nothing red anywhere. Anchoring
+      // on the `(responses: [` shape catches it whatever it is called.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSHMsgUserauthInfoResponse(responses: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('SSHMsgUserauthInfoResponse'));
+      expect(log.toString(), contains('(responses: [redacted])'));
+    });
+
+    test('a tail chunk carrying no class name is redacted too', () {
+      // Every producer hands `add` a whole record today. If one ever split a
+      // message, the chunk with the credential in it would be the one without
+      // the name — the case a name-anchored pattern cannot see.
+      final log = SshConnectionLog();
+      log.add('(responses: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('(responses: [redacted])'));
+    });
+
+    test('spacing drift around the anchor still redacts', () {
+      // A named line whose spacing drifted would at least reach the
+      // fail-closed branch, so the cost there is a whole record withheld. A
+      // chunk arriving without the name cannot reach that branch at all —
+      // this is the case the loose spacing is actually for.
+      expect(
+        redactConnectionTrace('(responses : [hunter2])'),
+        '(responses: [redacted])',
+      );
+      final log = SshConnectionLog();
+      log.add('-> sock: SSHMsgUserauthInfoResponse(responses:[hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+    });
+
+    test('a renamed field still hits the fail-closed branch', () {
+      // Loose spacing must not loosen the shape: `answers:` is a rename, not
+      // a spacing tweak, and it has to be withheld whole rather than pass.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(answers: [hunter2])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('does not recognize'));
+    });
+
+    test('the canonical line still redacts to exactly what it always did', () {
+      // Pinned as a whole string, not as a `contains`: making the class name
+      // optional must not change the canonical output by a byte, and a field
+      // rename must land in the withheld branch rather than quietly here.
+      expect(
+        redactConnectionTrace(
+          '-> sock: SSH_Message_Userauth_InfoResponse(responses: [hunter2])',
+        ),
+        '-> sock: SSH_Message_Userauth_InfoResponse(responses: [redacted])',
+      );
+    });
+
+    test('redaction leaves an ordinary trace line untouched', () {
+      const line = '  <- sock: SSH_Message_Userauth_Failure('
+          'methodsLeft: [publickey], partialSuccess: false)';
+      expect(redactConnectionTrace(line), line);
+    });
+  });
 }
