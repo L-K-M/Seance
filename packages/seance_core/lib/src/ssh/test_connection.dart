@@ -165,10 +165,14 @@ Future<ConnectionTestResult> runConnectionTest({
         transcript.add(line);
       }
     }
-    // A failure before the handshake has written nothing of its own, so its
-    // summary goes in last — where a failure transcript is documented to end
-    // — unless the log just copied already ends with it.
-    if (!authenticating && transcript.lines.lastOrNull != e.message) {
+    // The summary goes in last — where a failure transcript is documented to
+    // end — unless it is already there. The last-line check is what keeps the
+    // live path duplicate-free (the SSH layer writes this exact sentence
+    // before throwing), so the stage no longer has to be consulted: an
+    // authenticator that attached a log of its own, ending in something else,
+    // would otherwise return a transcript whose last line is not the summary
+    // the result carries.
+    if (transcript.lines.lastOrNull != e.message) {
       transcript.add(e.message);
     }
     return ConnectionTestResult(

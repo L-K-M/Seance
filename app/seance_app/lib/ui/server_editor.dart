@@ -388,7 +388,13 @@ class _ServerEditorState extends State<_ServerEditor> {
             ),
             if (_testResult != null) ...[
               const SizedBox(height: 12),
-              ConnectionTestReport(result: _testResult!),
+              // The spinner announces that a test started; without this the
+              // one thing that matters — how it ended — arrives silently, and
+              // a screen-reader user has to go looking for it.
+              Semantics(
+                liveRegion: true,
+                child: ConnectionTestReport(result: _testResult!),
+              ),
             ],
           ],
         ),

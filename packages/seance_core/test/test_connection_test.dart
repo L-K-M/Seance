@@ -164,6 +164,11 @@ void main() {
 
       expect(result.ok, isFalse);
       expect(result.log, contains('the authenticator\'s own detail'));
+      // And it still ends with the summary the result carries. The live SSH
+      // layer writes that sentence itself before throwing, so the stage used
+      // to be enough to decide; an authenticator whose own log ends in
+      // something else returned a transcript that stopped mid-detail.
+      expect(result.log.trimRight().split('\n').last, 'auth failed');
     });
 
     test('the unimplemented agent path reads as a sentence, not a crash',
@@ -267,6 +272,15 @@ void main() {
       );
       expect(unsupported.log, contains('no agent'));
       expect(unsupported.log, isNot(contains('runConnectionTest')));
+      // "Wherever": the resolver reaches the same catch, and a future split
+      // of the two stages has to keep both of them quiet.
+      final fromResolver = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw UnsupportedError('no agent yet'),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(fromResolver.log, contains('no agent yet'));
+      expect(fromResolver.log, isNot(contains('runConnectionTest')));
     });
 
     test('a summary an authenticator already logged is not repeated', () async {
@@ -593,7 +607,9 @@ void main() {
         host: 'stored.example.com',
         port: 2222,
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:known',
+        // Distinct per fixture, so a store that ignored the port names the
+        // pin that leaked instead of failing with a bare `Instance of`.
+        fingerprintSha256: 'SHA256:stored-2222',
         pinnedAt: 1,
       ));
       final trial = UnpinnedHostKeyStore(real);
@@ -606,7 +622,7 @@ void main() {
         host: 'dual.example.com',
         port: 22,
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:known',
+        fingerprintSha256: 'SHA256:dual-22',
         pinnedAt: 2,
       ));
       expect(await trial.get('dual.example.com', 22), isNotNull);

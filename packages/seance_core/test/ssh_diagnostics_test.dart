@@ -336,6 +336,10 @@ void main() {
           '(responses: [secret])tail])');
       expect(log.toString(), isNot(contains('tail')));
       expect(log.toString(), isNot(contains('sword')));
+      // And on the view the transcript widget reads, not only on the render:
+      // a scrub that moved to render time would hand this the raw answer.
+      expect(log.lines.join('\n'), isNot(contains('tail')));
+      expect(log.lines.join('\n'), isNot(contains('sword')));
       expect(log.toString(), contains('[redacted])'));
     });
 
@@ -352,8 +356,12 @@ void main() {
         final log = SshConnectionLog();
         log.add('-> sock: SSH_Message_Userauth_InfoResponse'
             '(responses: [pas${breakChar}sword])');
+        final at =
+            'U+${breakChar.runes.first.toRadixString(16).padLeft(4, '0')}';
         expect(log.toString(), isNot(contains('sword')),
-            reason: 'leaked past U+${breakChar.runes.first.toRadixString(16).padLeft(4, '0')}');
+            reason: 'leaked past $at');
+        expect(log.lines.join('\n'), isNot(contains('sword')),
+            reason: 'view leaked past $at');
         expect(log.toString(), contains('[redacted])'));
       }
     });
@@ -386,7 +394,28 @@ void main() {
       // And a request line, which shares everything but that part, stays.
       final request = SshConnectionLog();
       request.add('-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])');
-      expect(request.toString(), contains('Password:'));
+      // Pinned whole, like the canonical-line test: `contains` would pass
+      // just as well if the fail-closed branch had swallowed the record and
+      // echoed the prompt inside its own sentence.
+      expect(
+        redactConnectionTrace(
+          '-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])',
+        ),
+        '-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])',
+      );
+    });
+
+    test('a drifted record is withheld even with a later responses list', () {
+      // The fail-closed branch asked only whether the pattern matched
+      // *somewhere*. A record whose own field had drifted, followed by an
+      // unrelated `responses: [`, matched on the later one, skipped the
+      // withhold, and had only that occurrence replaced — leaving the
+      // credential ahead of it in the transcript verbatim.
+      final log = SshConnectionLog();
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse(answers: [hunter2])'
+          ' … then (responses: [ok])');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.toString(), contains('does not recognize'));
     });
 
     test('an InfoResponse this build cannot parse is withheld whole', () {
