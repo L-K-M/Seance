@@ -331,6 +331,13 @@ void main() {
       final log = SshConnectionLog();
       log.add('-> sock: SSH_Message_Userauth_InfoResponse'
           '(responses: [pas]sword])');
+      // The case that tells a greedy match from a lazy one: here the
+      // password *contains* the terminator, so a pattern stopping at the
+      // first `])` would leave `tail])` in the transcript verbatim while
+      // every other case in this group still passed.
+      log.add('-> sock: SSH_Message_Userauth_InfoResponse'
+          '(responses: [secret])tail])');
+      expect(log.toString(), isNot(contains('tail')));
       expect(log.toString(), isNot(contains('sword')));
       expect(log.toString(), contains('[redacted])'));
     });
@@ -362,7 +369,13 @@ void main() {
       final lines = log.lines;
       log.add('second');
       expect(lines, hasLength(2));
-      expect(() => lines.add('third'), throwsUnsupportedError);
+      // Two layers, and the cast is what makes the second one assertable.
+      // `lines` is typed `Iterable<String>`, so `lines.add('third')` is a
+      // compile error and no call site can reach the runtime guard by
+      // accident. Cast past that and the view still refuses, because nothing
+      // may append past the redaction in `add`.
+      expect(() => (lines as List<String>).add('third'),
+          throwsUnsupportedError);
     });
 
     test('the real message dartssh2 sends is the shape this scrubs', () {

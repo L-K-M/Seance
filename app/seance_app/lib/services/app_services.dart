@@ -477,8 +477,8 @@ class AppServices {
     // Dart's File does not expand `~`, but the editor hint invites it.
     var readPath = _expandHome(config.identityFilePath!);
     ResolvedIdentityFile? scoped;
-    final entry =
-        bookmarkOverride ?? settings.identityFileBookmarks[config.id];
+    final saved = settings.identityFileBookmarks[config.id];
+    final entry = bookmarkOverride ?? saved;
     // The grant counts only while it was minted for the configured path: a
     // synced edit (say, a key rotation on another device) changes the path
     // without touching this device's bookmark map, and the new path must win
@@ -494,8 +494,14 @@ class AppServices {
         // what the editor does for a server it did not re-Browse) may refresh
         // in place, or a stale bookmark would be re-minted on every attempt
         // and never kept.
-        final refreshable = bookmarkOverride == null ||
-            bookmarkOverride == settings.identityFileBookmarks[config.id];
+        //
+        // Compared with `==`, which `IdentityFileBookmark` overrides over the
+        // path and the bookmark payload, so a grant reconstructed with the
+        // same contents still counts — the editor is not obliged to hand back
+        // the identical instance. Read once, above, rather than looked up
+        // again here.
+        final refreshable =
+            bookmarkOverride == null || bookmarkOverride == saved;
         if (scoped.refreshedBookmark != null && refreshable) {
           // The stored bookmark went stale (key moved/replaced); persist the
           // re-minted one so the grant keeps surviving relaunches.

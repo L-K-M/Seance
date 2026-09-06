@@ -26,14 +26,20 @@ void main() {
   group('runConnectionTest', () {
     test('reports how authentication completed, not merely that it did',
         () async {
+      SshCredentials? seen;
       final result = await runConnectionTest(
         config: config(),
         credentials: () async => const SshCredentials.password('hunter2'),
-        authenticate: (_, _, log) async {
+        authenticate: (_, creds, log) async {
+          seen = creds;
           log.add('handshake');
           return AuthKind.key;
         },
       );
+      // The seam the `credentials` parameter exists for: every stub in this
+      // file discarded it, so nothing observed that the resolver's answer is
+      // what authentication is actually attempted with.
+      expect(seen, const SshCredentials.password('hunter2'));
 
       expect(result.ok, isTrue);
       // "Connected" alone would not tell the user their key was the thing that
@@ -41,6 +47,11 @@ void main() {
       expect(result.summary, contains('deploy@prod.example.com:2222'));
       expect(result.summary, contains('public key'));
       expect(result.log, contains('handshake'));
+      // A tripwire, not a redaction test: nothing should ever put the
+      // credential into a transcript shown with a Copy button and meant for
+      // bug reports, and one negative assertion keeps it that way.
+      expect(result.log, isNot(contains('hunter2')));
+      expect(result.summary, isNot(contains('hunter2')));
       expect(result.notes, isEmpty);
     });
 

@@ -98,7 +98,11 @@ class SshConnectionLog {
   /// `UnmodifiableListView` rather than `List.unmodifiable`, which allocates a
   /// fresh copy per read — this is read on every repaint of a live connection
   /// log, and a copy also silently freezes for any caller that holds on to it.
-  List<String> get lines => _linesView;
+  /// Read-only by *type*, not only at runtime: declared `List<String>`, a
+  /// `log.lines.add(...)` compiled cleanly and threw mid-handshake, which is
+  /// the failure the unmodifiable view was introduced to close off. Nothing
+  /// indexes the transcript, so `Iterable` costs no caller anything.
+  Iterable<String> get lines => _linesView;
   late final List<String> _linesView = UnmodifiableListView(_lines);
 
   /// Called after every [add] so a live view can repaint. Cleared by [freeze].
@@ -181,12 +185,18 @@ class SshConnectionLog {
 /// redacted — but a chunk arriving *without* the name cannot reach that
 /// branch at all, and a `(responses : [pw])` would then match nothing and
 /// print the credential.
-final RegExp _userauthResponses =
-    RegExp(r'(Userauth_InfoResponse)?\(responses\s*:\s*\[.*', dotAll: true);
-
 /// The message whose `responses` list *is* the password for a host doing
 /// password login over keyboard-interactive.
 const String _userauthMessage = 'Userauth_InfoResponse';
+
+/// Built from [_userauthMessage] rather than repeating it. The fail-closed
+/// branch below is only coherent while the name it checks for and the name
+/// the pattern accepts are the same string — widening one after a dartssh2
+/// rename and not the other would leave the withhold keying off a name the
+/// pattern no longer matches, which is the drift this whole mechanism exists
+/// to survive.
+final RegExp _userauthResponses =
+    RegExp('($_userauthMessage)?\\(responses\\s*:\\s*\\[.*', dotAll: true);
 
 /// [line] with any credential dartssh2's trace would otherwise print replaced.
 /// Public so the redaction can be asserted directly rather than only through a
@@ -743,11 +753,15 @@ class SshSessionManager {
   static String? _offeredKeyFromLog(SshConnectionLog? log) {
     if (log == null) return null;
     const marker = 'Offering key: ';
-    for (final line in log.lines.reversed) {
+    // Forward, keeping the last match, rather than iterating a reversed
+    // view: `lines` is an `Iterable` so mutating it cannot compile, and
+    // `reversed` is a `List` member. Same answer, one pass, no copy.
+    String? offered;
+    for (final line in log.lines) {
       final i = line.indexOf(marker);
-      if (i >= 0) return line.substring(i + marker.length).trim();
+      if (i >= 0) offered = line.substring(i + marker.length).trim();
     }
-    return null;
+    return offered;
   }
 
   /// Scan the trace for the last `methodsLeft: [ … ]` the server sent.

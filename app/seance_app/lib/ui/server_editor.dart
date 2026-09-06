@@ -308,16 +308,19 @@ class _ServerEditorState extends State<_ServerEditor> {
                 OutlinedButton.icon(
                   onPressed: _busy || _testing ? null : _testConnection,
                   icon: _testing
-                      ? SizedBox(
+                      ? const SizedBox(
                           width: 16,
                           height: 16,
                           // Labelled like the outcome icons this PR adds: a
                           // spinner is the one state with nothing to read, so
                           // without this a screen-reader user cannot tell a
-                          // running test from a button that did nothing.
-                          child: Semantics(
-                            label: 'Testing connection',
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                          // running test from a button that did nothing. The
+                          // indicator's own parameter rather than a wrapping
+                          // `Semantics`, which would merge a second node into
+                          // its announcement.
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            semanticsLabel: 'Testing connection',
                           ),
                         )
                       : const Icon(Icons.wifi_tethering, size: 18),
