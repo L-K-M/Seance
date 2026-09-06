@@ -319,6 +319,12 @@ class AppServices {
 
   /// Run one synchronization round against the configured server.
   Future<SyncOutcome> runSync() async {
+    // First statement, above every guard. The guards below all throw today,
+    // so nothing can read a stale answer — but placing the reset after them
+    // means that stays true only while they keep throwing, and a guard that
+    // is one day changed to return a failure outcome would hand the caller
+    // the previous round's "adopted" answer with nothing to show for it.
+    assistantSettingsChanged = false;
     final baseUrl = settings.syncBaseUrl;
     final token = await masterKeys.getApiKey('sync.token');
     if (baseUrl == null || token == null) {
@@ -365,11 +371,6 @@ class AppServices {
       syncSecrets: settings.syncSecrets,
       secretVault: settings.syncSecrets ? vault : null,
     );
-    // Cleared before the round, not only assigned after it: a round that
-    // throws would otherwise leave the answer from the last successful one
-    // standing, and a caller reading it after a failure would rebuild the chat
-    // provider for an adoption that never happened.
-    assistantSettingsChanged = false;
     final outcome = await _withSyncClient(baseUrl, (client) {
       client.token = token;
       return coordinator.run(client);

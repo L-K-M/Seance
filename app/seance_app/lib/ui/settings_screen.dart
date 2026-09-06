@@ -4,6 +4,7 @@ import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../services/app_settings.dart';
 import '../services/assistant_settings_sync.dart';
 import '../services/external_file_opener.dart';
 import 'sync_enrollment_validation.dart';
@@ -67,13 +68,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Deferred to didChangeDependencies to read AppScope.
   }
 
-  bool _initialized = false;
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_initialized) return;
-    _initialized = true;
-    final s = AppScope.of(context).services.settings;
+  /// Load the assistant half of [settings] into this screen's fields.
+  ///
+  /// Separate from the rest of the load because it is the one half another
+  /// device can rewrite while the screen is open: turning assistant sync on
+  /// adopts the account's configuration into `settings`, and a Save made
+  /// afterwards would otherwise write these stale values back over it — and
+  /// stamp them, so the revert would win everywhere.
+  void _loadAssistantFields(AppSettings s) {
     _kind = s.llmKind;
     _baseUrl.text = s.llmBaseUrl;
     _model.text = s.llmModel;
@@ -82,6 +84,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // keystore and is not something a settings screen should be able to show.
     _zai = s.zaiApiKeyRef != null && s.zaiApiKeyRef!.isNotEmpty;
     _redaction = s.redactionEnabled;
+  }
+
+  bool _initialized = false;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
+    final s = AppScope.of(context).services.settings;
+    _loadAssistantFields(s);
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;
     _syncAssistant = s.syncAssistant;
@@ -643,7 +655,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Provider, model, endpoint, web search and redaction — with their '
           'API keys, so the assistant works on the other device. '
           'End-to-end encrypted. A localhost endpoint will not resolve '
-          'elsewhere. Turning this off stops this device sharing further '
+          'elsewhere. Turning this on adopts the settings already on the '
+          'account, replacing the assistant setup on this device. '
+          'Turning this off stops this device sharing further '
           'changes; it does not remove what was already shared, which the '
           'other devices are still using.',
         ),
@@ -886,10 +900,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // field matched: the keys travel in the record too, under refs that do not
     // change when the value behind them is rotated, so nothing about a
     // re-entered key moves the fingerprint.
+    // Trimmed on both sides: whitespace is not a key, and treating it as one
+    // stamps a write with no edit behind it.
     final keyEntered =
-        _apiKey.text.isNotEmpty || _zaiApiKey.text.trim().isNotEmpty;
+        _apiKey.text.trim().isNotEmpty || _zaiApiKey.text.trim().isNotEmpty;
     if (keyEntered || assistantSyncFingerprint(s) != before) {
       await state.assistantSettingsEdited();
+    }
+    if (keyEntered) {
+      // Cleared once stored, or the text left in the field makes every later
+      // Save on this screen look like a key change: it would stamp `now` and
+      // republish, and on last-write-wins that beats a genuinely newer edit
+      // from another device with content that did not change. The field is
+      // write-only anyway — it is never populated from the keystore.
+      _apiKey.clear();
+      _zaiApiKey.clear();
     }
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();
@@ -917,7 +942,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Switching it on adopts what the account already has, and publishes what
     // this device has only when there was nothing to adopt.
     if (_syncAssistant && !wasSyncingAssistant) {
-      await state.assistantSyncSwitchedOn();
+      try {
+        await state.assistantSyncSwitchedOn();
+      } catch (e) {
+        // Fire-and-forget from `onChanged`, so without this the failure is an
+        // unhandled async error and the switch reads as "on and adopted".
+        if (mounted) showTopToastIn(context, message: 'Assistant sync: $e');
+      }
+      // Adoption rewrites the assistant half of `settings`, and this screen
+      // loaded its fields once. Without this, the next Save writes the
+      // pre-adoption values back — with a fresh stamp, so the revert wins on
+      // every device.
+      if (mounted) setState(() => _loadAssistantFields(s));
     }
   }
 

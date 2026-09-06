@@ -49,6 +49,21 @@ abstract class SnippetStore {
 /// and answers nowhere.
 abstract class AssistantSettingsStore {
   Future<AssistantSettings?> getAssistantSettings();
+
+  /// When this device's stored configuration was last edited — and nothing
+  /// else.
+  ///
+  /// Separate from [getAssistantSettings] because that one resolves key
+  /// references into key material, which means reaching into the OS keystore
+  /// and holding secrets in memory. The apply path needs only a timestamp, to
+  /// avoid writing a pulled record over a local edit newer than anything the
+  /// synced mirror has seen yet, and paying for key material to read a number
+  /// would put secrets on a path that has no use for them.
+  ///
+  /// Zero when nothing has been published from this device, matching the
+  /// stamp [getAssistantSettings] treats as "nothing to publish".
+  Future<int> assistantSettingsUpdatedAt();
+
   Future<void> putAssistantSettings(AssistantSettings settings);
 }
 
@@ -112,6 +127,9 @@ class InMemoryAssistantSettingsStore implements AssistantSettingsStore {
 
   @override
   Future<AssistantSettings?> getAssistantSettings() async => settings;
+
+  @override
+  Future<int> assistantSettingsUpdatedAt() async => settings?.updatedAt ?? 0;
 
   @override
   Future<void> putAssistantSettings(AssistantSettings value) async =>

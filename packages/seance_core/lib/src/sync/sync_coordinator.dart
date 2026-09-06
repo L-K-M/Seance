@@ -310,6 +310,21 @@ class SyncCoordinator {
             // assistant with nothing on every device that pulled it.
             if (assistant.providerKind.isEmpty) continue;
 
+            // This record won last-write-wins against the synced *mirror*,
+            // which is only as fresh as the last [collectLocal]. Unlike a
+            // server config, the assistant configuration is edited straight
+            // into its store between rounds — so an edit made while a round
+            // was already in flight is newer than anything the mirror knows,
+            // and applying an older pulled record over it would lose the edit
+            // silently, then re-collect and publish the loss.
+            //
+            // Strictly older, not older-or-equal: a tie is already resolved at
+            // the record layer by device id and sequence, and skipping ties
+            // here would stop two devices ever converging on one of them.
+            if (assistant.updatedAt < await store.assistantSettingsUpdatedAt()) {
+              continue;
+            }
+
             await store.putAssistantSettings(assistant);
           case RecordKind.bookmark:
           case RecordKind.unknown:

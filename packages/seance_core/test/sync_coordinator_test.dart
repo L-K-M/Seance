@@ -1272,6 +1272,49 @@ void main() {
       );
     });
 
+    test('a pulled record never overwrites a newer local edit', () async {
+      // The assistant configuration is edited straight into its store between
+      // rounds, so the synced mirror can be older than the store by a whole
+      // debounce. A record pulled mid-round wins last-write-wins against that
+      // stale mirror while still losing to the store — and applying it would
+      // drop the edit, then re-collect and publish the loss.
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        // Matched to the payload's own stamp, like collectLocal does — the
+        // envelope date is derived from it, so a fixture where they disagree
+        // is a state production cannot reach.
+        updatedAt: 20,
+        deviceId: 'B',
+        data: assistant(model: 'from-B', updatedAt: 20).toJson(),
+      )));
+      final store = InMemoryAssistantSettingsStore(
+        assistant(model: 'local-edit', updatedAt: 30),
+      );
+
+      await coordinator('A', local, store: store).applyToStores();
+      expect(store.settings!.model, 'local-edit');
+      expect(store.settings!.updatedAt, 30);
+    });
+
+    test('a pulled record that ties is still applied', () async {
+      // Ties are resolved at the record layer by device id and sequence, so
+      // refusing them here would stop two devices ever converging on one.
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 30,
+        deviceId: 'B',
+        data: assistant(model: 'from-B', updatedAt: 30).toJson(),
+      )));
+      final store = InMemoryAssistantSettingsStore(assistant(updatedAt: 30));
+
+      await coordinator('A', local, store: store).applyToStores();
+      expect(store.settings!.model, 'from-B');
+    });
+
     test('the keys never reach the server in the clear', () async {
       // The record is the only one that carries API keys, and it carries them
       // whatever `syncSecrets` says — so the seal is the whole protection.

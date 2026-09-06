@@ -1067,20 +1067,25 @@ class AppState extends ChangeNotifier {
   /// configuration, and then publishing this device's is the point of the
   /// switch.
   Future<void> assistantSyncSwitchedOn() async {
-    if (services.isSyncConfigured) {
-      try {
-        await _runSyncAndRefresh();
-      } on Exception {
-        // Offline, or the server is down: this is the one moment not to
-        // publish on a guess. An `Error` is a bug in this path rather than a
-        // fact about the network, and swallowing one here would leave a
-        // toggle that quietly does nothing with no trace of why. The switch stays on and the next round settles
-        // it — either by adopting the account's record or, once this device
-        // is edited, by publishing that edit.
-        return;
-      }
-      if (services.assistantSettingsChanged) return;
+    // No account attached: nothing to adopt, and nothing worth publishing
+    // either. Falling through would stamp `now` on this device's
+    // configuration, so it would arrive at the account as the newest write
+    // the moment one is attached — without ever having looked at what the
+    // account already held, which is the single guarantee this method exists
+    // to provide.
+    if (!services.isSyncConfigured) return;
+    try {
+      await _runSyncAndRefresh();
+    } on Exception {
+      // Offline, or the server is down: this is the one moment not to publish
+      // on a guess. An `Error` is a bug in this path rather than a fact about
+      // the network, and swallowing one here would leave a toggle that quietly
+      // does nothing with no trace of why. The switch stays on and the next
+      // round settles it — either by adopting the account's record or, once
+      // this device is edited, by publishing that edit.
+      return;
     }
+    if (services.assistantSettingsChanged) return;
     // Nothing configured here, so there is nothing worth publishing: stamping
     // now would turn this device's defaults into the account's newest write
     // and beat a phone that configured its assistant while sync was off and

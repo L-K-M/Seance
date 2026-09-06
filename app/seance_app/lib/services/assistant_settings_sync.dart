@@ -110,6 +110,9 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   }
 
   @override
+  Future<int> assistantSettingsUpdatedAt() async => settings.assistantUpdatedAt;
+
+  @override
   Future<void> putAssistantSettings(AssistantSettings value) async {
     final before = assistantSyncFingerprint(settings);
     final stampBefore = settings.assistantUpdatedAt;
@@ -131,6 +134,12 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // and this device's next edit would publish the hybrid over the newer
       // build's record everywhere. An older build not participating is the
       // smaller failure, and it self-heals when the build catches up.
+      //
+      // `applied` is a per-round answer, so it has to be cleared here too:
+      // the coordinator hands a record over every round, and leaving the
+      // previous round's `true` standing would rebuild the chat provider for
+      // a record this one deliberately did not adopt.
+      applied = false;
       return;
     }
     settings.llmKind = kind;
@@ -172,13 +181,18 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       }
     }
 
-    // Only a real change, on both counts: `applied` rebuilds the chat provider
-    // and `saveSettings` rewrites settings.json, and the coordinator hands
-    // this record over on every round whether or not anything in it moved.
-    final changed = keysChanged ||
-        assistantSyncFingerprint(settings) != before ||
-        settings.assistantUpdatedAt != stampBefore;
-    if (changed) await saveSettings();
-    applied = changed;
+    // Two different questions, deliberately separated. `saveSettings` has to
+    // run for a stamp that moved on its own — two devices making the same
+    // edit, or a revert — because the local stamp must catch up or the
+    // coordinator keeps re-delivering the record. But `applied` rebuilds the
+    // chat provider, and a record whose every field matches what is already
+    // configured gives that provider nothing new: rebuilding would interrupt
+    // a live session to arrive at the same client.
+    final contentChanged =
+        keysChanged || assistantSyncFingerprint(settings) != before;
+    if (contentChanged || settings.assistantUpdatedAt != stampBefore) {
+      await saveSettings();
+    }
+    applied = contentChanged;
   }
 }

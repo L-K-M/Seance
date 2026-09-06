@@ -149,6 +149,25 @@ void main() {
       expect(published.apiKeys, {'anthropic': 'sk-llm'});
       expect(published.zaiApiKeyRef, 'zai');
     });
+
+    test('a configuration with no key reference is not a locked keyring',
+        () async {
+      // A keyless local gateway — an Ollama or LM Studio endpoint that wants
+      // no key at all. If an absent reference read as "the key might be
+      // locked", this device would never publish, every incoming record would
+      // look newer than nothing, and it would silently adopt whatever any
+      // other device pushed.
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = '';
+      settings.llmModel = 'keyless-model';
+      settings.braveApiKeyRef = null;
+      settings.zaiApiKeyRef = null;
+
+      final published = await sync.getAssistantSettings();
+      expect(published, isNotNull);
+      expect(published!.model, 'keyless-model');
+      expect(published.apiKeys, isEmpty);
+    });
   });
 
   group('adopting', () {
@@ -162,6 +181,7 @@ void main() {
           model: model,
           llmApiKeyRef: 'openai',
           searxngUrl: 'https://searx.example.com',
+          braveApiKeyRef: 'brave',
           zaiApiKeyRef: 'zai',
           redactSecrets: false,
           apiKeys: apiKeys,
@@ -176,6 +196,10 @@ void main() {
       expect(settings.llmModel, 'gpt-5');
       expect(settings.llmApiKeyRef, 'openai');
       expect(settings.searxngUrl, 'https://searx.example.com');
+      // Brave travels too, and is fingerprinted — but nothing asserted it
+      // arrived, so an import that dropped it would have lost every adopting
+      // device its Brave key with the suite still green.
+      expect(settings.braveApiKeyRef, 'brave');
       expect(settings.zaiApiKeyRef, 'zai');
       expect(settings.redactionEnabled, isFalse);
       expect(settings.assistantUpdatedAt, 500);
@@ -194,6 +218,14 @@ void main() {
       settings.llmBaseUrl = 'https://prior.example.com';
       settings.llmModel = 'prior-model';
       settings.llmApiKeyRef = 'prior-ref';
+      // Non-default priors for these too. They were asserted `isNull`, which
+      // is also their default — so a partial apply that reset unreferenced
+      // fields would have wiped a user's configured search settings on every
+      // round and passed, which is exactly what the comment below claims is
+      // covered.
+      settings.searxngUrl = 'https://prior-searx.example.com';
+      settings.braveApiKeyRef = 'prior-brave';
+      settings.zaiApiKeyRef = 'prior-zai';
       await sync.putAssistantSettings(
         arriving(providerKind: 'some-future-provider'),
       );
@@ -207,11 +239,44 @@ void main() {
       // And nothing else is taken either. Adopting the half this build
       // understands would leave the account with two disagreeing
       // configurations and matching stamps to hide it.
-      expect(settings.searxngUrl, isNull);
-      expect(settings.zaiApiKeyRef, isNull);
+      expect(settings.searxngUrl, 'https://prior-searx.example.com');
+      expect(settings.braveApiKeyRef, 'prior-brave');
+      expect(settings.zaiApiKeyRef, 'prior-zai');
+      // `redactionEnabled` keeps its prior of `true` against the record's
+      // `false`, so this one detects adoption without needing a fixture
+      // change — setting the prior to `false` would blind it.
       expect(settings.redactionEnabled, isTrue);
       expect(settings.assistantUpdatedAt, 0);
       expect(sync.applied, isFalse);
+    });
+
+    test('a skipped record clears the applied flag the last one set',
+        () async {
+      // `applied` is a per-round answer and the coordinator hands a record
+      // over every round. A record adopted last round leaving `true` standing
+      // would rebuild the chat provider for one this round refused.
+      await sync.putAssistantSettings(arriving());
+      expect(sync.applied, isTrue);
+
+      await sync.putAssistantSettings(
+        arriving(providerKind: 'some-future-provider'),
+      );
+      expect(sync.applied, isFalse);
+    });
+
+    test('a stamp that moves alone saves but rebuilds nothing', () async {
+      // Two devices making the same edit, or a revert on the publishing one:
+      // every field the chat provider reads is already what the record says.
+      // The stamp still has to be persisted or the coordinator re-delivers
+      // the record forever — but rebuilding the provider would interrupt a
+      // live session to arrive at the same client.
+      await sync.putAssistantSettings(arriving());
+      final savesAfterAdopt = saves;
+
+      await sync.putAssistantSettings(arriving().copyWith(updatedAt: 900));
+      expect(settings.assistantUpdatedAt, 900);
+      expect(saves, savesAfterAdopt + 1, reason: 'the stamp must be persisted');
+      expect(sync.applied, isFalse, reason: 'nothing the provider reads moved');
     });
 
     test('a locked keyring still adopts the configuration', () async {
@@ -292,6 +357,12 @@ void main() {
 
       // A device-local value is not part of the account-shaped half.
       settings.terminalFontSize = settings.terminalFontSize + 1;
+      // Nor is the stamp itself, which is the one *travelling* field that
+      // must stay out: if it leaked in, a no-edit Save after an adoption
+      // would read as changed, stamp `now`, and beat a configuration another
+      // device published in the meantime — the exact bug this whole
+      // fingerprint exists to prevent.
+      settings.assistantUpdatedAt = settings.assistantUpdatedAt + 1;
       expect(assistantSyncFingerprint(settings), before);
 
       for (final change in <void Function()>[
