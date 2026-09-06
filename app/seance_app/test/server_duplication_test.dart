@@ -289,6 +289,10 @@ void main() {
         kind: SecretKind.password,
         value: 'hunter2',
       ));
+      // The recorder is proven to record before it is cleared: without this,
+      // a `putSecret` that stopped routing through `putSecretBlob` would
+      // leave the emptiness assertion below passing for nothing.
+      expect(writes, isNotEmpty);
       writes.clear();
       final plan = await planServerDuplication(
         source(secretRef: 'sec-old'),
