@@ -157,4 +157,101 @@ void main() {
 
     expect(services.settings.assistantUpdatedAt, greaterThan(ahead));
   });
+
+  test('a round queued behind an adopting one does not hide the adoption',
+      () async {
+    // `runSync` resets `assistantSettingsChanged` as its first statement, and
+    // a round queued on the mutation queue starts as soon as the adopting one
+    // releases it. The adoption flag is sampled while the round still holds
+    // the queue, so which of the two resumes first cannot matter. (Today the
+    // awaiting caller does — an async return reaches its awaiter a microtask
+    // ahead of the completer's release — so this passes with the flag read
+    // after the release too; it pins the scenario, not the ordering.)
+    final codec = RecordCodec(services.vaultKey!);
+    final record = await codec.encrypt(DecryptedRecord(
+      id: AssistantSettings.recordId,
+      kind: RecordKind.assistantSettings,
+      updatedAt: 500,
+      deviceId: 'other-device',
+      data: const AssistantSettings(
+        providerKind: 'openaiCompatible',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        llmApiKeyRef: 'openai',
+        redactSecrets: true,
+        apiKeys: {'openai': 'sk-remote'},
+        updatedAt: 500,
+      ).toJson(),
+    ));
+    var gets = 0;
+    var seq = 1;
+    final transport = MockClient((request) async {
+      if (request.method == 'GET') {
+        gets++;
+        return http.Response(
+          jsonEncode(PullResponse(
+            records: gets == 1 ? [record.withSeq(1)] : const [],
+            latestSeq: 1,
+          ).toJson()),
+          HttpStatus.ok,
+        );
+      }
+      // Accept whatever the second round publishes, so it ends cleanly.
+      final pushed = PushRequest.fromJson(
+        jsonDecode(request.body) as Map<String, dynamic>,
+      ).records;
+      return http.Response(
+        jsonEncode(PushResponse(
+          results: [
+            for (final r in pushed)
+              PushResult(id: r.id, seq: ++seq, accepted: true),
+          ],
+          latestSeq: seq,
+        ).toJson()),
+        HttpStatus.ok,
+      );
+    });
+
+    final state = AppState(services);
+    addTearDown(state.dispose);
+    final versionBefore = state.llmConfigVersion;
+    await http.runWithClient(
+      () => Future.wait([state.syncNow(), state.syncNow()]),
+      () => transport,
+    );
+
+    expect(services.settings.llmModel, 'gpt-5');
+    expect(gets, greaterThanOrEqualTo(3), reason: 'both rounds pulled');
+    // Rebuilt exactly once: by the round that adopted, not by the one that
+    // found nothing new.
+    expect(state.llmConfigVersion, versionBefore + 1);
+  });
+
+  test('switching on with the toggle still off neither syncs nor stamps',
+      () async {
+    // With the toggle off `runSync` builds no assistant store, so a round can
+    // adopt nothing — and falling through would stamp `now` on this device's
+    // configuration and persist it, an inflated stamp that outranks the
+    // account's record when the switch is genuinely turned on later.
+    services.settings.syncAssistant = false;
+    services.settings.assistantUpdatedAt = 5;
+    var requests = 0;
+    final transport = MockClient((request) async {
+      requests++;
+      return http.Response(
+        jsonEncode(const PullResponse(records: [], latestSeq: 0).toJson()),
+        HttpStatus.ok,
+      );
+    });
+
+    final state = AppState(services);
+    addTearDown(state.dispose);
+    await http.runWithClient(
+      () => state.assistantSyncSwitchedOn(),
+      () => transport,
+    );
+
+    expect(requests, 0);
+    expect(services.settings.assistantUpdatedAt, 5);
+  });
 }

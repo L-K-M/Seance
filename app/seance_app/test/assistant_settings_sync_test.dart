@@ -95,8 +95,14 @@ void main() {
       // Neither of these is referenced by the assistant configuration, and
       // neither may ever leave this device: one protects the account, the
       // other decrypts everything in it.
-      await keystore.write(key: 'seance.apikey.sync.token', value: 'tok');
-      await keystore.write(key: 'seance.vault.masterKey.v1', value: 'vault');
+      await keystore.write(
+        key: 'seance.apikey.sync.token',
+        value: 'leak-canary-sync-token',
+      );
+      await keystore.write(
+        key: 'seance.vault.masterKey.v1',
+        value: 'leak-canary-master-key',
+      );
 
       final published = (await sync.getAssistantSettings())!;
 
@@ -116,8 +122,8 @@ void main() {
       // The keys are gathered from the references, never by sweeping the
       // keystore — so nothing unreferenced can be swept up with them.
       final encoded = published.toJson().toString();
-      expect(encoded, isNot(contains('tok')));
-      expect(encoded, isNot(contains('vault')));
+      expect(encoded, isNot(contains('leak-canary-sync-token')));
+      expect(encoded, isNot(contains('leak-canary-master-key')));
     });
 
     test('the sync token is never a key reference, published or adopted',
@@ -141,6 +147,29 @@ void main() {
         updatedAt: 500,
       ));
       expect(await keys.getApiKey('sync.token'), 'tok');
+      // Refused whole, not adopted minus the key: an adopted ref of
+      // `sync.token` would have the chat provider resolve this device's
+      // token as its API key and send it to whatever endpoint the record
+      // named.
+      expect(sync.applied, isFalse);
+      expect(settings.llmKind, LlmProviderKind.anthropic);
+      expect(settings.llmBaseUrl, 'https://api.anthropic.com');
+      expect(settings.assistantUpdatedAt, 99);
+
+      // Any of the three references, not only the LLM's.
+      await sync.putAssistantSettings(const AssistantSettings(
+        providerKind: 'openaiCompatible',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        llmApiKeyRef: 'openai',
+        zaiApiKeyRef: 'sync.token',
+        redactSecrets: true,
+        apiKeys: {},
+        updatedAt: 500,
+      ));
+      expect(sync.applied, isFalse);
+      expect(settings.zaiApiKeyRef, isNull);
+      expect(settings.assistantUpdatedAt, 99);
     });
 
     test('a locked keyring publishes nothing rather than a keyless copy',

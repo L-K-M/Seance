@@ -78,9 +78,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   /// The keystore entry names this configuration refers to.
   ///
   /// Built from the references themselves, never by enumerating the keystore:
-  /// the sync token and the vault key live in that same keystore, and putting
-  /// either into a synced record would hand the account's own protection to
-  /// the account.
+  /// the sync token shares this API-key namespace, and the vault key sits
+  /// beside it in the same keystore under a prefix of its own (out of
+  /// `getApiKey`'s reach, so no reference can name it). A sweep would put the
+  /// token into a synced record, handing the account's own protection to the
+  /// account.
   Iterable<String> get _referencedKeys => <String>{
     if (settings.llmApiKeyRef.isNotEmpty) settings.llmApiKeyRef,
     if (settings.braveApiKeyRef != null &&
@@ -94,7 +96,9 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   /// own protection, never an assistant key: a record naming one as a ref
   /// would otherwise publish this device's sync token, or overwrite it on
   /// adoption. Held out here rather than trusted to the record, since a
-  /// record is exactly as careful as the device that wrote it.
+  /// record is exactly as careful as the device that wrote it. The vault key
+  /// is not listed because it is not in this namespace: [MasterKeyManager]
+  /// stores it under its own prefix, which no key reference resolves to.
   static const Set<String> reservedKeyNames = {'sync.token'};
 
   @override
@@ -173,6 +177,18 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // the coordinator hands a record over every round, and leaving the
       // previous round's `true` standing would rebuild the chat provider for
       // a record this one deliberately did not adopt.
+      applied = false;
+      return;
+    }
+    // A record whose configuration *names* a reserved entry is refused whole,
+    // not adopted minus the key: the filter below keeps the entry from being
+    // overwritten, but an adopted `llmApiKeyRef` of `sync.token` would have
+    // the chat provider resolve this device's sync token as its API key and
+    // send it, as a bearer credential, to whatever endpoint the record
+    // carried. The refs are the record's allow-list; this is the device's.
+    if (reservedKeyNames.contains(value.llmApiKeyRef) ||
+        reservedKeyNames.contains(value.braveApiKeyRef) ||
+        reservedKeyNames.contains(value.zaiApiKeyRef)) {
       applied = false;
       return;
     }

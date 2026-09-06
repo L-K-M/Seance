@@ -46,6 +46,9 @@ class SyncCoordinator {
 
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be
   /// provided so secrets can be sealed into records.
+  ///
+  /// Governs server credentials only: the assistant's API keys travel with
+  /// [assistantStore]'s record whatever this says — see there.
   final bool syncSecrets;
   final SecretVault? secretVault;
 
@@ -136,7 +139,13 @@ class SyncCoordinator {
       )));
     }
     final assistant = await assistantStore?.getAssistantSettings();
-    if (assistant != null) {
+    // The apply side's guard, at the boundary where bad data enters: an empty
+    // provider means a payload this build could not read, not a configuration
+    // — the same degradation `fromJson` makes of a missing field can happen
+    // to a device's own settings file — and publishing one would park a
+    // record no device adopts on the account under this device's stamp,
+    // where nothing older can displace it.
+    if (assistant != null && assistant.providerKind.isNotEmpty) {
       await local.putLocal(await codec.encrypt(DecryptedRecord(
         id: AssistantSettings.recordId,
         kind: RecordKind.assistantSettings,

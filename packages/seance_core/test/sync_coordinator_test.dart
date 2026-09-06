@@ -1597,6 +1597,26 @@ void main() {
       expect(await local.allRecords(), isEmpty);
     });
 
+    test('a configuration this build could not read is not published',
+        () async {
+      // The apply side refuses a record with an empty provider as "not a
+      // configuration". The same degradation — `fromJson` turning a missing
+      // field into '' — can happen to a device's own settings file, and
+      // publishing it would park a record no device adopts on the account
+      // under this device's stamp, where nothing older can displace it.
+      final remote = FakeServer();
+      final local = InMemoryLocalRecordStore();
+      await coordinator(
+        'A',
+        local,
+        store: InMemoryAssistantSettingsStore(
+          assistant().copyWith(providerKind: ''),
+        ),
+      ).run(remote);
+      expect(await local.allRecords(), isEmpty);
+      expect(remote.stored(AssistantSettings.recordId), isNull);
+    });
+
     test('a device that has not opted in neither pushes nor adopts', () async {
       final remote = FakeServer();
       final storeA = InMemoryAssistantSettingsStore(assistant());
@@ -1688,6 +1708,31 @@ void main() {
 
       await coordinator('A', local, store: store).applyToStores();
       expect(store.settings!.model, 'from-B');
+    });
+
+    test('a cleared configuration propagates as an edit, not a withdrawal',
+        () async {
+      // Clearing everything but the provider still publishes, under the new
+      // stamp: a store that answered null for it instead would leave the old
+      // record standing on the account, and B's next pull would resurrect
+      // the model and keys A had just removed.
+      final remote = FakeServer();
+      final storeA = InMemoryAssistantSettingsStore(assistant());
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      final storeB = InMemoryAssistantSettingsStore();
+      final localB = InMemoryLocalRecordStore();
+      await coordinator('B', localB, store: storeB).run(remote);
+      expect(storeB.settings!.model, isNotEmpty);
+
+      storeA.settings = assistant(model: '', apiKeys: const {}, updatedAt: 40);
+      await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
+          .run(remote);
+      await coordinator('B', localB, store: storeB).run(remote);
+
+      expect(storeB.settings!.model, '');
+      expect(storeB.settings!.apiKeys, isEmpty);
+      expect(storeB.settings!.updatedAt, 40);
     });
 
     test('the keys never reach the server in the clear', () async {

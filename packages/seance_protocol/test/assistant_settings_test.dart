@@ -82,10 +82,17 @@ void main() {
     // value would overwrite a working key with nothing on every device that
     // adopted the record — the failure "an absent key means look locally"
     // exists to prevent, arriving as a present key instead. A blank name
-    // addresses no keystore entry at all.
+    // addresses no keystore entry at all — and blank is whitespace too, as
+    // it is for every other field of this record.
     final decoded = AssistantSettings.fromJson(
       settings().toJson()
-        ..['apiKeys'] = {'anthropic': '', '': 'sk-1', 'zai': 'z'},
+        ..['apiKeys'] = {
+          'anthropic': '',
+          '': 'sk-1',
+          ' ': 'sk-2',
+          'brave': '  ',
+          'zai': 'z',
+        },
     );
     expect(decoded.apiKeys, {'zai': 'z'});
   });
@@ -93,8 +100,9 @@ void main() {
   test('a degenerate key entry is not written either', () {
     // The reader drops it; a writer that kept it would produce a record its
     // own reader disagrees with.
-    final json = settings(apiKeys: const {'anthropic': '', '': 'x', 'zai': 'z'})
-        .toJson();
+    final json = settings(
+      apiKeys: const {'anthropic': '', '': 'x', ' ': 'y', 'brave': ' ', 'zai': 'z'},
+    ).toJson();
     expect(json['apiKeys'], {'zai': 'z'});
     expect(settings(apiKeys: const {'anthropic': ''}).toJson(),
         isNot(contains('apiKeys')));
@@ -130,13 +138,19 @@ void main() {
   test('copyWith clears the optional refs and keeps everything else', () {
     // The clear flags are the one place a nullable copyWith can silently turn
     // "cleared here" back into "kept", and nothing exercised them.
+    // Brave is set first: the helper leaves it null, and clearing null
+    // proves nothing about the flag.
     final cleared = settings(apiKeys: const {'zai': 'z'})
+        .copyWith(braveApiKeyRef: 'brave')
         .copyWith(clearSearxngUrl: true)
+        .copyWith(clearBraveApiKeyRef: true)
         .copyWith(clearZaiApiKeyRef: true);
 
     expect(cleared.searxngUrl, isNull);
+    expect(cleared.braveApiKeyRef, isNull);
     expect(cleared.zaiApiKeyRef, isNull);
     expect(cleared.toJson().containsKey('searxngUrl'), isFalse);
+    expect(cleared.toJson().containsKey('braveApiKeyRef'), isFalse);
     expect(cleared.toJson().containsKey('zaiApiKeyRef'), isFalse);
     // Everything the flags do not name survives them.
     expect(cleared.providerKind, 'anthropic');

@@ -196,10 +196,13 @@ Map<String, String> _stringMap(Object? value) {
       // overwrite a working key with nothing on every device that adopted
       // the record — the one outcome "an absent key means look locally"
       // exists to prevent, arriving as a present one instead.
+      // Blank as [_isSet] reads it, whitespace included: this class has one
+      // meaning of blank, and a name or value of stray spaces is no more a
+      // keystore entry than an empty one.
       if (entry.key is String &&
           entry.value is String &&
-          (entry.key as String).isNotEmpty &&
-          (entry.value as String).isNotEmpty)
+          _isSet(entry.key as String) &&
+          _isSet(entry.value as String))
         entry.key as String: entry.value as String,
   };
 }

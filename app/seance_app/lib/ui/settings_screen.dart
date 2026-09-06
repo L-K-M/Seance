@@ -864,6 +864,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       return;
     }
+    // For the re-check at the end: the guard above sees an adoption that
+    // landed before this Save, not one that lands during its awaits.
+    final versionAtEntry = state.llmConfigVersion;
     setState(() => _saving = true);
     final s = state.services.settings;
     // Store the API key under a per-provider name.
@@ -982,16 +985,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();
-    // This Save is the configuration the fields now show.
-    _assistantVersionSeen = state.llmConfigVersion;
+    // This Save is the configuration the fields now show — unless a periodic
+    // round adopted another device's configuration during the awaits above,
+    // past the guard at the top. The reload just made is one bump; any other
+    // is an adoption, and blessing this version would let the next Save
+    // revert it silently, with a fresh stamp. The fields are reloaded instead,
+    // as the guard does, and the user saves again from what is configured.
+    final adoptedMeanwhile = state.llmConfigVersion != versionAtEntry + 1;
+    if (adoptedMeanwhile) {
+      if (mounted) setState(() => _syncAssistantFields(state));
+    } else {
+      _assistantVersionSeen = state.llmConfigVersion;
+    }
     if (mounted) {
       setState(() => _saving = false);
       showTopToastIn(
         context,
-        message: zaiWithoutKey
-            ? 'Saved — but no Z.AI key could be read (none stored, or the '
-                  'keyring is locked), so Z.AI search will be skipped.'
-            : 'Saved',
+        message: adoptedMeanwhile
+            ? 'Saved — but the assistant settings changed on another device '
+                  'meanwhile. The fields show what is configured now; review '
+                  'them and save again.'
+            : zaiWithoutKey
+                ? 'Saved — but no Z.AI key could be read (none stored, or the '
+                      'keyring is locked), so Z.AI search will be skipped.'
+                : 'Saved',
       );
     }
   }
@@ -1009,7 +1026,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // Fired without await from `onChanged`: a disk failure here would be an
       // unhandled async error with the switch left visually on. Say so, and
       // do not go on to adopt for a switch that was not persisted.
-      if (mounted) showTopToastIn(context, message: 'Sync preferences: $e');
+      //
+      // And roll the flag back: left on in memory, the next successful save
+      // of anything on this page would persist it, switching on a sync that
+      // carries API keys without the adopt-first step this failure skipped.
+      s.syncAssistant = wasSyncingAssistant;
+      if (mounted) {
+        setState(() => _syncAssistant = wasSyncingAssistant);
+        showTopToastIn(context, message: 'Sync preferences: $e');
+      }
       return;
     }
     state.ensureAutoSyncTimer();
