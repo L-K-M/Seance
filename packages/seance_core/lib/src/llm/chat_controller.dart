@@ -249,9 +249,19 @@ class ChatController {
             SearchResult(
               title: r.title,
               url: r.url,
-              snippet: '${r.snippet.substring(0, maxSnippetChars)}…',
+              snippet: '${r.snippet.substring(0, _clipIndex(r.snippet))}…',
             ),
       ];
+
+  /// Where to cut a snippet longer than [maxSnippetChars]: the cap, or one
+  /// code unit earlier when the cap would fall inside a surrogate pair. The
+  /// count is in UTF-16 code units, and an emoji astride the cut would
+  /// otherwise leave a lone high surrogate that serializes as U+FFFD.
+  static int _clipIndex(String snippet) {
+    final unit = snippet.codeUnitAt(maxSnippetChars - 1);
+    final highSurrogate = (unit & 0xFC00) == 0xD800;
+    return highSurrogate ? maxSnippetChars - 1 : maxSnippetChars;
+  }
 
   Future<List<SearchResult>> _runSearch(String query) async {
     final provider = searchProvider;

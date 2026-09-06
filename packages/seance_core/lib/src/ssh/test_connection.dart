@@ -156,6 +156,16 @@ Future<ConnectionTestResult> runConnectionTest({
     // through it. A `credentials()` that raises this same type has logged
     // nothing, and the transcript would end mid-sentence.
     if (!authenticating) transcript.add(e.message);
+    // Whichever stage threw, a log attached to the exception that is not the
+    // transcript in hand holds detail that lives nowhere else: a resolver's
+    // own, or an authenticator's that wrote into a log of its own rather
+    // than the one it was handed. The live one attaches the transcript
+    // itself, and that instance is skipped so nothing is doubled.
+    if (!identical(e.log, transcript)) {
+      for (final line in e.log.lines) {
+        transcript.add(line);
+      }
+    }
     return ConnectionTestResult(
       ok: false,
       summary: e.message,
@@ -227,6 +237,14 @@ class UnpinnedHostKeyStore implements HostKeyStore {
   Future<HostKey?> get(String host, int port) async =>
       _trial[hostKeyLocator(host, port)] ?? await inner.get(host, port);
 
+  /// Pinned keys and trial approvals together, as one view.
+  ///
+  /// Consistent with [get], which answers from the trial first — a store
+  /// whose listing disagreed with its lookups would be a stranger thing to
+  /// hand a verifier. What that means for a caller is that this is never a
+  /// persistence source: a trial approval must not outlive the attempt, and
+  /// this wrapper is only ever built inside one ([liveHostAuthenticator]),
+  /// so nothing that syncs or exports a store can reach it.
   @override
   Future<List<HostKey>> all() async {
     // Merged by locator rather than concatenated, so a host that is both

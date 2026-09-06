@@ -391,6 +391,12 @@ class SyncCoordinator {
 
     await _applySecretRecords(secretRecords, skip);
 
+    // Both re-dating passes report through `skip` too, so they run before
+    // the log line, not after it: a tombstone that could not be minted or a
+    // revival that could not be staged was landing in `skippedIds` a moment
+    // after the only reader of `skippedIds` had already spoken.
+    final redated =
+        await rescheduleOutranked(outranked, skip) + await _revive(revived, skip);
     if (skippedIds.isNotEmpty) {
       developer.log(
         'Skipped synced records: ${skippedIds.join(', ')}',
@@ -400,8 +406,7 @@ class SyncCoordinator {
         stackTrace: firstStackTrace,
       );
     }
-
-    return await rescheduleOutranked(outranked, skip) + await _revive(revived, skip);
+    return redated;
   }
 
   /// Re-date a re-included server past the retraction it is still losing to.
@@ -472,9 +477,6 @@ class SyncCoordinator {
     List<DecryptedRecord> records,
     void Function(String, Object, StackTrace) skip,
   ) async {
-    final vault = secretVault;
-    if (records.isEmpty || !syncSecrets || vault == null) return;
-    final shielded = await _shieldedSecretIds();
     // The id invariant enforced here rather than left to the call site, like
     // the kind check in [rescheduleOutranked]: every id this method reasons
     // about is `secret:` + the vault ref, which is what [_shieldedSecretIds]
@@ -493,10 +495,48 @@ class SyncCoordinator {
         StackTrace.current,
       );
     }
-    for (final dec in records.where((d) => d.id.startsWith(_secretIdPrefix))) {
+    // After the id check, so a peer minting ids differently shows up on a
+    // device that syncs no secrets too — otherwise the problem looks
+    // device-specific while it is being chased.
+    final vault = secretVault;
+    if (!syncSecrets || vault == null) return;
+    // A store read after the loop above has already written configs and host
+    // keys: fail-soft like every other failure in this method, or one flaky
+    // read throws out of `applyToStores` past the re-dating passes and the
+    // log, and the round's outcome goes with it.
+    // One predicate, computed once: the two loops below have to agree with
+    // each other and with the check above on what a secret record *is*, and a
+    // copy each would let one be edited without the others.
+    final prefixed =
+        records.where((d) => d.id.startsWith(_secretIdPrefix)).toList();
+    final Set<String> shielded;
+    try {
+      shielded = await _shieldedSecretIds();
+    } catch (error, stackTrace) {
+      for (final dec in prefixed) {
+        skip(dec.id, error, stackTrace);
+      }
+      return;
+    }
+    for (final dec in prefixed) {
       if (shielded.contains(dec.id)) continue;
       try {
-        await vault.putSecret(Secret.fromJson(dec.data));
+        final secret = Secret.fromJson(dec.data);
+        // The shield keys on the record id and the vault write keys on the
+        // payload's: a record whose two disagree would slip a credential past
+        // the shield and land it under a ref the shield never named — the
+        // same hole the config path closes for its own id.
+        if (dec.id != '$_secretIdPrefix${secret.id}') {
+          skip(
+            dec.id,
+            StateError(
+              'secret id ${secret.id} does not match record id ${dec.id}',
+            ),
+            StackTrace.current,
+          );
+          continue;
+        }
+        await vault.putSecret(secret);
       } catch (error, stackTrace) {
         skip(dec.id, error, stackTrace);
       }

@@ -673,7 +673,7 @@ class _ServerEditorState extends State<_ServerEditor> {
       id: existing?.id ?? _draftId,
       label: _label.text.trim(),
       host: _host.text.trim(),
-      port: int.tryParse(_port.text) ?? 22,
+      port: int.tryParse(_port.text.trim()) ?? 22,
       username: _user.text.trim(),
       authMethod: _auth,
       secretRef: secretRef,
@@ -730,11 +730,19 @@ class _ServerEditorState extends State<_ServerEditor> {
     try {
       result = await widget.state.testServerConnection(
         config,
-        draftPassword: _password.text,
-        // The PEM box is hidden (and stale) while the key is referenced from
-        // disk; passing it then would test text the user cannot see.
-        draftPrivateKey: _referenceKeyFile ? null : _keyPem.text,
-        draftKeyPassphrase: _keyPassphrase.text,
+        // A credential box is hidden (and stale) once the auth method stops
+        // using it, and the PEM box also while the key is referenced from
+        // disk; passing either then would test text the user cannot see.
+        // `resolveCredentials` reads each draft only under its own auth
+        // method, so this changes nothing it does — it makes the call site
+        // say what it means. The passphrase stays with the method, not the
+        // reference toggle: it decrypts the on-disk key too.
+        draftPassword: _auth == AuthMethod.password ? _password.text : null,
+        draftPrivateKey: _auth == AuthMethod.privateKey && !_referenceKeyFile
+            ? _keyPem.text
+            : null,
+        draftKeyPassphrase:
+            _auth == AuthMethod.privateKey ? _keyPassphrase.text : null,
         draftIdentityBookmark: _bookmarkFor(config.identityFilePath),
         log: log,
       );
@@ -763,8 +771,17 @@ class _ServerEditorState extends State<_ServerEditor> {
     if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
     final existing = widget.existing;
+    // Against the freshest copy this device holds, not the one captured when
+    // the editor opened: a round that pulled a newer record meanwhile is
+    // exactly the record this stamp has to outrank.
+    final latest = existing == null
+        ? null
+        : widget.state.servers
+            .where((s) => s.id == existing.id)
+            .map((s) => s.updatedAt)
+            .fold<int>(existing.updatedAt, math.max);
     final now = nextUpdatedAt(
-      existing?.updatedAt,
+      latest,
       now: DateTime.now().millisecondsSinceEpoch,
     );
 

@@ -73,6 +73,19 @@ class FakeMcpServer {
   /// Answer 404 to this many `tools/call`s, as a retired session id does.
   int expireSession = 0;
 
+  /// Hold every error status's body open forever. A gateway that answers
+  /// 4xx and then stalls is the shape the error drains' deadline exists for.
+  bool stallErrorBodies = false;
+
+  /// Drop the connection mid-body on every error status, as a gateway that
+  /// resets after sending its status line does.
+  bool resetErrorBodies = false;
+
+  /// The `cursor` each `tools/list` asked for, so a test can prove the client
+  /// echoes `nextCursor` rather than re-listing blind — which this fake's
+  /// page counter alone cannot tell apart.
+  final List<Object?> listCursors = [];
+
   FakeMcpServer({
     this.sse = false,
     this.noise = false,
@@ -80,17 +93,23 @@ class FakeMcpServer {
   });
 
   http.Client get client => MockClient.streaming((request, body) async {
-        requests.add(request);
-        headers.add({
+        // Kept for this request rather than read back as `headers.last`
+        // below: the body read that follows is an await, and a concurrent
+        // request can append its own headers before this one resumes. The
+        // three records are appended together after that await, so
+        // `methods`, `headers` and `requests` share one ordering.
+        final sent = <String, String>{
           // Lowercased: HTTP header names are case-insensitive, so a client
           // that capitalized one would otherwise fail as a null deep inside
           // this fake rather than as the expectation that meant to catch it.
           for (final entry in request.headers.entries)
             entry.key.toLowerCase(): entry.value,
-        });
+        };
         final payload =
             jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
         final method = payload['method'] as String;
+        requests.add(request);
+        headers.add(sent);
         methods.add(method);
 
         if (method == 'initialize') _handshakes++;
@@ -103,7 +122,7 @@ class FakeMcpServer {
         // re-handshakes but keeps sending the old id fails here rather than
         // silently passing.
         if (method == 'tools/call' &&
-            headers.last['mcp-session-id'] != _issuedSessionId) {
+            sent['mcp-session-id'] != _issuedSessionId) {
           return _stream(404, '');
         }
 
@@ -123,6 +142,7 @@ class FakeMcpServer {
       case 'initialize':
         return {'protocolVersion': '2025-06-18'};
       case 'tools/list':
+        listCursors.add((payload['params'] as Map?)?['cursor']);
         if (_toolPagesServed < extraToolPages) {
           _toolPagesServed++;
           return {
@@ -157,7 +177,11 @@ class FakeMcpServer {
   http.StreamedResponse _stream(int status, String body) {
     final text = sse && body.isNotEmpty ? _asSse(body) : body;
     return http.StreamedResponse(
-      Stream.value(utf8.encode(text)),
+      status >= 400 && stallErrorBodies
+          ? StreamController<List<int>>().stream
+          : status >= 400 && resetErrorBodies
+              ? Stream<List<int>>.error(http.ClientException('reset'))
+              : Stream.value(utf8.encode(text)),
       status,
       headers: {
         'content-type': sse && body.isNotEmpty
@@ -422,6 +446,9 @@ void main() {
 
       expect(results, isNotEmpty);
       expect(server.methods.where((m) => m == 'tools/list').length, 3);
+      // Three listings is what a cursor-blind client produces too; the pages
+      // are handed out by count. Only the cursors sent back tell them apart.
+      expect(server.listCursors, [null, 'cursor-1', 'cursor-2']);
     });
 
     test('a non-JSON event in the stream is walked past, not fatal', () async {
@@ -484,6 +511,118 @@ void main() {
       );
     });
 
+    test('a 4xx whose body stalls is still reported as that status', () async {
+      // The drain after an error status is deadlined, and its own
+      // TimeoutException was escaping — "Future not completed" in place of
+      // the status line that had already said what went wrong.
+      final stalled = StreamController<List<int>>();
+      addTearDown(stalled.close);
+      final client = MockClient.streaming((request, body) async =>
+          http.StreamedResponse(stalled.stream, 502));
+      await expectLater(
+        ZaiSearch(
+          apiKey: 'k',
+          client: client,
+          timeout: const Duration(milliseconds: 50),
+        ).search('dart'),
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('HTTP 502'),
+          ),
+        ),
+      );
+    });
+
+    test('a retired session whose 404 body stalls is still retried', () async {
+      // Same drain on the 404 branch, where the escaping TimeoutException
+      // displaced the session-expiry signal — so the one re-handshake that
+      // branch exists to trigger never ran.
+      final server = FakeMcpServer()
+        ..expireSession = 1
+        ..stallErrorBodies = true;
+      final results = await ZaiSearch(
+        apiKey: 'k',
+        client: server.client,
+        timeout: const Duration(milliseconds: 50),
+      ).search('dart');
+      expect(results, isNotEmpty);
+      expect(server.methods.where((m) => m == 'initialize').length, 2);
+    });
+
+    test('a retired session whose 404 body resets is still retried', () async {
+      // The drain on that branch swallowed only its own deadline; a
+      // connection dropped mid-body raised a transport error past it, and
+      // that displaced the session-expiry signal exactly as the deadline
+      // used to.
+      final server = FakeMcpServer()
+        ..expireSession = 1
+        ..resetErrorBodies = true;
+      final results =
+          await ZaiSearch(apiKey: 'k', client: server.client).search('dart');
+      expect(results, isNotEmpty);
+      expect(server.methods.where((m) => m == 'initialize').length, 2);
+    });
+
+    test('a search after a double expiry starts with a fresh handshake',
+        () async {
+      // The replacement session was retired too, and the gateway said so.
+      // Kept, the next call would send it, eat the 404 and only then start
+      // over — one round trip spent on a session already known to be dead.
+      final server = FakeMcpServer()..expireSession = 2;
+      final search = ZaiSearch(apiKey: 'k', client: server.client);
+      await expectLater(
+        search.search('dart'),
+        throwsA(isA<http.ClientException>()),
+      );
+      expect(await search.search('dart'), isNotEmpty);
+      // The original, the retry's replacement, and a fresh one afterwards.
+      expect(server.methods.where((m) => m == 'initialize').length, 3);
+    });
+
+    test('a notification whose stream never closes is a named failure',
+        () async {
+      // No status speaks for this one: the gateway answered 200 and held the
+      // stream. It is a failure of its own, and reaches the UI as a sentence.
+      final stalled = StreamController<List<int>>();
+      addTearDown(stalled.close);
+      final client = MockClient.streaming((request, body) async {
+        final payload =
+            jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
+        if (payload.containsKey('id')) {
+          return http.StreamedResponse(
+            Stream.value(utf8.encode(jsonEncode({
+              'jsonrpc': '2.0',
+              'id': payload['id'],
+              'result': {'protocolVersion': '2025-06-18'},
+            }))),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.StreamedResponse(
+          stalled.stream,
+          200,
+          headers: {'content-type': 'text/event-stream'},
+        );
+      });
+      await expectLater(
+        ZaiSearch(
+          apiKey: 'k',
+          client: client,
+          timeout: const Duration(milliseconds: 50),
+        ).search('dart'),
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('held the search stream open'),
+          ),
+        ),
+      );
+    });
+
     test('an errored tool result is a failure, not an empty answer', () async {
       final server = FakeMcpServer();
       server.overrides['tools/call'] = {
@@ -532,6 +671,40 @@ void main() {
     });
   });
 
+  group('readRpcResult', () {
+    test('a JSON-RPC error names its code and nothing else', () {
+      // The number tells a method-not-found from bad params; the server's
+      // own text stays out, like every other message here.
+      expect(
+        () => ZaiSearch.readRpcResult({
+          'jsonrpc': '2.0',
+          'id': 7,
+          'error': {'code': -32601, 'message': 'secret server prose'},
+        }, method: 'tools/call', id: 7),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('(code -32601)'), isNot(contains('secret'))),
+        )),
+      );
+      // No code, no parenthesis; an error that is not even a map, the same.
+      for (final error in [const <String, Object>{}, 'down', 1]) {
+        expect(
+          () => ZaiSearch.readRpcResult({
+            'jsonrpc': '2.0',
+            'id': 7,
+            'error': error,
+          }, method: 'tools/call', id: 7),
+          throwsA(isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            isNot(contains('(code')),
+          )),
+        );
+      }
+    });
+  });
+
   group('buildArguments', () {
     test('uses whichever names the schema declares', () {
       expect(
@@ -555,6 +728,22 @@ void main() {
           'required': ['search_query', 'search_engine'],
         }, 'dart', 5),
         {'search_query': 'dart', 'search_engine': 'search-prime'},
+      );
+    });
+
+    test('a required parameter\'s name is echoed bounded', () {
+      // The name is the gateway's to choose and the message reaches the UI.
+      final name = 'p' * 500;
+      expect(
+        () => ZaiSearch.buildArguments({
+          'properties': {name: const {'type': 'string'}},
+          'required': [name],
+        }, 'dart', 5),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message.length,
+          'message length',
+          lessThan(160),
+        )),
       );
     });
 
@@ -647,7 +836,8 @@ void main() {
           ],
         },
       }, 5);
-      expect(results.single.snippet, 'en hello');
+      // The tag is for the client, not the reader.
+      expect(results.single.snippet, 'hello');
     });
 
     test('only http(s) URLs with a host become results', () {
@@ -739,8 +929,11 @@ void main() {
       Stream<List<int>> source() =>
           Stream.fromIterable(List.generate(3, (_) => chunk));
 
-      expect(
-        ZaiSearch.bounded(source(), 500, const Duration(seconds: 1)).toList(),
+      // Any cap in [600, 1800) tells the two strategies apart: counting
+      // bytes trips at 1200 on the second chunk, counting decoded units only
+      // ever reaches 600. A cap of 500 was tripped by both.
+      await expectLater(
+        ZaiSearch.bounded(source(), 1000, const Duration(seconds: 1)).toList(),
         throwsA(isA<http.ClientException>()),
       );
       await expectLater(
@@ -777,6 +970,7 @@ void main() {
         ),
       );
       expect(cancelled, isTrue);
+      await controller.close();
     });
   });
 
@@ -849,15 +1043,12 @@ void main() {
       // Rethrowing the bare object would point the stack at the merge loop
       // instead of at the backend that failed, in exactly the case this
       // branch exists to make legible.
+      // The same object, not one with the same message: a merge loop that
+      // caught and re-threw a copy would pass a message check.
+      final error = http.ClientException('backend down');
       await expectLater(
-        CompositeSearch([_Broken()]).search('q'),
-        throwsA(
-          isA<http.ClientException>().having(
-            (e) => e.message,
-            'message',
-            'backend down',
-          ),
-        ),
+        CompositeSearch([_Broken(error)]).search('q'),
+        throwsA(same(error)),
       );
     });
 

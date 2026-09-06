@@ -445,7 +445,13 @@ class AppServices {
     // symptom of a caller getting this wrong is a green "authenticated" for a
     // credential nobody asked to test — the same reason the exclusion guard in
     // `ServerConfig.copyWith` throws.
-    if (config.identityFilePath == null && draftIdentityBookmark != null) {
+    // Only under key auth: for a password or the agent the bookmark is never
+    // consulted, so a stale one left over from an auth-method switch cannot
+    // change what is tested, and throwing would turn a harmless leftover
+    // into a failed test.
+    if (config.authMethod == AuthMethod.privateKey &&
+        config.identityFilePath == null &&
+        draftIdentityBookmark != null) {
       throw ArgumentError.value(
         draftIdentityBookmark,
         'draftIdentityBookmark',
@@ -639,9 +645,9 @@ class AppServices {
   /// The chat tool's web search: every configured backend, merged.
   ///
   /// Configured means used, rather than a priority order that would quietly
-  /// ignore the second backend someone took the trouble to set up. Clearing a
-  /// field is how you pick one instead of the other; filling both is how you
-  /// use both (see [CompositeSearch]). Null when nothing is configured, which
+  /// ignore a backend someone took the trouble to set up. Clearing a field is
+  /// how you drop one; filling several is how you use them all (see
+  /// [CompositeSearch]). Null when nothing is configured, which
   /// is what hides the search tool from the assistant.
   Future<SearchProvider?> buildSearchProvider() async {
     final backends = <SearchProvider>[];
