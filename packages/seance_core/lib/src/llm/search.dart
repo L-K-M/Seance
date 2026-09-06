@@ -104,7 +104,8 @@ class BraveSearch implements SearchProvider {
 /// let the first swallow the rest.
 String _dedupKey(String url) {
   final parsed = Uri.tryParse(url);
-  final withoutFragment = parsed == null ? url : parsed.removeFragment().toString();
+  final withoutFragment =
+      parsed == null ? url : parsed.removeFragment().toString();
   return withoutFragment.replaceFirst(RegExp(r'/+$'), '');
 }
 

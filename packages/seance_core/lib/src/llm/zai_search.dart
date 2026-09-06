@@ -68,6 +68,9 @@ class ZaiSearch implements SearchProvider {
     required this.apiKey,
     this.endpoint = defaultEndpoint,
     http.Client? client,
+    // Per request, not per search: one search is a handshake, a listing of
+    // up to [maxToolPages] pages and the call, doubled once if the session
+    // is retired mid-way — so the worst case is a multiple of this.
     this.timeout = const Duration(seconds: 20),
   }) : _client = client ?? http.Client();
 
@@ -83,6 +86,10 @@ class ZaiSearch implements SearchProvider {
       try {
         return await _attempt(query, limit);
       } on _SessionExpired {
+        // The replacement was just retired too. Dropped rather than kept:
+        // the next call would otherwise spend a 404 round trip on a session
+        // the gateway has already said is dead before it could start over.
+        _reset();
         throw http.ClientException(
           'Z.AI kept dropping the search session. Try again in a moment.',
         );
@@ -522,9 +529,15 @@ class ZaiSearch implements SearchProvider {
       );
     }
     if (message['error'] != null) {
+      // The numeric code and nothing else: it tells a method-not-found
+      // (-32601) from bad params (-32602) without quoting a server string.
+      final error = message['error'];
+      final code = error is Map && error['code'] is num
+          ? ' (code ${error['code']})'
+          : '';
       throw http.ClientException(
-        'Z.AI reported an error for $method. Check Coding Plan access and '
-        'search configuration.',
+        'Z.AI reported an error for $method$code. Check Coding Plan access '
+        'and search configuration.',
       );
     }
     final result = message['result'];
@@ -576,8 +589,11 @@ class ZaiSearch implements SearchProvider {
       final fallback =
           property?['default'] ?? _asList(property?['enum']).firstOrNull;
       if (fallback == null) {
+        // Bounded: the name is the gateway's to choose, and this string
+        // reaches the UI. Forty-eight characters names any real parameter.
+        final shown = name.length <= 48 ? name : '${name.substring(0, 48)}…';
         throw http.ClientException(
-          'Z.AI requires a search parameter Séance cannot supply: $name.',
+          'Z.AI requires a search parameter Séance cannot supply: $shown.',
         );
       }
       arguments[name] = fallback;
@@ -596,7 +612,9 @@ class ZaiSearch implements SearchProvider {
   /// When nothing link-shaped is in there but the tool did answer with prose,
   /// that prose is returned as a single result rather than an empty list: the
   /// assistant is being handed this as context, and silently dropping an
-  /// answer the search did find is the worse failure.
+  /// answer the search did find is the worse failure. That lone result is
+  /// the only one whose `url` is empty — every other one passed `_isWebUrl`
+  /// — so an empty `url` reads as "prose, not a page" and is not for parsing.
   static List<SearchResult> parseToolResult(
     Map<String, dynamic> result,
     int limit,
@@ -636,10 +654,6 @@ class ZaiSearch implements SearchProvider {
   static List<Object?> _asList(Object? value) =>
       value is List ? value : const [];
 
-  /// A URL a search result may legitimately carry: a web page, with a host.
-  ///
-  /// Parsed rather than prefix-matched, so `https:evil` and a bare
-  /// `https://` do not pass for want of a host.
   /// The text of a snippet that arrived as an object.
   ///
   /// A key that names text is read alone when one is present, so `{lang: en,
@@ -664,11 +678,20 @@ class ZaiSearch implements SearchProvider {
   Future<void> _drainQuietly(http.ByteStream stream) async {
     try {
       await stream.drain<void>().timeout(timeout);
-    } on TimeoutException {
-      // The caller's exception is the one that describes this failure.
+    } on Exception {
+      // A stall, a reset, a truncated body: none of it changes what the
+      // status line already said, and the caller's exception is the one that
+      // describes this failure. Catching only the deadline let a connection
+      // dropped mid-body preempt "HTTP 502" with a bare transport error — and
+      // on the 404 branch displace the session-expiry signal, the same way
+      // the deadline used to.
     }
   }
 
+  /// A URL a search result may legitimately carry: a web page, with a host.
+  ///
+  /// Parsed rather than prefix-matched, so `https:evil` and a bare
+  /// `https://` do not pass for want of a host.
   static bool _isWebUrl(String value) {
     final uri = Uri.tryParse(value);
     return uri != null &&

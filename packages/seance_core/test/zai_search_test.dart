@@ -77,6 +77,10 @@ class FakeMcpServer {
   /// 4xx and then stalls is the shape the error drains' deadline exists for.
   bool stallErrorBodies = false;
 
+  /// Drop the connection mid-body on every error status, as a gateway that
+  /// resets after sending its status line does.
+  bool resetErrorBodies = false;
+
   /// The `cursor` each `tools/list` asked for, so a test can prove the client
   /// echoes `nextCursor` rather than re-listing blind — which this fake's
   /// page counter alone cannot tell apart.
@@ -89,10 +93,11 @@ class FakeMcpServer {
   });
 
   http.Client get client => MockClient.streaming((request, body) async {
-        requests.add(request);
         // Kept for this request rather than read back as `headers.last`
         // below: the body read that follows is an await, and a concurrent
-        // request can append its own headers before this one resumes.
+        // request can append its own headers before this one resumes. The
+        // three records are appended together after that await, so
+        // `methods`, `headers` and `requests` share one ordering.
         final sent = <String, String>{
           // Lowercased: HTTP header names are case-insensitive, so a client
           // that capitalized one would otherwise fail as a null deep inside
@@ -100,10 +105,11 @@ class FakeMcpServer {
           for (final entry in request.headers.entries)
             entry.key.toLowerCase(): entry.value,
         };
-        headers.add(sent);
         final payload =
             jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
         final method = payload['method'] as String;
+        requests.add(request);
+        headers.add(sent);
         methods.add(method);
 
         if (method == 'initialize') _handshakes++;
@@ -173,7 +179,9 @@ class FakeMcpServer {
     return http.StreamedResponse(
       status >= 400 && stallErrorBodies
           ? StreamController<List<int>>().stream
-          : Stream.value(utf8.encode(text)),
+          : status >= 400 && resetErrorBodies
+              ? Stream<List<int>>.error(http.ClientException('reset'))
+              : Stream.value(utf8.encode(text)),
       status,
       headers: {
         'content-type': sse && body.isNotEmpty
@@ -543,6 +551,36 @@ void main() {
       expect(server.methods.where((m) => m == 'initialize').length, 2);
     });
 
+    test('a retired session whose 404 body resets is still retried', () async {
+      // The drain on that branch swallowed only its own deadline; a
+      // connection dropped mid-body raised a transport error past it, and
+      // that displaced the session-expiry signal exactly as the deadline
+      // used to.
+      final server = FakeMcpServer()
+        ..expireSession = 1
+        ..resetErrorBodies = true;
+      final results =
+          await ZaiSearch(apiKey: 'k', client: server.client).search('dart');
+      expect(results, isNotEmpty);
+      expect(server.methods.where((m) => m == 'initialize').length, 2);
+    });
+
+    test('a search after a double expiry starts with a fresh handshake',
+        () async {
+      // The replacement session was retired too, and the gateway said so.
+      // Kept, the next call would send it, eat the 404 and only then start
+      // over — one round trip spent on a session already known to be dead.
+      final server = FakeMcpServer()..expireSession = 2;
+      final search = ZaiSearch(apiKey: 'k', client: server.client);
+      await expectLater(
+        search.search('dart'),
+        throwsA(isA<http.ClientException>()),
+      );
+      expect(await search.search('dart'), isNotEmpty);
+      // The original, the retry's replacement, and a fresh one afterwards.
+      expect(server.methods.where((m) => m == 'initialize').length, 3);
+    });
+
     test('a notification whose stream never closes is a named failure',
         () async {
       // No status speaks for this one: the gateway answered 200 and held the
@@ -633,6 +671,40 @@ void main() {
     });
   });
 
+  group('readRpcResult', () {
+    test('a JSON-RPC error names its code and nothing else', () {
+      // The number tells a method-not-found from bad params; the server's
+      // own text stays out, like every other message here.
+      expect(
+        () => ZaiSearch.readRpcResult({
+          'jsonrpc': '2.0',
+          'id': 7,
+          'error': {'code': -32601, 'message': 'secret server prose'},
+        }, method: 'tools/call', id: 7),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('(code -32601)'), isNot(contains('secret'))),
+        )),
+      );
+      // No code, no parenthesis; an error that is not even a map, the same.
+      for (final error in [const <String, Object>{}, 'down', 1]) {
+        expect(
+          () => ZaiSearch.readRpcResult({
+            'jsonrpc': '2.0',
+            'id': 7,
+            'error': error,
+          }, method: 'tools/call', id: 7),
+          throwsA(isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            isNot(contains('(code')),
+          )),
+        );
+      }
+    });
+  });
+
   group('buildArguments', () {
     test('uses whichever names the schema declares', () {
       expect(
@@ -656,6 +728,22 @@ void main() {
           'required': ['search_query', 'search_engine'],
         }, 'dart', 5),
         {'search_query': 'dart', 'search_engine': 'search-prime'},
+      );
+    });
+
+    test('a required parameter\'s name is echoed bounded', () {
+      // The name is the gateway's to choose and the message reaches the UI.
+      final name = 'p' * 500;
+      expect(
+        () => ZaiSearch.buildArguments({
+          'properties': {name: const {'type': 'string'}},
+          'required': [name],
+        }, 'dart', 5),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message.length,
+          'message length',
+          lessThan(160),
+        )),
       );
     });
 
@@ -882,6 +970,7 @@ void main() {
         ),
       );
       expect(cancelled, isTrue);
+      await controller.close();
     });
   });
 
