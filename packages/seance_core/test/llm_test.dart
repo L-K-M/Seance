@@ -504,8 +504,8 @@ void main() {
   });
 
   group('clipSearchSnippets', () {
-    SearchResult hit(String snippet) =>
-        SearchResult(title: 't', url: 'https://x.example', snippet: snippet);
+    SearchResult hit(String snippet, {String title = 't'}) =>
+        SearchResult(title: title, url: 'https://x.example', snippet: snippet);
 
     test('a snippet under the cap is passed through untouched', () {
       final result = ChatController.clipSearchSnippets([hit('short')]).single;
@@ -531,6 +531,33 @@ void main() {
           result.snippet.codeUnitAt(result.snippet.length - 2);
       expect(beforeEllipsis & 0xFC00, isNot(0xD800));
       expect(result.snippet, '${'x' * (ChatController.maxSnippetChars - 1)}…');
+    });
+
+    test('a cut that lands after a complete pair keeps the whole cap', () {
+      // The complement of the case above: with the pair ending exactly at the
+      // cap there is nothing to back off, and an implementation that always
+      // dropped a unit would pass that test and fail this one.
+      final long = '${'x' * (ChatController.maxSnippetChars - 2)}😀 and more';
+      final result = ChatController.clipSearchSnippets([hit(long)]).single;
+      expect(
+        result.snippet,
+        '${'x' * (ChatController.maxSnippetChars - 2)}😀…',
+      );
+    });
+
+    test('a title is capped too, by the same rule', () {
+      // Only the snippet used to be: a title is whatever text the service put
+      // in the field, so a gateway answering with a megabyte of it spends the
+      // budget the snippet cap exists to protect.
+      final long = 'y' * (ChatController.maxTitleChars + 50);
+      final result =
+          ChatController.clipSearchSnippets([hit('short', title: long)]).single;
+      expect(result.title.length, ChatController.maxTitleChars + 1);
+      expect(result.title.endsWith('…'), isTrue);
+      // And a title that fits is left alone, along with its snippet.
+      final kept = ChatController.clipSearchSnippets([hit('short')]).single;
+      expect(kept.title, 't');
+      expect(kept.snippet, 'short');
     });
 
     test('an over-long snippet is clipped, and says it was', () {

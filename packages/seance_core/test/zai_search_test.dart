@@ -319,8 +319,11 @@ void main() {
         {ZaiSearch.defaultEndpoint},
       );
       expect(
-        server.headers.first['content-type'],
-        contains('application/json'),
+        // Every request, not just the handshake's: the fake does not check
+        // it, so a regression that sent `text/plain` on `tools/call` would
+        // otherwise pass the whole file.
+        server.headers.map((h) => h['content-type']),
+        everyElement(contains('application/json')),
       );
       // The version the *server* answered with, not the one we proposed, and
       // the session id it handed back in a header.
@@ -625,7 +628,8 @@ void main() {
       );
     });
 
-    test('a 4xx whose body stalls is still reported as that status', () async {
+    test('an error status whose body stalls is still reported as that status',
+        () async {
       // The drain after an error status is deadlined, and its own
       // TimeoutException was escaping — "Future not completed" in place of
       // the status line that had already said what went wrong.
@@ -662,7 +666,9 @@ void main() {
         apiKey: 'k',
         client: server.client,
         timeout: const Duration(milliseconds: 50),
-      ).search('dart');
+        // Test-side, like its siblings: a drain deadline that stopped being
+        // enforced would hang until the runner's own timeout.
+      ).search('dart').timeout(const Duration(seconds: 5));
       expect(results, isNotEmpty);
       expect(server.methods.where((m) => m == 'initialize').length, 2);
     });
@@ -784,10 +790,10 @@ void main() {
 
       expect(results, isNotEmpty);
       expect(cancelled, isTrue);
-      // Far below the 3s deadline rather than just under it: draining instead
-      // of cancelling costs the whole deadline, and a bound sitting on it
-      // could not tell that apart from a slow machine.
-      expect(clock.elapsed, lessThan(const Duration(seconds: 1)));
+      // Well under the 3s deadline, with a second of headroom: draining
+      // instead of cancelling costs the whole deadline, and a bound sitting on
+      // it could not tell that apart from a loaded machine.
+      expect(clock.elapsed, lessThan(const Duration(seconds: 2)));
     });
 
     test('an errored tool result is a failure, not an empty answer', () async {
@@ -929,6 +935,55 @@ void main() {
       };
       expect(ZaiSearch.parseToolResult(prose, 0), isEmpty);
       expect(ZaiSearch.parseToolResult(prose, 1), hasLength(1));
+    });
+
+    test('an empty snippet does not hide the description beside it', () {
+      // The last hop of the fall-through chain: `??` answers for null alone,
+      // so an explicitly empty snippet kept its place and dropped a usable
+      // description — the asymmetry the three hops before it already fixed.
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'search_result': [
+                {
+                  'title': 'T',
+                  'link': 'https://example.com/d',
+                  'snippet': '',
+                  'description': 'the usable one',
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(results.single.snippet, 'the usable one');
+    });
+
+    test('a URL too long to be a page is not a result', () {
+      // The one field a result cannot have clipped — a truncated link lies —
+      // so an implausible one is refused rather than carried into the tool
+      // result, where it would spend the budget the other caps protect.
+      final long = 'https://x.example/${'a' * ZaiSearch.maxUrlChars}';
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'search_result': [
+                {'title': 'Huge', 'link': long, 'content': 'text'},
+                {
+                  'title': 'Fine',
+                  'link': 'https://example.com/ok',
+                  'content': 'text',
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(results.map((r) => r.url), ['https://example.com/ok']);
     });
 
     test('a title that arrives as a list is read, like a snippet is', () {

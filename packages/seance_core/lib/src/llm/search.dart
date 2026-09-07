@@ -202,6 +202,22 @@ class CompositeSearch implements SearchProvider {
   }
 }
 
+/// [text] cut to [max] UTF-16 code units and closed with an ellipsis, or
+/// returned as it is when it already fits.
+///
+/// The cut backs off one unit when the cap would fall inside a surrogate
+/// pair, so an ellipsis never lands between the halves of an emoji and the
+/// result never carries a lone surrogate that serializes as U+FFFD. Shared
+/// rather than copied: the snippet cap and the parameter-name echo in
+/// `ZaiSearch.buildArguments` apply the same subtle rule, and two copies of
+/// it drift.
+String clipText(String text, int max) {
+  if (text.length <= max) return text;
+  final unit = text.codeUnitAt(max - 1);
+  final cut = (unit & 0xFC00) == 0xD800 ? max - 1 : max;
+  return '${text.substring(0, cut)}…';
+}
+
 /// Warning, for every record of a search backend going quiet — the one this
 /// file writes when a backend fails mid-search, and the app's when one is
 /// dropped before the search starts. Public so the two cannot drift: they are
