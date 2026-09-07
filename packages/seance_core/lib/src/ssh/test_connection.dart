@@ -66,6 +66,7 @@ HostAuthenticator liveHostAuthenticator({
     );
     // On success the client is ours to close (there is no SshSession here to
     // own it); on failure openAuthenticatedClient has already closed it.
+    const closeTimeout = Duration(seconds: 5);
     try {
       // The *wait* is bounded, which is the part that reaches the user:
       // [timeout] covers the TCP connect and dartssh2 runs its own timer over
@@ -73,7 +74,7 @@ HostAuthenticator liveHostAuthenticator({
       // awaits the socket's, and a peer that has stopped reading can leave
       // that outstanding — on a button the user is watching a spinner on, for
       // a connection that has already succeeded.
-      await client.close().timeout(const Duration(seconds: 5));
+      await client.close().timeout(closeTimeout);
     } on TimeoutException {
       // Not the same as a close that failed. `Future.timeout` frees this
       // caller; it does not cancel the close, and dartssh2 exposes no public
@@ -81,9 +82,12 @@ HostAuthenticator liveHostAuthenticator({
       // and may outlive the attempt. "A leak here is a leak per click" is the
       // standard this file sets, and the one case that cannot meet it is the
       // one that has to say so out loud.
-      log.add('Closing the trial connection timed out after 5s. It was '
-          'abandoned rather than waited out, and may stay open until it '
-          'fails on its own.');
+      // Interpolated, not restated: this line is quoted back in "the
+      // connection hung" reports, and a tuned bound with a stale number in
+      // the message makes those reports say the wrong thing.
+      log.add('Closing the trial connection timed out after '
+          '${closeTimeout.inSeconds}s. It was abandoned rather than waited '
+          'out, and may stay open until it fails on its own.');
     } catch (error) {
       // Authentication has already succeeded by here, and that is the only
       // thing this reports: a socket that misbehaves on the way down must not

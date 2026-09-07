@@ -151,6 +151,12 @@ void main() {
                     reason: 'reads stored, yet ignores it: $combination',
                   );
                 } else {
+                  // `kind` as well: a carry-over that took the stored
+                  // entry's kind would stamp a private key as a password —
+                  // the cross-method contamination the neighbouring tests are
+                  // about — and the two fields below would not notice.
+                  expect(withStored?.kind, without?.kind,
+                      reason: 'reads stored without saying so: $combination');
                   expect(withStored?.value, without?.value,
                       reason: 'reads stored without saying so: $combination');
                   expect(withStored?.keyPassphrase, without?.keyPassphrase,

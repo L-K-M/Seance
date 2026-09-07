@@ -25,8 +25,7 @@ String sha256Fingerprint(String s) => 'SHA256:$s';
 /// `SHA256:…` fingerprint *string* as bytes. Built from [sha256Fingerprint]
 /// so a pin written as a string and a challenge written as bytes cannot drift
 /// into comparing different formats.
-Uint8List fingerprint(String s) =>
-    Uint8List.fromList(utf8.encode(sha256Fingerprint(s)));
+Uint8List fingerprint(String s) => utf8.encode(sha256Fingerprint(s));
 
 void main() {
   group('runConnectionTest', () {
@@ -68,6 +67,11 @@ void main() {
       // bug reports, and one negative assertion keeps it that way.
       expect(result.log, isNot(contains('hunter2')));
       expect(result.summary, isNot(contains('hunter2')));
+      // The caller's instance too — the one the editor renders while the
+      // attempt runs. A credential written there and trimmed out of
+      // `result.log` would satisfy both assertions above and still be on
+      // screen.
+      expect(callerLog.lines.join('\n'), isNot(contains('hunter2')));
       expect(result.notes, isEmpty);
     });
 
@@ -168,8 +172,10 @@ void main() {
       // attaches that same instance; a double — or a future implementation —
       // that logs into one of its own would otherwise lose that detail, and
       // the merge below only ever ran for the resolver.
+      final callerLog = SshConnectionLog();
       final result = await runConnectionTest(
         config: config(),
+        log: callerLog,
         credentials: () async => const SshCredentials.password('pw'),
         authenticate: (_, _, _) async => throw SshConnectException(
           'auth failed',
@@ -180,6 +186,11 @@ void main() {
 
       expect(result.ok, isFalse);
       expect(result.log, contains('the authenticator\'s own detail'));
+      // Into the caller's instance as well: a merge that only reached
+      // `result.log` would leave the editor's live transcript missing the
+      // detail while the attempt was still on screen.
+      expect(callerLog.lines.join('\n'),
+          contains('the authenticator\'s own detail'));
       // And it still ends with the summary the result carries. The live SSH
       // layer writes that sentence itself before throwing, so the stage used
       // to be enough to decide; an authenticator whose own log ends in
@@ -666,6 +677,14 @@ void main() {
         );
         expect(prompts, 3,
             reason: 'a superseded key must not linger as a trusted alternative');
+        // And that approval lands, like the one before it: a manager that
+        // re-asked and returned true without writing would leave the pin on
+        // the attacker key and re-prompt on every reconnect.
+        expect(
+          (await trial.get('new.example.com', 22))?.fingerprintSha256,
+          'SHA256:new',
+          reason: 'a re-approved key must become the pin again',
+        );
       } else {
         // The prompt above always answers yes, so a refusal can only mean
         // the manager never asked — a prompt that was answered and then
@@ -771,9 +790,14 @@ void main() {
       expect((await trial.get('portful.example.com', 22))?.fingerprintSha256,
           'SHA256:portful-2222',
           reason: 'an approved first sight must pin the port it was offered on');
-      expect((await trial.get('portful.example.com', 2222))?.fingerprintSha256,
-          'SHA256:portful-2222',
+      // On the port, not the fingerprint: both pins carry the same key
+      // material by design — that is what isolates the prompt count above —
+      // so a fingerprint check here cannot tell "left alone" from
+      // "overwritten with an identical value".
+      final otherPort = await trial.get('portful.example.com', 2222);
+      expect(otherPort?.port, 2222,
           reason: 'and must leave the pin for the other port alone');
+      expect(otherPort?.fingerprintSha256, 'SHA256:portful-2222');
     });
   });
 }

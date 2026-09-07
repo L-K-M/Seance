@@ -146,6 +146,15 @@ class SshConnectionLog {
 
 /// The one shape in dartssh2's packet trace that carries a secret.
 ///
+/// Audited against the pinned 3.0.2 rather than assumed: of every
+/// `toString()` in `message/`, `SSH_Message_Userauth_InfoResponse`'s
+/// `'\$runtimeType(responses: \$responses)'` is the only one that
+/// interpolates credential material. `SSH_Message_Userauth_Request` prints
+/// `user`, `serviceName` and `methodName` and deliberately not the password,
+/// which is the premise the whole mechanism rests on. Re-run that audit on a
+/// `pub upgrade`: a new printing site is the one drift the fail-closed branch
+/// below cannot catch, because it keys on this shape.
+///
 /// Every message it traces goes through `toString`, and most of them are
 /// careful — `SSH_Message_Userauth_Request` prints its user and method and
 /// deliberately not its password. `SSH_Message_Userauth_InfoResponse` is not:
