@@ -138,10 +138,14 @@ Future<ConnectionTestResult> runConnectionTest({
     final resolved = await credentials();
     authenticating = true;
     final kind = await authenticate(config, resolved, transcript);
+    // Bracketed when the host carries colons of its own: `alice@::1:22` hides
+    // where the address ends, and this line is the one people quote back.
+    final host =
+        config.host.contains(':') ? '[${config.host}]' : config.host;
     return ConnectionTestResult(
       ok: true,
       summary:
-          'Authenticated as ${config.username}@${config.host}:${config.port} '
+          'Authenticated as ${config.username}@$host:${config.port} '
           '(${authKindLabel(kind)}).',
       notes: notes,
       log: transcript.toString(),
@@ -165,10 +169,14 @@ Future<ConnectionTestResult> runConnectionTest({
         transcript.add(line);
       }
     }
-    // A failure before the handshake has written nothing of its own, so its
-    // summary goes in last — where a failure transcript is documented to end
-    // — unless the log just copied already ends with it.
-    if (!authenticating && transcript.lines.lastOrNull != e.message) {
+    // The summary goes in last — where a failure transcript is documented to
+    // end — unless it is already there. The last-line check is what keeps the
+    // live path duplicate-free (the SSH layer writes this exact sentence
+    // before throwing), so the stage no longer has to be consulted: an
+    // authenticator that attached a log of its own, ending in something else,
+    // would otherwise return a transcript whose last line is not the summary
+    // the result carries.
+    if (transcript.lines.lastOrNull != e.message) {
       transcript.add(e.message);
     }
     return ConnectionTestResult(
@@ -187,7 +195,13 @@ Future<ConnectionTestResult> runConnectionTest({
     // The failure has not written itself into the transcript on the path that
     // reaches here first — resolving credentials — so an expanded log would
     // otherwise stop mid-sentence.
-    transcript.add(summary);
+    // Guarded like the branch above, and for the same reason: the ssh-agent
+    // path writes its sentence into the log before throwing, and a custom
+    // authenticator may do the same before throwing something that is not an
+    // `SshConnectException`. Either way the transcript already ends with it.
+    if (transcript.lines.lastOrNull != summary) {
+      transcript.add(summary);
+    }
     // An `Error` is a bug rather than a fact about the host, and its message
     // alone rarely says where it came from. `Exception`s raised while
     // resolving credentials — a locked keyring, an unreadable identity file —
