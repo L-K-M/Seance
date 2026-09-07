@@ -276,12 +276,23 @@ class ZaiSearch implements SearchProvider {
     // used to throw reaches the UI as "Future not completed", which is the
     // one thing `bounded` converts its own deadlines to avoid. This is the
     // deadline most likely to fire — it covers connect, TLS and the headers.
-    final response = await _client.send(request).timeout(
-          timeout,
-          onTimeout: () => throw http.ClientException(
-            'Z.AI did not answer the search request in time.',
-          ),
+    final sent = _client.send(request);
+    final response = await sent.timeout(
+      timeout,
+      onTimeout: () {
+        // Freeing the caller is not enough: the request can still complete,
+        // and the response it produces would have nobody to read or cancel
+        // it, so its socket would linger — the leak `bounded` exists to
+        // avoid on the body, one phase earlier.
+        unawaited(sent.then(
+          (late) => late.stream.listen(null).cancel(),
+          onError: (Object _) {},
+        ));
+        throw http.ClientException(
+          'Z.AI did not answer the search request in time.',
         );
+      },
+    );
     // Case-insensitive by contract in package:http, so this is the header the
     // server sent whatever case it used.
     // Read before the write below: `headers` *is* `session` during a
@@ -692,7 +703,9 @@ class ZaiSearch implements SearchProvider {
     if (found.isNotEmpty) return found.take(limit < 0 ? 0 : limit).toList();
 
     final prose = _textBlocks(result['content']).join('\n').trim();
-    if (prose.isEmpty) return const [];
+    // The limit binds here too: the link path takes none when asked for none,
+    // and prose answering anyway would be a different count for the same ask.
+    if (prose.isEmpty || limit < 1) return const [];
     return [SearchResult(title: 'Z.AI web search', url: '', snippet: prose)];
   }
 
@@ -840,9 +853,19 @@ class ZaiSearch implements SearchProvider {
       // Empty falls through here too: an explicitly empty `content` beside
       // a usable `snippet` was rendering as no snippet at all.
       final content = value['content'];
-      final snippet = content is String && content.isEmpty
-          ? value['snippet'] ?? value['description']
-          : content ?? value['snippet'] ?? value['description'];
+      // Empty in every shape the switch below reads, not only as a string:
+      // `??` answers for null alone, so an explicitly empty list or map hid
+      // a usable `snippet` beside it — the same fall-through the string case
+      // already had.
+      final hasContent = switch (content) {
+        null => false,
+        final String text => text.isNotEmpty,
+        final List<Object?> parts => parts.isNotEmpty,
+        final Map<Object?, Object?> fields => fields.isNotEmpty,
+        _ => true,
+      };
+      final snippet =
+          hasContent ? content : value['snippet'] ?? value['description'];
       out.add(SearchResult(
         title: title is String && title.isNotEmpty ? title : url,
         url: url,

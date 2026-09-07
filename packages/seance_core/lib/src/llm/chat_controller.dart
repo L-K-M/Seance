@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:meta/meta.dart';
 
 import '../terminal/paste_sanitizer.dart';
 import 'provider.dart';
@@ -240,7 +239,6 @@ class ChatController {
   /// through verbatim. This is the one place they converge before being
   /// serialized into a tool result and sent to the model, so it is the one
   /// place a cap covers all of them.
-  @visibleForTesting
   static List<SearchResult> clipSearchSnippets(List<SearchResult> results) => [
         for (final r in results)
           if (r.snippet.length <= maxSnippetChars)

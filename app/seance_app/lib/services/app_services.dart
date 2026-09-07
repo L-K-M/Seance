@@ -606,11 +606,13 @@ class AppServices {
     developer.log(
       '$backend search key unavailable (locked keyring or missing entry); '
       'backend skipped for this session',
-      name: 'seance.search',
+      name: searchLoggerName,
       // Warning, like `CompositeSearch`'s record of a backend failing
       // mid-search: the two are halves of one signal, and a filter at
-      // warning level should see both.
-      level: 900,
+      // warning level should see both. Through the shared constant, which is
+      // public so the halves cannot drift — restating the number here was the
+      // drift it exists to prevent.
+      level: searchWarningLogLevel,
     );
   }
 
