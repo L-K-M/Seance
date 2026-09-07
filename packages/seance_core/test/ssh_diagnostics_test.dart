@@ -385,6 +385,9 @@ void main() {
       // may append past the redaction in `add`.
       expect(() => (lines as List<String>).add('third'),
           throwsUnsupportedError);
+      // And left it alone: a view that mutated before throwing would satisfy
+      // the expectation above while appending past the redaction anyway.
+      expect(lines, hasLength(2));
     });
 
     test('a renamed class and a renamed field together still never leak', () {
@@ -478,6 +481,11 @@ void main() {
       final log = SshConnectionLog();
       log.add('-> sock: SSHMsgUserauthInfoResponse(responses:[hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
+      // The branch, not just the absence: this line carries a class name, so
+      // losing the spacing tolerance would send it to the fail-closed withhold
+      // — which satisfies the assertion above while the shape anchor this test
+      // is about stopped matching.
+      expect(log.toString(), contains('(responses: [redacted])'));
     });
 
     test('a renamed field still hits the fail-closed branch', () {

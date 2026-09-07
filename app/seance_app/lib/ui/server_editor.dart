@@ -41,6 +41,15 @@ bool excludingNeedsConfirmation({
 /// through would replace the stored credential with nothing on any save that
 /// only touched some other field.
 ///
+/// Known gap, pre-existing and not closed here: when the auth *method*
+/// changed and nothing was typed, "what is stored" is a credential of the old
+/// kind. Nothing is written, so the config keeps its `secretRef` — now
+/// pointing at, say, a password under a server set to key auth, until a
+/// credential for the new method is entered. Clearing the ref instead would
+/// throw away a working credential on a method switch the user may undo in
+/// the same sitting, which is the worse of the two. `docs/STATUS.md`
+/// follow-up 17 tracks it.
+///
 /// A *referenced* key is the case this exists for. Its passphrase is the only
 /// credential that mode has, and it used to be dropped — the box was shown,
 /// filled and ignored — so `Test connection`, which authenticates with what
@@ -213,6 +222,14 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// save so a test connection and the save that follows describe one server,
   /// and so a save that failed and is retried does not mint a second identity.
   final String _draftId = uuidV4();
+
+  /// The vault id a *new* server's credential is saved under, minted once for
+  /// the same reason as [_draftId] and one the credential needs more:
+  /// `_saveServerNow` writes the vault before the config store, so a save that
+  /// stored the secret and then failed on the config write left an entry
+  /// behind — and a retry minting a fresh id orphaned it in the keyring with
+  /// nothing pointing at it and nothing that would ever clean it up.
+  final String _draftSecretId = uuidV4();
 
   /// The connection test: whether one is running, what the last one found,
   /// and which attempt is current. The counter is the cancellation flag — the
@@ -902,7 +919,7 @@ class _ServerEditorState extends State<_ServerEditor> {
         return;
       }
     }
-    final secretId = existingRef ?? uuidV4();
+    final secretId = existingRef ?? _draftSecretId;
     final secret = plannedCredential(
       auth: _auth,
       referenceKeyFile: _referenceKeyFile,

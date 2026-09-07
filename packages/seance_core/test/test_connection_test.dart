@@ -640,6 +640,21 @@ void main() {
           'SHA256:attacker',
           reason: 'an approved re-ask must pin the key that was approved',
         );
+        // And the other direction, which "one approval trusts one key" also
+        // means: offering the *replaced* key must ask again rather than be
+        // answered from a host-level "already trusted" cache. The prompt
+        // always says yes, so the count is what tells the two apart.
+        expect(
+          await manager.verifyHostKey(
+            host: 'new.example.com',
+            port: 22,
+            type: 'ssh-ed25519',
+            fingerprintBytes: fingerprint('new'),
+          ),
+          isTrue,
+        );
+        expect(prompts, 3,
+            reason: 'a superseded key must not linger as a trusted alternative');
       } else {
         // The prompt above always answers yes, so a refusal can only mean
         // the manager never asked — a prompt that was answered and then
@@ -703,8 +718,9 @@ void main() {
         pinnedAt: 1,
       ));
       var prompts = 0;
+      final trial = UnpinnedHostKeyStore(real);
       final manager = SshSessionManager(
-        tofu: TofuVerifier(UnpinnedHostKeyStore(real)),
+        tofu: TofuVerifier(trial),
         onHostKey: (_) async {
           prompts++;
           return true;
@@ -738,6 +754,15 @@ void main() {
       );
       expect(prompts, 1,
           reason: 'a pin must not answer for a port it was not approved on');
+      // Where the approval landed, not only that one was asked for: a manager
+      // that prompted and then pinned under the wrong port would satisfy both
+      // counts above — the same bug this test is about, one direction over.
+      expect((await trial.get('portful.example.com', 22))?.fingerprintSha256,
+          'SHA256:portful-2222',
+          reason: 'an approved first sight must pin the port it was offered on');
+      expect((await trial.get('portful.example.com', 2222))?.fingerprintSha256,
+          'SHA256:portful-2222',
+          reason: 'and must leave the pin for the other port alone');
     });
   });
 }

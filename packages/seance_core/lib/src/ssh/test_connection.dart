@@ -123,6 +123,13 @@ class ConnectionTestResult {
 /// file the sandbox will not open — and those failures belong in the same
 /// result as a refused password rather than as an exception the caller has to
 /// classify a second time.
+///
+/// Nothing here cancels a slow attempt. With [liveHostAuthenticator] the only
+/// bounds are its TCP-connect timeout and dartssh2's five-minute
+/// authentication timer, both deliberate — so a caller driving a spinner owns
+/// its own way out, and has to ignore a result that arrives after the user
+/// has moved on. The editor supersedes by attempt number and drops a late
+/// verdict rather than showing it against a form it no longer describes.
 Future<ConnectionTestResult> runConnectionTest({
   required ServerConfig config,
   required Future<SshCredentials> Function() credentials,

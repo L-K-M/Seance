@@ -232,6 +232,16 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     differs for the same file) and is null on every other platform. The fix is
     an explicit "no passphrase" affordance in the editor, honoured identically
     by `resolveCredentials` and `plannedCredential`.
+17. **A method switch can leave a credential of the wrong kind referenced.**
+    Every credential box starts blank when an existing server is opened, and
+    blank means "keep what is stored". Switch the auth method without typing
+    anything and nothing is written, so the config keeps a `secretRef` pointing
+    at a credential of the old kind — a password under a server now set to key
+    auth, which a later connect reads as a PEM and fails to parse. Clearing the
+    ref instead would throw away a working credential on a switch the user may
+    undo in the same sitting, so neither half is right on its own: the fix is
+    for the editor to notice the mismatch and say so, rather than for `_save`
+    to pick one silently.
 
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,

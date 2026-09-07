@@ -185,6 +185,16 @@ class SshConnectionLog {
 /// redacted — but a chunk arriving *without* the name cannot reach that
 /// branch at all, and a `(responses : [pw])` would then match nothing and
 /// print the credential.
+///
+/// One cell of that matrix stays open, and deliberately: a chunk carrying
+/// *neither* the class name nor the `responses` field — both drifted at once,
+/// in a message some producer split — matches no anchor and reaches no
+/// withhold. Closing it would mean redacting any bracketed list after any
+/// `name:`, which eats `methodsLeft: [ … ]` — the line the failure summary
+/// parses to tell the user which methods the host accepts. What holds the
+/// cell shut instead is that every producer hands [SshConnectionLog.add] a
+/// whole record, so a chunk without the name does not exist today; that
+/// invariant is the one to keep, not the pattern to widen.
 const String _userauthMessage = 'Userauth_InfoResponse';
 
 /// What the fail-closed branch keys on: the part of the name a rename is
