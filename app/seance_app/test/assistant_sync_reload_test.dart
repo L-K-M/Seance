@@ -316,7 +316,11 @@ void main() {
     // how many records the ones before it pushed — arbitrary under
     // `--test-randomize-ordering-seed`, and confusing in a single-test run.
     setUp(() => seq = 0);
-    MockClient emptyAccount(void Function(String id) onPushed) => MockClient(
+    // The whole record, not its id: what a publish puts on the *wire* is the
+    // thing these tests are about, and a stamp that only ever moves in
+    // `settings` cannot be told from one that also moves on the record.
+    MockClient emptyAccount(void Function(EncryptedRecord record) onPushed) =>
+        MockClient(
           (request) async {
             if (request.method == 'GET') {
               return http.Response(
@@ -335,7 +339,7 @@ void main() {
               jsonDecode(request.body) as Map<String, dynamic>,
             ).records;
             for (final record in pushed) {
-              onPushed(record.id);
+              onPushed(record);
             }
             // Acknowledged, as a server does. Answering `results: []` to
             // every push simulates a server that silently drops what it is
@@ -370,7 +374,7 @@ void main() {
       services.settings.autoSync = false;
       await services.masterKeys.putApiKey('anthropic', 'sk-configured');
 
-      final pushed = <String>[];
+      final pushed = <EncryptedRecord>[];
       final state = AppState(services);
       addTearDown(state.dispose);
       await http.runWithClient(
@@ -380,7 +384,16 @@ void main() {
 
       expect(services.settings.assistantUpdatedAt, greaterThan(0),
           reason: 'a configured device must stamp what it is about to publish');
-      expect(pushed, contains(AssistantSettings.recordId));
+      expect(pushed.map((r) => r.id), contains(AssistantSettings.recordId));
+      // And the record carries that stamp, which is the half the setting
+      // cannot vouch for: a publish that dated the outgoing record from its
+      // own clock would satisfy every assertion above.
+      expect(
+        (await RecordCodec(services.vaultKey!).decrypt(pushed
+                .lastWhere((r) => r.id == AssistantSettings.recordId)))
+            .updatedAt,
+        services.settings.assistantUpdatedAt,
+      );
     });
 
     test('a device that already has a stamp does not stamp again', () async {
@@ -397,7 +410,7 @@ void main() {
 
       final state = AppState(services);
       addTearDown(state.dispose);
-      final pushed = <String>[];
+      final pushed = <EncryptedRecord>[];
       await http.runWithClient(
         () => state.assistantSyncSwitchedOn(),
         () => emptyAccount(pushed.add),
@@ -406,9 +419,19 @@ void main() {
       expect(services.settings.assistantUpdatedAt, 500);
       // The stamp suppresses re-stamping, not publishing: the round's own
       // `collectLocal` still puts the record on the account. Discarding the
-      // pushed ids here could not tell that from a device that had silently
-      // stopped syncing its assistant altogether.
-      expect(pushed, contains(AssistantSettings.recordId));
+      // pushed records here could not tell that from a device that had
+      // silently stopped syncing its assistant altogether.
+      expect(pushed.map((r) => r.id), contains(AssistantSettings.recordId));
+      // Under the stamp it already had, on the wire and not only in
+      // `settings`. A publish that re-dated the outgoing record while leaving
+      // the setting alone is exactly the "permanent winner" this test's
+      // comment describes, and the local assertion above cannot see it.
+      expect(
+        (await RecordCodec(services.vaultKey!).decrypt(pushed
+                .lastWhere((r) => r.id == AssistantSettings.recordId)))
+            .updatedAt,
+        500,
+      );
     });
 
     test('an upgrading configured device adopts rather than clobbers',
@@ -441,7 +464,10 @@ void main() {
       ));
 
       final pushed = <String>[];
-      var seq = 1;
+      // Named apart from the group's `seq`: this transport starts from an
+      // account that already holds a record, and shadowing the counter that
+      // `setUp` resets makes it look as though that reset applied here.
+      var pushSeq = 1;
       final transport = MockClient((request) async {
         if (request.method == 'GET') {
           return http.Response(
@@ -462,9 +488,9 @@ void main() {
           jsonEncode(PushResponse(
             results: [
               for (final record in records)
-                PushResult(id: record.id, seq: ++seq, accepted: true),
+                PushResult(id: record.id, seq: ++pushSeq, accepted: true),
             ],
-            latestSeq: seq,
+            latestSeq: pushSeq,
           ).toJson()),
           HttpStatus.ok,
         );
@@ -480,6 +506,11 @@ void main() {
       // Adopted, not published over: the switch's own copy says it replaces
       // the assistant setup on this device.
       expect(services.settings.llmModel, 'the-phone-model');
+      // The keys too: the switch's copy says it replaces the assistant setup,
+      // and a configuration adopted without its key looks set up here and
+      // answers nothing.
+      expect(await services.masterKeys.getApiKey('anthropic'), 'sk-phone',
+          reason: 'adoption replaces the whole setup, keys included');
       expect(services.settings.assistantUpdatedAt, 900);
       expect(pushed, isNot(contains(AssistantSettings.recordId)),
           reason: 'a device that adopted has nothing of its own to publish');
@@ -499,7 +530,7 @@ void main() {
       addTearDown(state.dispose);
       await http.runWithClient(
         () => state.assistantSyncSwitchedOn(),
-        () => emptyAccount(pushed.add),
+        () => emptyAccount((r) => pushed.add(r.id)),
       );
 
       expect(services.settings.assistantUpdatedAt, 0);

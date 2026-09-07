@@ -262,6 +262,10 @@ void main() {
       // the keyed one has, where the tiebreak can evict the copy that still
       // has it — and nothing republishes, because the stamps agree.
       settings.assistantUpdatedAt = 99;
+      // Named rather than left to the shipped default: this test is about
+      // one reference, and reading which one out of `AppSettings`'s defaults
+      // makes a change there fail here with no hint why.
+      settings.llmApiKeyRef = 'anthropic';
       await keys.putApiKey('anthropic', 'sk-llm');
       expect((await sync.getAssistantSettings())!.apiKeys,
           containsPair('anthropic', 'sk-llm'));
@@ -282,6 +286,43 @@ void main() {
       await keys.putApiKey('anthropic', 'sk-again');
       expect((await sync.getAssistantSettings())!.apiKeys,
           containsPair('anthropic', 'sk-again'));
+    });
+
+    test('a key recorded only by publishing survives a restart', () async {
+      // The wipe guard reads `heldAssistantKeyRefs` out of `settings.json`,
+      // and the collect path is the only thing that records a key entered in
+      // Settings — this device never adopted it, so the apply path never saw
+      // it. Recorded in memory alone, the next launch reads "reference set,
+      // key absent, keystore fine" as the never-stored state and publishes
+      // the keyless copy the guard exists to hold back, under the stamp the
+      // keyed record already has.
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = 'anthropic';
+      await keys.putApiKey('anthropic', 'sk-llm');
+
+      // Asserted as a *save*, not by re-reading the object: the set is on the
+      // object either way, so serializing this instance cannot tell a
+      // recorded key from a persisted one. What a restart actually reads is
+      // the last thing written to disk.
+      expect((await sync.getAssistantSettings())!.apiKeys,
+          containsPair('anthropic', 'sk-llm'));
+      expect(settings.heldAssistantKeyRefs, contains('anthropic'));
+      expect(saves, 1, reason: 'a newly held key has to reach the disk');
+
+      // Once, though: `add` answers false from here on, and a save per round
+      // for a configuration that has not moved is the churn every other
+      // guard in this class is written against.
+      await sync.getAssistantSettings();
+      expect(saves, 1);
+
+      // And the guard that set exists for, over the settings as persisted.
+      final afterRestart = AssistantSettingsSync(
+        settings: AppSettings.fromJson(settings.toJson()),
+        masterKeys: keys,
+        saveSettings: () async {},
+      );
+      keystore.entries.remove('seance.apikey.anthropic');
+      expect(await afterRestart.getAssistantSettings(), isNull);
     });
 
     test('clearing a reference clears the history that blocked it', () async {
@@ -500,6 +541,25 @@ void main() {
         saveSettings: () async {},
       );
       expect(await afterRestart.getAssistantSettings(), isNull);
+    });
+
+    test('a key the record only confirms is recorded as held', () async {
+      // The write branch records what it writes, but this is the other way a
+      // device comes to hold a key it must not later publish keyless: the
+      // user typed it in Settings under a name the configuration did not yet
+      // reference, and the arriving record is the first thing to name it.
+      // The value already matches, so nothing is written — and without a
+      // record of it here, nothing on this device knows it was ever held.
+      settings.llmApiKeyRef = 'somewhere-else';
+      await keys.putApiKey('openai', 'sk-remote');
+      expect(settings.heldAssistantKeyRefs, isNot(contains('openai')));
+
+      await sync.putAssistantSettings(arriving());
+
+      expect(settings.heldAssistantKeyRefs, contains('openai'));
+      // Which is what the wipe guard then has to work from.
+      keystore.entries.remove('seance.apikey.openai');
+      expect(await sync.getAssistantSettings(), isNull);
     });
 
     test('a key that reads back correct clears its suspension', () async {

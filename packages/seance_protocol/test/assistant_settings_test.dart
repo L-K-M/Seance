@@ -46,6 +46,29 @@ void main() {
         isFalse);
   });
 
+  test('a stamp that is not a finite number decodes to zero', () {
+    // `toInt()` throws `UnsupportedError` on a NaN or an infinity, so a
+    // number-typed stamp is not enough to make the decode tolerant — and a
+    // throw here abandons the whole record rather than degrading one field.
+    // Zero is the safe reading: it loses to every real stamp.
+    for (final bad in <num>[double.nan, double.infinity, -double.infinity]) {
+      expect(
+        AssistantSettings.fromJson(settings().toJson()..['updatedAt'] = bad)
+            .updatedAt,
+        0,
+        reason: '$bad',
+      );
+    }
+    // A finite double still decodes, so the guard did not take the ordinary
+    // case with it: JSON has one number type, and a stamp that round-trips
+    // through a codec preserving doubles arrives as one.
+    expect(
+      AssistantSettings.fromJson(settings().toJson()..['updatedAt'] = 42.0)
+          .updatedAt,
+      42,
+    );
+  });
+
   test('redaction defaults on when a writer had no such field', () {
     // The safe reading of "an older writer" is the default the app ships with.
     final legacy = settings().toJson()..remove('redactSecrets');

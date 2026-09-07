@@ -187,8 +187,16 @@ class AssistantSettings {
         // rewritten through the field it exposes. The const constructor still
         // aliases a caller-supplied map; callers treat it as read-only.
         apiKeys: Map.unmodifiable(_stringMap(json['apiKeys'])),
-        updatedAt:
-            json['updatedAt'] is num ? (json['updatedAt'] as num).toInt() : 0,
+        // `isFinite` as well as `is num`: `toInt()` throws
+        // `UnsupportedError` on a NaN or an infinity, which would take the
+        // whole decode with it — and this constructor's contract, stated for
+        // the provider fields above, is that a wrong-typed value degrades to
+        // its default rather than throwing. A stamp of zero loses to every
+        // real one, which is the safe reading of a timestamp that is not a
+        // number.
+        updatedAt: json['updatedAt'] is num && (json['updatedAt'] as num).isFinite
+            ? (json['updatedAt'] as num).toInt()
+            : 0,
       );
 
   @override

@@ -1065,6 +1065,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// Persist the sync preference toggles and (re)start the auto-sync timer.
   Future<void> _persistSyncPrefs(AppState state) async {
+    // The same flag Save sets, for the same reason it exists: these handlers
+    // await a disk write and, on switch-on, a whole sync round, and the
+    // switches are only disabled while it is set. Without it the user can
+    // press Save — or flip a second toggle — while adoption is rewriting the
+    // very `settings` object this method assigns to and rolls back, so a
+    // rollback here can undo a sibling's persisted choice and `_save`'s
+    // assignments can interleave with adoption's.
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await _persistSyncPrefsInner(state);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _persistSyncPrefsInner(AppState state) async {
     final s = state.services.settings;
     final wasAutoSync = s.autoSync;
     final wasSyncSecrets = s.syncSecrets;
@@ -1136,7 +1153,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // pre-adoption values back — with a fresh stamp, so the revert wins on
       // every device. (A periodic round can adopt too; `_save` checks for
       // that itself.)
-      if (mounted) setState(() => _syncAssistantFields(state));
+      //
+      // Only when adoption actually ran, though. The switch adopts when the
+      // account already holds a record and otherwise *publishes*, which
+      // rewrites nothing here — and reloading then overwrites whatever the
+      // user had typed into the assistant fields but not yet saved, from a
+      // toggle whose subtitle promises it only changes what is shared. The
+      // version counter is what separates the two: `_runSyncAndRefresh`
+      // reloads the provider, and so bumps it, only when the round adopted.
+      if (mounted && state.llmConfigVersion != _assistantVersionSeen) {
+        setState(() => _syncAssistantFields(state));
+      }
     }
   }
 

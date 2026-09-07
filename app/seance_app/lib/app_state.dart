@@ -1293,7 +1293,15 @@ class AppState extends ChangeNotifier {
     // stamp. Stamping now would put this device's pre-feature configuration
     // over the one it just adopted — the clobber this whole method is a
     // sequence of guards against.
-    if (services.settings.assistantUpdatedAt != 0) return;
+    // Both halves of the entry guard, not only the stamp: the toggle stays
+    // live across that await too, and a user who switches assistant sync back
+    // off inside it would otherwise be stamped and persisted anyway — leaving
+    // the inflated stamp, while opted out, that can outrank a record another
+    // device publishes before the switch is thrown again.
+    if (services.settings.assistantUpdatedAt != 0 ||
+        !services.settings.syncAssistant) {
+      return;
+    }
     await assistantSettingsEdited();
     // That hands the publish to the auto-sync debounce, which does not run
     // with auto-sync off — and this switch is an explicit ask to sync, made

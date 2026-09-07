@@ -161,6 +161,9 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     final redactSecrets = settings.redactionEnabled;
     final updatedAt = settings.assistantUpdatedAt;
     final keys = <String, String>{};
+    // Set when a name is recorded as held for the first time, so the round
+    // can flush it below rather than trusting a later save to happen by.
+    var heldAdded = false;
     for (final name in _referencedKeys) {
       // getApiKey answers null on a locked keyring rather than throwing, and
       // null for a name that was never stored. keystoreStatus is what tells
@@ -191,7 +194,15 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // after a keystore wipe, which this device cannot tell apart locally.
       if (value != null) {
         keys[name] = value;
-        _held.add(name);
+        // Persisted, not only remembered: `_held` is what tells a key this
+        // device lost from one it never had, and `settings.json` surviving a
+        // keystore wipe is the whole reason it lives there. Added here and
+        // left in memory, a key entered in Settings — never adopted, so the
+        // apply path never records it — would be forgotten by the next
+        // launch, and the wipe it exists to catch would read as "never held"
+        // and publish keyless. Once per name: `add` answers false after the
+        // first round.
+        if (_held.add(name)) heldAdded = true;
       } else if (_held.contains(name)) {
         // Held before, unreadable now, keystore available: a wipe, not a
         // reference that never had a key. Publishing keyless here would put a
@@ -204,6 +215,8 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         return null;
       }
     }
+
+    if (heldAdded) await saveSettings();
 
     return AssistantSettings(
       providerKind: providerKind,
@@ -332,6 +345,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
           // name listed would go on blocking this device from publishing on
           // evidence the keystore has just contradicted.
           if (_unwritten.remove(entry.key)) unwrittenChanged = true;
+          // And held, for the same evidence: this branch is the ordinary one
+          // once a configuration has settled, so without it a device that
+          // adopted in an earlier session and has re-delivered the record
+          // ever since would never record what it demonstrably holds.
+          if (_held.add(entry.key)) heldChanged = true;
           continue;
         }
         await masterKeys.putApiKey(entry.key, entry.value);

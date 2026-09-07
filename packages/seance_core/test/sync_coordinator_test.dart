@@ -2005,13 +2005,6 @@ class _RefusingVault extends SecretVault {
   }
 }
 
-/// A store whose keyring will not answer: the configuration is there and its
-/// stamp is real, but nothing can be vouched for this round.
-///
-/// The in-memory double cannot express this — it returns null only when it has
-/// never been set, so its null and its stamp agree — and this combination is
-/// exactly the contract [AssistantSettingsStore] documents for a locked
-/// keyring.
 /// A store whose keystore read fails the way a real one does — the platform
 /// channel behind a locked keyring throws rather than answering null.
 class _ThrowingAssistantStore implements AssistantSettingsStore {
@@ -2026,6 +2019,14 @@ class _ThrowingAssistantStore implements AssistantSettingsStore {
   Future<void> putAssistantSettings(AssistantSettings value) async {}
 }
 
+/// A store whose keyring will not answer: the configuration is there and its
+/// stamp is real, but nothing can be vouched for this round.
+///
+/// The in-memory double cannot express this — it returns null only when it has
+/// never been set, so its null and its stamp agree — and this combination is
+/// exactly the contract [AssistantSettingsStore] documents for a locked
+/// keyring. The sibling above is the other half of that contract: a keyring
+/// that throws rather than answering at all.
 class _WithheldKeyStore implements AssistantSettingsStore {
   _WithheldKeyStore(this.settings);
   AssistantSettings settings;
