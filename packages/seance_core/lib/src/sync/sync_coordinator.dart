@@ -145,7 +145,19 @@ class SyncCoordinator {
     // to a device's own settings file — and publishing one would park a
     // record no device adopts on the account under this device's stamp,
     // where nothing older can displace it.
-    if (assistant != null && assistant.providerKind.isNotEmpty) {
+    // And the stamp, which is the other half of "is this worth publishing".
+    // Zero means this device has never edited its assistant — the sentinel
+    // `AppState.assistantSyncSwitchedOn` reads before it decides to stamp and
+    // publish. Without it here, a device that opted in with nothing
+    // configured parks its *shipped defaults* on the account at stamp zero,
+    // and the next device to opt in — every install that configured its
+    // assistant before this feature existed reads zero too — adopts them over
+    // a working provider, model and keys, because `0 < 0` is false. That is
+    // the exact harm the switch-on guard exists to prevent; guarding the
+    // stamp bump alone left this path open.
+    if (assistant != null &&
+        assistant.providerKind.isNotEmpty &&
+        assistant.updatedAt != 0) {
       await local.putLocal(await codec.encrypt(DecryptedRecord(
         id: AssistantSettings.recordId,
         kind: RecordKind.assistantSettings,

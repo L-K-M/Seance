@@ -305,14 +305,25 @@ void main() {
             // By id, not by counting requests: the round pushes whatever else
             // this device holds, and "a POST happened" would pass for a
             // server config while the assistant record stayed behind.
-            final body = jsonDecode(request.body) as Map<String, dynamic>;
-            for (final record in body['records'] as List<dynamic>) {
-              onPushed((record as Map<String, dynamic>)['id'] as String);
+            final pushed = PushRequest.fromJson(
+              jsonDecode(request.body) as Map<String, dynamic>,
+            ).records;
+            for (final record in pushed) {
+              onPushed(record.id);
             }
+            // Acknowledged, as a server does. Answering `results: []` to
+            // every push simulates a server that silently drops what it is
+            // sent, so a client that treated an unacknowledged record as
+            // unsynced would look identical to one that published.
+            var seq = 0;
             return http.Response(
-              jsonEncode(
-                const PushResponse(results: [], latestSeq: 0).toJson(),
-              ),
+              jsonEncode(PushResponse(
+                results: [
+                  for (final record in pushed)
+                    PushResult(id: record.id, seq: ++seq, accepted: true),
+                ],
+                latestSeq: seq,
+              ).toJson()),
               HttpStatus.ok,
             );
           },
@@ -343,6 +354,28 @@ void main() {
       expect(services.settings.assistantUpdatedAt, isNot(0),
           reason: 'a configured device must stamp what it is about to publish');
       expect(pushed, contains(AssistantSettings.recordId));
+    });
+
+    test('a device that already has a stamp does not stamp again', () async {
+      // Not a zero-stamp case, and the reason the guard reads the stamp
+      // rather than only the adoption flag: this device's record is already
+      // the account's — the round above pushed it, or it was there and
+      // nothing outranked it. Stamping again republishes identical content
+      // under a newer date, making this device the permanent winner of a
+      // record it may not have authored, and it is the only thing standing
+      // between a round queued behind this one and a false "adopted nothing".
+      services.settings.assistantUpdatedAt = 500;
+      services.settings.autoSync = false;
+      await services.masterKeys.putApiKey('anthropic', 'sk-configured');
+
+      final state = AppState(services);
+      addTearDown(state.dispose);
+      await http.runWithClient(
+        () => state.assistantSyncSwitchedOn(),
+        () => emptyAccount((_) {}),
+      );
+
+      expect(services.settings.assistantUpdatedAt, 500);
     });
 
     test('a fresh install publishes nothing over the account', () async {

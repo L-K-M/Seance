@@ -1618,6 +1618,81 @@ void main() {
       expect(arrived.updatedAt, 10);
     });
 
+    test('a keyring that cannot be read sits the round out', () async {
+      // The store contract's most delicate case, and the one
+      // `InMemoryAssistantSettingsStore` cannot express: a null read with a
+      // *nonzero* stamp means "the keys could not be vouched for right now",
+      // not "nothing configured". The round must publish nothing — a keyless
+      // copy would carry the keyed record's own stamp and could evict it —
+      // while the stamp still refuses an older record pulled in the same
+      // round, so the withheld edit is not overwritten either.
+      final remote = FakeServer();
+      final local = InMemoryLocalRecordStore();
+      final withheld = _WithheldKeyStore(assistant(updatedAt: 30));
+      await coordinator('A', local, store: withheld).run(remote);
+
+      expect(remote.stored(AssistantSettings.recordId), isNull);
+      expect((await local.allRecords()).map((r) => r.id),
+          isNot(contains(AssistantSettings.recordId)));
+
+      // And an older record from another device does not slip in behind it.
+      final older = FakeServer();
+      await coordinator('B', InMemoryLocalRecordStore(),
+              store: InMemoryAssistantSettingsStore(
+                  assistant(model: 'older', updatedAt: 20)))
+          .run(older);
+      await coordinator('A', InMemoryLocalRecordStore(), store: withheld)
+          .run(older);
+      expect(withheld.settings.model, 'claude-haiku-4-5-20251001');
+    });
+
+    test('a device that never edited its assistant publishes nothing',
+        () async {
+      // Stamp zero means "never edited here", and it is what separates a
+      // fresh install from a device with a configuration. Published anyway, a
+      // laptop that opted in with nothing configured parks its *shipped
+      // defaults* on the account under that stamp.
+      final remote = FakeServer();
+      final never = InMemoryAssistantSettingsStore(assistant(updatedAt: 0));
+      await coordinator('A', InMemoryLocalRecordStore(), store: never)
+          .run(remote);
+      expect(remote.stored(AssistantSettings.recordId), isNull);
+    });
+
+    test('the apply side cannot refuse a stamp-zero record, so the publish '
+        'side has to', () async {
+      // Why the guard above is load-bearing rather than tidy. The apply guard
+      // refuses a *strictly* older record, and an install that configured its
+      // assistant before this feature existed reads stamp zero too — so
+      // `0 < 0` is false and a defaults record at that stamp is adopted over
+      // a working provider, model and keys. Pinned here, at the apply side,
+      // because that is the fact the publish guard exists to keep
+      // unreachable: widening this refusal instead would stop a record that
+      // legitimately ties from converging, which the guard's own comment
+      // calls the narrow price of convergence.
+      final local = InMemoryLocalRecordStore();
+      final configured = InMemoryAssistantSettingsStore(assistant(
+        model: 'my-real-model',
+        llmApiKeyRef: 'openai',
+        apiKeys: const {'openai': 'sk-real'},
+        updatedAt: 0,
+      ));
+      await local.putRemote((await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 0,
+        deviceId: 'laptop',
+        data: assistant(updatedAt: 0).toJson(),
+      )))
+          .withSeq(1));
+
+      await coordinator('phone', local, store: configured).applyToStores();
+
+      expect(configured.settings!.model, 'claude-haiku-4-5-20251001',
+          reason: 'a stamp-zero record is adopted, which is why one must '
+              'never be published');
+    });
+
     test('a later edit wins, an unchanged round changes nothing', () async {
       final remote = FakeServer();
       final storeA = InMemoryAssistantSettingsStore(assistant());
@@ -1886,4 +1961,26 @@ class _RefusingVault extends SecretVault {
     deletesAttempted++;
     throw StateError('keyring locked');
   }
+}
+
+/// A store whose keyring will not answer: the configuration is there and its
+/// stamp is real, but nothing can be vouched for this round.
+///
+/// The in-memory double cannot express this — it returns null only when it has
+/// never been set, so its null and its stamp agree — and this combination is
+/// exactly the contract [AssistantSettingsStore] documents for a locked
+/// keyring.
+class _WithheldKeyStore implements AssistantSettingsStore {
+  _WithheldKeyStore(this.settings);
+  AssistantSettings settings;
+
+  @override
+  Future<AssistantSettings?> getAssistantSettings() async => null;
+
+  @override
+  Future<int> assistantSettingsUpdatedAt() async => settings.updatedAt;
+
+  @override
+  Future<void> putAssistantSettings(AssistantSettings value) async =>
+      settings = value;
 }

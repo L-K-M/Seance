@@ -127,7 +127,13 @@ class AssistantSettings {
         updatedAt: updatedAt ?? this.updatedAt,
       );
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson() {
+    // Filtered once. The whole design rests on the reader and the writer
+    // applying the *same* filter, and calling it twice on one line puts two
+    // copies of that decision a comma apart — where editing one is the
+    // obvious mistake and nothing catches it.
+    final keys = _stringMap(apiKeys);
+    return {
         // Trimmed on the way out for the same reason [_blankToNull] trims on
         // the way in, and [_stringMap] trims in both directions: the reader
         // normalizes, so a padded value written verbatim makes the collecting
@@ -154,9 +160,10 @@ class AssistantSettings {
         // does not sync keys is byte-identical to one that has none.
         // Through the same filter [fromJson] applies, so a degenerate entry
         // a caller built by hand is not written as set and read back as gone.
-        if (_stringMap(apiKeys).isNotEmpty) 'apiKeys': _stringMap(apiKeys),
+        if (keys.isNotEmpty) 'apiKeys': keys,
         'updatedAt': updatedAt,
       };
+  }
 
   factory AssistantSettings.fromJson(Map<String, dynamic> json) =>
       AssistantSettings(

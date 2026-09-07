@@ -101,6 +101,23 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   /// stores it under its own prefix, which no key reference resolves to.
   static const Set<String> reservedKeyNames = {'sync.token'};
 
+  /// Whether any of a configuration's three key references names a reserved
+  /// entry.
+  ///
+  /// One predicate for both directions rather than the same three-way check
+  /// written twice. The publish side leans on the adopt side's copy — it
+  /// withholds *because* every peer refuses such a record — so the two going
+  /// out of step is what turns a refusal into a leak, and a fourth reference
+  /// field added to one and not the other is exactly how that happens.
+  static bool _namesReservedEntry(
+    String llmApiKeyRef,
+    String? braveApiKeyRef,
+    String? zaiApiKeyRef,
+  ) =>
+      reservedKeyNames.contains(llmApiKeyRef) ||
+      reservedKeyNames.contains(braveApiKeyRef) ||
+      reservedKeyNames.contains(zaiApiKeyRef);
+
   @override
   Future<AssistantSettings?> getAssistantSettings() async {
     // Nothing has ever been published from this device, so there is nothing to
@@ -115,9 +132,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // thing without the litter. Reachable only by hand-editing
     // `settings.json` — the screen writes the provider's own name — which is
     // exactly the case a deny-list is for.
-    if (reservedKeyNames.contains(settings.llmApiKeyRef) ||
-        reservedKeyNames.contains(settings.braveApiKeyRef) ||
-        reservedKeyNames.contains(settings.zaiApiKeyRef)) {
+    if (_namesReservedEntry(
+      settings.llmApiKeyRef,
+      settings.braveApiKeyRef,
+      settings.zaiApiKeyRef,
+    )) {
       return null;
     }
 
@@ -242,9 +261,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // the chat provider resolve this device's sync token as its API key and
     // send it, as a bearer credential, to whatever endpoint the record
     // carried. The refs are the record's allow-list; this is the device's.
-    if (reservedKeyNames.contains(value.llmApiKeyRef) ||
-        reservedKeyNames.contains(value.braveApiKeyRef) ||
-        reservedKeyNames.contains(value.zaiApiKeyRef)) {
+    if (_namesReservedEntry(
+      value.llmApiKeyRef,
+      value.braveApiKeyRef,
+      value.zaiApiKeyRef,
+    )) {
       applied = false;
       return;
     }

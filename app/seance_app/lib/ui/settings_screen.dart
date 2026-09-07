@@ -1002,7 +1002,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
       }
     }
-    if (keyEntered) {
+    // `mounted` first: these are `TextEditingController`s owned by this
+    // widget, and the awaits above give the user time to leave the screen.
+    // Clearing a disposed one throws — an unhandled async error from a Save
+    // that otherwise succeeded, and there is nothing left to clear anyway.
+    if (keyEntered && mounted) {
       // Cleared once stored, or the text left in the field makes every later
       // Save on this screen look like a key change: it would stamp `now` and
       // republish, and on last-write-wins that beats a genuinely newer edit
@@ -1111,6 +1115,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
         if (mounted) setState(() => _syncAssistant = false);
         if (mounted) showTopToastIn(context, message: 'Assistant sync: $e');
+        // And stop here. The reload below exists to show what adoption wrote,
+        // and this branch is the one where adoption did not run — reloading
+        // anyway would overwrite whatever the user had typed into the
+        // assistant fields with the stored values, as a side effect of a
+        // network failure they did not cause.
+        return;
       }
       // Adoption rewrites the assistant half of `settings`, and this screen
       // loaded its fields once. Without this, the next Save writes the

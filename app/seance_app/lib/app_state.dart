@@ -1250,9 +1250,24 @@ class AppState extends ChangeNotifier {
     // out before anything was adopted — stamping now would leave behind
     // exactly the inflated stamp the entry guard exists to prevent, and it
     // would outrank the account's record when the switch is next turned on.
-    if (_lastRoundAdoptedAssistant || !services.settings.syncAssistant) return;
-    // A zero stamp means two different things, and only one of them is
-    // "nothing worth publishing".
+    // A nonzero stamp after a round that adopted nothing means this device's
+    // record is already the account's — `collectLocal` pushed it in the round
+    // above, or it was already there and nothing outranked it. Stamping again
+    // republishes identical content under a newer date for nothing, and makes
+    // this device the permanent winner of a record it may not have authored.
+    //
+    // It also makes the check above robust rather than merely fast enough:
+    // adoption always leaves the adopted record's stamp behind, which is never
+    // zero, so a round queued behind this one that overwrote
+    // `_lastRoundAdoptedAssistant` during the reload's await cannot turn an
+    // adoption into a republish.
+    if (_lastRoundAdoptedAssistant ||
+        services.settings.assistantUpdatedAt != 0 ||
+        !services.settings.syncAssistant) {
+      return;
+    }
+    // Past here the stamp is zero, which means two different things — and only
+    // one of them is "nothing worth publishing".
     //
     // A fresh install has never configured an assistant, and stamping now
     // would turn its shipped defaults into the account's newest write — the
@@ -1270,10 +1285,8 @@ class AppState extends ChangeNotifier {
     // none. That is `llmConfigured`, re-read rather than trusted, because a
     // key stored moments ago on the screen this switch lives on is exactly
     // the case that matters.
-    if (services.settings.assistantUpdatedAt == 0) {
-      await refreshLlmConfigured();
-      if (!llmConfigured) return;
-    }
+    await refreshLlmConfigured();
+    if (!llmConfigured) return;
     await assistantSettingsEdited();
     // That hands the publish to the auto-sync debounce, which does not run
     // with auto-sync off — and this switch is an explicit ask to sync, made

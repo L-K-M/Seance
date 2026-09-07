@@ -27,11 +27,14 @@ class _Keystore extends FlutterSecureStorage {
     AppleOptions? mOptions,
     WindowsOptions? wOptions,
   }) async {
+    // Consumed before the locked branch can throw: left armed, an edit
+    // placed at one read would fire at the first *unlocked* one instead —
+    // a settings mutation landing somewhere no test asked for it.
+    final hook = onNextRead;
+    onNextRead = null;
     if (locked) {
       throw PlatformException(code: 'KeyringLocked', message: 'KeyringLocked');
     }
-    final hook = onNextRead;
-    onNextRead = null;
     hook?.call();
     return entries[key];
   }
