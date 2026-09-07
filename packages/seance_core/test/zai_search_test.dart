@@ -587,8 +587,10 @@ void main() {
               .having((e) => e.message, 'message', contains('HTTP 502'))
               .having((e) => e.message, 'message', isNot(contains('secret'))),
         ),
-        // Test-side: the drain deadline is what ends this, and a regression
-        // in it would otherwise hang until the runner's own timeout.
+        // Test-side belt and braces only: this body is a `Stream.value`, so
+        // it completes under any reading strategy and no drain deadline is
+        // reached here. The stalled- and reset-body tests are what exercise
+        // that deadline.
       ).timeout(const Duration(seconds: 5));
     });
 
@@ -1269,6 +1271,25 @@ void main() {
         }, 'dart', 0),
         {'query': 'dart', 'count': 10},
       );
+      // And the combination neither of those covers: required, no default,
+      // nothing sensible to put there. Naming it is the same answer the
+      // unfillable-parameter branch gives — better than spending a round trip
+      // on `count: 0`, which no gateway can mean anything by, or on a request
+      // missing a field its own schema calls required.
+      expect(
+        () => ZaiSearch.buildArguments(const {
+          'properties': {
+            'query': {'type': 'string'},
+            'count': {'type': 'integer'},
+          },
+          'required': ['count'],
+        }, 'dart', 0),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          contains('count'),
+        )),
+      );
     });
 
     test('fills a required parameter from its default', () {
@@ -1286,26 +1307,48 @@ void main() {
 
     test('a required parameter\'s name is echoed bounded', () {
       // The name is the gateway's to choose and the message reaches the UI.
+      //
+      // A *fillable* query parameter beside it, which this fixture used to
+      // lack: with the long name as the only property, the tool has no query
+      // parameter at all and the throw comes from that branch instead —
+      // whose message is a constant, and so passed a bound on the length
+      // while never echoing a name. The test was green for a reason that had
+      // nothing to do with its subject.
       final name = 'p' * 500;
       expect(
         () => ZaiSearch.buildArguments({
-          'properties': {name: const {'type': 'string'}},
-          'required': [name],
+          'properties': {
+            'search_query': const {'type': 'string'},
+            name: const {'type': 'string'},
+          },
+          'required': ['search_query', name],
         }, 'dart', 5),
         throwsA(isA<http.ClientException>().having(
-          (e) => e.message.length,
-          'message length',
-          lessThan(160),
+          (e) => e.message,
+          'message',
+          allOf(
+            // Bounded *and* still there. On the length alone, a message that
+            // stopped naming the parameter altogether — the dead end the
+            // neighbouring test says this design exists to avoid — is under
+            // any cap and passes, and so is an empty echo.
+            contains('p' * 20),
+            predicate<String>((m) => m.length < 160, 'under 160 characters'),
+          ),
         )),
       );
     });
 
     test('the echoed name is not cut between the halves of an emoji', () {
+      // Same fixture shape as the test above, and for the same reason: the
+      // name has to reach the message before its cut can be asserted.
       final name = '${'p' * 47}😀tail';
       expect(
         () => ZaiSearch.buildArguments({
-          'properties': {name: const {'type': 'string'}},
-          'required': [name],
+          'properties': {
+            'search_query': const {'type': 'string'},
+            name: const {'type': 'string'},
+          },
+          'required': ['search_query', name],
         }, 'dart', 5),
         throwsA(isA<http.ClientException>().having(
           (e) => e.message,
@@ -1890,5 +1933,5 @@ class _Broken implements SearchProvider {
 class _DefaultBackendFailure implements Exception {
   const _DefaultBackendFailure();
   @override
-  String toString() => 'backend down';
+  String toString() => 'unnamed backend failure';
 }
