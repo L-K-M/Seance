@@ -544,11 +544,11 @@ void main() {
         redactConnectionTrace('(responses : [hunter2])'),
         '(responses: [redacted])',
       );
-      // Both sides of the colon, and directly: the line below carries a class
-      // name containing `InfoResponse`, so a pattern that stopped tolerating
-      // the missing space would withhold it whole and still satisfy the
-      // absence assertion — passing while the shape this test names went
-      // unmatched.
+      // And the other side of the colon, still on a bare chunk: there is no
+      // class name here for the fail-closed branch to catch, so a pattern
+      // that stopped tolerating the missing space would leak outright rather
+      // than withhold. The exact pin below is the only guard on this one —
+      // which is what the block after it, on a *named* line, is for.
       expect(
         redactConnectionTrace('(responses:[hunter2])'),
         '(responses: [redacted])',

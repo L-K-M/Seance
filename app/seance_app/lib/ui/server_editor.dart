@@ -967,7 +967,10 @@ class _ServerEditorState extends State<_ServerEditor> {
     );
 
     final config = secret != null && secretId != existingRef
-        ? formConfig.copyWith(secretRef: secretId, updatedAt: now)
+        // `updatedAt` is not restated here: `_formConfig` already stamped it
+        // with the same `now`, and repeating it reads as though a save that
+        // reuses its secret entry keeps an older one.
+        ? formConfig.copyWith(secretRef: secretId)
         : formConfig;
     try {
       // The vault write inside throws (VaultLockedException) when the OS

@@ -83,7 +83,10 @@ void main() {
         config(AuthMethod.privateKey).copyWith(identityFilePath: stray.path),
         draftIdentityBookmark: stray,
       ),
-      throwsA(isNot(isA<ArgumentError>())),
+      // The concrete failure, not merely "not the guard": a regression that
+      // failed earlier for an unrelated reason would satisfy a negative
+      // matcher while this path lost its coverage silently.
+      throwsA(isA<IdentityFileException>()),
     );
   });
 

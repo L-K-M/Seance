@@ -565,6 +565,50 @@ void main() {
       expect(await inner.all(), isEmpty);
     });
 
+    test('a changed key the user refuses never touches the approved pin',
+        () async {
+      // The one path this file exists to protect that no test drove: a
+      // *changed* key answered with "no". The declined-host-key test covers a
+      // first sight; this covers the replacement, where the pin already
+      // exists and could be overwritten by the key that was just refused.
+      //
+      // Deliberately silent on whether a changed key is re-asked — that is
+      // the behaviour the `if (reoffered)` disjunction below leaves open, and
+      // pinning it here would settle by the back door a question this PR
+      // does not answer. What is asserted holds under either reading.
+      final trial = UnpinnedHostKeyStore(InMemoryHostKeyStore());
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(trial),
+        // Approve a first sight, refuse anything replacing it.
+        onHostKey: (decision) async => decision.pinned == null,
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'refused.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('first'),
+        ),
+        isTrue,
+      );
+      expect(
+        await manager.verifyHostKey(
+          host: 'refused.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('attacker'),
+        ),
+        isFalse,
+        reason: 'a refused replacement must not be trusted',
+      );
+      expect(
+        (await trial.get('refused.example.com', 22))?.fingerprintSha256,
+        sha256Fingerprint('first'),
+        reason: 'and must not overwrite the key that was approved',
+      );
+    });
+
     test('an approval during a trial never reaches the real store', () async {
       // The promise the editor makes in copy — "trusted for the test only, the
       // first real connection asks again" — enforced rather than asserted in a
@@ -700,7 +744,7 @@ void main() {
         // the new one verified.
         expect(
           (await trial.get('new.example.com', 22))?.fingerprintSha256,
-          'SHA256:attacker',
+          sha256Fingerprint('attacker'),
           reason: 'an approved re-ask must pin the key that was approved',
         );
         // And the other direction, which "one approval trusts one key" also
@@ -744,7 +788,7 @@ void main() {
             reason: 'a silent refusal must not consume a yes-answered prompt');
         expect(
           (await trial.get('new.example.com', 22))?.fingerprintSha256,
-          'SHA256:new',
+          sha256Fingerprint('new'),
           reason: 'a refused key must not overwrite the approved pin',
         );
       }
@@ -768,7 +812,7 @@ void main() {
       // A pin read through from the wrapped store is scoped to its port —
       // the path every trial takes for the pins it already has…
       expect((await trial.get('stored.example.com', 2222))?.fingerprintSha256,
-          'SHA256:stored-2222');
+          sha256Fingerprint('stored-2222'));
       expect(await trial.get('stored.example.com', 22), isNull);
       // …and so is one approved during the trial itself.
       await trial.put(HostKey(
@@ -779,7 +823,7 @@ void main() {
         pinnedAt: 2,
       ));
       expect((await trial.get('dual.example.com', 22))?.fingerprintSha256,
-          'SHA256:dual-22');
+          sha256Fingerprint('dual-22'));
       expect(await trial.get('dual.example.com', 2222), isNull);
     });
 
@@ -838,7 +882,7 @@ void main() {
       // that prompted and then pinned under the wrong port would satisfy both
       // counts above — the same bug this test is about, one direction over.
       expect((await trial.get('portful.example.com', 22))?.fingerprintSha256,
-          'SHA256:portful-2222',
+          sha256Fingerprint('portful-2222'),
           reason: 'an approved first sight must pin the port it was offered on');
       // On the port, not the fingerprint: both pins carry the same key
       // material by design — that is what isolates the prompt count above —
@@ -853,7 +897,7 @@ void main() {
       // do. Only the fixture's own `pinnedAt` of 1 survives that.
       expect(otherPort?.pinnedAt, 1,
           reason: 'the original pin, not an identical-looking rewrite');
-      expect(otherPort?.fingerprintSha256, 'SHA256:portful-2222');
+      expect(otherPort?.fingerprintSha256, sha256Fingerprint('portful-2222'));
     });
   });
 }
