@@ -272,6 +272,20 @@ class SshConnectException implements Exception {
   String toString() => message;
 }
 
+/// The one [UnsupportedError] this layer throws on purpose: agent auth has no
+/// dartssh2 backend yet.
+///
+/// A type of its own, not the stock one, because [runConnectionTest] treats
+/// this case as a fact about the configuration — the message is shown to the
+/// user verbatim and the stack trace is dropped as noise. Keyed on the stock
+/// type, that treatment would reach every unrelated `UnsupportedError` raised
+/// anywhere under resolving credentials or authenticating, and a real bug in
+/// the SSH stack would come back as a polished sentence about the host with
+/// no trace in the transcript people paste into bug reports.
+class AgentAuthUnsupportedError extends UnsupportedError {
+  AgentAuthUnsupportedError(super.message);
+}
+
 /// A live SSH shell session wired to a [TerminalEngine].
 class SshSession {
   final SSHClient client;
@@ -478,7 +492,7 @@ Future<(SSHClient, AuthKind)> openAuthenticatedClient({
   if (credentials.method == AuthMethod.agent) {
     // dartssh2 has no local ssh-agent auth path; the app must resolve agent
     // keys via a platform bridge and pass them as privateKey credentials.
-    throw UnsupportedError(
+    throw AgentAuthUnsupportedError(
       'Agent auth is not available through the dartssh2 backend yet; '
       'resolve the key via the platform ssh-agent and connect with a '
       'privateKey credential.',
@@ -782,8 +796,8 @@ class SshSessionManager {
     if (log == null) return null;
     const marker = 'Offering key: ';
     // Forward, keeping the last match, rather than iterating a reversed
-    // view: `lines` is an `Iterable` so mutating it cannot compile, and
-    // `reversed` is a `List` member. Same answer, one pass, no copy.
+    // view: `reversed` is a `List` member and `lines` is an `Iterable`, so
+    // `log.lines.reversed` does not compile. Same answer, one pass, no copy.
     String? offered;
     for (final line in log.lines) {
       final i = line.indexOf(marker);

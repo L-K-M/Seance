@@ -65,7 +65,13 @@ HostAuthenticator liveHostAuthenticator({
     // On success the client is ours to close (there is no SshSession here to
     // own it); on failure openAuthenticatedClient has already closed it.
     try {
-      await client.close();
+      // Bounded, unlike the rest of this path: [timeout] covers the TCP
+      // connect and dartssh2 runs its own timer over authentication, but
+      // nothing watches teardown. `SSHClient.close` awaits the socket's, and
+      // a peer that has stopped reading can leave that outstanding — on a
+      // button the user is watching a spinner on, for a connection that has
+      // already succeeded.
+      await client.close().timeout(const Duration(seconds: 5));
     } catch (error) {
       // Authentication has already succeeded by here, and that is the only
       // thing this reports: a socket that misbehaves on the way down must not
@@ -97,7 +103,9 @@ class ConnectionTestResult {
   /// unreadable identity file — has its summary appended here by
   /// [runConnectionTest], since nothing else has written anything. One that
   /// happens during it already ends with the summary, because the SSH layer
-  /// writes that line before it throws.
+  /// writes that line before it throws. Either way the summary is the last
+  /// line: the stack trace an unexpected failure earns goes above it, so
+  /// anything reading the tail as the headline finds a sentence there.
   final String log;
 
   const ConnectionTestResult({
@@ -186,22 +194,17 @@ Future<ConnectionTestResult> runConnectionTest({
       log: transcript.toString(),
     );
   } catch (error, stackTrace) {
-    final summary = error is UnsupportedError
+    final summary = error is AgentAuthUnsupportedError
         // "Unsupported operation: …" reads as a crash. The message alone is
         // the sentence the SSH layer wrote for a person to read — this is the
         // ssh-agent path, which the backend does not implement yet.
+        //
+        // The dedicated type, not `UnsupportedError`: that one is stock Dart,
+        // thrown from collections, platform stubs and any package under here,
+        // and unwrapping every one of them into a polished user sentence
+        // would dress a bug up as a fact about the host.
         ? (error.message?.toString() ?? '$error')
         : '$error';
-    // The failure has not written itself into the transcript on the path that
-    // reaches here first — resolving credentials — so an expanded log would
-    // otherwise stop mid-sentence.
-    // Guarded like the branch above, and for the same reason: the ssh-agent
-    // path writes its sentence into the log before throwing, and a custom
-    // authenticator may do the same before throwing something that is not an
-    // `SshConnectException`. Either way the transcript already ends with it.
-    if (transcript.lines.lastOrNull != summary) {
-      transcript.add(summary);
-    }
     // An `Error` is a bug rather than a fact about the host, and its message
     // alone rarely says where it came from. `Exception`s raised while
     // resolving credentials — a locked keyring, an unreadable identity file —
@@ -215,10 +218,24 @@ Future<ConnectionTestResult> runConnectionTest({
     // arriving from `authenticate` is one nothing was written to expect,
     // which is exactly when the trace is the only thing that locates it.
     //
-    // `UnsupportedError` stays out either way: it is an Error, but a known
-    // and deliberate one (the ssh-agent path the backend does not implement).
-    if (error is! UnsupportedError && (error is Error || authenticating)) {
+    // `AgentAuthUnsupportedError` stays out either way: it is an Error, but a
+    // known and deliberate one (the ssh-agent path the backend does not
+    // implement).
+    if (error is! AgentAuthUnsupportedError &&
+        (error is Error || authenticating)) {
       transcript.add('$stackTrace');
+    }
+    // Last, after any trace: [ConnectionTestResult.log] documents a failure
+    // transcript as ending with the summary, and a wall of frames under it
+    // would leave anything that reads the last line as the headline showing a
+    // stack frame instead.
+    //
+    // Guarded like the branch above, and for the same reason: a custom
+    // authenticator may write its sentence into the log before throwing
+    // something that is not an `SshConnectException`, and the transcript
+    // already ends with it.
+    if (transcript.lines.lastOrNull != summary) {
+      transcript.add(summary);
     }
     return ConnectionTestResult(
       ok: false,

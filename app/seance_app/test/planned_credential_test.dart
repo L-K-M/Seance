@@ -97,5 +97,61 @@ void main() {
       expect(secret!.kind, SecretKind.password);
       expect(secret.value, 'pw');
     });
+
+    test('plannedCredentialReadsStored covers every branch that reads it', () {
+      // `_save` fetches the vault entry only where the predicate says it is
+      // needed, so the two have to agree by construction rather than by
+      // convention: widen the carry-over without widening the predicate and
+      // `stored` arrives null on a branch that dereferences it, writing an
+      // empty PEM over a real key.
+      //
+      // Fuzzed rather than enumerated by hand, so a branch added later is
+      // covered without anyone remembering to list it.
+      const stored = Secret(
+        id: 'sec-1',
+        kind: SecretKind.privateKey,
+        value: 'STORED PEM',
+      );
+      for (final auth in AuthMethod.values) {
+        for (final referenceKeyFile in [true, false]) {
+          for (final password in ['', 'pw']) {
+            for (final keyPem in ['', 'TYPED PEM']) {
+              for (final keyPassphrase in ['', 'pass']) {
+                final reads = plannedCredentialReadsStored(
+                  auth: auth,
+                  referenceKeyFile: referenceKeyFile,
+                  keyPassphrase: keyPassphrase,
+                );
+                Secret? call({Secret? with_}) => plan(
+                      auth: auth,
+                      referenceKeyFile: referenceKeyFile,
+                      password: password,
+                      keyPem: keyPem,
+                      keyPassphrase: keyPassphrase,
+                      stored: with_,
+                    );
+                final withStored = call(with_: stored);
+                final without = call();
+                final combination = 'auth=$auth reference=$referenceKeyFile '
+                    'password="$password" pem="$keyPem" '
+                    'passphrase="$keyPassphrase"';
+                if (reads) {
+                  // The predicate promises the entry matters here, so a plan
+                  // made without it has to differ — otherwise the fetch is
+                  // dead weight and the promise is empty.
+                  expect(withStored?.value, isNot(without?.value),
+                      reason: 'reads stored, yet ignores it: $combination');
+                } else {
+                  expect(withStored?.value, without?.value,
+                      reason: 'reads stored without saying so: $combination');
+                  expect(withStored?.keyPassphrase, without?.keyPassphrase,
+                      reason: 'reads stored without saying so: $combination');
+                }
+              }
+            }
+          }
+        }
+      }
+    });
   });
 }

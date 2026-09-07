@@ -86,6 +86,25 @@ Secret? plannedCredential({
   );
 }
 
+/// Whether [plannedCredential] will read [stored], so a caller knows when it
+/// has to fetch the existing vault entry first.
+///
+/// The condition lives here rather than being restated at the call site: read
+/// too narrowly, `stored` arrives null on a branch that carries it through and
+/// an existing PEM is overwritten with nothing — the data loss the carry-over
+/// exists to prevent. A test fuzzes the two together: wherever this is false,
+/// [plannedCredential] must return the same thing with and without a [Secret]
+/// in hand.
+@visibleForTesting
+bool plannedCredentialReadsStored({
+  required AuthMethod auth,
+  required bool referenceKeyFile,
+  required String keyPassphrase,
+}) =>
+    auth == AuthMethod.privateKey &&
+    referenceKeyFile &&
+    keyPassphrase.isNotEmpty;
+
 /// The timestamp a save should carry: the wall clock, but never one this
 /// config has already passed.
 ///
@@ -867,9 +886,11 @@ class _ServerEditorState extends State<_ServerEditor> {
     // entry that may hold a PEM: every other branch replaces the entry whole.
     Secret? stored;
     if (existingRef != null &&
-        _auth == AuthMethod.privateKey &&
-        _referenceKeyFile &&
-        _keyPassphrase.text.isNotEmpty) {
+        plannedCredentialReadsStored(
+          auth: _auth,
+          referenceKeyFile: _referenceKeyFile,
+          keyPassphrase: _keyPassphrase.text,
+        )) {
       try {
         stored = await widget.state.services.vault.getSecret(existingRef);
       } catch (e) {

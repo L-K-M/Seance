@@ -392,6 +392,22 @@ class AppServices {
   /// file: its macOS security-scoped grant is keyed by server id and is not
   /// written to settings until save, so without it a key outside `~/.ssh`
   /// would fall back to the raw path and fail with EPERM.
+  ///
+  /// A *newly picked* identity file is not carved out the way a typed PEM is,
+  /// and the asymmetry is deliberate. Save keeps the stored passphrase when
+  /// the box is blank (the editor writes no secret in referenced-key mode
+  /// without one), so falling back to it here is what makes the test faithful
+  /// to the save — the property this whole method is built on. Treating the
+  /// pick as new key material instead would need a way to tell "a different
+  /// key" from "the same key re-picked", and the only signal available is the
+  /// bookmark: a macOS-only blob that is re-minted per grant, so it differs
+  /// for the same file and is null everywhere else. That would drop a correct
+  /// stored passphrase on every re-pick on one platform and never fire on the
+  /// others. The cost is that rotating to an unprotected key cannot be
+  /// expressed — the box is already blank — so the test reports a decrypt
+  /// failure for a configuration that is correct, and saving would store the
+  /// same stale passphrase. `docs/STATUS.md` follow-up 16 tracks the explicit
+  /// "no passphrase" affordance that closes it in both places at once.
   Future<SshCredentials> resolveCredentials(
     ServerConfig config, {
     String? draftPassword,

@@ -17,13 +17,14 @@ ServerConfig config({String? jumpHostId}) => ServerConfig(
       updatedAt: 2,
     );
 
-/// Pass-through bytes, not a digest: dartssh2 hands `onVerifyHostKey` the
-/// `SHA256:…` fingerprint *string* as bytes, so these are what a [HostKey]
-/// built with `fingerprintSha256: 'SHA256:<s>'` describes.
-/// The stored form of a fingerprint, and the bytes dartssh2 hands the
-/// verifier for the same key. One spelling, so a pin built as a string and a
-/// challenge built as bytes cannot drift into comparing different formats.
+/// The stored form of a fingerprint: what a [HostKey] built with
+/// `fingerprintSha256: 'SHA256:<s>'` carries.
 String sha256Fingerprint(String s) => 'SHA256:$s';
+
+/// Pass-through bytes, not a digest: dartssh2 hands `onVerifyHostKey` the
+/// `SHA256:…` fingerprint *string* as bytes. Built from [sha256Fingerprint]
+/// so a pin written as a string and a challenge written as bytes cannot drift
+/// into comparing different formats.
 Uint8List fingerprint(String s) =>
     Uint8List.fromList(utf8.encode(sha256Fingerprint(s)));
 
@@ -182,7 +183,7 @@ void main() {
         config: config(),
         credentials: () async => const SshCredentials.agent(),
         authenticate: (_, _, _) async =>
-            throw UnsupportedError('Agent auth is not available yet.'),
+            throw AgentAuthUnsupportedError('Agent auth is not available yet.'),
       );
 
       expect(result.ok, isFalse);
@@ -267,13 +268,15 @@ void main() {
       expect(unexpected.log, contains('runConnectionTest'));
     });
 
-    test('UnsupportedError stays quiet wherever it is thrown', () async {
+    test('AgentAuthUnsupportedError stays quiet wherever it is thrown',
+        () async {
       // The one Error that stays quiet: the ssh-agent path the backend
       // deliberately does not implement.
       final unsupported = await runConnectionTest(
         config: config(),
         credentials: () async => const SshCredentials.password('pw'),
-        authenticate: (_, _, _) async => throw UnsupportedError('no agent'),
+        authenticate: (_, _, _) async =>
+            throw AgentAuthUnsupportedError('no agent'),
       );
       expect(unsupported.log, contains('no agent'));
       expect(unsupported.log, isNot(contains('runConnectionTest')));
@@ -281,11 +284,48 @@ void main() {
       // of the two stages has to keep both of them quiet.
       final fromResolver = await runConnectionTest(
         config: config(),
-        credentials: () async => throw UnsupportedError('no agent yet'),
+        credentials: () async => throw AgentAuthUnsupportedError('no agent yet'),
         authenticate: (_, _, _) async => fail('must not be reached'),
       );
       expect(fromResolver.log, contains('no agent yet'));
       expect(fromResolver.log, isNot(contains('runConnectionTest')));
+    });
+
+    test('a stock UnsupportedError is a bug and keeps its trace', () async {
+      // The quiet treatment is for the one deliberate throw, not for the type:
+      // `UnsupportedError` is stock Dart, raised by unmodifiable collections,
+      // platform stubs and any package under here. Matched by type alone, a
+      // real bug would come back as a polished sentence about the host with
+      // nothing in the transcript to locate it.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async =>
+            throw UnsupportedError('Cannot add to an unmodifiable list'),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.log, contains('runConnectionTest'),
+          reason: 'an unexpected Error must keep the trace that locates it');
+      // The message is still not unwrapped into a sentence about the host: an
+      // `UnsupportedError` this layer did not throw prints as what it is.
+      expect(result.summary, contains('Unsupported operation'));
+    });
+
+    test('the summary is the last line even under a stack trace', () async {
+      // ConnectionTestResult.log documents a failure transcript as ending
+      // with the summary. A trace appended after it leaves anything that
+      // reads the tail as the headline showing a stack frame instead.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async => throw StateError('boom'),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.log, contains('runConnectionTest'),
+          reason: 'the precondition: this failure does earn a trace');
+      expect(result.log.trimRight().split('\n').last, result.summary);
     });
 
     test('a summary an authenticator already logged is not repeated', () async {
@@ -646,6 +686,58 @@ void main() {
       expect((await trial.get('dual.example.com', 22))?.fingerprintSha256,
           'SHA256:dual-22');
       expect(await trial.get('dual.example.com', 2222), isNull);
+    });
+
+    test('the manager consults the store with the port it was given', () async {
+      // The test above proves the *store* keys by port; nothing proves the
+      // manager passes the port through. Every other verifyHostKey call in
+      // this file uses 22, so a manager that hardcoded it — or dropped the
+      // argument — would satisfy the whole suite while the app's own sample
+      // config, on 2222, took the wrong pin.
+      final real = InMemoryHostKeyStore();
+      await real.put(HostKey(
+        host: 'portful.example.com',
+        port: 2222,
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('portful-2222'),
+        pinnedAt: 1,
+      ));
+      var prompts = 0;
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(UnpinnedHostKeyStore(real)),
+        onHostKey: (_) async {
+          prompts++;
+          return true;
+        },
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'portful.example.com',
+          port: 2222,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('portful-2222'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 0,
+          reason: 'a pin on the offered port answers without asking');
+
+      // The same key on another port is a host this manager has never seen,
+      // so it must ask rather than answer from the 2222 pin. Answered yes, so
+      // a manager that hardcoded 22 fails on the count rather than the
+      // verdict — the two outcomes are otherwise identical.
+      expect(
+        await manager.verifyHostKey(
+          host: 'portful.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('portful-2222'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1,
+          reason: 'a pin must not answer for a port it was not approved on');
     });
   });
 }

@@ -220,6 +220,18 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     the same reason, at the cost of an orphaned vault entry and an
     unretracted pin on the other devices. An authenticator over id, kind and
     date keyed like the payload closes all three at once.
+16. **No way to clear a referenced key's stored passphrase.** In
+    "reference a key file on disk" mode a blank passphrase box means "keep what
+    is stored", which is what makes `Test connection` faithful to Save — both
+    fall back to the stored passphrase. It also means a rotation from a
+    passphrase-protected key to an unprotected one cannot be expressed: the box
+    is already empty, so the old passphrase keeps being tried and the test
+    reports a decrypt failure for a configuration that is correct. Detecting
+    "new key material" from the picked file is not available — the only signal
+    is the macOS security-scoped bookmark, which is re-minted per grant (so it
+    differs for the same file) and is null on every other platform. The fix is
+    an explicit "no passphrase" affordance in the editor, honoured identically
+    by `resolveCredentials` and `plannedCredential`.
 
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,

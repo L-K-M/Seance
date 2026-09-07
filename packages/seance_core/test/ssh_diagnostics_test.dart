@@ -466,6 +466,15 @@ void main() {
         redactConnectionTrace('(responses : [hunter2])'),
         '(responses: [redacted])',
       );
+      // Both sides of the colon, and directly: the line below carries a class
+      // name containing `InfoResponse`, so a pattern that stopped tolerating
+      // the missing space would withhold it whole and still satisfy the
+      // absence assertion — passing while the shape this test names went
+      // unmatched.
+      expect(
+        redactConnectionTrace('(responses:[hunter2])'),
+        '(responses: [redacted])',
+      );
       final log = SshConnectionLog();
       log.add('-> sock: SSHMsgUserauthInfoResponse(responses:[hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));

@@ -46,12 +46,17 @@ void main() {
   test('a stray grant under key auth with no path is refused', () async {
     // Dropped silently, the vault credential would be tested instead — a
     // green result for a key nobody asked to try.
+    // Named, not merely `throwsArgumentError`: this is the one test whose
+    // whole job is to pin that guard, and a generic validation added later
+    // ("key auth with nothing to authenticate with") would satisfy the bare
+    // matcher while the guard was gone.
     await expectLater(
       services.resolveCredentials(
         config(AuthMethod.privateKey),
         draftIdentityBookmark: stray,
       ),
-      throwsArgumentError,
+      throwsA(isA<ArgumentError>()
+          .having((e) => e.name, 'name', 'draftIdentityBookmark')),
     );
   });
 
