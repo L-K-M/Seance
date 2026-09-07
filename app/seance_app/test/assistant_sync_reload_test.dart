@@ -287,11 +287,25 @@ void main() {
     expect(state.llmConfigVersion, before + 2);
     await state.reloadLlmProvider();
     expect(state.llmConfigVersion, before + 3);
+
+    // The other half of the arithmetic `_save` does: it subtracts its own
+    // single bump and reads anything left over as somebody else's adoption,
+    // so the two calls it makes around that reload must not bump at all.
+    final steady = state.llmConfigVersion;
+    await services.saveSettings();
+    expect(state.llmConfigVersion, steady, reason: 'saveSettings must not bump');
+    await state.assistantSettingsEdited();
+    expect(state.llmConfigVersion, steady,
+        reason: 'publishing an edit must not bump');
   });
 
   group('switching on at the zero stamp', () {
     /// An empty account: nothing to adopt, so the switch's second half — the
     /// publish — is the only thing that can happen.
+    // Account-wide and monotonic, like a real server's: per-request it
+    // restarted at 1 on every push, so a second round in one test would have
+    // seen the sequence go backwards.
+    var seq = 0;
     MockClient emptyAccount(void Function(String id) onPushed) => MockClient(
           (request) async {
             if (request.method == 'GET') {
@@ -315,12 +329,13 @@ void main() {
             // every push simulates a server that silently drops what it is
             // sent, so a client that treated an unacknowledged record as
             // unsynced would look identical to one that published.
-            var seq = 0;
+            var next = seq;
+            seq += pushed.length;
             return http.Response(
               jsonEncode(PushResponse(
                 results: [
                   for (final record in pushed)
-                    PushResult(id: record.id, seq: ++seq, accepted: true),
+                    PushResult(id: record.id, seq: ++next, accepted: true),
                 ],
                 latestSeq: seq,
               ).toJson()),
@@ -351,7 +366,7 @@ void main() {
         () => emptyAccount(pushed.add),
       );
 
-      expect(services.settings.assistantUpdatedAt, isNot(0),
+      expect(services.settings.assistantUpdatedAt, greaterThan(0),
           reason: 'a configured device must stamp what it is about to publish');
       expect(pushed, contains(AssistantSettings.recordId));
     });
@@ -370,12 +385,92 @@ void main() {
 
       final state = AppState(services);
       addTearDown(state.dispose);
+      final pushed = <String>[];
       await http.runWithClient(
         () => state.assistantSyncSwitchedOn(),
-        () => emptyAccount((_) {}),
+        () => emptyAccount(pushed.add),
       );
 
       expect(services.settings.assistantUpdatedAt, 500);
+      // The stamp suppresses re-stamping, not publishing: the round's own
+      // `collectLocal` still puts the record on the account. Discarding the
+      // pushed ids here could not tell that from a device that had silently
+      // stopped syncing its assistant altogether.
+      expect(pushed, contains(AssistantSettings.recordId));
+    });
+
+    test('an upgrading configured device adopts rather than clobbers',
+        () async {
+      // The other half of the upgrade path, and the one with something to
+      // lose: stamp 0 and genuinely configured, but the account already holds
+      // a phone's record. The empty-account test cannot tell "publishes
+      // because it is configured" from "publishes because there was nothing
+      // to adopt".
+      services.settings.assistantUpdatedAt = 0;
+      services.settings.autoSync = false;
+      services.settings.llmModel = 'my-local-model';
+      await services.masterKeys.putApiKey('anthropic', 'sk-configured');
+
+      final codec = RecordCodec(services.vaultKey!);
+      final remote = await codec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 900,
+        deviceId: 'phone',
+        data: const AssistantSettings(
+          providerKind: 'anthropic',
+          baseUrl: 'https://api.anthropic.com',
+          model: 'the-phone-model',
+          llmApiKeyRef: 'anthropic',
+          redactSecrets: true,
+          apiKeys: {'anthropic': 'sk-phone'},
+          updatedAt: 900,
+        ).toJson(),
+      ));
+
+      final pushed = <String>[];
+      var seq = 1;
+      final transport = MockClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response(
+            jsonEncode(PullResponse(
+              records: [remote.withSeq(1)],
+              latestSeq: 1,
+            ).toJson()),
+            HttpStatus.ok,
+          );
+        }
+        final records = PushRequest.fromJson(
+          jsonDecode(request.body) as Map<String, dynamic>,
+        ).records;
+        for (final record in records) {
+          pushed.add(record.id);
+        }
+        return http.Response(
+          jsonEncode(PushResponse(
+            results: [
+              for (final record in records)
+                PushResult(id: record.id, seq: ++seq, accepted: true),
+            ],
+            latestSeq: seq,
+          ).toJson()),
+          HttpStatus.ok,
+        );
+      });
+
+      final state = AppState(services);
+      addTearDown(state.dispose);
+      await http.runWithClient(
+        () => state.assistantSyncSwitchedOn(),
+        () => transport,
+      );
+
+      // Adopted, not published over: the switch's own copy says it replaces
+      // the assistant setup on this device.
+      expect(services.settings.llmModel, 'the-phone-model');
+      expect(services.settings.assistantUpdatedAt, 900);
+      expect(pushed, isNot(contains(AssistantSettings.recordId)),
+          reason: 'a device that adopted has nothing of its own to publish');
     });
 
     test('a fresh install publishes nothing over the account', () async {

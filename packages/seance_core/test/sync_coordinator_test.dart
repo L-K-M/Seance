@@ -1659,17 +1659,14 @@ void main() {
       expect(remote.stored(AssistantSettings.recordId), isNull);
     });
 
-    test('the apply side cannot refuse a stamp-zero record, so the publish '
-        'side has to', () async {
-      // Why the guard above is load-bearing rather than tidy. The apply guard
-      // refuses a *strictly* older record, and an install that configured its
-      // assistant before this feature existed reads stamp zero too — so
-      // `0 < 0` is false and a defaults record at that stamp is adopted over
-      // a working provider, model and keys. Pinned here, at the apply side,
-      // because that is the fact the publish guard exists to keep
-      // unreachable: widening this refusal instead would stop a record that
-      // legitimately ties from converging, which the guard's own comment
-      // calls the narrow price of convergence.
+    test('a stamp-zero record is refused on apply as well', () async {
+      // Both sides, not just the publish one. The stamp comparison refuses a
+      // *strictly* older record, so `0 < 0` is false and a stamp-zero record
+      // would be adopted by every install still reading zero — which is every
+      // one that configured its assistant before this feature existed.
+      // Widening the comparison would refuse a legitimate tie; refusing zero
+      // by name costs nothing, because no compliant client puts one on the
+      // wire (the test above pins that), so two devices cannot tie at it.
       final local = InMemoryLocalRecordStore();
       final configured = InMemoryAssistantSettingsStore(assistant(
         model: 'my-real-model',
@@ -1688,9 +1685,10 @@ void main() {
 
       await coordinator('phone', local, store: configured).applyToStores();
 
-      expect(configured.settings!.model, 'claude-haiku-4-5-20251001',
-          reason: 'a stamp-zero record is adopted, which is why one must '
-              'never be published');
+      expect(configured.settings!.model, 'my-real-model',
+          reason: 'a stamp-zero record reaching the wire is already a bug; '
+              'adopting it over a working configuration is the harm');
+      expect(configured.settings!.apiKeys, {'openai': 'sk-real'});
     });
 
     test('a later edit wins, an unchanged round changes nothing', () async {
@@ -1796,7 +1794,7 @@ void main() {
         kind: RecordKind.assistantSettings,
         updatedAt: 99,
         deviceId: 'B',
-        data: assistant().copyWith(providerKind: '').toJson(),
+        data: assistant(updatedAt: 99).copyWith(providerKind: '').toJson(),
       )));
       final store = InMemoryAssistantSettingsStore(assistant());
       await coordinator('A', local, store: store).applyToStores();

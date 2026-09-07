@@ -33,6 +33,13 @@ class _Keystore extends FlutterSecureStorage {
     final hook = onNextRead;
     onNextRead = null;
     if (locked) {
+      // Consumed above so it cannot fire at some later, unrelated read — but
+      // dropping it silently is the same hazard pointing the other way: a
+      // test that armed an edit would observe the pre-edit world and pass for
+      // the wrong reason.
+      if (hook != null) {
+        throw StateError('onNextRead was armed for a read on a locked keyring');
+      }
       throw PlatformException(code: 'KeyringLocked', message: 'KeyringLocked');
     }
     hook?.call();
@@ -105,10 +112,9 @@ void main() {
       // Neither of these is referenced by the assistant configuration, and
       // neither may ever leave this device: one protects the account, the
       // other decrypts everything in it.
-      await keystore.write(
-        key: 'seance.apikey.sync.token',
-        value: 'leak-canary-sync-token',
-      );
+      // Through the production API for this one, so the canary lands wherever
+      // `putApiKey` actually puts it rather than where this test remembers.
+      await keys.putApiKey('sync.token', 'leak-canary-sync-token');
       await keystore.write(
         key: 'seance.vault.masterKey.v1',
         value: 'leak-canary-master-key',
@@ -167,6 +173,11 @@ void main() {
       // The edit publishes on the next round, with its own keys.
       expect(published.llmApiKeyRef, 'anthropic');
       expect(published.updatedAt, 99);
+      // And the edit did land: if the keystore read this hook hangs on ever
+      // goes away — a cache in `MasterKeyManager`, say — every assertion above
+      // would pass with the hook never firing.
+      expect(settings.llmApiKeyRef, 'openai');
+      expect(settings.assistantUpdatedAt, 500);
     });
 
     test('the sync token is never a key reference, published or adopted',
@@ -239,6 +250,64 @@ void main() {
       expect(settings.zaiApiKeyRef, isNull);
       expect(settings.llmApiKeyRef, 'anthropic');
       expect(settings.assistantUpdatedAt, 99);
+    });
+
+    test('a key this device held and lost withholds the round', () async {
+      // `getApiKey` answers null for a reference that never had a key *and*
+      // for one the keystore has lost. Published keyless, the second puts a
+      // record naming a key it does not carry on the account under the stamp
+      // the keyed one has, where the tiebreak can evict the copy that still
+      // has it — and nothing republishes, because the stamps agree.
+      settings.assistantUpdatedAt = 99;
+      await keys.putApiKey('anthropic', 'sk-llm');
+      expect((await sync.getAssistantSettings())!.apiKeys,
+          containsPair('anthropic', 'sk-llm'));
+      expect(settings.heldAssistantKeyRefs, contains('anthropic'));
+
+      // The wipe: the entry is gone, the keystore answers, settings.json is
+      // untouched.
+      keystore.entries.clear();
+      expect(await sync.getAssistantSettings(), isNull);
+
+      // A reference that never held anything still publishes — the Z.AI
+      // switch on with the field blank is a real configuration.
+      settings.llmApiKeyRef = 'never-stored';
+      expect(await sync.getAssistantSettings(), isNotNull);
+
+      // And re-entering the key resumes publishing for the original ref.
+      settings.llmApiKeyRef = 'anthropic';
+      await keys.putApiKey('anthropic', 'sk-again');
+      expect((await sync.getAssistantSettings())!.apiKeys,
+          containsPair('anthropic', 'sk-again'));
+    });
+
+    test('clearing a reference clears the history that blocked it', () async {
+      // The documented way to take a key off the account — clear the
+      // reference and save while opted in — has to keep publishing, so the
+      // held set is pruned to what the configuration still names.
+      settings.assistantUpdatedAt = 99;
+      settings.zaiApiKeyRef = 'zai';
+      await keys.putApiKey('anthropic', 'sk-llm');
+      await keys.putApiKey('zai', 'sk-zai');
+      await sync.getAssistantSettings();
+      expect(settings.heldAssistantKeyRefs, contains('zai'));
+
+      // The prune happens where `_unwritten`'s does: on the adopt path, which
+      // is where the configuration's references are settled for the round.
+      await sync.putAssistantSettings(const AssistantSettings(
+        providerKind: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        model: 'claude-haiku-4-5-20251001',
+        llmApiKeyRef: 'anthropic',
+        redactSecrets: true,
+        apiKeys: {},
+        updatedAt: 500,
+      ));
+      expect(settings.zaiApiKeyRef, isNull,
+          reason: 'the adopted record names no Z.AI key');
+      expect(settings.heldAssistantKeyRefs, isNot(contains('zai')));
+      // And publishing is unblocked again, which is the point of the prune.
+      expect(await sync.getAssistantSettings(), isNotNull);
     });
 
     test('a locked keyring publishes nothing rather than a keyless copy',
@@ -620,9 +689,14 @@ void main() {
       // moved.
       await sync.putAssistantSettings(arriving());
       expect(sync.applied, isTrue);
+      final savesAfterAdopt = saves;
 
       await sync.putAssistantSettings(arriving());
       expect(sync.applied, isFalse);
+      // The comment above names the keystore rewrite as the other half of
+      // this hazard: a round that re-saved every five minutes would keep the
+      // test green on `applied` alone.
+      expect(saves, savesAfterAdopt);
 
       // A rotated key is a change even though every field matches.
       await sync.putAssistantSettings(
@@ -636,6 +710,13 @@ void main() {
         arriving(apiKeys: const {'openai': 'sk-rotated'}, model: 'gpt-5-mini'),
       );
       expect(sync.applied, isTrue);
+
+      // And the *new* baseline settles too: a comparison that never reset
+      // after a field-level diff would leave every later round applying.
+      await sync.putAssistantSettings(
+        arriving(apiKeys: const {'openai': 'sk-rotated'}, model: 'gpt-5-mini'),
+      );
+      expect(sync.applied, isFalse);
     });
   });
 
@@ -683,12 +764,22 @@ void main() {
       // These are free text that can arrive from another device, so any
       // character a separator could be is one a field could contain. Length
       // prefixes are what make the encoding unambiguous.
-      settings.llmBaseUrl = 'a\u0000b';
-      settings.llmModel = 'c';
-      final first = assistantSyncFingerprint(settings);
-      settings.llmBaseUrl = 'a';
-      settings.llmModel = 'b\u0000c';
-      expect(assistantSyncFingerprint(settings), isNot(first));
+      // Every separator a naive `join` might pick, not just the one this test
+      // happened to choose: length-prefixing defeats all of them, and a
+      // refactor to `join('|')` would pass a \u0000-only probe.
+      for (final sep in ['\u0000', '\u0001', '\u001f', '|', ':', '\n', ' ']) {
+        settings.llmBaseUrl = 'a${sep}b';
+        settings.llmModel = 'c';
+        final first = assistantSyncFingerprint(settings);
+        settings.llmBaseUrl = 'a';
+        settings.llmModel = 'b${sep}c';
+        expect(
+          assistantSyncFingerprint(settings),
+          isNot(first),
+          reason: 'U+${sep.codeUnitAt(0).toRadixString(16).padLeft(4, '0')} '
+              'as a separator would forge a collision',
+        );
+      }
     });
 
     test('a field ending where the next begins is still a change', () {

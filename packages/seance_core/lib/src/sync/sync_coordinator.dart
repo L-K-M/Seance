@@ -424,7 +424,17 @@ class SyncCoordinator {
             // is written from an enum — so an empty one means the payload is
             // not a configuration, and adopting it would replace a working
             // assistant with nothing on every device that pulled it.
-            if (assistant.providerKind.isEmpty) continue;
+            // And a stamp of zero, for the same reason one is never
+            // published: zero means "never edited here", so no compliant
+            // client puts one on the wire and two devices cannot legitimately
+            // tie at it. Refusing it here costs no convergence — unlike
+            // widening the comparison below, which would refuse a real tie —
+            // and it keeps a record parked by an older build, or by a client
+            // that does not follow this rule, from being adopted over a
+            // working configuration by every device still reading zero.
+            if (assistant.providerKind.isEmpty || assistant.updatedAt == 0) {
+              continue;
+            }
 
             // This record won last-write-wins against the synced *mirror*,
             // which is only as fresh as the last [collectLocal]. Unlike a

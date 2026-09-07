@@ -29,6 +29,13 @@ class SettingsScreen extends StatefulWidget {
 const String _zaiKeyRef = 'zai';
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  /// Shown by both of `_save`'s refusals, which are one message about one
+  /// situation: written twice, a wording fix or a translation reaches one of
+  /// them and the drift is invisible in review.
+  static const String _adoptedMidSave =
+      'The assistant settings changed on another device while this screen '
+      'was open. They have been reloaded — review them and save again.';
+
   late final _baseUrl = TextEditingController();
   late final _model = TextEditingController();
   late final _apiKey = TextEditingController();
@@ -644,10 +651,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Runs on startup, after edits, and every few minutes.',
         ),
         value: _autoSync,
-        onChanged: (value) {
-          setState(() => _autoSync = value);
-          _persistSyncPrefs(state);
-        },
+        onChanged: _saving
+            ? null
+            : (value) {
+                setState(() => _autoSync = value);
+                _persistSyncPrefs(state);
+              },
       ),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
@@ -656,10 +665,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Only includes servers where credential sync is also enabled.',
         ),
         value: _syncSecrets,
-        onChanged: (value) {
-          setState(() => _syncSecrets = value);
-          _persistSyncPrefs(state);
-        },
+        onChanged: _saving
+            ? null
+            : (value) {
+                setState(() => _syncSecrets = value);
+                _persistSyncPrefs(state);
+              },
       ),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
@@ -675,10 +686,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'other devices are still using.',
         ),
         value: _syncAssistant,
-        onChanged: (value) {
-          setState(() => _syncAssistant = value);
-          _persistSyncPrefs(state);
-        },
+        onChanged: _saving
+            ? null
+            : (value) {
+                setState(() => _syncAssistant = value);
+                _persistSyncPrefs(state);
+              },
       ),
       const SizedBox(height: 8),
       TextField(
@@ -858,9 +871,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() => _syncAssistantFields(state));
       showTopToastIn(
         context,
-        message: 'The assistant settings changed on another device while '
-            'this screen was open. They have been reloaded — review them '
-            'and save again.',
+        message: _adoptedMidSave,
       );
       return;
     }
@@ -959,9 +970,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         });
         showTopToastIn(
           context,
-          message: 'The assistant settings changed on another device while '
-              'this screen was open. They have been reloaded — review them '
-              'and save again.',
+          message: _adoptedMidSave,
         );
       }
       return;

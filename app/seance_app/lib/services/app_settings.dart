@@ -87,6 +87,25 @@ class AppSettings {
   /// came from and is broken by device id.
   Set<String> unwrittenAssistantKeyRefs;
 
+  /// Assistant key references this device has actually held a value for —
+  /// read from the keystore or written to it.
+  ///
+  /// The mirror of [unwrittenAssistantKeyRefs], for the null this device
+  /// otherwise cannot read. `getApiKey` answers null both for a reference
+  /// that never had a key (the Z.AI switch can be on with the field blank,
+  /// and that configuration is publishable) and for one the keystore has
+  /// *lost* — a keychain reset, an OS restore, a half-finished migration.
+  /// Published as keyless, the second case puts a record naming a key it does
+  /// not carry on the account under the stamp the keyed record already has,
+  /// where the device-id tiebreak can let it win and evict the copy that
+  /// still had the key.
+  ///
+  /// `settings.json` survives a keystore wipe, so this file is what tells the
+  /// two nulls apart. Pruned to the references the configuration still names,
+  /// exactly like the set above, so clearing a reference clears its history
+  /// with it.
+  Set<String> heldAssistantKeyRefs;
+
   // Sync (optional).
   String? syncBaseUrl;
   String? syncUsername;
@@ -196,6 +215,7 @@ class AppSettings {
     Map<String, IdentityFileBookmark>? identityFileBookmarks,
     Set<String>? collapsedServerGroups,
     Set<String>? unwrittenAssistantKeyRefs,
+    Set<String>? heldAssistantKeyRefs,
     this.terminalFontSize = kDefaultTerminalFontSize,
     this.terminalFontFamily = '',
     this.terminalPalette = TerminalPalette.followApp,
@@ -206,7 +226,8 @@ class AppSettings {
        remoteShowHidden = remoteShowHidden ?? {},
        identityFileBookmarks = identityFileBookmarks ?? {},
        collapsedServerGroups = collapsedServerGroups ?? {},
-       unwrittenAssistantKeyRefs = unwrittenAssistantKeyRefs ?? {};
+       unwrittenAssistantKeyRefs = unwrittenAssistantKeyRefs ?? {},
+       heldAssistantKeyRefs = heldAssistantKeyRefs ?? {};
 
   Map<String, dynamic> toJson() => {
     'llmKind': llmKind.name,
@@ -221,6 +242,7 @@ class AppSettings {
     // Sorted for the same reason as [collapsedServerGroups]: an unchanged set
     // has to write byte-identical JSON.
     'unwrittenAssistantKeyRefs': unwrittenAssistantKeyRefs.toList()..sort(),
+    'heldAssistantKeyRefs': heldAssistantKeyRefs.toList()..sort(),
     if (syncBaseUrl != null) 'syncBaseUrl': syncBaseUrl,
     if (syncUsername != null) 'syncUsername': syncUsername,
     'syncSecrets': syncSecrets,
@@ -264,6 +286,7 @@ class AppSettings {
     redactionEnabled: json['redactionEnabled'] as bool? ?? true,
     assistantUpdatedAt: (json['assistantUpdatedAt'] as num?)?.toInt() ?? 0,
     unwrittenAssistantKeyRefs: _stringSet(json['unwrittenAssistantKeyRefs']),
+    heldAssistantKeyRefs: _stringSet(json['heldAssistantKeyRefs']),
     syncBaseUrl: json['syncBaseUrl'] as String?,
     syncUsername: json['syncUsername'] as String?,
     syncSecrets: json['syncSecrets'] as bool? ?? false,

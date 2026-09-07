@@ -69,6 +69,10 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   /// key it knows it dropped.
   Set<String> get _unwritten => settings.unwrittenAssistantKeyRefs;
 
+  /// See [AppSettings.heldAssistantKeyRefs]: what this device has actually
+  /// held, so a null it reads now can be told from one it always read.
+  Set<String> get _held => settings.heldAssistantKeyRefs;
+
   AssistantSettingsSync({
     required this.settings,
     required this.masterKeys,
@@ -185,7 +189,20 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // nothing to republish the key afterwards. Right for a ref that never
       // had a key (the Z.AI switch can be on with the field blank); wrong
       // after a keystore wipe, which this device cannot tell apart locally.
-      if (value != null) keys[name] = value;
+      if (value != null) {
+        keys[name] = value;
+        _held.add(name);
+      } else if (_held.contains(name)) {
+        // Held before, unreadable now, keystore available: a wipe, not a
+        // reference that never had a key. Publishing keyless here would put a
+        // record naming this key without carrying it on the account under the
+        // stamp the keyed one already has, where the tiebreak can evict the
+        // copy that still has it — and nothing would republish, because by
+        // then the stamps agree. A round skipped costs five minutes; this
+        // costs the account its key. Re-entering the key, or clearing the
+        // reference, resumes publishing.
+        return null;
+      }
     }
 
     return AssistantSettings(
@@ -294,6 +311,13 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // carrying it would grow a persisted set for the life of the install.
     final unwrittenBefore = _unwritten.length;
     _unwritten.retainWhere(referenced.contains);
+    // Pruned with it, and for the same reason: a reference the configuration
+    // no longer names has no history worth keeping, and the documented way to
+    // take a key off the account — clear the reference, save while opted in —
+    // has to leave publishing unblocked.
+    final heldBefore = _held.length;
+    _held.retainWhere(referenced.contains);
+    var heldChanged = _held.length != heldBefore;
     var unwrittenChanged = _unwritten.length != unwrittenBefore;
     var keysChanged = false;
     for (final entry in value.apiKeys.entries) {
@@ -312,6 +336,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         }
         await masterKeys.putApiKey(entry.key, entry.value);
         if (_unwritten.remove(entry.key)) unwrittenChanged = true;
+        // A write is the other way this device comes to hold a key, and the
+        // one an adopting device takes: without it, the first round after an
+        // adoption would read the key back, add it here, and only then be
+        // protected.
+        if (_held.add(entry.key)) heldChanged = true;
         keysChanged = true;
       } on KeystoreException {
         // The keyring is locked or missing. The configuration is still worth
@@ -344,6 +373,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     applied = contentChanged;
     if (contentChanged ||
         unwrittenChanged ||
+        heldChanged ||
         settings.assistantUpdatedAt != stampBefore) {
       await saveSettings();
     }

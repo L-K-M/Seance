@@ -1287,6 +1287,13 @@ class AppState extends ChangeNotifier {
     // the case that matters.
     await refreshLlmConfigured();
     if (!llmConfigured) return;
+    // The guard above ran before that await, which is a keystore read: a
+    // round queued behind this one can acquire the mutation queue and adopt
+    // the account's record inside it, and adoption always leaves a nonzero
+    // stamp. Stamping now would put this device's pre-feature configuration
+    // over the one it just adopted — the clobber this whole method is a
+    // sequence of guards against.
+    if (services.settings.assistantUpdatedAt != 0) return;
     await assistantSettingsEdited();
     // That hands the publish to the auto-sync debounce, which does not run
     // with auto-sync off — and this switch is an explicit ask to sync, made
