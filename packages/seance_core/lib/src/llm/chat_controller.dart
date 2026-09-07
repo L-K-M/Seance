@@ -228,7 +228,26 @@ class ChatController {
   /// hundred tokens each.
   static const int maxSnippetChars = 2000;
 
-  /// [results] with over-long snippets clipped.
+  /// The cap on a result's title, for the reason the snippet has one: a
+  /// title is whatever text the search service put in the field, and a
+  /// gateway that answered with a megabyte of it would spend the token
+  /// budget the snippet cap exists to protect. Shorter than the snippet's,
+  /// because a title that needs two thousand characters is not one.
+  static const int maxTitleChars = 200;
+
+  /// The cap on a result's URL, the third field serialized into the same tool
+  /// result — and the one the other two caps left open.
+  ///
+  /// Long URLs need no malice: a query string with a page of tracking
+  /// parameters is ordinary on the open web, and SearXNG and Brave copy the
+  /// field through as they find it. Set where `ZaiSearch` already draws the
+  /// line for a *plausible* URL, so "too long to be real" means the same
+  /// thing on both paths. Clipped rather than dropped, and with the ellipsis
+  /// every other cap uses: a truncated link is visibly truncated, where a
+  /// silently shortened one reads as a citation that merely does not resolve.
+  static const int maxUrlChars = 2048;
+
+  /// [results] with over-long fields clipped.
   ///
   /// Applied here rather than in any one backend because every backend is
   /// unbounded in the same way and for the same reason: a snippet is whatever
@@ -238,22 +257,16 @@ class ChatController {
   /// through verbatim. This is the one place they converge before being
   /// serialized into a tool result and sent to the model, so it is the one
   /// place a cap covers all of them.
-  /// The cap on a result's title, for the reason the snippet has one: a
-  /// title is whatever text the search service put in the field, and a
-  /// gateway that answered with a megabyte of it would spend the token
-  /// budget the snippet cap exists to protect. Shorter than the snippet's,
-  /// because a title that needs two thousand characters is not one.
-  static const int maxTitleChars = 200;
-
   static List<SearchResult> clipSearchSnippets(List<SearchResult> results) => [
         for (final r in results)
           if (r.snippet.length <= maxSnippetChars &&
-              r.title.length <= maxTitleChars)
+              r.title.length <= maxTitleChars &&
+              r.url.length <= maxUrlChars)
             r
           else
             SearchResult(
               title: clipText(r.title, maxTitleChars),
-              url: r.url,
+              url: clipText(r.url, maxUrlChars),
               snippet: clipText(r.snippet, maxSnippetChars),
             ),
       ];

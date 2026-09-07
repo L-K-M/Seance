@@ -581,10 +581,15 @@ class ZaiSearch implements SearchProvider {
       // Quota first: "insufficient token quota" and "token limit reached"
       // both carry "token", and telling someone with a working key to rotate
       // it is the exact confusion this branch exists to prevent.
+      // "tokens exhausted" and "token budget depleted" carry neither of the
+      // first four words and every bit of the same meaning, so without them
+      // the "token" test below sends someone with a working key to rotate it.
       final quota = text.contains('quota') ||
           text.contains('limit') ||
           text.contains('balance') ||
-          text.contains('insufficient');
+          text.contains('insufficient') ||
+          text.contains('exhausted') ||
+          text.contains('depleted');
       if (!quota &&
           (text.contains('auth') ||
               text.contains('api key') ||
@@ -651,7 +656,12 @@ class ZaiSearch implements SearchProvider {
     }
     final arguments = <String, dynamic>{queryKey: query};
     final countKey = pick(const ['count', 'limit', 'num_results']);
-    if (countKey != null) arguments[countKey] = limit;
+    // Omitted rather than sent when it is not a count: `parseToolResult`
+    // already clamps a non-positive limit on the way back, and forwarding one
+    // spends a round trip to be told `-32602` by a gateway that cannot mean
+    // anything by "give me zero results". Omitting lets the schema's own
+    // default stand, and the clamp still returns nothing.
+    if (countKey != null && limit > 0) arguments[countKey] = limit;
 
     for (final name in required) {
       if (arguments.containsKey(name)) continue;
@@ -860,27 +870,28 @@ class ZaiSearch implements SearchProvider {
       };
       // Empty falls through here too: an explicitly empty `content` beside
       // a usable `snippet` was rendering as no snippet at all.
-      final content = value['content'];
-      // Empty in every shape the switch below reads, not only as a string:
-      // `??` answers for null alone, so an explicitly empty list or map hid
-      // a usable `snippet` beside it — the same fall-through the string case
-      // already had.
-      final hasContent = switch (content) {
-        null => false,
+      //
+      // One question for both fields, and it is the renderer's own: will this
+      // put text in front of a person? `??` answers for null alone, so an
+      // explicitly empty value — in any shape, not only as a string — hid a
+      // usable field beside it. Asking it in the switch's own terms is what
+      // keeps the two from disagreeing: a list of numbers or a map with no
+      // text renders to nothing, so treating either as present drops a good
+      // `description` for a field that shows the reader an empty line.
+      bool rendersText(Object? value) => switch (value) {
         final String text => text.isNotEmpty,
-        final List<Object?> parts => parts.isNotEmpty,
-        final Map<Object?, Object?> fields => fields.isNotEmpty,
-        _ => true,
+        final List<Object?> parts =>
+          parts.whereType<String>().join(' ').isNotEmpty,
+        final Map<Object?, Object?> fields => _snippetText(fields).isNotEmpty,
+        _ => false,
       };
-      // The last hop takes the same fall-through as the three above it: an
-      // explicitly empty `snippet` must not hide a `description` beside it,
-      // while a map or list one still reaches the switch that reads it.
+      final content = value['content'];
       final rawSnippet = value['snippet'];
-      final snippet = hasContent
+      final snippet = rendersText(content)
           ? content
-          : rawSnippet is String && rawSnippet.isEmpty
-              ? value['description']
-              : rawSnippet ?? value['description'];
+          : rendersText(rawSnippet)
+              ? rawSnippet
+              : value['description'];
       out.add(SearchResult(
         title: title is String && title.isNotEmpty ? title : url,
         url: url,

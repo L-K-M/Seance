@@ -211,7 +211,18 @@ class CompositeSearch implements SearchProvider {
 /// rather than copied: the snippet cap and the parameter-name echo in
 /// `ZaiSearch.buildArguments` apply the same subtle rule, and two copies of
 /// it drift.
+///
+/// [max] bounds the kept content, not the result: a clipped string is one
+/// unit longer for the ellipsis. Every cap here is a token budget rather than
+/// a length a server enforces, so the extra unit costs nothing — a caller
+/// that does have a hard limit has to pass `max - 1`.
+///
+/// A cap of zero or less yields the empty string. Nothing asks for one today
+/// (every caller passes a constant), but this is a shared public helper, and
+/// indexing at `max - 1` for the surrogate check turns a nonsensical argument
+/// into a `RangeError` from inside a text-clipping utility.
 String clipText(String text, int max) {
+  if (max <= 0) return '';
   if (text.length <= max) return text;
   final unit = text.codeUnitAt(max - 1);
   final cut = (unit & 0xFC00) == 0xD800 ? max - 1 : max;

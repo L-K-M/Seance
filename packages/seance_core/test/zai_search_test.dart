@@ -482,6 +482,35 @@ void main() {
       );
     });
 
+    test('a quota phrasing without a quota word is not blamed on the key',
+        () async {
+      // "tokens exhausted" carries "token" and none of quota/limit/balance/
+      // insufficient, so the auth branch claimed it: someone with a working
+      // key sent to rotate it, which is the confusion the quota test in front
+      // of that branch exists to prevent.
+      for (final msg in ['Tokens exhausted', 'Token budget depleted']) {
+        final server = FakeMcpServer();
+        server.overrides['initialize'] = {
+          'success': false,
+          'code': 1113,
+          'msg': msg,
+        };
+
+        await expectLater(
+          ZaiSearch(apiKey: 'good', client: server.client).search('dart'),
+          throwsA(
+            isA<http.ClientException>()
+                .having((e) => e.message, 'message',
+                    isNot(contains('rejected the search API key')))
+                // The generic message, which names all three possibilities
+                // rather than picking the wrong one.
+                .having((e) => e.message, 'message', contains('quota')),
+          ),
+          reason: '"$msg" is a quota failure, not a key failure',
+        );
+      }
+    });
+
     test('a failed handshake is retried rather than cached', () async {
       // Caching the failed future would leave the instance permanently broken
       // after one blip, and the app keeps one per chat session.
@@ -540,7 +569,10 @@ void main() {
                 .having((e) => e.message, 'message', isNot(contains('secret'))),
             ),
           reason: 'HTTP $status should name the key',
-        );
+          // The same guard the stall tests carry: this drives the same
+          // non-2xx body drain, so a regressed deadline would hang the loop
+          // rather than fail it.
+        ).timeout(const Duration(seconds: 5));
       }
     });
 
@@ -625,7 +657,10 @@ void main() {
             contains('stopped sending'),
           ),
         ),
-      );
+        // Test-side only, like its siblings below: a deadline that stopped
+        // being enforced would hang this on a controller nothing closes,
+        // until the runner's own timeout rather than at the assertion.
+      ).timeout(const Duration(seconds: 5));
     });
 
     test('an error status whose body stalls is still reported as that status',
@@ -937,6 +972,35 @@ void main() {
       expect(ZaiSearch.parseToolResult(prose, 1), hasLength(1));
     });
 
+    test('an empty snippet of any shape does not hide the description', () {
+      // The same widening `content` got: a snippet that renders to nothing —
+      // an empty list or map, or a scalar the rendering switch drops to '' —
+      // kept its place and hid a usable description beside it. Both fields
+      // now ask the renderer's own question, so they cannot disagree about
+      // what "present" means.
+      for (final empty in [<Object?>[], <String, Object?>{}, <Object?>[1, 2], true]) {
+        final results = ZaiSearch.parseToolResult({
+          'content': [
+            {
+              'type': 'text',
+              'text': jsonEncode({
+                'search_result': [
+                  {
+                    'title': 'T',
+                    'link': 'https://example.com/d',
+                    'snippet': empty,
+                    'description': 'the usable one',
+                  },
+                ],
+              }),
+            },
+          ],
+        }, 5);
+        expect(results.single.snippet, 'the usable one',
+            reason: 'snippet: $empty should fall through');
+      }
+    });
+
     test('an empty snippet does not hide the description beside it', () {
       // The last hop of the fall-through chain: `??` answers for null alone,
       // so an explicitly empty snippet kept its place and dropped a usable
@@ -1071,6 +1135,36 @@ void main() {
           },
         }, 'dart', 4),
         {'query': 'dart', 'limit': 4},
+      );
+    });
+
+    test('a non-positive count is omitted rather than sent', () {
+      // `parseToolResult` already clamps one on the way back; forwarding it
+      // spends a round trip to be told `-32602` by a gateway that cannot mean
+      // anything by "give me zero results".
+      for (final limit in [0, -3]) {
+        expect(
+          ZaiSearch.buildArguments(const {
+            'properties': {
+              'query': {'type': 'string'},
+              'limit': {'type': 'integer'},
+            },
+          }, 'dart', limit),
+          {'query': 'dart'},
+          reason: 'limit $limit is not a count',
+        );
+      }
+      // A required count still gets the schema's own default rather than
+      // nothing, so the request stays well-formed.
+      expect(
+        ZaiSearch.buildArguments(const {
+          'properties': {
+            'query': {'type': 'string'},
+            'count': {'type': 'integer', 'default': 10},
+          },
+          'required': ['count'],
+        }, 'dart', 0),
+        {'query': 'dart', 'count': 10},
       );
     });
 
@@ -1383,7 +1477,10 @@ void main() {
           controller.stream,
           1024,
           const Duration(milliseconds: 20),
-        ).toList(),
+          // Test-side only, like the trickle test's: an idle deadline that
+          // stopped being enforced would hang here on a controller that never
+          // closes, rather than failing the expectation.
+        ).toList().timeout(const Duration(seconds: 5)),
         // Readable, like the byte cap's: both guards exist for the same
         // 200-then-stall case and both reach the UI, so neither surfaces as
         // "Future not completed".
