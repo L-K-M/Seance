@@ -117,8 +117,19 @@ class FakeMcpServer {
           for (final entry in request.headers.entries)
             entry.key.toLowerCase(): entry.value,
         };
-        final payload =
-            jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
+        final Object? decoded;
+        try {
+          decoded = jsonDecode(await body.bytesToString());
+        } on FormatException {
+          // Like the lowercased headers and the null-aware params below: a
+          // client bug should fail as an expectation, not as a crash deep
+          // inside this fake.
+          throw StateError('ZaiSearch sent a non-JSON body to ${request.url}');
+        }
+        if (decoded is! Map<String, dynamic>) {
+          throw StateError('ZaiSearch sent a non-object body: $decoded');
+        }
+        final payload = decoded;
         final method = payload['method'] as String;
         requests.add(request);
         headers.add(sent);
@@ -635,7 +646,9 @@ void main() {
             contains('HTTP 502'),
           ),
         ),
-      );
+        // Like its siblings: the drain deadline is what ends this, and a
+        // regression in it would hang until the runner's own timeout.
+      ).timeout(const Duration(seconds: 5));
     });
 
     test('a retired session whose 404 body stalls is still retried', () async {
@@ -877,6 +890,45 @@ void main() {
         ],
       }, 5);
       expect(results.map((r) => r.url), ['https://example.com/a']);
+    });
+
+    test('an empty content of any shape does not hide the snippet beside it',
+        () {
+      // `??` answers for null alone, so an explicitly empty list or map was
+      // kept and joined to nothing — the fall-through the string case had.
+      for (final empty in [<Object?>[], <String, Object?>{}, '']) {
+        final results = ZaiSearch.parseToolResult({
+          'content': [
+            {
+              'type': 'text',
+              'text': jsonEncode({
+                'search_result': [
+                  {
+                    'title': 'T',
+                    'link': 'https://example.com/e',
+                    'content': empty,
+                    'snippet': 'the real one',
+                  },
+                ],
+              }),
+            },
+          ],
+        }, 5);
+        expect(results.single.snippet, 'the real one',
+            reason: 'content: $empty should fall through');
+      }
+    });
+
+    test('prose answers nothing when nothing was asked for', () {
+      // The link path takes none when asked for none; prose answering anyway
+      // would be a different count for the same ask.
+      const prose = {
+        'content': [
+          {'type': 'text', 'text': 'just words, no links'},
+        ],
+      };
+      expect(ZaiSearch.parseToolResult(prose, 0), isEmpty);
+      expect(ZaiSearch.parseToolResult(prose, 1), hasLength(1));
     });
 
     test('a title that arrives as a list is read, like a snippet is', () {
@@ -1329,6 +1381,20 @@ void main() {
       expect(results.single.url, 'https://x.example/docs');
     });
 
+    test('two forms of one page from a single backend are one result',
+        () async {
+      // Every other dedup case here feeds the variants from *different*
+      // backends, so a merge that deduped only across them would pass while
+      // still showing the same page twice from one index.
+      final results = await CompositeSearch([
+        _Fixed([
+          _hit('https://x.example/docs', title: 'Docs'),
+          _hit('https://x.example/docs/', title: 'Docs, again'),
+        ]),
+      ]).search('q');
+      expect(results.map((r) => r.url), ['https://x.example/docs']);
+    });
+
     test('a query string is not a duplicate', () async {
       // Deliberately conservative: `?id=1` and `?id=2` are different pages,
       // so normalization stops at the fragment and trailing slashes.
@@ -1373,8 +1439,11 @@ void main() {
       ]).search('q');
       expect(results.map((r) => r.url), ['https://a']);
 
-      // Any backend error is contained, not only the transport ones: a parse
-      // failure in one backend is no more the others' problem.
+    });
+
+    test('a parse failure is contained like a transport one', () async {
+      // Any backend error, not only the transport ones: reported under its
+      // own name so a regression names the property that broke.
       expect(
         (await CompositeSearch([
           _Broken(const FormatException('bad payload')),
@@ -1391,9 +1460,15 @@ void main() {
       // dropped the argument would return the same two results.
       final backend =
           _Fixed([_hit('https://a'), _hit('https://b'), _hit('https://c')]);
-      final results = await CompositeSearch([backend]).search('q', limit: 2);
+      final second = _Fixed([_hit('https://x'), _hit('https://y')]);
+      final results =
+          await CompositeSearch([backend, second]).search('q', limit: 2);
+      // Each backend is asked for the whole limit, not a share of it: the
+      // union after dedup is usually smaller than the sum, and a short answer
+      // from one is exactly when the other's results are wanted.
       expect(backend.lastLimit, 2);
-      expect(results.map((r) => r.url), ['https://a', 'https://b']);
+      expect(second.lastLimit, 2);
+      expect(results.map((r) => r.url), ['https://a', 'https://x']);
     });
 
     test('the raised failure keeps the backend it came from', () async {
@@ -1427,8 +1502,8 @@ void main() {
   });
 }
 
-SearchResult _hit(String url) =>
-    SearchResult(title: url, url: url, snippet: '');
+SearchResult _hit(String url, {String? title}) =>
+    SearchResult(title: title ?? url, url: url, snippet: 'body');
 
 class _Fixed implements SearchProvider {
   final List<SearchResult> results;
