@@ -74,6 +74,25 @@ void main() {
     );
   });
 
+  testWidgets('notes qualify a failure the summary understates', (
+    tester,
+  ) async {
+    // The notes are what carry the remediation, and a failure is when the
+    // user needs them most. Rendered outside any `ok` branch today; this is
+    // what keeps a future one from gating them on success.
+    await pump(
+      tester,
+      const ConnectionTestResult(
+        ok: false,
+        summary: 'Connection refused.',
+        notes: ['A firewall may be blocking port 22.'],
+        log: '',
+      ),
+    );
+
+    expect(find.text('A firewall may be blocking port 22.'), findsOneWidget);
+  });
+
   testWidgets('the transcript is there but folded away', (tester) async {
     await pump(
       tester,

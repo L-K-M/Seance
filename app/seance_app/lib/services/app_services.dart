@@ -464,12 +464,19 @@ class AppServices {
             config,
             bookmarkOverride: draftIdentityBookmark,
           );
-          final storedPass = config.secretRef == null
-              ? null
-              : (await vault.getSecret(config.secretRef!))?.keyPassphrase;
           return SshCredentials.privateKey(
             pem,
-            keyPassphrase: draft(draftKeyPassphrase) ?? storedPass,
+            // Behind the `??`, so a typed passphrase skips the read that was
+            // about to be discarded. Only a read: the vault is `vault.json`
+            // (`FileVaultStore`), and the keyring holds the vault key alone —
+            // already resolved by the time this runs — so there is no unlock
+            // prompt or keychain failure to avoid here, and no behaviour
+            // difference to test. Free, and one less thing happening.
+            keyPassphrase: draft(draftKeyPassphrase) ??
+                (config.secretRef == null
+                    ? null
+                    : (await vault.getSecret(config.secretRef!))
+                        ?.keyPassphrase),
           );
         }
         final typedPem = draft(draftPrivateKey);

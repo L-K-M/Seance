@@ -36,10 +36,15 @@ bool excludingNeedsConfirmation({
 /// The credential this Save writes, or null when the form describes none and
 /// the stored one should stay as it is.
 ///
-/// Blank means "keep what is stored", the same for every credential box: the
-/// fields start empty when an existing server is opened, so writing a blank
-/// through would replace the stored credential with nothing on any save that
-/// only touched some other field.
+/// Blank means "keep what is stored" when every box of that method is blank:
+/// the fields start empty when an existing server is opened, so writing a
+/// blank through would replace the stored credential with nothing on any save
+/// that only touched some other field.
+///
+/// Not box by box, though, and the passphrase is where that shows: a *typed*
+/// PEM writes `keyPassphrase: null` even when the passphrase box is blank,
+/// because a newly pasted key brings its own — so re-pasting the same
+/// encrypted key and leaving the passphrase alone drops the stored one.
 ///
 /// Known gap, pre-existing and not closed here: when the auth *method*
 /// changed and nothing was typed, "what is stored" is a credential of the old

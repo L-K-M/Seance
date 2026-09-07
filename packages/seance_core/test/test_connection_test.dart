@@ -532,9 +532,18 @@ void main() {
       // decline and pinned anyway passed the suite.
       final inner = InMemoryHostKeyStore();
       final trial = UnpinnedHostKeyStore(inner);
+      // Captured, not discarded: the outcomes below — false, nothing pinned
+      // in either store — are exactly what a manager that auto-declined every
+      // unknown host would produce, and that manager would make a first
+      // connection impossible. Consent is the boundary this test names, so
+      // the prompt having been asked is part of what it has to assert.
+      var prompted = false;
       final manager = SshSessionManager(
         tofu: TofuVerifier(trial),
-        onHostKey: (_) async => false,
+        onHostKey: (_) async {
+          prompted = true;
+          return false;
+        },
       );
 
       expect(
@@ -546,6 +555,8 @@ void main() {
         ),
         isFalse,
       );
+      expect(prompted, isTrue,
+          reason: 'the refusal has to be an answered prompt, not a silent no');
       expect(await trial.get('declined.example.com', 22), isNull);
       expect(await inner.get('declined.example.com', 22), isNull);
       // Nowhere at all, not just under the locator asked for: a pin written
@@ -576,7 +587,9 @@ void main() {
         isTrue,
       );
       // Approved and usable for the rest of this attempt…
-      expect(await trial.get('trial.example.com', 22), isNotNull);
+      expect((await trial.get('trial.example.com', 22))?.fingerprintSha256,
+          sha256Fingerprint('trial'),
+          reason: 'and it is the approved key that was pinned, not a default');
       // …and invisible to the store a real session would consult.
       expect(await persistent.get('trial.example.com', 22), isNull);
       expect(await persistent.all(), isEmpty);

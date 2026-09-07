@@ -155,12 +155,10 @@ class SshConnectionLog {
 /// `pub upgrade`: a new printing site is the one drift the fail-closed branch
 /// below cannot catch, because it keys on this shape.
 ///
-/// Every message it traces goes through `toString`, and most of them are
-/// careful — `SSH_Message_Userauth_Request` prints its user and method and
-/// deliberately not its password. `SSH_Message_Userauth_InfoResponse` is not:
-/// it prints `responses: [...]`, and for a host that does password login over
-/// keyboard-interactive (the OpenSSH default on many distributions) that list
-/// *is* the password, in plaintext.
+/// What makes that one message the whole problem: for a host that does
+/// password login over keyboard-interactive — the OpenSSH default on many
+/// distributions — the `responses: [...]` list *is* the password, in
+/// plaintext.
 ///
 /// The transcript is shown in the UI with a Copy button beside it and is meant
 /// to be pasted into a bug report, so this is neutralised where it is
