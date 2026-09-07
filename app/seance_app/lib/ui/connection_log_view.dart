@@ -83,6 +83,11 @@ class ConnectionLogView extends StatelessWidget {
                   text.isEmpty ? '(no log captured)' : text,
                   style: const TextStyle(
                     fontFamily: 'monospace',
+                    // `monospace` is a real family on Android and Linux only.
+                    // Elsewhere the bare name falls back to the proportional
+                    // system font, and a transcript whose columns do not line
+                    // up is the thing this view exists to avoid.
+                    fontFamilyFallback: ['Menlo', 'Consolas', 'Courier New'],
                     fontSize: 12,
                     height: 1.4,
                   ),
