@@ -164,6 +164,13 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // Set when a name is recorded as held for the first time, so the round
     // can flush it below rather than trusting a later save to happen by.
     var heldAdded = false;
+    // The three guards below abort the round, and every one of them can fire
+    // *after* an earlier name in this same loop was recorded as held. They
+    // break rather than return so the flush still runs: a name left in memory
+    // is forgotten by the next launch, and `add` answers false from the next
+    // round on, so nothing would raise `heldAdded` again — the set would stay
+    // off disk until some unrelated save happened by.
+    var aborted = false;
     for (final name in _referencedKeys) {
       // getApiKey answers null on a locked keyring rather than throwing, and
       // null for a name that was never stored. keystoreStatus is what tells
@@ -177,13 +184,17 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // A key this device adopted a reference to and failed to store. Until
       // the retry lands, publishing would put a keyless record on the account
       // under a stamp that can evict the keyed one it came from.
-      if (value == null && _unwritten.contains(name)) return null;
+      if (value == null && _unwritten.contains(name)) {
+        aborted = true;
+        break;
+      }
       // Anything but a positively readable keystore: `unknown` and any state
       // added later mean the same thing here — this null is not evidence the
       // key is gone.
       if (value == null &&
           masterKeys.keystoreStatus != KeystoreStatus.available) {
-        return null;
+        aborted = true;
+        break;
       }
       // Null with a keystore that is *available* falls through and publishes
       // a record naming this key without carrying it, under the stamp the
@@ -212,11 +223,14 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         // then the stamps agree. A round skipped costs five minutes; this
         // costs the account its key. Re-entering the key, or clearing the
         // reference, resumes publishing.
-        return null;
+        aborted = true;
+        break;
       }
     }
 
+    // Before the abort, not after it: see `aborted`.
     if (heldAdded) await saveSettings();
+    if (aborted) return null;
 
     return AssistantSettings(
       providerKind: providerKind,

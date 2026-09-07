@@ -1659,7 +1659,12 @@ void main() {
           (await mirror.allRecords())
               .where((r) => r.id == AssistantSettings.recordId)
               .map((r) => r.deviceId),
-          everyElement('B'),
+          // `equals`, not `everyElement`: the store is a map keyed by record
+          // id, so B's pulled copy is the one entry there is — and
+          // `everyElement` is satisfied by an empty iterable, which would let
+          // a regression that stopped mirroring the record at all pass as
+          // "nothing of A's was staged".
+          equals(['B']),
           reason: 'a withheld keyring stages no copy of its own, either');
       expect(older.stored(AssistantSettings.recordId)!.deviceId, 'B');
     });

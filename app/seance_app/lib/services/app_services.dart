@@ -92,6 +92,11 @@ class AppServices {
   /// it, in the same call: rounds are serialized behind `AppState._mutate`,
   /// but a reader that awaits something else in between can find the next
   /// round has already begun and cleared it.
+  ///
+  /// Raised in a `finally`, so a round that applied the record and *then*
+  /// failed still reports the adoption — which is the case it was put there
+  /// for. Read it from a `finally` around [runSync] rather than only on the
+  /// success path, or that round's adoption is the one that goes unseen.
   bool assistantSettingsChanged = false;
 
   AppServices._({

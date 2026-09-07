@@ -160,7 +160,7 @@ void main() {
       braveApiKeyRef: '  brave  ',
       zaiApiKeyRef: '  zai  ',
       redactSecrets: true,
-      apiKeys: {'openai': 'sk'},
+      apiKeys: {'  openai  ': ' sk '},
       updatedAt: 7,
     );
     final json = padded.toJson();
@@ -171,6 +171,10 @@ void main() {
     expect(json['searxngUrl'], 'https://searx.example.com');
     expect(json['braveApiKeyRef'], 'brave');
     expect(json['zaiApiKeyRef'], 'zai');
+    // The keys travel through the same normalizer as the scalars, and only a
+    // padded entry proves it: the blank-entry case below shows entries being
+    // dropped, which a build that had stopped trimming would still do.
+    expect(json['apiKeys'], {'openai': 'sk'});
     // The property that matters, stated as itself: what a peer reads back and
     // re-publishes is byte-identical to what was written.
     expect(AssistantSettings.fromJson(json).toJson(), json);

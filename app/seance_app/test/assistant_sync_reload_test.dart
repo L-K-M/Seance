@@ -518,7 +518,10 @@ void main() {
 
     test('a fresh install publishes nothing over the account', () async {
       // The other half of the zero stamp, and the case the guard was written
-      // for: no key anywhere, so nothing here is a configuration. Stamping
+      // for: no *assistant* key, so nothing here is a configuration. The
+      // keystore is not empty — `setUp` put the sync token in it — which is
+      // the point: the guard reads this device's assistant configuration,
+      // never "some key exists somewhere". Stamping
       // `now` would make this laptop's shipped defaults the account's newest
       // write and beat a phone that configured a real provider while sync was
       // off and enables the switch afterwards.

@@ -298,7 +298,15 @@ void main() {
       // keyed record already has.
       settings.assistantUpdatedAt = 99;
       settings.llmApiKeyRef = 'anthropic';
+      // Captured around the production call rather than spelled out, for the
+      // reason the leak canary above gives: a storage key renamed in
+      // `secure_master_key.dart` would leave a literal here removing an
+      // address nothing writes to, and the wipe this test simulates would
+      // quietly stop happening.
+      final before = keystore.entries.keys.toSet();
       await keys.putApiKey('anthropic', 'sk-llm');
+      final written = keystore.entries.keys.toSet().difference(before);
+      expect(written, hasLength(1));
 
       // Asserted as a *save*, not by re-reading the object: the set is on the
       // object either way, so serializing this instance cannot tell a
@@ -321,8 +329,33 @@ void main() {
         masterKeys: keys,
         saveSettings: () async {},
       );
-      keystore.entries.remove('seance.apikey.anthropic');
+      keystore.entries.removeWhere((key, _) => written.contains(key));
       expect(await afterRestart.getAssistantSettings(), isNull);
+    });
+
+    test('a key read before an abort still reaches the disk', () async {
+      // The flush lived after the loop, and all three of its guards left by
+      // `return` — so a name recorded as held before a later ref aborted the
+      // round stayed in memory only. `add` answers false from the next round
+      // on, so nothing raised the flag again: the name never reached disk
+      // until some unrelated save happened by, and a restart in between read
+      // it back as never held.
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = 'anthropic';
+      settings.braveApiKeyRef = 'brave';
+      // The second reference is one this device adopted and failed to store,
+      // which is the abort that fires after the first has been read.
+      settings.unwrittenAssistantKeyRefs.add('brave');
+      await keys.putApiKey('anthropic', 'sk-llm');
+
+      expect(await sync.getAssistantSettings(), isNull,
+          reason: 'a ref this device failed to store withholds the round');
+      expect(saves, 1,
+          reason: 'the name read before the abort has to reach the disk');
+      expect(
+          AppSettings.fromJson(settings.toJson()).heldAssistantKeyRefs,
+          contains('anthropic'),
+          reason: 'and be there for the next launch to read');
     });
 
     test('clearing a reference clears the history that blocked it', () async {
@@ -622,10 +655,15 @@ void main() {
       await sync.putAssistantSettings(arriving());
       expect(sync.applied, isTrue);
 
+      final savesAfterAdopt = saves;
       await sync.putAssistantSettings(
         arriving(providerKind: 'some-future-provider'),
       );
       expect(sync.applied, isFalse);
+      // And nothing of it reached disk, like the refusal test asserts: the
+      // coordinator hands this record over every round, so a skip that saved
+      // would burn a settings write every five minutes forever.
+      expect(saves, savesAfterAdopt);
     });
 
     test('a record older than the stamp this device holds is refused',

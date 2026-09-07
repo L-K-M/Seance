@@ -890,6 +890,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final keyEntered =
         enteredLlmKey.trim().isNotEmpty || enteredZaiKey.trim().isNotEmpty;
     setState(() => _saving = true);
+    // Every await below can throw — the keystore reads, `saveSettings`, and
+    // the provider reload. Without this, one of them escaping leaves `_saving`
+    // set, and it is what disables Save *and* all three sync switches, the
+    // mode selector and both sync buttons: a transient disk failure would lock
+    // the whole sync section of this screen until it is closed and reopened.
+    try {
+      await _saveInner(state, versionAtEntry, enteredLlmKey, enteredZaiKey,
+          keyEntered);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveInner(
+    AppState state,
+    int versionAtEntry,
+    String enteredLlmKey,
+    String enteredZaiKey,
+    bool keyEntered,
+  ) async {
     final s = state.services.settings;
     // Store the API key under a per-provider name.
     final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
@@ -910,7 +930,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       } catch (e) {
         if (!mounted) return;
-        setState(() => _saving = false);
         // Named like the LLM key's failure below: the same class of error
         // otherwise produced a bare `KeystoreException` string with nothing
         // saying which of the two keys failed to save.
@@ -933,7 +952,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // KeystoreException: the OS keyring is unavailable — don't report
         // "Saved" for a key that never landed.
         if (!mounted) return;
-        setState(() => _saving = false);
         showTopToastIn(
           context,
           message: 'Settings not saved — could not store the API key: $e',
@@ -964,10 +982,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // them.
     if (state.llmConfigVersion != versionAtEntry) {
       if (mounted) {
-        setState(() {
-          _saving = false;
-          _syncAssistantFields(state);
-        });
+        setState(() => _syncAssistantFields(state));
         showTopToastIn(
           context,
           message: _adoptedMidSave,
@@ -1048,7 +1063,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _assistantVersionSeen = state.llmConfigVersion;
     }
     if (mounted) {
-      setState(() => _saving = false);
       showTopToastIn(
         context,
         message: adoptedMeanwhile
@@ -1121,6 +1135,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Switching it on adopts what the account already has, and publishes what
     // this device has only when there was nothing to adopt.
     if (_syncAssistant && !wasSyncingAssistant) {
+      // Taken immediately before the round, not from `_assistantVersionSeen`,
+      // which is the version this screen loaded its fields at. A periodic
+      // round that adopted earlier in the screen's life also moves the counter
+      // away from that baseline, and on the publish path — where this round
+      // itself bumps nothing — it would satisfy the check below and reload the
+      // fields, discarding whatever the user had typed into them. Only this
+      // round's own bump means "adopted".
+      final versionBeforeRound = state.llmConfigVersion;
       try {
         await state.assistantSyncSwitchedOn();
       } catch (e) {
@@ -1161,7 +1183,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // toggle whose subtitle promises it only changes what is shared. The
       // version counter is what separates the two: `_runSyncAndRefresh`
       // reloads the provider, and so bumps it, only when the round adopted.
-      if (mounted && state.llmConfigVersion != _assistantVersionSeen) {
+      if (mounted && state.llmConfigVersion != versionBeforeRound) {
         setState(() => _syncAssistantFields(state));
       }
     }

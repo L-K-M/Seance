@@ -1261,9 +1261,18 @@ class AppState extends ChangeNotifier {
     // zero, so a round queued behind this one that overwrote
     // `_lastRoundAdoptedAssistant` during the reload's await cannot turn an
     // adoption into a republish.
+    // The account half of the entry guard is live across that await too. A
+    // user who signs out inside it — or a detach from anywhere else — leaves a
+    // round that adopted nothing, pushed nothing and kept the toggle on, so
+    // every other condition here reads exactly as it does on a fresh install
+    // with an account attached. Falling through stamps `now` on a
+    // configuration no account was ever consulted about, which is the inflated
+    // stamp the entry guard's own comment describes: it wins the first round
+    // against whatever the next account attached already held.
     if (_lastRoundAdoptedAssistant ||
         services.settings.assistantUpdatedAt != 0 ||
-        !services.settings.syncAssistant) {
+        !services.settings.syncAssistant ||
+        !services.isSyncConfigured) {
       return;
     }
     // Past here the stamp is zero, which means two different things — and only
@@ -1293,13 +1302,15 @@ class AppState extends ChangeNotifier {
     // stamp. Stamping now would put this device's pre-feature configuration
     // over the one it just adopted — the clobber this whole method is a
     // sequence of guards against.
-    // Both halves of the entry guard, not only the stamp: the toggle stays
-    // live across that await too, and a user who switches assistant sync back
-    // off inside it would otherwise be stamped and persisted anyway — leaving
-    // the inflated stamp, while opted out, that can outrank a record another
-    // device publishes before the switch is thrown again.
+    // All of the entry guard, not only the stamp: the toggle and the account
+    // both stay live across that await too. A user who switches assistant
+    // sync back off inside it, or who signs out, would otherwise be stamped
+    // and persisted anyway — leaving the inflated stamp, while opted out or
+    // detached, that can outrank a record another device publishes before the
+    // switch is thrown again.
     if (services.settings.assistantUpdatedAt != 0 ||
-        !services.settings.syncAssistant) {
+        !services.settings.syncAssistant ||
+        !services.isSyncConfigured) {
       return;
     }
     await assistantSettingsEdited();
