@@ -28,6 +28,55 @@ import 'top_toast.dart';
 /// A top-level function so the rule can be asserted directly — no widget test
 /// in this app stands up an [AppState], and this is the part of the dialog
 /// worth pinning down.
+/// The credential this Save writes, or null when the form describes none and
+/// the stored one should stay as it is.
+///
+/// Blank means "keep what is stored", the same for every credential box: the
+/// fields start empty when an existing server is opened, so writing a blank
+/// through would replace the stored credential with nothing on any save that
+/// only touched some other field.
+///
+/// A *referenced* key is the case this exists for. Its passphrase is the only
+/// credential that mode has, and it used to be dropped — the box was shown,
+/// filled and ignored — so `Test connection`, which authenticates with what
+/// was typed, reported success for a key the saved server could not decrypt.
+/// [stored] is carried through when one is written, because switching to a
+/// referenced file leaves an already-stored PEM unread rather than discarded,
+/// and switching back has to find it again.
+@visibleForTesting
+Secret? plannedCredential({
+  required AuthMethod auth,
+  required bool referenceKeyFile,
+  required String password,
+  required String keyPem,
+  required String keyPassphrase,
+  required String secretId,
+  Secret? stored,
+}) {
+  if (auth == AuthMethod.password) {
+    if (password.isEmpty) return null;
+    return Secret(id: secretId, kind: SecretKind.password, value: password);
+  }
+  if (auth != AuthMethod.privateKey) return null;
+  if (!referenceKeyFile) {
+    if (keyPem.isEmpty) return null;
+    return Secret(
+      id: secretId,
+      kind: SecretKind.privateKey,
+      value: keyPem,
+      keyPassphrase: keyPassphrase.isEmpty ? null : keyPassphrase,
+    );
+  }
+  if (keyPassphrase.isEmpty) return null;
+  return Secret(
+    id: secretId,
+    kind: SecretKind.privateKey,
+    // The key itself stays on disk; only what decrypts it is stored.
+    value: stored?.value ?? '',
+    keyPassphrase: keyPassphrase,
+  );
+}
+
 bool excludingNeedsConfirmation({
   required ServerConfig? existing,
   required bool syncConfigured,
@@ -386,10 +435,19 @@ class _ServerEditorState extends State<_ServerEditor> {
                     color: Theme.of(context).hintColor,
                   ),
             ),
-            if (_testResult != null) ...[
-              const SizedBox(height: 12),
-              ConnectionTestReport(result: _testResult!),
-            ],
+            if (_testResult != null) const SizedBox(height: 12),
+            // The spinner announces that a test started; without this the one
+            // thing that matters — how it ended — arrives silently, and a
+            // screen-reader user has to go looking for it. Kept mounted while
+            // idle rather than added with the result: several screen readers
+            // announce a live region whose content changes and stay quiet for
+            // one that appears already filled.
+            Semantics(
+              liveRegion: true,
+              child: _testResult == null
+                  ? const SizedBox.shrink()
+                  : ConnectionTestReport(result: _testResult!),
+            ),
           ],
         ),
       ),
@@ -677,7 +735,12 @@ class _ServerEditorState extends State<_ServerEditor> {
       username: _user.text.trim(),
       authMethod: _auth,
       secretRef: secretRef,
-      identityFilePath: (_auth == AuthMethod.privateKey && _referenceKeyFile)
+      // Blank reads as "no file referenced", not as a path made of nothing:
+      // the validator blocks an empty path, and a caller that ever reached
+      // here without it would otherwise ask the SSH layer to read `''`.
+      identityFilePath: (_auth == AuthMethod.privateKey &&
+              _referenceKeyFile &&
+              _keyPath.text.trim().isNotEmpty)
           ? _keyPath.text.trim()
           : null,
       syncSecret: _syncSecret,
@@ -795,31 +858,38 @@ class _ServerEditorState extends State<_ServerEditor> {
       now: DateTime.now().millisecondsSinceEpoch,
     );
 
-    String? secretRef = existing?.secretRef;
-    Secret? secret;
-
-    if (_auth == AuthMethod.password && _password.text.isNotEmpty) {
-      secretRef ??= uuidV4();
-      secret = Secret(
-          id: secretRef, kind: SecretKind.password, value: _password.text);
-    } else if (_auth == AuthMethod.privateKey &&
-        !_referenceKeyFile &&
-        _keyPem.text.isNotEmpty) {
-      // Guard on isNotEmpty (like the password branch): the PEM field starts
-      // blank when editing an existing server, so without this, editing any
-      // other field and saving would overwrite the stored key with "".
-      secretRef ??= uuidV4();
-      secret = Secret(
-        id: secretRef,
-        kind: SecretKind.privateKey,
-        value: _keyPem.text,
-        keyPassphrase:
-            _keyPassphrase.text.isEmpty ? null : _keyPassphrase.text,
-      );
+    final existingRef = existing?.secretRef;
+    // Only when a referenced key's passphrase is about to be written over an
+    // entry that may hold a PEM: every other branch replaces the entry whole.
+    Secret? stored;
+    if (existingRef != null &&
+        _auth == AuthMethod.privateKey &&
+        _referenceKeyFile &&
+        _keyPassphrase.text.isNotEmpty) {
+      try {
+        stored = await widget.state.services.vault.getSecret(existingRef);
+      } catch (e) {
+        // A locked keyring, reported like the save failure below rather than
+        // silently writing the passphrase over the key it was stored beside.
+        if (!mounted) return;
+        setState(() => _busy = false);
+        showTopToastIn(context, message: 'Could not save: $e');
+        return;
+      }
     }
+    final secretId = existingRef ?? uuidV4();
+    final secret = plannedCredential(
+      auth: _auth,
+      referenceKeyFile: _referenceKeyFile,
+      password: _password.text,
+      keyPem: _keyPem.text,
+      keyPassphrase: _keyPassphrase.text,
+      secretId: secretId,
+      stored: stored,
+    );
 
     final config = _formConfig(
-      secretRef: secret != null ? secretRef : existing?.secretRef,
+      secretRef: secret != null ? secretId : existingRef,
       now: now,
     );
     try {

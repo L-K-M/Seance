@@ -200,8 +200,14 @@ const String _infoResponseToken = 'InfoResponse';
 /// rename and not the other would leave the withhold keying off a name the
 /// pattern no longer matches, which is the drift this whole mechanism exists
 /// to survive.
-final RegExp _userauthResponses =
-    RegExp('($_userauthMessage)?\\(responses\\s*:\\s*\\[.*', dotAll: true);
+/// Escaped, though today's name needs none: everything around this pattern is
+/// built to survive drift in dartssh2's spelling, and a name edited to contain
+/// a metacharacter would change the pattern's meaning silently — the one drift
+/// this file would fail open on.
+final RegExp _userauthResponses = RegExp(
+  '(${RegExp.escape(_userauthMessage)})?\\(responses\\s*:\\s*\\[.*',
+  dotAll: true,
+);
 
 /// [line] with any credential dartssh2's trace would otherwise print replaced.
 /// Public so the redaction can be asserted directly rather than only through a
@@ -220,7 +226,24 @@ String redactConnectionTrace(String line) {
   // nothing red anywhere. An InfoResponse this does not recognize is
   // therefore replaced whole: a transcript line lost to caution costs a
   // diagnosis, and the alternative costs the credential.
-  if (line.contains(_infoResponseToken) && !_userauthResponses.hasMatch(line)) {
+  //
+  // Positional, not just "does the pattern match somewhere": the leftmost
+  // match has to belong to the named message. A record carrying a drifted
+  // field name followed by an unrelated `responses: [` — two messages joined
+  // into one chunk — matched on the later one, skipped the withhold, and had
+  // only that occurrence replaced, leaving the credential ahead of it
+  // verbatim.
+  //
+  // "Belongs to it" is `start <= tokenEnd`, which admits both shapes that are
+  // recognized today: the canonical line, where the pattern's optional name
+  // group makes the match start at `Userauth_…` *before* the token, and a
+  // renamed class whose field is still `responses:`, where the match starts
+  // immediately *after* it. Anything further along is another message.
+  final firstResponses = _userauthResponses.firstMatch(line);
+  final tokenAt = line.indexOf(_infoResponseToken);
+  final tokenEnd = tokenAt + _infoResponseToken.length;
+  if (tokenAt >= 0 &&
+      (firstResponses == null || firstResponses.start > tokenEnd)) {
     return '$_userauthMessage(redacted: this build does not recognize the '
         'shape of this message, so all of it is withheld)';
   }

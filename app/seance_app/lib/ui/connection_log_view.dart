@@ -73,12 +73,19 @@ class ConnectionLogView extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
             ),
             child: SingleChildScrollView(
-              child: SelectableText(
-                text.isEmpty ? '(no log captured)' : text,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  height: 1.4,
+              // Horizontally too: a transcript carries long unbreakable runs
+              // (algorithm lists, base64 key material) that soft-wrap nowhere,
+              // and on a narrow layout their tails painted past the card with
+              // no way to reach them — the part a bug report needs.
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SelectableText(
+                  text.isEmpty ? '(no log captured)' : text,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
                 ),
               ),
             ),

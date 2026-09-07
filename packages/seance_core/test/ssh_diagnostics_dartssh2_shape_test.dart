@@ -28,6 +28,9 @@ void main() {
             'hunter2',
             'second-answer',
           ])}');
+      // The framing survives: a scrubber that nuked the whole line would
+      // satisfy every assertion below while destroying the transcript.
+      expect(log.toString(), contains('-> sock:'));
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), isNot(contains('second-answer')));
       expect(log.toString(), contains('[redacted])'));
