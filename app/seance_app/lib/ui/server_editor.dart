@@ -328,8 +328,10 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// reads as current, and the report's whole claim is that it describes the
   /// server about to be saved. An attempt *in flight* is the same problem
   /// arriving late, so the counter moves too and its result lands as
-  /// superseded — which means clearing [_testing] here as well, or the Save
-  /// button would stay disabled waiting for a result that will be dropped.
+  /// superseded — which means clearing [_testing] here as well, or the *Test*
+  /// button would stay disabled behind a live spinner, waiting on a result
+  /// that will be dropped. Save is never gated on a running test: it takes
+  /// `_busy` alone, so a test in flight does not block saving.
   ///
   /// Guarded so typing does not rebuild the dialog on every keystroke.
   void _dropTestResult() {

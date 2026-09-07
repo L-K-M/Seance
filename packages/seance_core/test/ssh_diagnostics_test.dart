@@ -413,6 +413,10 @@ void main() {
       // Which branch, not just the outcome: the shape anchor cannot match
       // `answers:`, so only the withhold can have produced this.
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
       // And a request line, which shares everything but that part, stays.
       final request = SshConnectionLog();
       request.add('-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])');
@@ -436,6 +440,10 @@ void main() {
           ' … then (responses: [ok])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('an InfoResponse this build cannot parse is withheld whole', () {
@@ -448,6 +456,10 @@ void main() {
           '(numResponses: 1, answers: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('a renamed InfoResponse class is still redacted', () {
@@ -559,6 +571,10 @@ void main() {
           '(answers: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('the canonical line still redacts to exactly what it always did', () {

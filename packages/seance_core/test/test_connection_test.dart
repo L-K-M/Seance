@@ -718,12 +718,21 @@ void main() {
         );
         expect(prompts, 3,
             reason: 'a superseded key must not linger as a trusted alternative');
+        // And the roles in *that* prompt, not only in the one before it. The
+        // swap this test guards against on the second ask — showing the user
+        // the key being replaced while trusting the one offered — is exactly
+        // as available on the third, and a count cannot see it.
+        expect(shown.last.presented.fingerprintSha256, sha256Fingerprint('new'),
+            reason: 'the re-ask must present the key being offered');
+        expect(shown.last.pinned?.fingerprintSha256,
+            sha256Fingerprint('attacker'),
+            reason: 'and name the one it would replace');
         // And that approval lands, like the one before it: a manager that
         // re-asked and returned true without writing would leave the pin on
         // the attacker key and re-prompt on every reconnect.
         expect(
           (await trial.get('new.example.com', 22))?.fingerprintSha256,
-          'SHA256:new',
+          sha256Fingerprint('new'),
           reason: 'a re-approved key must become the pin again',
         );
       } else {

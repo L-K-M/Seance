@@ -71,6 +71,22 @@ void main() {
     expect(credentials.privateKeyPem, 'PEM');
   });
 
+  test('a grant beside a configured identity path is not refused', () async {
+    // The complement of the first test, and the mode the grant exists for:
+    // referenced-key auth is what the editor's Test connection runs in, so a
+    // guard that fired whenever a bookmark was present — comparing the wrong
+    // field, or trimming too hard — would break the only path that needs it
+    // while every other test here stayed green. The file does not exist, so
+    // reading it fails; what matters is that it got that far.
+    await expectLater(
+      services.resolveCredentials(
+        config(AuthMethod.privateKey).copyWith(identityFilePath: stray.path),
+        draftIdentityBookmark: stray,
+      ),
+      throwsA(isNot(isA<ArgumentError>())),
+    );
+  });
+
   test('a stray grant under password auth is a harmless leftover', () async {
     // The editor keeps a picked file's grant across an auth-method switch.
     // Under a password it is never consulted, so it cannot change what is
