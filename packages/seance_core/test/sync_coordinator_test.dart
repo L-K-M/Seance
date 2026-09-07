@@ -1695,6 +1695,50 @@ void main() {
       expect(remote.stored(AssistantSettings.recordId), isNull);
     });
 
+    test('a store that throws on apply costs the assistant its record, '
+        'not the round', () async {
+      // The mirror of the collect-side test above, and the answer to the
+      // recurring question of why that read needed a guard while this write
+      // does not: the apply loop's body is inside a per-record `try` whose
+      // `catch` reports through `skip` and moves on, so a keystore write that
+      // throws cannot take the records queued behind it. Pinned here rather
+      // than argued again — a refactor that hoisted the write out of that
+      // `try` would fail this.
+      final local = InMemoryLocalRecordStore();
+      final snippets = InMemorySnippetStore();
+      // Staged first, so a throw that escaped would be in front of the
+      // snippet rather than behind it.
+      await local.putRemote((await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 900,
+        deviceId: 'phone',
+        data: assistant(updatedAt: 900).toJson(),
+      )))
+          .withSeq(1));
+      await local.putRemote((await _sharedCodec.encrypt(DecryptedRecord(
+        id: 'snippet:s1',
+        kind: RecordKind.snippet,
+        updatedAt: 5,
+        deviceId: 'phone',
+        data: const Snippet(
+          id: 's1',
+          title: 'tail the log',
+          body: 'tail -f /var/log/syslog',
+          createdAt: 1,
+          updatedAt: 5,
+        ).toJson(),
+      )))
+          .withSeq(2));
+
+      await coordinator('A', local,
+              store: _ThrowingOnWriteAssistantStore(), snippets: snippets)
+          .applyToStores();
+
+      expect(await snippets.getSnippet('s1'), isNotNull,
+          reason: 'the record behind the throwing one still applied');
+    });
+
     test('a device that never edited its assistant publishes nothing',
         () async {
       // Stamp zero means "never edited here", and it is what separates a
@@ -1785,6 +1829,10 @@ void main() {
       await coordinator('A', local, store: InMemoryAssistantSettingsStore())
           .run(remote);
       expect(await local.allRecords(), isEmpty);
+      // Both sides: staging and pushing are separate steps, and a record that
+      // reached the account without being staged is the same rival default on
+      // the account by another route.
+      expect(remote.stored(AssistantSettings.recordId), isNull);
     });
 
     test('a configuration this build could not read is not published',
@@ -2022,6 +2070,21 @@ class _ThrowingAssistantStore implements AssistantSettingsStore {
 
   @override
   Future<void> putAssistantSettings(AssistantSettings value) async {}
+}
+
+/// A store that answers reads but throws on the write, which is what a locked
+/// keyring does to the apply path: the stamp comparison in front of it reads
+/// fine, and only `putAssistantSettings` reaches the platform channel.
+class _ThrowingOnWriteAssistantStore implements AssistantSettingsStore {
+  @override
+  Future<AssistantSettings?> getAssistantSettings() async => null;
+
+  @override
+  Future<int> assistantSettingsUpdatedAt() async => 0;
+
+  @override
+  Future<void> putAssistantSettings(AssistantSettings value) async =>
+      throw StateError('KeyringLocked');
 }
 
 /// A store whose keyring will not answer: the configuration is there and its

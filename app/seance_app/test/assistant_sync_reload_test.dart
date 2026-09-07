@@ -473,7 +473,12 @@ void main() {
           return http.Response(
             jsonEncode(PullResponse(
               records: [remote.withSeq(1)],
-              latestSeq: 1,
+              // The head the acknowledgements below have reached, not a
+              // literal: identical today, since this device pushes nothing
+              // here, but a mock whose head goes backwards after a push is a
+              // state no server can be in — which the transport at the top of
+              // this file has its own comment about.
+              latestSeq: pushSeq,
             ).toJson()),
             HttpStatus.ok,
           );

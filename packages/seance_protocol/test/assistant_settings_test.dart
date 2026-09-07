@@ -17,6 +17,19 @@ AssistantSettings settings({
     );
 
 void main() {
+  test('an empty record decodes to the defaults rather than throwing', () {
+    // A peer, or a build that dropped a field, can put a stripped record on
+    // the account. Every default below is established one at a time by the
+    // wrong-typed-field tests; this pins them together, since it is the shape
+    // a record actually arrives in when nothing about it survived.
+    final decoded = AssistantSettings.fromJson(const {});
+    expect(decoded.providerKind, '');
+    expect(decoded.baseUrl, '');
+    expect(decoded.redactSecrets, isTrue);
+    expect(decoded.apiKeys, isEmpty);
+    expect(decoded.updatedAt, 0);
+  });
+
   test('round-trips, keys included', () {
     final original = settings(apiKeys: const {'anthropic': 'sk-1', 'zai': 'z'});
     final back = AssistantSettings.fromJson(original.toJson());
@@ -98,6 +111,16 @@ void main() {
         reason: 'apiKeys=$bad should read as no keys',
       );
     }
+    // A good entry beside a bad value drops only the bad one, matching how
+    // the degenerate entries are handled below. Pinned because the other
+    // reading — refusing the whole map — would have one corrupt value in a
+    // peer's record discard a working key on every device that adopted it.
+    expect(
+      AssistantSettings.fromJson(
+        settings().toJson()..['apiKeys'] = {'anthropic': 'sk-1', 'zai': 42},
+      ).apiKeys,
+      {'anthropic': 'sk-1'},
+    );
   });
 
   test('a degenerate key entry is dropped rather than adopted', () {
@@ -271,6 +294,16 @@ void main() {
     expect(cleared.toJson().containsKey('searxngUrl'), isFalse);
     expect(cleared.toJson().containsKey('braveApiKeyRef'), isFalse);
     expect(cleared.toJson().containsKey('zaiApiKeyRef'), isFalse);
+    // A value and its clear flag in the same call: the flag wins. A settings
+    // screen binding a text controller beside a reset action can pass both,
+    // and the two readings differ by whether the reset happens at all.
+    expect(
+      settings()
+          .copyWith(
+              searxngUrl: 'https://searx.example.com', clearSearxngUrl: true)
+          .searxngUrl,
+      isNull,
+    );
     // Everything the flags do not name survives them.
     expect(cleared.providerKind, 'anthropic');
     expect(cleared.llmApiKeyRef, 'anthropic');

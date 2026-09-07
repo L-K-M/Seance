@@ -865,9 +865,17 @@ void main() {
       // Nor is the sync layer's own bookkeeping: a pending key retry landing
       // would otherwise make an unchanged Save read as an edit and stamp.
       settings.unwrittenAssistantKeyRefs.add('openai');
-      // The getter could return a copy, and then the add above would be a
-      // no-op and the assertion below would pass having tested nothing.
+      // Its sibling is the same hazard from the other side: a key the record
+      // only *confirms* this device holds is recorded on an ordinary round,
+      // so folding that set in would make the next Save read as an edit and
+      // stamp `now` over a configuration another device published meanwhile.
+      // Measured: with it folded in and this line absent, the whole suite
+      // stays green.
+      settings.heldAssistantKeyRefs.add('confirmed-ref');
+      // The getters could return copies, and then the adds above would be
+      // no-ops and the assertions below would pass having tested nothing.
       expect(settings.unwrittenAssistantKeyRefs, contains('openai'));
+      expect(settings.heldAssistantKeyRefs, contains('confirmed-ref'));
       expect(assistantSyncFingerprint(settings), before);
 
       for (final change in <void Function()>[
