@@ -130,7 +130,15 @@ class FakeMcpServer {
           throw StateError('ZaiSearch sent a non-object body: $decoded');
         }
         final payload = decoded;
-        final method = payload['method'] as String;
+        final Object? named = payload['method'];
+        if (named is! String) {
+          // Named like the guards above: a client bug should fail as an
+          // expectation, not as a cast error deep inside this fake.
+          throw StateError(
+              'ZaiSearch sent a JSON-RPC message with no method to '
+              '${request.url}');
+        }
+        final method = named;
         requests.add(request);
         headers.add(sent);
         methods.add(method);
@@ -504,7 +512,11 @@ void main() {
       // insufficient, so the auth branch claimed it: someone with a working
       // key sent to rotate it, which is the confusion the quota test in front
       // of that branch exists to prevent.
-      for (final msg in ['Tokens exhausted', 'Token budget depleted']) {
+      for (final msg in [
+        'Tokens exhausted',
+        'Token budget depleted',
+        'Token budget exceeded',
+      ]) {
         final server = FakeMcpServer();
         server.overrides['initialize'] = {
           'success': false,
@@ -651,7 +663,10 @@ void main() {
       // server hold the stream open, so a proxy that answers 200 and then
       // says nothing would otherwise wedge the caller for good.
       final stalled = StreamController<List<int>>();
-      addTearDown(stalled.close);
+      // Wrapped, not passed: `close()` on an unlistened single-subscription
+      // controller never completes, and a teardown that awaits it turns a
+      // failed assertion into a suite timeout that hides it.
+      addTearDown(() => stalled.close());
       final client = MockClient.streaming((request, body) async =>
           http.StreamedResponse(
             stalled.stream,
@@ -685,7 +700,10 @@ void main() {
       // TimeoutException was escaping — "Future not completed" in place of
       // the status line that had already said what went wrong.
       final stalled = StreamController<List<int>>();
-      addTearDown(stalled.close);
+      // Wrapped, not passed: `close()` on an unlistened single-subscription
+      // controller never completes, and a teardown that awaits it turns a
+      // failed assertion into a suite timeout that hides it.
+      addTearDown(() => stalled.close());
       final client = MockClient.streaming((request, body) async =>
           http.StreamedResponse(stalled.stream, 502));
       await expectLater(
@@ -762,11 +780,14 @@ void main() {
       final stalled = StreamController<List<int>>(
         onCancel: () => stalledCancelled = true,
       );
-      addTearDown(stalled.close);
+      // Wrapped, not passed: `close()` on an unlistened single-subscription
+      // controller never completes, and a teardown that awaits it turns a
+      // failed assertion into a suite timeout that hides it.
+      addTearDown(() => stalled.close());
       final client = MockClient.streaming((request, body) async {
         final payload =
             jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
-        if (payload.containsKey('id')) {
+        if (payload['method'] == 'initialize') {
           return http.StreamedResponse(
             Stream.value(utf8.encode(jsonEncode({
               'jsonrpc': '2.0',
@@ -776,6 +797,12 @@ void main() {
             200,
             headers: {'content-type': 'application/json'},
           );
+        }
+        // Anything else means the client reordered the handshake, and this
+        // test's stall would then be reported as "no web search tool" —
+        // pointing at the wrong layer entirely.
+        if (payload.containsKey('id')) {
+          fail('unexpected ${payload['method']} before the notification');
         }
         return http.StreamedResponse(
           stalled.stream,
@@ -815,7 +842,7 @@ void main() {
       final held = StreamController<List<int>>(
         onCancel: () => cancelled = true,
       );
-      addTearDown(held.close);
+      addTearDown(() => held.close());
       final client = MockClient.streaming((request, body) async {
         final bytes = await body.toBytes();
         final payload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
@@ -958,7 +985,13 @@ void main() {
         () {
       // `??` answers for null alone, so an explicitly empty list or map was
       // kept and joined to nothing — the fall-through the string case had.
-      for (final empty in [<Object?>[], <String, Object?>{}, '']) {
+      for (final empty in [
+        <Object?>[],
+        <String, Object?>{},
+        <Object?>[1, 2],
+        true,
+        '',
+      ]) {
         final results = ZaiSearch.parseToolResult({
           'content': [
             {
@@ -1046,11 +1079,12 @@ void main() {
       expect(results.single.snippet, 'the usable one');
     });
 
-    test('a URL too long to be a page is not a result', () {
-      // The one field a result cannot have clipped — a truncated link lies —
-      // so an implausible one is refused rather than carried into the tool
-      // result, where it would spend the budget the other caps protect.
-      final long = 'https://x.example/${'a' * ZaiSearch.maxUrlChars}';
+    test('an over-long URL keeps its result, to be clipped downstream', () {
+      // One policy for one field. `clipSearchSnippets` caps every backend's
+      // URL at `maxSearchUrlChars` with a visible ellipsis, so refusing here
+      // dropped a Z.AI result — title and snippet with it — where the
+      // identical URL from SearXNG or Brave was kept and truncated.
+      final long = 'https://x.example/${'a' * (maxSearchUrlChars + 100)}';
       final results = ZaiSearch.parseToolResult({
         'content': [
           {
@@ -1068,7 +1102,15 @@ void main() {
           },
         ],
       }, 5);
-      expect(results.map((r) => r.url), ['https://example.com/ok']);
+      expect(results.map((r) => r.url), [long, 'https://example.com/ok']);
+      expect(results.first.title, 'Huge',
+          reason: 'the title and snippet ride through with it');
+
+      // And the cap still lands, one layer on, where every backend meets it.
+      final clipped = ChatController.clipSearchSnippets(results);
+      expect(clipped.first.url.length, maxSearchUrlChars + 1);
+      expect(clipped.first.url.endsWith('…'), isTrue);
+      expect(clipped.first.title, 'Huge');
     });
 
     test('a title that arrives as a list is read, like a snippet is', () {
@@ -1139,7 +1181,13 @@ void main() {
           throwsA(isA<http.ClientException>().having(
             (e) => e.message,
             'message',
-            allOf(isNot(contains('(code')), isNotEmpty),
+            // 'down' is the payload itself: "names its code and nothing
+            // else" is the claim, and only the map case was checking it.
+            allOf(
+              isNot(contains('(code')),
+              isNot(contains('down')),
+              isNotEmpty,
+            ),
           )),
         );
       }
@@ -1251,7 +1299,44 @@ void main() {
           },
           'required': ['search_query', 'tenant'],
         }, 'dart', 5),
-        throwsA(isA<http.ClientException>()),
+        // Naming the parameter, not merely refusing: the gateway's schema is
+        // the only place that says what it wanted, and "Z.AI advertised a
+        // tool this build cannot call" with no name is a dead end for
+        // whoever reads it.
+        throwsA(isA<http.ClientException>()
+            .having((e) => e.message, 'message', contains('tenant'))),
+      );
+    });
+
+    test('a required name wins over an optional twin', () {
+      // Both spellings advertised, only one required: taking the optional one
+      // would put the query where the server does not read it, and leave the
+      // required loop below to fill the real parameter from its default.
+      expect(
+        ZaiSearch.buildArguments(const {
+          'properties': {
+            'query': {'type': 'string'},
+            'q': {'type': 'string'},
+            'count': {'type': 'integer'},
+            'limit': {'type': 'integer'},
+          },
+          'required': ['q', 'limit'],
+        }, 'dart', 4),
+        {'q': 'dart', 'limit': 4},
+      );
+    });
+
+    test('a count named the way another schema spells it is still sent', () {
+      // The names are the schema's to choose — that is what `pick` is for —
+      // and `max_results` is as ordinary as `count` in MCP tool schemas.
+      expect(
+        ZaiSearch.buildArguments(const {
+          'properties': {
+            'search_query': {'type': 'string'},
+            'max_results': {'type': 'integer'},
+          },
+        }, 'dart', 3),
+        {'search_query': 'dart', 'max_results': 3},
       );
     });
 
@@ -1357,15 +1442,32 @@ void main() {
       expect(results.map((r) => r.url), ['https://ok.example/page']);
     });
 
-    test('a payload nested past any real shape is walked, not crashed', () {
+    test('a payload nested past the cap is dropped, not crashed', () {
       // Server-controlled, and StackOverflowError is an Error — it would sail
       // past the `on Exception` handling every caller of this class relies on.
-      var nested = <String, Object?>{'link': 'https://deep.example'};
-      for (var i = 0; i < 100000; i++) {
-        nested = <String, Object?>{'a': nested};
+      //
+      // `returnsNormally` alone could not say which of "walked it" and
+      // "stopped at the cap" happened, and the walk caps at 32: the deep link
+      // is unreachable, so the honest assertion is that nothing comes back.
+      Map<String, Object?> wrap(int depth) {
+        var nested = <String, Object?>{'link': 'https://deep.example'};
+        for (var i = 0; i < depth; i++) {
+          nested = <String, Object?>{'a': nested};
+        }
+        return nested;
       }
-      expect(() => ZaiSearch.parseToolResult({'structuredContent': nested}, 5),
-          returnsNormally);
+
+      expect(
+        ZaiSearch.parseToolResult({'structuredContent': wrap(100000)}, 5),
+        isEmpty,
+      );
+      // The control that keeps the assertion above from passing for a walk
+      // that returns nothing at any depth.
+      expect(
+        ZaiSearch.parseToolResult({'structuredContent': wrap(20)}, 5)
+            .map((r) => r.url),
+        ['https://deep.example'],
+      );
     });
 
     test('walks into a text block that holds JSON, skipping icons', () {
@@ -1582,6 +1684,25 @@ void main() {
       // The duplicate must not eat the slot the third backend's page needs.
       expect(results.map((r) => r.url),
           ['https://x.example/docs/?q=1', 'https://x.example/other']);
+    });
+
+    test('an unparseable URL drops its fragment too', () async {
+      // The fallback is the raw string, and dropping the fragment is the
+      // identity rule this key documents — applied only to URLs that parse,
+      // `…#a` and `…#b` were two results for one malformed page. `http://[`
+      // is an invalid IPv6 literal, which `Uri.tryParse` refuses outright.
+      final results = await CompositeSearch([
+        _Fixed([_hit('http://[#section-one', title: 'One')]),
+        _Fixed([_hit('http://[#section-two', title: 'Two')]),
+      ]).search('q', limit: 5);
+      expect(results, hasLength(1));
+      // And two genuinely different malformed URLs still count separately,
+      // so the fallback has not collapsed onto one key.
+      final distinct = await CompositeSearch([
+        _Fixed([_hit('http://[one')]),
+        _Fixed([_hit('http://[two')]),
+      ]).search('q', limit: 5);
+      expect(distinct, hasLength(2));
     });
 
     test('a query string is not a duplicate', () async {

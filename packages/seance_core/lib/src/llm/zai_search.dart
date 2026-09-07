@@ -602,7 +602,8 @@ class ZaiSearch implements SearchProvider {
           text.contains('balance') ||
           text.contains('insufficient') ||
           text.contains('exhausted') ||
-          text.contains('depleted');
+          text.contains('depleted') ||
+          text.contains('exceeded');
       if (!quota &&
           (text.contains('auth') ||
               text.contains('api key') ||
@@ -655,6 +656,14 @@ class ZaiSearch implements SearchProvider {
         _asList(schema['required']).whereType<String>();
 
     String? pick(List<String> candidates) {
+      // Required first, not merely present. A schema advertising both `query`
+      // and `q` with only `q` required would otherwise take the query on the
+      // optional twin, and the loop below would fill the required one from its
+      // default — two conflicting parameters, with the server almost certainly
+      // reading the one the user's query is not in.
+      for (final name in candidates) {
+        if (required.contains(name)) return name;
+      }
       for (final name in candidates) {
         if (properties.containsKey(name)) return name;
       }
@@ -668,7 +677,14 @@ class ZaiSearch implements SearchProvider {
       );
     }
     final arguments = <String, dynamic>{queryKey: query};
-    final countKey = pick(const ['count', 'limit', 'num_results']);
+    final countKey = pick(const [
+      'count',
+      'limit',
+      'num_results',
+      'max_results',
+      'numResults',
+      'maxResults',
+    ]);
     // Omitted rather than sent when it is not a count: `parseToolResult`
     // already clamps a non-positive limit on the way back, and forwarding one
     // spends a round trip to be told `-32602` by a gateway that cannot mean
@@ -792,22 +808,17 @@ class ZaiSearch implements SearchProvider {
   /// Parsed rather than prefix-matched, so `https:evil` and a bare
   /// `https://` do not pass for want of a host.
   static bool _isWebUrl(String value) {
-    // Length first: a URL is the one field of a result that cannot be
-    // clipped — a truncated one is a link that lies — so an implausible one
-    // is refused rather than carried into the tool result, where it would
-    // spend the token budget the snippet and title caps protect.
-    if (value.length > maxUrlChars) return false;
+    // Shape only. Length is `clipSearchSnippets`' business, and deliberately
+    // not this one: it caps every backend's URL at the same number with a
+    // visible ellipsis, so refusing here dropped a Z.AI result — title and
+    // snippet with it — where the identical URL from SearXNG or Brave was
+    // kept and truncated. Two policies for one field, and the losing one took
+    // the whole result.
     final uri = Uri.tryParse(value);
     return uri != null &&
         (uri.scheme == 'http' || uri.scheme == 'https') &&
         uri.host.isNotEmpty;
   }
-
-  /// Beyond this a URL is not a page anyone will open. Browsers stop well
-  /// below it; this is a ceiling on what a gateway can spend, not a limit
-  /// anything real runs into.
-  @visibleForTesting
-  static const int maxUrlChars = maxSearchUrlChars;
 
   /// Walk a tool reply of any shape, collecting every result-looking map.
   ///

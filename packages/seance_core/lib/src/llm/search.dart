@@ -102,10 +102,18 @@ class BraveSearch implements SearchProvider {
 /// Falls back to the raw string when it will not parse: an unparseable URL is
 /// still a distinct result, and collapsing every one of them onto `''` would
 /// let the first swallow the rest.
+/// Hoisted: `_dedupKey` runs once per result from every backend, and Dart
+/// compiles a pattern per construction.
+final RegExp _trailingSlashes = RegExp(r'/+$');
+
 String _dedupKey(String url) {
   final parsed = Uri.tryParse(url);
-  final withoutFragment =
-      parsed == null ? url : parsed.removeFragment().toString();
+  // The fragment goes on both branches: dropping it is the identity rule
+  // this function documents, and applying it only to URLs that parse made
+  // `…#a` and `…#b` two results for one malformed page.
+  final withoutFragment = parsed == null
+      ? url.split('#').first
+      : parsed.removeFragment().toString();
   // The path ends at the first '?', so its trailing '/' can be dropped
   // without touching a slash that is *data* inside a query value
   // (`?next=/docs/` keeps its own). Skipping the strip whenever a query was
@@ -117,7 +125,7 @@ String _dedupKey(String url) {
       ? withoutFragment
       : withoutFragment.substring(0, queryStart);
   final query = queryStart == -1 ? '' : withoutFragment.substring(queryStart);
-  return path.replaceFirst(RegExp(r'/+$'), '') + query;
+  return path.replaceFirst(_trailingSlashes, '') + query;
 }
 
 /// Query several backends at once and merge what comes back.
