@@ -120,9 +120,9 @@ class SshConnectionLog {
   /// is handed, so a producer that split a message on newlines before calling
   /// this would store the tail past the redaction as a line of its own — and
   /// nothing here can tell an already-split chunk from a whole one.
-  void add(String line) {
+  void add(String record) {
     if (_frozen) return;
-    _lines.add(redactConnectionTrace(line));
+    _lines.add(redactConnectionTrace(record));
     if (_lines.length > _maxLines) {
       _lines.removeRange(0, _lines.length - _maxLines);
     }

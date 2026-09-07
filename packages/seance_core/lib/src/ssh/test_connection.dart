@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:seance_protocol/seance_protocol.dart';
 
 import '../hostkey/tofu.dart';
@@ -65,13 +67,23 @@ HostAuthenticator liveHostAuthenticator({
     // On success the client is ours to close (there is no SshSession here to
     // own it); on failure openAuthenticatedClient has already closed it.
     try {
-      // Bounded, unlike the rest of this path: [timeout] covers the TCP
-      // connect and dartssh2 runs its own timer over authentication, but
-      // nothing watches teardown. `SSHClient.close` awaits the socket's, and
-      // a peer that has stopped reading can leave that outstanding — on a
-      // button the user is watching a spinner on, for a connection that has
-      // already succeeded.
+      // The *wait* is bounded, which is the part that reaches the user:
+      // [timeout] covers the TCP connect and dartssh2 runs its own timer over
+      // authentication, but nothing watches teardown. `SSHClient.close`
+      // awaits the socket's, and a peer that has stopped reading can leave
+      // that outstanding — on a button the user is watching a spinner on, for
+      // a connection that has already succeeded.
       await client.close().timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      // Not the same as a close that failed. `Future.timeout` frees this
+      // caller; it does not cancel the close, and dartssh2 exposes no public
+      // way to destroy the transport — so the socket is still on its way down
+      // and may outlive the attempt. "A leak here is a leak per click" is the
+      // standard this file sets, and the one case that cannot meet it is the
+      // one that has to say so out loud.
+      log.add('Closing the trial connection timed out after 5s. It was '
+          'abandoned rather than waited out, and may stay open until it '
+          'fails on its own.');
     } catch (error) {
       // Authentication has already succeeded by here, and that is the only
       // thing this reports: a socket that misbehaves on the way down must not
@@ -157,11 +169,17 @@ Future<ConnectionTestResult> runConnectionTest({
     // where the address ends, and this line is the one people quote back.
     final host =
         config.host.contains(':') ? '[${config.host}]' : config.host;
+    final summary = 'Authenticated as ${config.username}@$host:${config.port} '
+        '(${authKindLabel(kind)}).';
+    // Into the transcript too, not only onto the result. A success ended with
+    // whatever the SSH layer last wrote — which, when the close misbehaves, is
+    // a line about a failure — so anything reading the tail as the headline
+    // showed one for a connection that worked, and a copied transcript closed
+    // on it.
+    transcript.add(summary);
     return ConnectionTestResult(
       ok: true,
-      summary:
-          'Authenticated as ${config.username}@$host:${config.port} '
-          '(${authKindLabel(kind)}).',
+      summary: summary,
       notes: notes,
       log: transcript.toString(),
     );

@@ -227,9 +227,12 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     passphrase-protected key to an unprotected one cannot be expressed: the box
     is already empty, so the old passphrase keeps being tried and the test
     reports a decrypt failure for a configuration that is correct. Detecting
-    "new key material" from the picked file is not available — the only signal
-    is the macOS security-scoped bookmark, which is re-minted per grant (so it
-    differs for the same file) and is null on every other platform. The fix is
+    "new key material" is not reliable enough to hang the rule on: a changed
+    path catches only a rotation to a *different* file, the macOS
+    security-scoped bookmark is re-minted per grant (so it differs even for
+    the same file) and is null on every other platform, and same-path rotation
+    — writing a new key over the old one — needs a stored key fingerprint the
+    config does not carry. The fix is
     an explicit "no passphrase" affordance in the editor, honoured identically
     by `resolveCredentials` and `plannedCredential`.
 17. **A method switch can leave a credential of the wrong kind referenced.**

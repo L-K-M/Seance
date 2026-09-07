@@ -139,8 +139,17 @@ void main() {
                   // The predicate promises the entry matters here, so a plan
                   // made without it has to differ — otherwise the fetch is
                   // dead weight and the promise is empty.
-                  expect(withStored?.value, isNot(without?.value),
-                      reason: 'reads stored, yet ignores it: $combination');
+                  // The whole plan, as the comment above says: a branch
+                  // where the entry mattered only for the passphrase would
+                  // otherwise fail this for the wrong reason. Not weaker in
+                  // practice — the passphrase comes from the form, so a
+                  // carry-over that stopped carrying leaves both equal.
+                  expect(
+                    withStored?.value != without?.value ||
+                        withStored?.keyPassphrase != without?.keyPassphrase,
+                    isTrue,
+                    reason: 'reads stored, yet ignores it: $combination',
+                  );
                 } else {
                   expect(withStored?.value, without?.value,
                       reason: 'reads stored without saying so: $combination');

@@ -33,8 +33,13 @@ void main() {
     test('reports how authentication completed, not merely that it did',
         () async {
       SshCredentials? seen;
+      // The caller's own log, not just the result's: the editor renders this
+      // instance live while the attempt runs, and only the failure path had
+      // anything asserting the transcript reaches it.
+      final callerLog = SshConnectionLog();
       final result = await runConnectionTest(
         config: config(),
+        log: callerLog,
         credentials: () async => const SshCredentials.password('hunter2'),
         authenticate: (_, creds, log) async {
           seen = creds;
@@ -53,6 +58,11 @@ void main() {
       expect(result.summary, contains('deploy@prod.example.com:2222'));
       expect(result.summary, contains('public key'));
       expect(result.log, contains('handshake'));
+      expect(callerLog.lines.join('\n'), contains('handshake'));
+      // And the summary closes it, the same way a failure transcript does, so
+      // a copied successful test does not end on whatever the close happened
+      // to log.
+      expect(callerLog.lines.last, result.summary);
       // A tripwire, not a redaction test: nothing should ever put the
       // credential into a transcript shown with a Copy button and meant for
       // bug reports, and one negative assertion keeps it that way.
@@ -146,7 +156,7 @@ void main() {
             throw SshConnectException('keyring is locked', StateError('x'), own),
         authenticate: (_, _, _) async => fail('must not be reached'),
       );
-      final lines = result.log.trim().split('\n');
+      final lines = result.log.trimRight().split('\n');
       expect(lines.last, 'keyring is locked');
       expect(lines.where((l) => l == 'keyring is locked').length, 1);
       expect(lines, contains('reading the identity file'));
@@ -424,8 +434,9 @@ void main() {
     });
 
     test('the notes a result carries cannot be edited through it', () async {
-      // The same instance flows into all three results, and a caller that
-      // sorted or filtered it in place would be editing what it was handed.
+      // `notes` is a view of the list `runConnectionTest` built, so a caller
+      // that sorted or filtered it in place would be editing the result it
+      // was handed rather than a list of its own.
       final result = await runConnectionTest(
         config: config(),
         credentials: () async => const SshCredentials.password('pw'),

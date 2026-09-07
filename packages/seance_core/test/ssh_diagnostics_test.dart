@@ -364,8 +364,16 @@ void main() {
             'U+${breakChar.runes.first.toRadixString(16).padLeft(4, '0')}';
         expect(log.toString(), isNot(contains('sword')),
             reason: 'leaked past $at');
+        // And the half *before* the break, which the bracket test pins for
+        // its own case: a match anchored after the terminator would redact
+        // the tail and leave `responses: [pas` standing, satisfying every
+        // assertion about `sword`.
+        expect(log.toString(), isNot(contains('pas')),
+            reason: 'head leaked before $at');
         expect(log.lines.join('\n'), isNot(contains('sword')),
             reason: 'view leaked past $at');
+        expect(log.lines.join('\n'), isNot(contains('pas')),
+            reason: 'view head leaked before $at');
         expect(log.toString(), contains('[redacted])'));
       }
     });
