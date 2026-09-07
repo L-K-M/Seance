@@ -369,7 +369,11 @@ class ZaiSearch implements SearchProvider {
         // named like every other one this class raises.
         // Both deadlines say the same thing here: no reply was ever due, so
         // "stopped sending the reply" would name one that was never expected.
-        const held = 'Z.AI held the search stream open without replying.';
+        // Names the step: this fires only for the init notification, and a
+        // server that answers it with a held-open stream instead of the 202
+        // the protocol owes is the one shape that reaches here.
+        const held = 'Z.AI held the search stream open after the init '
+            'notification instead of acknowledging it.';
         await bounded(
           response.stream,
           maxResponseBytes,
@@ -657,16 +661,9 @@ class ZaiSearch implements SearchProvider {
       if (fallback == null) {
         // Bounded: the name is the gateway's to choose, and this string
         // reaches the UI. Forty-eight characters names any real parameter.
-        var shown = name;
-        if (name.length > 48) {
-          var cut = name.substring(0, 48);
-          // Back off a lone high surrogate, as the snippet clip does: the
-          // ellipsis must not land between the halves of an emoji.
-          if ((cut.codeUnitAt(cut.length - 1) & 0xFC00) == 0xD800) {
-            cut = cut.substring(0, cut.length - 1);
-          }
-          shown = '$cut…';
-        }
+        // The same clip the snippet cap uses, rather than a second copy of
+        // its surrogate rule.
+        final shown = clipText(name, 48);
         throw http.ClientException(
           'Z.AI requires a search parameter Séance cannot supply: $shown.',
         );
@@ -772,11 +769,22 @@ class ZaiSearch implements SearchProvider {
   /// Parsed rather than prefix-matched, so `https:evil` and a bare
   /// `https://` do not pass for want of a host.
   static bool _isWebUrl(String value) {
+    // Length first: a URL is the one field of a result that cannot be
+    // clipped — a truncated one is a link that lies — so an implausible one
+    // is refused rather than carried into the tool result, where it would
+    // spend the token budget the snippet and title caps protect.
+    if (value.length > maxUrlChars) return false;
     final uri = Uri.tryParse(value);
     return uri != null &&
         (uri.scheme == 'http' || uri.scheme == 'https') &&
         uri.host.isNotEmpty;
   }
+
+  /// Beyond this a URL is not a page anyone will open. Browsers stop well
+  /// below it; this is a ceiling on what a gateway can spend, not a limit
+  /// anything real runs into.
+  @visibleForTesting
+  static const int maxUrlChars = 2048;
 
   /// Walk a tool reply of any shape, collecting every result-looking map.
   ///
@@ -864,8 +872,15 @@ class ZaiSearch implements SearchProvider {
         final Map<Object?, Object?> fields => fields.isNotEmpty,
         _ => true,
       };
-      final snippet =
-          hasContent ? content : value['snippet'] ?? value['description'];
+      // The last hop takes the same fall-through as the three above it: an
+      // explicitly empty `snippet` must not hide a `description` beside it,
+      // while a map or list one still reaches the switch that reads it.
+      final rawSnippet = value['snippet'];
+      final snippet = hasContent
+          ? content
+          : rawSnippet is String && rawSnippet.isEmpty
+              ? value['description']
+              : rawSnippet ?? value['description'];
       out.add(SearchResult(
         title: title is String && title.isNotEmpty ? title : url,
         url: url,

@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-
 import '../terminal/paste_sanitizer.dart';
 import 'provider.dart';
 import 'redaction.dart';
@@ -239,27 +238,25 @@ class ChatController {
   /// through verbatim. This is the one place they converge before being
   /// serialized into a tool result and sent to the model, so it is the one
   /// place a cap covers all of them.
+  /// The cap on a result's title, for the reason the snippet has one: a
+  /// title is whatever text the search service put in the field, and a
+  /// gateway that answered with a megabyte of it would spend the token
+  /// budget the snippet cap exists to protect. Shorter than the snippet's,
+  /// because a title that needs two thousand characters is not one.
+  static const int maxTitleChars = 200;
+
   static List<SearchResult> clipSearchSnippets(List<SearchResult> results) => [
         for (final r in results)
-          if (r.snippet.length <= maxSnippetChars)
+          if (r.snippet.length <= maxSnippetChars &&
+              r.title.length <= maxTitleChars)
             r
           else
             SearchResult(
-              title: r.title,
+              title: clipText(r.title, maxTitleChars),
               url: r.url,
-              snippet: '${r.snippet.substring(0, _clipIndex(r.snippet))}…',
+              snippet: clipText(r.snippet, maxSnippetChars),
             ),
       ];
-
-  /// Where to cut a snippet longer than [maxSnippetChars]: the cap, or one
-  /// code unit earlier when the cap would fall inside a surrogate pair. The
-  /// count is in UTF-16 code units, and an emoji astride the cut would
-  /// otherwise leave a lone high surrogate that serializes as U+FFFD.
-  static int _clipIndex(String snippet) {
-    final unit = snippet.codeUnitAt(maxSnippetChars - 1);
-    final highSurrogate = (unit & 0xFC00) == 0xD800;
-    return highSurrogate ? maxSnippetChars - 1 : maxSnippetChars;
-  }
 
   Future<List<SearchResult>> _runSearch(String query) async {
     final provider = searchProvider;
