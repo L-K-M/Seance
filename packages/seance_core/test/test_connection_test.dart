@@ -20,7 +20,12 @@ ServerConfig config({String? jumpHostId}) => ServerConfig(
 /// Pass-through bytes, not a digest: dartssh2 hands `onVerifyHostKey` the
 /// `SHA256:…` fingerprint *string* as bytes, so these are what a [HostKey]
 /// built with `fingerprintSha256: 'SHA256:<s>'` describes.
-Uint8List fingerprint(String s) => Uint8List.fromList(utf8.encode('SHA256:$s'));
+/// The stored form of a fingerprint, and the bytes dartssh2 hands the
+/// verifier for the same key. One spelling, so a pin built as a string and a
+/// challenge built as bytes cannot drift into comparing different formats.
+String sha256Fingerprint(String s) => 'SHA256:$s';
+Uint8List fingerprint(String s) =>
+    Uint8List.fromList(utf8.encode(sha256Fingerprint(s)));
 
 void main() {
   group('runConnectionTest', () {
@@ -408,7 +413,7 @@ void main() {
       final pinned = HostKey(
         host: 'known.example.com',
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:known',
+        fingerprintSha256: sha256Fingerprint('known'),
         pinnedAt: 1,
       );
       await real.put(pinned);
@@ -420,7 +425,7 @@ void main() {
       final fresh = HostKey(
         host: 'new.example.com',
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:new',
+        fingerprintSha256: sha256Fingerprint('new'),
         pinnedAt: 2,
       );
       await trial.put(fresh);
@@ -432,7 +437,7 @@ void main() {
       final reapproved = HostKey(
         host: 'known.example.com',
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:rotated',
+        fingerprintSha256: sha256Fingerprint('rotated'),
         pinnedAt: 3,
       );
       await trial.put(reapproved);
@@ -550,7 +555,7 @@ void main() {
         host: 'new.example.com',
         port: 22,
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:new',
+        fingerprintSha256: sha256Fingerprint('new'),
         pinnedAt: 3,
       ));
       expect(decision.verdict, HostKeyVerdict.trusted);
@@ -561,7 +566,7 @@ void main() {
         host: 'new.example.com',
         port: 22,
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:attacker',
+        fingerprintSha256: sha256Fingerprint('attacker'),
         pinnedAt: 4,
       ));
       expect(mismatch.verdict, HostKeyVerdict.changed);
@@ -581,7 +586,10 @@ void main() {
       // count drifted, and fails with an opaque "Expected: false" that cannot
       // say which of the two happened.
       if (reoffered) {
-        expect(prompts, greaterThan(1),
+        // Exactly two — the first pin and the one re-ask — not merely "more
+        // than one": a manager that re-prompted on every reconnect would also
+        // satisfy a lower bound.
+        expect(prompts, 2,
             reason: 'a changed key must be refused or re-asked, never assumed');
         // An approved re-ask pins the key that was approved — in the trial
         // store, and only there. A "yes" that left the old pin standing would
@@ -618,7 +626,7 @@ void main() {
         type: 'ssh-ed25519',
         // Distinct per fixture, so a store that ignored the port names the
         // pin that leaked instead of failing with a bare `Instance of`.
-        fingerprintSha256: 'SHA256:stored-2222',
+        fingerprintSha256: sha256Fingerprint('stored-2222'),
         pinnedAt: 1,
       ));
       final trial = UnpinnedHostKeyStore(real);
@@ -632,7 +640,7 @@ void main() {
         host: 'dual.example.com',
         port: 22,
         type: 'ssh-ed25519',
-        fingerprintSha256: 'SHA256:dual-22',
+        fingerprintSha256: sha256Fingerprint('dual-22'),
         pinnedAt: 2,
       ));
       expect((await trial.get('dual.example.com', 22))?.fingerprintSha256,

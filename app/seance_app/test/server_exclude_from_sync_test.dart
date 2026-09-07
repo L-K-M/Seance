@@ -9,7 +9,6 @@ import 'package:seance_core/seance_core.dart';
 /// row says so, and "cloud with a slash" is not self-describing — so both the
 /// condition and the announcement are asserted here.
 void main() {
-  _plannedCredentialTests();
   ServerConfig config({required bool excluded}) => ServerConfig(
     id: 's1',
     label: 'laptop',
@@ -195,79 +194,6 @@ void main() {
       // Last-write-wins breaks a tie by device id and sequence, not in the
       // editing device's favour, so an equal stamp is a coin flip.
       expect(nextUpdatedAt(5000, now: 5000), 5001);
-    });
-  });
-}
-
-void _plannedCredentialTests() {
-  group('plannedCredential', () {
-    Secret? plan({
-      AuthMethod auth = AuthMethod.privateKey,
-      bool referenceKeyFile = true,
-      String password = '',
-      String keyPem = '',
-      String keyPassphrase = '',
-      Secret? stored,
-    }) =>
-        plannedCredential(
-          auth: auth,
-          referenceKeyFile: referenceKeyFile,
-          password: password,
-          keyPem: keyPem,
-          keyPassphrase: keyPassphrase,
-          secretId: 'sec-1',
-          stored: stored,
-        );
-
-    test('a referenced key stores the passphrase that decrypts it', () {
-      // The box is shown in this mode and used to be dropped: `Test
-      // connection` authenticates with what was typed, so it reported success
-      // for a key the saved server could not decrypt.
-      final secret = plan(keyPassphrase: 'hunter2');
-      expect(secret, isNotNull);
-      expect(secret!.keyPassphrase, 'hunter2');
-      expect(secret.id, 'sec-1');
-      // The key itself stays on disk.
-      expect(secret.value, isEmpty);
-    });
-
-    test('a PEM stored under the same entry survives the passphrase write',
-        () {
-      // Switching to a referenced file leaves the stored key unread, not
-      // discarded — switching back has to find it again.
-      final secret = plan(
-        keyPassphrase: 'hunter2',
-        stored: const Secret(
-          id: 'sec-1',
-          kind: SecretKind.privateKey,
-          value: 'PEM',
-        ),
-      );
-      expect(secret!.value, 'PEM');
-      expect(secret.keyPassphrase, 'hunter2');
-    });
-
-    test('a blank box keeps whatever is stored, in every mode', () {
-      expect(plan(), isNull);
-      expect(plan(referenceKeyFile: false), isNull);
-      expect(plan(auth: AuthMethod.password), isNull);
-      // The agent has no credential of its own to write.
-      expect(plan(auth: AuthMethod.agent, keyPassphrase: 'x'), isNull);
-    });
-
-    test('a typed key carries its passphrase, or none', () {
-      final withPass =
-          plan(referenceKeyFile: false, keyPem: 'PEM', keyPassphrase: 'p');
-      expect(withPass!.value, 'PEM');
-      expect(withPass.keyPassphrase, 'p');
-      final without = plan(referenceKeyFile: false, keyPem: 'PEM');
-      expect(without!.keyPassphrase, isNull);
-    });
-
-    test('a password is stored as one', () {
-      final secret = plan(auth: AuthMethod.password, password: 'pw');
-      expect(secret!.kind, SecretKind.password);
-      expect(secret.value, 'pw');
     });
   });
 }

@@ -28,6 +28,11 @@ import 'top_toast.dart';
 /// A top-level function so the rule can be asserted directly — no widget test
 /// in this app stands up an [AppState], and this is the part of the dialog
 /// worth pinning down.
+bool excludingNeedsConfirmation({
+  required ServerConfig? existing,
+  required bool syncConfigured,
+}) => existing != null && !existing.excludeFromSync && syncConfigured;
+
 /// The credential this Save writes, or null when the form describes none and
 /// the stored one should stay as it is.
 ///
@@ -71,16 +76,15 @@ Secret? plannedCredential({
   return Secret(
     id: secretId,
     kind: SecretKind.privateKey,
-    // The key itself stays on disk; only what decrypts it is stored.
-    value: stored?.value ?? '',
+    // The key itself stays on disk; only what decrypts it is stored. What is
+    // carried over has to be a key: the entry under this id belongs to
+    // whatever auth method last wrote it, and a server that used a password
+    // before would otherwise have that password stored as its PEM — read back
+    // as one the next time the key is typed rather than referenced.
+    value: stored?.kind == SecretKind.privateKey ? stored!.value : '',
     keyPassphrase: keyPassphrase,
   );
 }
-
-bool excludingNeedsConfirmation({
-  required ServerConfig? existing,
-  required bool syncConfigured,
-}) => existing != null && !existing.excludeFromSync && syncConfigured;
 
 /// The timestamp a save should carry: the wall clock, but never one this
 /// config has already passed.
