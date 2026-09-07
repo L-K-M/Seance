@@ -121,6 +121,22 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       return null;
     }
 
+    // Snapshotted before the first await, not read back after it. An
+    // assistant edit stamps `settings` from the UI path without taking the
+    // mutation queue (see `AppState.assistantSettingsEdited`), so it can land
+    // in any of the keystore reads below — and a record built afterwards
+    // would carry the new stamp and the new refs beside keys gathered for the
+    // old ones. That is the keyless-record hazard every guard in this method
+    // is written against, reached by interleaving rather than by failure.
+    final providerKind = settings.llmKind.name;
+    final baseUrl = settings.llmBaseUrl;
+    final model = settings.llmModel;
+    final llmApiKeyRef = settings.llmApiKeyRef;
+    final searxngUrl = settings.searxngUrl;
+    final braveApiKeyRef = settings.braveApiKeyRef;
+    final zaiApiKeyRef = settings.zaiApiKeyRef;
+    final redactSecrets = settings.redactionEnabled;
+    final updatedAt = settings.assistantUpdatedAt;
     final keys = <String, String>{};
     for (final name in _referencedKeys) {
       // getApiKey answers null on a locked keyring rather than throwing, and
@@ -154,16 +170,16 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     }
 
     return AssistantSettings(
-      providerKind: settings.llmKind.name,
-      baseUrl: settings.llmBaseUrl,
-      model: settings.llmModel,
-      llmApiKeyRef: settings.llmApiKeyRef,
-      searxngUrl: settings.searxngUrl,
-      braveApiKeyRef: settings.braveApiKeyRef,
-      zaiApiKeyRef: settings.zaiApiKeyRef,
-      redactSecrets: settings.redactionEnabled,
+      providerKind: providerKind,
+      baseUrl: baseUrl,
+      model: model,
+      llmApiKeyRef: llmApiKeyRef,
+      searxngUrl: searxngUrl,
+      braveApiKeyRef: braveApiKeyRef,
+      zaiApiKeyRef: zaiApiKeyRef,
+      redactSecrets: redactSecrets,
       apiKeys: keys,
-      updatedAt: settings.assistantUpdatedAt,
+      updatedAt: updatedAt,
     );
   }
 
@@ -298,11 +314,17 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // `unwrittenChanged` joins the save condition and not `applied`: it is a
     // fact about this keystore that has to survive a restart, and nothing
     // about it changes what the chat provider would be built from.
+    // Set before the save, not after: it reports what happened to `settings`,
+    // which has already happened by here. Left until afterwards, a throwing
+    // save would leave it false for a configuration the running app is
+    // already using — and the next round re-delivers the same record at the
+    // same stamp with the same fingerprint, so `contentChanged` is false and
+    // nothing rebuilds the chat provider again before a restart.
+    applied = contentChanged;
     if (contentChanged ||
         unwrittenChanged ||
         settings.assistantUpdatedAt != stampBefore) {
       await saveSettings();
     }
-    applied = contentChanged;
   }
 }

@@ -1251,12 +1251,29 @@ class AppState extends ChangeNotifier {
     // exactly the inflated stamp the entry guard exists to prevent, and it
     // would outrank the account's record when the switch is next turned on.
     if (_lastRoundAdoptedAssistant || !services.settings.syncAssistant) return;
-    // Nothing configured here, so there is nothing worth publishing: stamping
-    // now would turn this device's defaults into the account's newest write
-    // and beat a phone that configured its assistant while sync was off and
-    // enables the switch afterwards. The zero stamp is the whole guard, and
-    // it is this line that would step around it.
-    if (services.settings.assistantUpdatedAt == 0) return;
+    // A zero stamp means two different things, and only one of them is
+    // "nothing worth publishing".
+    //
+    // A fresh install has never configured an assistant, and stamping now
+    // would turn its shipped defaults into the account's newest write — the
+    // clobber that beats a phone which configured its assistant while sync
+    // was off and enables the switch afterwards.
+    //
+    // An install that configured its assistant *before this feature existed*
+    // also reads zero: there was nothing to stamp its edits. That one is the
+    // whole upgrade path, and silence here costs it everything — it adopts
+    // nothing from an empty account, publishes nothing, and the switch does
+    // nothing at all until the user happens to edit the settings again.
+    //
+    // What separates them is whether the assistant here is usable at all: a
+    // key stored under the referenced name, or a local endpoint that needs
+    // none. That is `llmConfigured`, re-read rather than trusted, because a
+    // key stored moments ago on the screen this switch lives on is exactly
+    // the case that matters.
+    if (services.settings.assistantUpdatedAt == 0) {
+      await refreshLlmConfigured();
+      if (!llmConfigured) return;
+    }
     await assistantSettingsEdited();
     // That hands the publish to the auto-sync debounce, which does not run
     // with auto-sync off — and this switch is an explicit ask to sync, made

@@ -262,4 +262,109 @@ void main() {
     expect(requests, 0);
     expect(services.settings.assistantUpdatedAt, 5);
   });
+
+  test('reloadLlmProvider bumps the config version exactly once', () async {
+    // `_save` in the settings screen tells an adoption that landed during its
+    // awaits from its own reload by counting: any bump beyond the one it makes
+    // itself is somebody else's. That constant lives in a different file from
+    // the method it counts, so an early return added here — "nothing
+    // configured, nothing to reload" — would make every save report that the
+    // settings changed on another device, reload the fields, and refuse.
+    final state = AppState(services);
+    addTearDown(state.dispose);
+
+    // With nothing configured first — the early return a future optimisation
+    // would most plausibly add ("no provider, nothing to reload").
+    final before = state.llmConfigVersion;
+    await state.reloadLlmProvider();
+    expect(state.llmConfigVersion, before + 1);
+
+    // And with a key stored, where the reload has something to do. Twice in a
+    // row with the same configuration too: a bump conditional on the config
+    // *changing* would break the count just as surely.
+    await services.masterKeys.putApiKey('anthropic', 'sk-configured');
+    await state.reloadLlmProvider();
+    expect(state.llmConfigVersion, before + 2);
+    await state.reloadLlmProvider();
+    expect(state.llmConfigVersion, before + 3);
+  });
+
+  group('switching on at the zero stamp', () {
+    /// An empty account: nothing to adopt, so the switch's second half — the
+    /// publish — is the only thing that can happen.
+    MockClient emptyAccount(void Function(String id) onPushed) => MockClient(
+          (request) async {
+            if (request.method == 'GET') {
+              return http.Response(
+                jsonEncode(
+                  const PullResponse(records: [], latestSeq: 0).toJson(),
+                ),
+                HttpStatus.ok,
+              );
+            }
+            // By id, not by counting requests: the round pushes whatever else
+            // this device holds, and "a POST happened" would pass for a
+            // server config while the assistant record stayed behind.
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            for (final record in body['records'] as List<dynamic>) {
+              onPushed((record as Map<String, dynamic>)['id'] as String);
+            }
+            return http.Response(
+              jsonEncode(
+                const PushResponse(results: [], latestSeq: 0).toJson(),
+              ),
+              HttpStatus.ok,
+            );
+          },
+        );
+
+    test('an install configured before this feature shipped publishes',
+        () async {
+      // The upgrade path, and the whole reason the guard cannot be the stamp
+      // alone: `assistantUpdatedAt` was added by this feature, so every device
+      // that already had a working assistant reads zero. Silent here, it
+      // adopts nothing from an empty account and publishes nothing, and the
+      // switch does nothing at all until the settings happen to be edited.
+      services.settings.assistantUpdatedAt = 0;
+      // Off, so the publish is this method's own second round rather than the
+      // debounce it would otherwise hand to — the branch the switch takes for
+      // a user who has just watched a round run.
+      services.settings.autoSync = false;
+      await services.masterKeys.putApiKey('anthropic', 'sk-configured');
+
+      final pushed = <String>[];
+      final state = AppState(services);
+      addTearDown(state.dispose);
+      await http.runWithClient(
+        () => state.assistantSyncSwitchedOn(),
+        () => emptyAccount(pushed.add),
+      );
+
+      expect(services.settings.assistantUpdatedAt, isNot(0),
+          reason: 'a configured device must stamp what it is about to publish');
+      expect(pushed, contains(AssistantSettings.recordId));
+    });
+
+    test('a fresh install publishes nothing over the account', () async {
+      // The other half of the zero stamp, and the case the guard was written
+      // for: no key anywhere, so nothing here is a configuration. Stamping
+      // `now` would make this laptop's shipped defaults the account's newest
+      // write and beat a phone that configured a real provider while sync was
+      // off and enables the switch afterwards.
+      services.settings.assistantUpdatedAt = 0;
+      services.settings.autoSync = false;
+
+      final pushed = <String>[];
+      final state = AppState(services);
+      addTearDown(state.dispose);
+      await http.runWithClient(
+        () => state.assistantSyncSwitchedOn(),
+        () => emptyAccount(pushed.add),
+      );
+
+      expect(services.settings.assistantUpdatedAt, 0);
+      expect(pushed, isNot(contains(AssistantSettings.recordId)),
+          reason: 'defaults are not a configuration worth publishing');
+    });
+  });
 }

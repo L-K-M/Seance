@@ -122,6 +122,37 @@ void main() {
     expect(AssistantSettings.fromJson(blank.toJson()).toJson(), blank.toJson());
   });
 
+  test('a padded record is written canonically, not verbatim', () {
+    // The reader trims every field (`_blankToNull`, and `_stringMap` in both
+    // directions). Writing one back verbatim leaves the device that built the
+    // record holding `' anthropic '` while every device that adopts it holds
+    // `'anthropic'` — a record that does not describe the settings it came
+    // from, and one that does not survive its own round trip.
+    const padded = AssistantSettings(
+      providerKind: '  openaiCompatible  ',
+      baseUrl: '  https://api.openai.com/v1  ',
+      model: '  gpt-5  ',
+      llmApiKeyRef: '  openai  ',
+      searxngUrl: '  https://searx.example.com  ',
+      braveApiKeyRef: '  brave  ',
+      zaiApiKeyRef: '  zai  ',
+      redactSecrets: true,
+      apiKeys: {'openai': 'sk'},
+      updatedAt: 7,
+    );
+    final json = padded.toJson();
+    expect(json['providerKind'], 'openaiCompatible');
+    expect(json['baseUrl'], 'https://api.openai.com/v1');
+    expect(json['model'], 'gpt-5');
+    expect(json['llmApiKeyRef'], 'openai');
+    expect(json['searxngUrl'], 'https://searx.example.com');
+    expect(json['braveApiKeyRef'], 'brave');
+    expect(json['zaiApiKeyRef'], 'zai');
+    // The property that matters, stated as itself: what a peer reads back and
+    // re-publishes is byte-identical to what was written.
+    expect(AssistantSettings.fromJson(json).toJson(), json);
+  });
+
   test('a blank optional field is written as unset, not as blank', () {
     // fromJson reads a blank as "not set", so writing one out would be a
     // field the writer calls set and every reader — this class re-reading its

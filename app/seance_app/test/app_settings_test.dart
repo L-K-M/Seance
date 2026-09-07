@@ -41,6 +41,16 @@ void main() {
     expect(restored.syncAssistant, isTrue);
     expect(restored.assistantUpdatedAt, 500);
 
+    // "Opted in, never published" — the combination the publish guard reads,
+    // and the only one not covered here. A serializer that stamped `now` when
+    // the toggle was on, or collapsed a zero stamp to absent, would satisfy
+    // every other assertion in this test while removing the guard's premise.
+    final neverPublished =
+        AppSettings(syncAssistant: true, assistantUpdatedAt: 0);
+    final neverPublishedRestored = AppSettings.fromJson(neverPublished.toJson());
+    expect(neverPublishedRestored.syncAssistant, isTrue);
+    expect(neverPublishedRestored.assistantUpdatedAt, 0);
+
     // The stamp is independent of the toggle: someone who published and then
     // turned sync off must not read as "never published" when they turn it
     // back on, which is what the publish guard keys on.

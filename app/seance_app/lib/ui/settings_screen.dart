@@ -867,6 +867,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // For the re-check at the end: the guard above sees an adoption that
     // landed before this Save, not one that lands during its awaits.
     final versionAtEntry = state.llmConfigVersion;
+    // Before the keystore writes below, which await: the fields stay editable
+    // while a Save is in flight, and `putApiKey` reads the controller at the
+    // moment it is called. Taken afterwards, these would count text typed
+    // during those awaits — text the store never saw — and the equality check
+    // at the end would then clear it from the field as if it had been saved.
+    // Taken here they can only lag what was stored, which fails that check
+    // and leaves the text where the user can save it again.
+    final enteredLlmKey = _apiKey.text;
+    final enteredZaiKey = _zaiApiKey.text;
+    final keyEntered =
+        enteredLlmKey.trim().isNotEmpty || enteredZaiKey.trim().isNotEmpty;
     setState(() => _saving = true);
     final s = state.services.settings;
     // Store the API key under a per-provider name.
@@ -955,10 +966,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       return;
     }
-    final enteredLlmKey = _apiKey.text;
-    final enteredZaiKey = _zaiApiKey.text;
-    final keyEntered =
-        enteredLlmKey.trim().isNotEmpty || enteredZaiKey.trim().isNotEmpty;
     final before = assistantSyncFingerprint(s);
     s.llmKind = _kind;
     s.llmBaseUrl = _baseUrl.text.trim();
@@ -1046,6 +1053,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// Persist the sync preference toggles and (re)start the auto-sync timer.
   Future<void> _persistSyncPrefs(AppState state) async {
     final s = state.services.settings;
+    final wasAutoSync = s.autoSync;
+    final wasSyncSecrets = s.syncSecrets;
     final wasSyncingAssistant = s.syncAssistant;
     s.autoSync = _autoSync;
     s.syncSecrets = _syncSecrets;
@@ -1060,9 +1069,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // And roll the flag back: left on in memory, the next successful save
       // of anything on this page would persist it, switching on a sync that
       // carries API keys without the adopt-first step this failure skipped.
+      //
+      // All three, not only the assistant's: the other two are left in memory
+      // by the same failed write, and the next successful save of anything on
+      // this page would persist them without the user asking again — the same
+      // reasoning, one switch over.
       s.syncAssistant = wasSyncingAssistant;
+      s.autoSync = wasAutoSync;
+      s.syncSecrets = wasSyncSecrets;
       if (mounted) {
-        setState(() => _syncAssistant = wasSyncingAssistant);
+        setState(() {
+          _syncAssistant = wasSyncingAssistant;
+          _autoSync = wasAutoSync;
+          _syncSecrets = wasSyncSecrets;
+        });
         showTopToastIn(context, message: 'Sync preferences: $e');
       }
       return;

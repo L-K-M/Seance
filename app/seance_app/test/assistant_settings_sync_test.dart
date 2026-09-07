@@ -13,6 +13,10 @@ class _Keystore extends FlutterSecureStorage {
   final Map<String, String> entries = {};
   bool locked = false;
 
+  /// Runs on the next read and then clears itself, so a test can land an edit
+  /// inside the await window a key lookup opens.
+  void Function()? onNextRead;
+
   @override
   Future<String?> read({
     required String key,
@@ -26,6 +30,9 @@ class _Keystore extends FlutterSecureStorage {
     if (locked) {
       throw PlatformException(code: 'KeyringLocked', message: 'KeyringLocked');
     }
+    final hook = onNextRead;
+    onNextRead = null;
+    hook?.call();
     return entries[key];
   }
 
@@ -110,6 +117,12 @@ void main() {
       expect(published.baseUrl, 'https://api.openai.com/v1');
       expect(published.model, 'claude-custom');
       expect(published.braveApiKeyRef, 'brave');
+      // The one ref the chat provider actually resolves, and the one the
+      // `apiKeys` assertion below cannot stand in for: the keys are gathered
+      // from the local refs before the record is built, so an encoder that
+      // dropped this field would still publish `anthropic: sk-llm` and every
+      // adopting device would treat the record as keyless.
+      expect(published.llmApiKeyRef, 'anthropic');
       expect(published.searxngUrl, 'https://searx.example.com');
       expect(published.zaiApiKeyRef, 'zai');
       expect(published.redactSecrets, isFalse);
@@ -124,6 +137,33 @@ void main() {
       final encoded = published.toJson().toString();
       expect(encoded, isNot(contains('leak-canary-sync-token')));
       expect(encoded, isNot(contains('leak-canary-master-key')));
+    });
+
+    test('an edit landing mid-collection cannot tear the published record',
+        () async {
+      // Assistant edits stamp `settings` from the UI path without taking the
+      // mutation queue, so one can land in any of the keystore reads this
+      // method makes. Read back afterwards, the record would carry the new
+      // stamp and the new refs beside keys gathered for the old ones — a
+      // record naming a key it does not carry, at a stamp that outranks the
+      // keyed one it replaces.
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = 'anthropic';
+      await keys.putApiKey('anthropic', 'sk-old');
+      keystore.onNextRead = () {
+        settings.llmApiKeyRef = 'openai';
+        settings.assistantUpdatedAt = 500;
+      };
+
+      final published = (await sync.getAssistantSettings())!;
+
+      // The invariant, stated as itself: a record's refs and its keys have to
+      // describe the same moment.
+      expect(published.apiKeys, contains(published.llmApiKeyRef));
+      // And which moment it is: the one the collection started from, whole.
+      // The edit publishes on the next round, with its own keys.
+      expect(published.llmApiKeyRef, 'anthropic');
+      expect(published.updatedAt, 99);
     });
 
     test('the sync token is never a key reference, published or adopted',
@@ -157,10 +197,31 @@ void main() {
       // named.
       expect(sync.applied, isFalse);
       expect(settings.llmKind, LlmProviderKind.anthropic);
+      // The one value this test configured away from the production default,
+      // so a partial apply that wrote the record's ref and skipped the rest
+      // is caught here rather than passing on the fields it happened to
+      // leave alone.
+      expect(settings.llmApiKeyRef, 'anthropic');
       expect(settings.llmBaseUrl, 'https://api.anthropic.com');
       expect(settings.assistantUpdatedAt, 99);
 
-      // Any of the three references, not only the LLM's.
+      // Any of the three references, not only the LLM's. The Brave one too:
+      // it and Z.AI are symmetric by design, which is exactly what a
+      // copy-paste slip in the guard would quietly break.
+      await sync.putAssistantSettings(const AssistantSettings(
+        providerKind: 'openaiCompatible',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        llmApiKeyRef: 'openai',
+        braveApiKeyRef: 'sync.token',
+        redactSecrets: true,
+        apiKeys: {},
+        updatedAt: 500,
+      ));
+      expect(sync.applied, isFalse);
+      expect(settings.braveApiKeyRef, isNull);
+      expect(settings.llmApiKeyRef, 'anthropic');
+
       await sync.putAssistantSettings(const AssistantSettings(
         providerKind: 'openaiCompatible',
         baseUrl: 'https://api.openai.com/v1',
@@ -173,6 +234,7 @@ void main() {
       ));
       expect(sync.applied, isFalse);
       expect(settings.zaiApiKeyRef, isNull);
+      expect(settings.llmApiKeyRef, 'anthropic');
       expect(settings.assistantUpdatedAt, 99);
     });
 
@@ -459,13 +521,19 @@ void main() {
       expect(sync.applied, isFalse, reason: 'nothing the provider reads moved');
     });
 
-    test('a save that fails leaves nothing claiming to have been applied',
+    test('applied reports what the round did to settings, not to the disk',
         () async {
       // `applied` is a per-round answer the caller rebuilds the chat provider
-      // on. An exception escaping mid-apply used to leave the previous
-      // round's `true` standing for a record this one never finished.
-      // One instance across both rounds: a fresh one starts false and could
-      // not tell a cleared flag from an untouched one.
+      // on. It is cleared on entry, so an exception escaping mid-apply can
+      // never leave the previous round's `true` standing — and it is set the
+      // moment `settings` changes, because `settings` is what the running app
+      // reads. A failed *save* leaves the adopted configuration in memory and
+      // on screen; a provider left unrebuilt then serves the old model and key
+      // until a restart, and no later round fixes it: the record re-delivers
+      // at the same stamp with the same fingerprint, so nothing changes again.
+      //
+      // One instance across all three rounds: a fresh one starts false and
+      // could not tell a cleared flag from an untouched one.
       var failSave = false;
       final flaky = AssistantSettingsSync(
         settings: settings,
@@ -482,7 +550,17 @@ void main() {
         flaky.putAssistantSettings(arriving(model: 'gpt-6')),
         throwsA(isA<StateError>()),
       );
+      expect(flaky.applied, isTrue,
+          reason: 'the configuration the app is running on did change');
+      expect(settings.llmModel, 'gpt-6');
+
+      // And the clearing still works, which the assertion above no longer
+      // shows: a round that returns before touching `settings` reports false
+      // even with a `true` standing from the round before it.
+      await flaky.putAssistantSettings(arriving(model: 'gpt-7')
+          .copyWith(updatedAt: settings.assistantUpdatedAt - 1));
       expect(flaky.applied, isFalse);
+      expect(settings.llmModel, 'gpt-6');
     });
 
     test('a locked keyring still adopts the configuration', () async {

@@ -128,19 +128,27 @@ class AssistantSettings {
       );
 
   Map<String, dynamic> toJson() => {
-        'providerKind': providerKind,
-        'baseUrl': baseUrl,
-        'model': model,
+        // Trimmed on the way out for the same reason [_blankToNull] trims on
+        // the way in, and [_stringMap] trims in both directions: the reader
+        // normalizes, so a padded value written verbatim makes the collecting
+        // device hold `' anthropic '` while every device that adopts the
+        // record holds `'anthropic'` — a record that does not describe the
+        // settings it was built from, and does not survive its own round trip.
+        'providerKind': providerKind.trim(),
+        'baseUrl': baseUrl.trim(),
+        'model': model.trim(),
         // Blank reads as empty (see [fromJson]); written the same way so the
         // record round-trips.
-        'llmApiKeyRef': _isSet(llmApiKeyRef) ? llmApiKeyRef : '',
+        'llmApiKeyRef': _isSet(llmApiKeyRef) ? llmApiKeyRef.trim() : '',
         // Blank is the same as absent on the way *in* (see [_blankToNull]),
         // so writing one out would be a field the writer calls set and every
         // reader — including this class re-reading its own record — calls
         // unset. A cleared text box is the ordinary way to produce one.
-        if (_isSet(searxngUrl)) 'searxngUrl': searxngUrl,
-        if (_isSet(braveApiKeyRef)) 'braveApiKeyRef': braveApiKeyRef,
-        if (_isSet(zaiApiKeyRef)) 'zaiApiKeyRef': zaiApiKeyRef,
+        // `_isSet` is false for null, so the `!` is what the guard already
+        // proved.
+        if (_isSet(searxngUrl)) 'searxngUrl': searxngUrl!.trim(),
+        if (_isSet(braveApiKeyRef)) 'braveApiKeyRef': braveApiKeyRef!.trim(),
+        if (_isSet(zaiApiKeyRef)) 'zaiApiKeyRef': zaiApiKeyRef!.trim(),
         'redactSecrets': redactSecrets,
         // Omitted rather than written empty, so a record from a device that
         // does not sync keys is byte-identical to one that has none.
