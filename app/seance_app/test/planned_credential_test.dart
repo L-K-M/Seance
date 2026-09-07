@@ -88,7 +88,12 @@ void main() {
           value: 'the old password',
         ),
       );
-      expect(secret!.value, isEmpty);
+      // The kind as well as the fields: an entry that kept the old
+      // `password` stamp while carrying a passphrase is the same
+      // contamination one label along, and a read that dispatches on `kind`
+      // would take the passphrase for a password.
+      expect(secret!.kind, SecretKind.privateKey);
+      expect(secret.value, isEmpty);
       expect(secret.keyPassphrase, 'hunter2');
     });
 

@@ -336,6 +336,10 @@ void main() {
           '(responses: [secret])tail])');
       expect(log.toString(), isNot(contains('tail')));
       expect(log.toString(), isNot(contains('sword')));
+      // And the head of the first answer, which every other assertion here
+      // leaves to the second line: a match anchored after a `]` would redact
+      // `sword])` and leave `pas` standing.
+      expect(log.toString(), isNot(contains('pas]')));
       // The head of the second answer too: every other assertion here targets
       // what follows the bracket, so a match that started at the wrong `]`
       // would leave the front of a credential standing.
@@ -466,6 +470,49 @@ void main() {
       log.add('(responses: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('(responses: [redacted])'));
+    });
+
+    test('a tail chunk cut before its terminator is redacted too', () {
+      // The other half of the split-message case: a chunk boundary can fall
+      // before the `])` as easily as after the class name. Neither guard can
+      // see this line — there is no class name for the fail-closed branch,
+      // and no terminator for a bracket-bounded pattern — so what protects it
+      // is that the shape runs to end of line rather than to `])`. Nothing
+      // pinned that: every other case here happens to carry a terminator, so
+      // an implementation anchored on one passed the whole group.
+      final log = SshConnectionLog();
+      log.add('(responses: [hunter2');
+      expect(log.toString(), isNot(contains('hunter2')));
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
+    });
+
+    test('an unrelated field ahead of the credential does not shelter it', () {
+      // Two messages joined into one chunk, in the order the positional
+      // withhold does *not* cover: an unrelated `responses:` first, then a
+      // named message whose own field has drifted. The leftmost match starts
+      // before the token, so the withhold is skipped by design — and the
+      // credential behind it is still safe, because the shape runs to end of
+      // line and swallows everything after the first `responses:`.
+      //
+      // Pinned because that is a composition, not a property of either half:
+      // a pattern anchored on `])` would redact only the first list and leave
+      // the password of the second standing, with the withhold already
+      // declined and nothing else looking.
+      expect(
+        redactConnectionTrace(
+          'A(responses: [x]) SSH_Message_Userauth_InfoResponse(replies: [pw])',
+        ),
+        isNot(contains('pw')),
+      );
+      // And the same two messages the other way round, where the withhold is
+      // what covers it: the token comes first, so the later match cannot
+      // vouch for it and the whole record is held back.
+      expect(
+        redactConnectionTrace(
+          'SSH_Message_Userauth_InfoResponse(replies: [pw]) B(responses: [x])',
+        ),
+        isNot(contains('pw')),
+      );
     });
 
     test('spacing drift around the anchor still redacts', () {

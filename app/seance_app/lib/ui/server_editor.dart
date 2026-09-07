@@ -899,6 +899,21 @@ class _ServerEditorState extends State<_ServerEditor> {
     );
 
     final existingRef = existing?.secretRef;
+    // Everything the form says, read here — before the awaited vault call
+    // below. `_busy` disables the buttons, not the fields, so a keyring that
+    // prompts (macOS) or is slow to answer leaves them editable for as long
+    // as it takes: read afterwards, a keystroke landing in that window is
+    // saved without ever passing the `validate()` this method opened with,
+    // and a host cleared after Save was pressed is written empty.
+    final password = _password.text;
+    final keyPem = _keyPem.text;
+    final keyPassphrase = _keyPassphrase.text;
+    // The config too, and not only the credential fields: it reads seven more
+    // controllers. Its `secretRef` is the one thing that cannot be known yet
+    // — whether a credential is written depends on what the vault answers —
+    // so it is built against the existing ref and corrected below, which is
+    // a field this form does not own rather than one the user could edit.
+    final formConfig = _formConfig(secretRef: existingRef, now: now);
     // Only when a referenced key's passphrase is about to be written over an
     // entry that may hold a PEM: every other branch replaces the entry whole.
     Secret? stored;
@@ -906,7 +921,7 @@ class _ServerEditorState extends State<_ServerEditor> {
         plannedCredentialReadsStored(
           auth: _auth,
           referenceKeyFile: _referenceKeyFile,
-          keyPassphrase: _keyPassphrase.text,
+          keyPassphrase: keyPassphrase,
         )) {
       try {
         stored = await widget.state.services.vault.getSecret(existingRef);
@@ -923,17 +938,16 @@ class _ServerEditorState extends State<_ServerEditor> {
     final secret = plannedCredential(
       auth: _auth,
       referenceKeyFile: _referenceKeyFile,
-      password: _password.text,
-      keyPem: _keyPem.text,
-      keyPassphrase: _keyPassphrase.text,
+      password: password,
+      keyPem: keyPem,
+      keyPassphrase: keyPassphrase,
       secretId: secretId,
       stored: stored,
     );
 
-    final config = _formConfig(
-      secretRef: secret != null ? secretId : existingRef,
-      now: now,
-    );
+    final config = secret != null && secretId != existingRef
+        ? formConfig.copyWith(secretRef: secretId, updatedAt: now)
+        : formConfig;
     try {
       // The vault write inside throws (VaultLockedException) when the OS
       // keyring is unavailable — tell the user instead of wedging the editor

@@ -160,6 +160,10 @@ void main() {
             throw SshConnectException('keyring is locked', StateError('x'), own),
         authenticate: (_, _, _) async => fail('must not be reached'),
       );
+      // Failed first, and only then how it read: every trace assertion here
+      // describes a failure report, and a run that came back *successful*
+      // while still logging its trace would satisfy them all.
+      expect(result.ok, isFalse);
       final lines = result.log.trimRight().split('\n');
       expect(lines.last, 'keyring is locked');
       expect(lines.where((l) => l == 'keyring is locked').length, 1);
@@ -257,6 +261,7 @@ void main() {
         credentials: () async => throw StateError('bad state'),
         authenticate: (_, _, _) async => fail('must not be reached'),
       );
+      expect(bug.ok, isFalse);
       expect(bug.log, contains('runConnectionTest'));
     });
 
@@ -270,6 +275,7 @@ void main() {
             throw const FormatException('unreadable identity file'),
         authenticate: (_, _, _) async => fail('must not be reached'),
       );
+      expect(expected.ok, isFalse);
       expect(expected.log, contains('unreadable identity file'));
       expect(expected.log, isNot(contains('runConnectionTest')));
     });
@@ -285,6 +291,7 @@ void main() {
         authenticate: (_, _, _) async =>
             throw const FormatException('unwrapped transport failure'),
       );
+      expect(unexpected.ok, isFalse);
       expect(unexpected.log, contains('unwrapped transport failure'));
       expect(unexpected.log, contains('runConnectionTest'));
     });
@@ -299,6 +306,7 @@ void main() {
         authenticate: (_, _, _) async =>
             throw AgentAuthUnsupportedError('no agent'),
       );
+      expect(unsupported.ok, isFalse);
       expect(unsupported.log, contains('no agent'));
       expect(unsupported.log, isNot(contains('runConnectionTest')));
       // "Wherever": the resolver reaches the same catch, and a future split
@@ -308,6 +316,7 @@ void main() {
         credentials: () async => throw AgentAuthUnsupportedError('no agent yet'),
         authenticate: (_, _, _) async => fail('must not be reached'),
       );
+      expect(fromResolver.ok, isFalse);
       expect(fromResolver.log, contains('no agent yet'));
       expect(fromResolver.log, isNot(contains('runConnectionTest')));
     });
@@ -580,10 +589,17 @@ void main() {
       // and pinned an unknown key without asking would satisfy every verdict
       // assertion below while skipping the one step this whole design is for.
       var prompts = 0;
+      // What the prompt was *shown*, not only that it fired. The dialog is
+      // where consent is given, so it has to describe the key being offered:
+      // handed the pinned key instead, a user re-confirming a familiar
+      // fingerprint would be approving the one replacing it, and every count
+      // and verdict below would still pass.
+      final shown = <HostKeyDecision>[];
       final manager = SshSessionManager(
         tofu: verifier,
-        onHostKey: (_) async {
+        onHostKey: (decision) async {
           prompts++;
+          shown.add(decision);
           return true;
         },
       );
@@ -599,6 +615,9 @@ void main() {
         isTrue,
       );
       expect(prompts, 1, reason: 'first sight must ask, not silently pin');
+      expect(shown.single.presented.fingerprintSha256, sha256Fingerprint('new'));
+      expect(shown.single.pinned, isNull,
+          reason: 'nothing is being replaced on a first sight');
 
       // Second offer of the same key is trusted without another prompt, so a
       // reconnect inside one attempt does not re-ask.
@@ -653,6 +672,15 @@ void main() {
         // satisfy a lower bound.
         expect(prompts, 2,
             reason: 'a changed key must be refused or re-asked, never assumed');
+        // Both keys, in the right roles: the offered one is what the user is
+        // being asked to accept, and the pinned one is what it would replace.
+        // Swapped, the dialog reads as a re-confirmation of a key the user
+        // already knows while trusting the attacker's.
+        expect(shown.last.presented.fingerprintSha256,
+            sha256Fingerprint('attacker'),
+            reason: 'the re-ask must show the key being offered');
+        expect(shown.last.pinned?.fingerprintSha256, sha256Fingerprint('new'),
+            reason: 'and the one it would replace');
         // An approved re-ask pins the key that was approved — in the trial
         // store, and only there. A "yes" that left the old pin standing would
         // re-prompt on every reconnect, or trust the old key while reporting
@@ -797,6 +825,12 @@ void main() {
       final otherPort = await trial.get('portful.example.com', 2222);
       expect(otherPort?.port, 2222,
           reason: 'and must leave the pin for the other port alone');
+      // On the stamp, because neither of the other two fields can tell an
+      // untouched pin from one rewritten with the same material on the same
+      // port — which is what a manager pinning under 2222 instead of 22 would
+      // do. Only the fixture's own `pinnedAt` of 1 survives that.
+      expect(otherPort?.pinnedAt, 1,
+          reason: 'the original pin, not an identical-looking rewrite');
       expect(otherPort?.fingerprintSha256, 'SHA256:portful-2222');
     });
   });
