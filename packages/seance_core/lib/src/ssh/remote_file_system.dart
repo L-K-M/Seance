@@ -183,6 +183,12 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
   final SftpClient _client;
   final Duration operationTimeout;
   final Random _random = Random.secure();
+  int _activeOperations = 0;
+
+  /// Lets the transport owner skip keepalive while VFS calls are outstanding.
+  /// Includes nested calls, streaming and awaited cleanup, not wire requests
+  /// still settling after a call has timed out or been cancelled.
+  bool get hasActiveOperations => _activeOperations != 0;
 
   DartSshRemoteFileSystem(
     this._client, {
@@ -776,6 +782,8 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
     String? path,
     Future<T> Function() action,
   ) async {
+    // Count rather than toggle: uploads call stat, and callers may overlap.
+    _activeOperations++;
     try {
       return await action();
     } on RemoteFileException {
@@ -828,6 +836,8 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
         message: _message(operation, path, e.toString()),
         cause: e,
       );
+    } finally {
+      _activeOperations--;
     }
   }
 
