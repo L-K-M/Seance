@@ -625,8 +625,15 @@ class AppServices {
   /// is what hides the search tool from the assistant.
   Future<SearchProvider?> buildSearchProvider() async {
     final backends = <SearchProvider>[];
-    if (settings.searxngUrl != null && settings.searxngUrl!.isNotEmpty) {
-      backends.add(SearxngSearch(baseUrl: settings.searxngUrl!));
+    // Trimmed, unlike the key refs beside it: a ref that is only whitespace
+    // resolves to no key and the backend is skipped with a toast, but a URL
+    // that is only whitespace has nothing to resolve against — it would build
+    // a `SearxngSearch` whose every request fails, and the only sign would be
+    // the mid-search failure log. The settings screen already writes
+    // trimmed-or-null; a hand-edited or synced `settings.json` need not.
+    final searxngUrl = settings.searxngUrl?.trim() ?? '';
+    if (searxngUrl.isNotEmpty) {
+      backends.add(SearxngSearch(baseUrl: searxngUrl));
     }
     if (settings.braveApiKeyRef != null &&
         settings.braveApiKeyRef!.isNotEmpty) {

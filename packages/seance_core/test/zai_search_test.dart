@@ -246,7 +246,12 @@ class FakeMcpServer {
     final text = streaming ? _asSse(body) : body;
     return http.StreamedResponse(
       status >= 400 && stallErrorBodies
-          ? StreamController<List<int>>().stream
+          // A stream that never emits and never ends, said as itself: the
+          // `StreamController` this used to be was dropped on the floor
+          // unclosed, and a reader tidying that leak away with a `close()`
+          // would have ended the stall and quietly disarmed the
+          // drain-deadline tests this flag exists to drive.
+          ? Stream<List<int>>.fromFuture(Completer<List<int>>().future)
           : status >= 400 && resetErrorBodies
               ? Stream<List<int>>.error(http.ClientException('reset'))
               : Stream.value(utf8.encode(text)),
@@ -423,7 +428,10 @@ void main() {
       final results = await Future.wait([
         search.search('dart'),
         search.search('flutter'),
-      ]);
+      // Test-side only, like the drain tests': a cache that ended up awaiting
+      // itself would otherwise hang here until the runner's own timeout,
+      // reported as a generic 30-second stall rather than this deadlock.
+      ]).timeout(const Duration(seconds: 5));
 
       expect(results, everyElement(isNotEmpty));
       expect(server.methods.where((m) => m == 'initialize').length, 1);
@@ -451,7 +459,7 @@ void main() {
         search.search('a'),
         search.search('b'),
         search.search('c'),
-      ]);
+      ]).timeout(const Duration(seconds: 5));
 
       expect(results, everyElement(isNotEmpty));
       // Shared handshake, separate calls: a guard that shared the retried
@@ -486,24 +494,31 @@ void main() {
     });
 
     test('a rejected key says so instead of naming the quota', () async {
-      final server = FakeMcpServer();
-      server.overrides['initialize'] = {
-        'success': false,
-        'code': 1002,
-        'msg': 'Invalid API key',
-      };
-      final search = ZaiSearch(apiKey: 'bad', client: server.client);
+      // Both spellings of the same rejection, like the quota loop below: a
+      // gateway writes "api key" or "apikey" as it pleases, and either has to
+      // reach the message that names the key rather than the one that lists
+      // three things to check.
+      for (final msg in ['Invalid API key', 'wrong apikey', 'Unauthorized']) {
+        final server = FakeMcpServer();
+        server.overrides['initialize'] = {
+          'success': false,
+          'code': 1002,
+          'msg': msg,
+        };
+        final search = ZaiSearch(apiKey: 'bad', client: server.client);
 
-      await expectLater(
-        search.search('dart'),
-        throwsA(
-          isA<http.ClientException>().having(
-            (e) => e.message,
-            'message',
-            contains('rejected the search API key'),
+        await expectLater(
+          search.search('dart'),
+          throwsA(
+            isA<http.ClientException>().having(
+              (e) => e.message,
+              'message',
+              contains('rejected the search API key'),
+            ),
           ),
-        ),
-      );
+          reason: msg,
+        );
+      }
     });
 
     test('a quota phrasing without a quota word is not blamed on the key',
@@ -663,10 +678,15 @@ void main() {
       // server hold the stream open, so a proxy that answers 200 and then
       // says nothing would otherwise wedge the caller for good.
       final stalled = StreamController<List<int>>();
-      // Wrapped, not passed: `close()` on an unlistened single-subscription
-      // controller never completes, and a teardown that awaits it turns a
-      // failed assertion into a suite timeout that hides it.
-      addTearDown(() => stalled.close());
+      // Not passed, and not an arrow either: `close()` on an unlistened
+      // single-subscription controller never completes, and package:test
+      // awaits whatever a teardown *returns* — which `() => close()` does,
+      // making it the same thing as passing `close` itself. A block body
+      // returns nothing, so a failed assertion here fails, rather than
+      // wedging the runner until its own timeout hides it.
+      addTearDown(() {
+        unawaited(stalled.close());
+      });
       final client = MockClient.streaming((request, body) async =>
           http.StreamedResponse(
             stalled.stream,
@@ -700,10 +720,15 @@ void main() {
       // TimeoutException was escaping — "Future not completed" in place of
       // the status line that had already said what went wrong.
       final stalled = StreamController<List<int>>();
-      // Wrapped, not passed: `close()` on an unlistened single-subscription
-      // controller never completes, and a teardown that awaits it turns a
-      // failed assertion into a suite timeout that hides it.
-      addTearDown(() => stalled.close());
+      // Not passed, and not an arrow either: `close()` on an unlistened
+      // single-subscription controller never completes, and package:test
+      // awaits whatever a teardown *returns* — which `() => close()` does,
+      // making it the same thing as passing `close` itself. A block body
+      // returns nothing, so a failed assertion here fails, rather than
+      // wedging the runner until its own timeout hides it.
+      addTearDown(() {
+        unawaited(stalled.close());
+      });
       final client = MockClient.streaming((request, body) async =>
           http.StreamedResponse(stalled.stream, 502));
       await expectLater(
@@ -780,10 +805,15 @@ void main() {
       final stalled = StreamController<List<int>>(
         onCancel: () => stalledCancelled = true,
       );
-      // Wrapped, not passed: `close()` on an unlistened single-subscription
-      // controller never completes, and a teardown that awaits it turns a
-      // failed assertion into a suite timeout that hides it.
-      addTearDown(() => stalled.close());
+      // Not passed, and not an arrow either: `close()` on an unlistened
+      // single-subscription controller never completes, and package:test
+      // awaits whatever a teardown *returns* — which `() => close()` does,
+      // making it the same thing as passing `close` itself. A block body
+      // returns nothing, so a failed assertion here fails, rather than
+      // wedging the runner until its own timeout hides it.
+      addTearDown(() {
+        unawaited(stalled.close());
+      });
       final client = MockClient.streaming((request, body) async {
         final payload =
             jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
@@ -842,7 +872,11 @@ void main() {
       final held = StreamController<List<int>>(
         onCancel: () => cancelled = true,
       );
-      addTearDown(() => held.close());
+      // Block body, for the reason spelled out on the stalled-body teardowns
+      // above: an arrow returns the future and package:test awaits it.
+      addTearDown(() {
+        unawaited(held.close());
+      });
       final client = MockClient.streaming((request, body) async {
         final bytes = await body.toBytes();
         final payload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
@@ -1840,10 +1874,21 @@ class _Fixed implements SearchProvider {
 }
 
 class _Broken implements SearchProvider {
-  final Object? error;
-  _Broken([this.error]);
+  /// Non-nullable with a default, so `_Broken(null)` is a compile error
+  /// rather than a silent fall back to the generic failure — a test handing
+  /// this a nullable variable would otherwise assert against an exception it
+  /// did not choose.
+  final Object error;
+  _Broken([this.error = const _DefaultBackendFailure()]);
 
   @override
   Future<List<SearchResult>> search(String query, {int limit = 5}) async =>
-      throw error ?? http.ClientException('backend down');
+      throw error;
+}
+
+/// The stand-in failure `_Broken` throws when a test does not name one.
+class _DefaultBackendFailure implements Exception {
+  const _DefaultBackendFailure();
+  @override
+  String toString() => 'backend down';
 }

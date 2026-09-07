@@ -550,11 +550,18 @@ void main() {
       // Only the snippet used to be: a title is whatever text the service put
       // in the field, so a gateway answering with a megabyte of it spends the
       // budget the snippet cap exists to protect.
-      final long = 'y' * (ChatController.maxTitleChars + 50);
+      // Distinct at both ends rather than a run of one character: the kept
+      // prefix is asserted exactly below, and a clip taken from the wrong
+      // offset reproduces `'y' * n` perfectly.
+      final long = 'START${'y' * (ChatController.maxTitleChars + 50)}';
       final result =
           ChatController.clipSearchSnippets([hit('short', title: long)]).single;
+      // The kept prefix itself, not just its length: a clip taken from the
+      // wrong offset, or one that doubled a character while keeping the
+      // count, satisfies a length-and-suffix pair exactly as well.
+      expect(result.title,
+          '${long.substring(0, ChatController.maxTitleChars)}…');
       expect(result.title.length, ChatController.maxTitleChars + 1);
-      expect(result.title.endsWith('…'), isTrue);
       // And a title that fits is left alone, along with its snippet.
       final kept = ChatController.clipSearchSnippets([hit('short')]).single;
       expect(kept.title, 't');
@@ -585,10 +592,12 @@ void main() {
       final long = 'https://x.example/?q=${'z' * ChatController.maxUrlChars}';
       final result =
           ChatController.clipSearchSnippets([hit('short', url: long)]).single;
-      expect(result.url.length, ChatController.maxUrlChars + 1);
       // Visibly truncated, not silently shortened: a link that merely does
-      // not resolve reads as a citation.
-      expect(result.url.endsWith('…'), isTrue);
+      // not resolve reads as a citation. Pinned as the exact prefix, for the
+      // reason the title's is — the scheme and host have to survive the clip
+      // for the truncation to read as one.
+      expect(result.url, '${long.substring(0, ChatController.maxUrlChars)}…');
+      expect(result.url.length, ChatController.maxUrlChars + 1);
       // The rest of the result rides through unchanged.
       expect(result.title, 't');
       expect(result.snippet, 'short');
@@ -614,6 +623,14 @@ void main() {
       expect(clipText('abc', -1), isEmpty);
       // Empty text is already at or under any cap, so it comes back as it is.
       expect(clipText('', 0), isEmpty);
+    });
+
+    test('text exactly at the cap is returned as it is', () {
+      // The boundary of the comparison itself. Both callers pin it through
+      // their own fields, but this is the helper they share: a `>=` here
+      // would clip text that fits, and every caller would inherit it.
+      expect(clipText('abcd', 4), 'abcd');
+      expect(clipText('abc', 4), 'abc');
     });
 
     test('a clipped string is one unit longer than the cap', () {

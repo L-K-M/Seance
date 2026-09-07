@@ -604,9 +604,15 @@ class ZaiSearch implements SearchProvider {
           text.contains('exhausted') ||
           text.contains('depleted') ||
           text.contains('exceeded');
+      // Both spellings: gateways write "invalid api key" and "invalid apikey"
+      // about equally, and the one-word form used to fall through to the
+      // generic message that lists three things to check instead of naming
+      // the one that is wrong. ("unauthorized" needs no clause of its own —
+      // it contains "auth".)
       if (!quota &&
           (text.contains('auth') ||
               text.contains('api key') ||
+              text.contains('apikey') ||
               text.contains('token'))) {
         throw http.ClientException(
           'Z.AI rejected the search API key. Check the key in Settings.',
