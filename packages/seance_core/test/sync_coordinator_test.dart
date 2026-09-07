@@ -1591,6 +1591,7 @@ void main() {
       String deviceId,
       LocalRecordStore local, {
       AssistantSettingsStore? store,
+      SnippetStore? snippets,
     }) => SyncCoordinator(
           configStore: InMemoryConfigStore(),
           hostKeyStore: InMemoryHostKeyStore(),
@@ -1598,6 +1599,7 @@ void main() {
           local: local,
           deviceId: deviceId,
           assistantStore: store,
+          snippetStore: snippets,
         );
 
     test('the configuration and its keys reach the other device', () async {
@@ -1641,9 +1643,51 @@ void main() {
               store: InMemoryAssistantSettingsStore(
                   assistant(model: 'older', updatedAt: 20)))
           .run(older);
-      await coordinator('A', InMemoryLocalRecordStore(), store: withheld)
-          .run(older);
+      final mirror = InMemoryLocalRecordStore();
+      await coordinator('A', mirror, store: withheld).run(older);
       expect(withheld.settings.model, 'claude-haiku-4-5-20251001');
+      // And nothing of this device's was staged behind that refusal, which
+      // the assertion above cannot show. This is the phase where the apply
+      // path runs with a record it decided not to adopt: a copy staged there
+      // to tell the account about the newer local stamp would be keyless —
+      // the keyring is what is withheld — and would carry stamp 30, so it
+      // outranks and evicts B's keyed record the moment anything pushes it.
+      // The round happens not to push again unless a re-dating asks for it,
+      // so the mirror is where the hazard is visible; the server assertion
+      // states the outcome that composition currently gives.
+      expect(
+          (await mirror.allRecords())
+              .where((r) => r.id == AssistantSettings.recordId)
+              .map((r) => r.deviceId),
+          everyElement('B'),
+          reason: 'a withheld keyring stages no copy of its own, either');
+      expect(older.stored(AssistantSettings.recordId)!.deviceId, 'B');
+    });
+
+    test('a store that throws costs the assistant its round, not the round',
+        () async {
+      // The contract reserves null for "the keys cannot be vouched for", but
+      // the app's store reads an OS keyring through a platform channel, and a
+      // locked one throws instead. Uncaught, that would abandon collection
+      // mid-method and take every record collected after the assistant with
+      // it — the rest of the round paying for one keyring.
+      final remote = FakeServer();
+      final local = InMemoryLocalRecordStore();
+      final snippets = InMemorySnippetStore();
+      await snippets.putSnippet(const Snippet(
+        id: 's1',
+        title: 'tail the log',
+        body: 'tail -f /var/log/syslog',
+        createdAt: 1,
+        updatedAt: 5,
+      ));
+
+      await coordinator('A', local,
+              store: _ThrowingAssistantStore(), snippets: snippets)
+          .run(remote);
+
+      expect(remote.stored('snippet:s1'), isNotNull);
+      expect(remote.stored(AssistantSettings.recordId), isNull);
     });
 
     test('a device that never edited its assistant publishes nothing',
@@ -1968,6 +2012,20 @@ class _RefusingVault extends SecretVault {
 /// never been set, so its null and its stamp agree — and this combination is
 /// exactly the contract [AssistantSettingsStore] documents for a locked
 /// keyring.
+/// A store whose keystore read fails the way a real one does — the platform
+/// channel behind a locked keyring throws rather than answering null.
+class _ThrowingAssistantStore implements AssistantSettingsStore {
+  @override
+  Future<AssistantSettings?> getAssistantSettings() async =>
+      throw StateError('KeyringLocked');
+
+  @override
+  Future<int> assistantSettingsUpdatedAt() async => 30;
+
+  @override
+  Future<void> putAssistantSettings(AssistantSettings value) async {}
+}
+
 class _WithheldKeyStore implements AssistantSettingsStore {
   _WithheldKeyStore(this.settings);
   AssistantSettings settings;

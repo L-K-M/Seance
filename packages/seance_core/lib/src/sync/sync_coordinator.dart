@@ -44,6 +44,19 @@ class SyncCoordinator {
   /// seal is the protection, the same one synced passwords get.
   final AssistantSettingsStore? assistantStore;
 
+  /// Whether an assistant record is worth having on the account at all.
+  ///
+  /// One predicate for both sides on purpose. [collectLocal] asks it before
+  /// publishing and the apply loop asks it before adopting, and the two must
+  /// answer identically: a record one side publishes and the other skips is
+  /// parked on the account under a stamp nothing older can displace, and one
+  /// the publish side would refuse but the apply side takes is adopted over a
+  /// working configuration. Written out twice, that symmetry survives only
+  /// until someone edits one copy. The reasoning behind each clause is at the
+  /// two call sites, which is where it is load-bearing.
+  static bool _isViableAssistantRecord(AssistantSettings s) =>
+      s.providerKind.isNotEmpty && s.updatedAt != 0;
+
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be
   /// provided so secrets can be sealed into records.
   ///
@@ -138,7 +151,19 @@ class SyncCoordinator {
         data: hk.toJson(),
       )));
     }
-    final assistant = await assistantStore?.getAssistantSettings();
+    // The contract reserves null for "the keys could not be vouched for this
+    // round", but the real store backs onto an OS keyring, and a locked or
+    // missing one surfaces from a platform channel as a throw. Uncaught, one
+    // failed keystore read would abandon the rest of this method — the
+    // snippets below it would never be collected, and a round's worth of
+    // unrelated records would pay for the assistant's keyring. Degrading to
+    // null costs the assistant the round it was going to sit out anyway.
+    AssistantSettings? assistant;
+    try {
+      assistant = await assistantStore?.getAssistantSettings();
+    } catch (_) {
+      assistant = null;
+    }
     // The apply side's guard, at the boundary where bad data enters: an empty
     // provider means a payload this build could not read, not a configuration
     // — the same degradation `fromJson` makes of a missing field can happen
@@ -155,9 +180,7 @@ class SyncCoordinator {
     // a working provider, model and keys, because `0 < 0` is false. That is
     // the exact harm the switch-on guard exists to prevent; guarding the
     // stamp bump alone left this path open.
-    if (assistant != null &&
-        assistant.providerKind.isNotEmpty &&
-        assistant.updatedAt != 0) {
+    if (assistant != null && _isViableAssistantRecord(assistant)) {
       await local.putLocal(await codec.encrypt(DecryptedRecord(
         id: AssistantSettings.recordId,
         kind: RecordKind.assistantSettings,
@@ -432,7 +455,7 @@ class SyncCoordinator {
             // and it keeps a record parked by an older build, or by a client
             // that does not follow this rule, from being adopted over a
             // working configuration by every device still reading zero.
-            if (assistant.providerKind.isEmpty || assistant.updatedAt == 0) {
+            if (!_isViableAssistantRecord(assistant)) {
               continue;
             }
 

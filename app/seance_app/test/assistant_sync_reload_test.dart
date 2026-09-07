@@ -196,7 +196,12 @@ void main() {
         return http.Response(
           jsonEncode(PullResponse(
             records: gets == 1 ? [record.withSeq(1)] : const [],
-            latestSeq: 1,
+            // The head as this mock has actually handed it out, not the
+            // constant it started at: the pushes below advance it, and
+            // answering the old value would have the client watch the
+            // account's head go backwards between the two rounds — a state
+            // no server can be in, and one a client is free to reject.
+            latestSeq: seq,
           ).toJson()),
           HttpStatus.ok,
         );
@@ -306,12 +311,19 @@ void main() {
     // restarted at 1 on every push, so a second round in one test would have
     // seen the sequence go backwards.
     var seq = 0;
+    // Group-level state, so it has to start each test where the comment above
+    // says it does: read across tests, the head a round sees would depend on
+    // how many records the ones before it pushed — arbitrary under
+    // `--test-randomize-ordering-seed`, and confusing in a single-test run.
+    setUp(() => seq = 0);
     MockClient emptyAccount(void Function(String id) onPushed) => MockClient(
           (request) async {
             if (request.method == 'GET') {
               return http.Response(
                 jsonEncode(
-                  const PullResponse(records: [], latestSeq: 0).toJson(),
+                  // Monotonic here too: the account head this mock reports is
+                  // the one its own acknowledgements have reached.
+                  PullResponse(records: const [], latestSeq: seq).toJson(),
                 ),
                 HttpStatus.ok,
               );

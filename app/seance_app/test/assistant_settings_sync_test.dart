@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -112,13 +114,14 @@ void main() {
       // Neither of these is referenced by the assistant configuration, and
       // neither may ever leave this device: one protects the account, the
       // other decrypts everything in it.
-      // Through the production API for this one, so the canary lands wherever
-      // `putApiKey` actually puts it rather than where this test remembers.
+      // Both through the production API, so each canary lands wherever the
+      // manager actually puts it rather than where this test remembers: a
+      // storage key renamed in `secure_master_key.dart` would otherwise leave
+      // this one guarding an address nothing writes to any more, green and
+      // disarmed.
       await keys.putApiKey('sync.token', 'leak-canary-sync-token');
-      await keystore.write(
-        key: 'seance.vault.masterKey.v1',
-        value: 'leak-canary-master-key',
-      );
+      final masterKey = base64.encode(List.filled(32, 7));
+      await keys.setKeystoreKey(List.filled(32, 7));
 
       final published = (await sync.getAssistantSettings())!;
 
@@ -145,7 +148,7 @@ void main() {
       // keystore — so nothing unreferenced can be swept up with them.
       final encoded = published.toJson().toString();
       expect(encoded, isNot(contains('leak-canary-sync-token')));
-      expect(encoded, isNot(contains('leak-canary-master-key')));
+      expect(encoded, isNot(contains(masterKey)));
     });
 
     test('an edit landing mid-collection cannot tear the published record',
@@ -447,6 +450,12 @@ void main() {
       expect(settings.redactionEnabled, isTrue);
       expect(settings.assistantUpdatedAt, 0);
       expect(sync.applied, isFalse);
+      // "Refused whole" includes the keystore. Validation runs ahead of the
+      // key loop, and it has to: a refusal that wrote the record's keys first
+      // would leave secrets from a configuration this build declined to adopt
+      // sitting under names nothing here references, which nothing prunes and
+      // nothing reads.
+      expect(await keys.getApiKey('openai'), isNull);
     });
 
     test('a key this device failed to store suspends publishing', () async {
@@ -641,6 +650,12 @@ void main() {
       keystore.locked = true;
       await sync.putAssistantSettings(arriving());
 
+      // The flag the caller rebuilds the chat provider on, in the one round
+      // where the keystore failed: settings changed, so it is true. Tied to
+      // the key write instead, a locked device would go on answering with the
+      // old model until the keyring came back — and the round that brings the
+      // key does rebuild, so nothing later would notice.
+      expect(sync.applied, isTrue);
       expect(settings.llmModel, 'gpt-5');
       expect(settings.assistantUpdatedAt, 500);
       expect(saves, 1);
@@ -663,6 +678,12 @@ void main() {
     test('only the keys the configuration references are written', () async {
       // Publishing never sweeps the keystore; importing whatever names a
       // record happens to carry would give that care straight back.
+      //
+      // Stored first, so the assertion below can tell "never imported" from
+      // "deleted": an adoption that swept the entries its record does not
+      // mention would take keys the user keeps outside the assistant
+      // configuration with it, and read as absent either way.
+      await keys.putApiKey('unrelated', 'sk-local-only');
       await sync.putAssistantSettings(arriving(apiKeys: const {
         'openai': 'sk-remote',
         // The search keys are referenced too, and only the LLM key was ever
@@ -678,7 +699,8 @@ void main() {
       expect(await keys.getApiKey('brave'), 'sk-brave');
       expect(await keys.getApiKey('zai'), 'sk-zai');
       expect(await keys.getApiKey('sync.token'), isNull);
-      expect(await keys.getApiKey('unrelated'), isNull);
+      expect(await keys.getApiKey('unrelated'), 'sk-local-only',
+          reason: 'neither written from the record nor swept away');
     });
 
     test('a round that changes nothing does not rebuild the provider',
@@ -710,6 +732,7 @@ void main() {
         arriving(apiKeys: const {'openai': 'sk-rotated'}, model: 'gpt-5-mini'),
       );
       expect(sync.applied, isTrue);
+      final savesAfterFieldChange = saves;
 
       // And the *new* baseline settles too: a comparison that never reset
       // after a field-level diff would leave every later round applying.
@@ -717,6 +740,11 @@ void main() {
         arriving(apiKeys: const {'openai': 'sk-rotated'}, model: 'gpt-5-mini'),
       );
       expect(sync.applied, isFalse);
+      // Both halves again, at the later baseline: one expression answers for
+      // the flag and the save today, and splitting them is exactly the change
+      // that would leave a settled configuration rewriting the disk while
+      // `applied` stayed honest.
+      expect(saves, savesAfterFieldChange);
     });
   });
 
