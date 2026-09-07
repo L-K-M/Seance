@@ -138,10 +138,14 @@ Future<ConnectionTestResult> runConnectionTest({
     final resolved = await credentials();
     authenticating = true;
     final kind = await authenticate(config, resolved, transcript);
+    // Bracketed when the host carries colons of its own: `alice@::1:22` hides
+    // where the address ends, and this line is the one people quote back.
+    final host =
+        config.host.contains(':') ? '[${config.host}]' : config.host;
     return ConnectionTestResult(
       ok: true,
       summary:
-          'Authenticated as ${config.username}@${config.host}:${config.port} '
+          'Authenticated as ${config.username}@$host:${config.port} '
           '(${authKindLabel(kind)}).',
       notes: notes,
       log: transcript.toString(),
@@ -191,7 +195,13 @@ Future<ConnectionTestResult> runConnectionTest({
     // The failure has not written itself into the transcript on the path that
     // reaches here first — resolving credentials — so an expanded log would
     // otherwise stop mid-sentence.
-    transcript.add(summary);
+    // Guarded like the branch above, and for the same reason: the ssh-agent
+    // path writes its sentence into the log before throwing, and a custom
+    // authenticator may do the same before throwing something that is not an
+    // `SshConnectException`. Either way the transcript already ends with it.
+    if (transcript.lines.lastOrNull != summary) {
+      transcript.add(summary);
+    }
     // An `Error` is a bug rather than a fact about the host, and its message
     // alone rarely says where it came from. `Exception`s raised while
     // resolving credentials — a locked keyring, an unreadable identity file —

@@ -308,6 +308,11 @@ void main() {
       // 'refused' would also count the SocketException if that were ever
       // logged, and then this would fail for the wrong reason.
       expect(
+        summary.allMatches(log.lines.join('\n')).length,
+        1,
+        reason: "the caller's own log must not repeat it either",
+      );
+      expect(
         summary.allMatches(result.log).length,
         1,
         reason: 'the summary must appear once, not once per writer',
@@ -467,6 +472,10 @@ void main() {
       );
       expect(await trial.get('declined.example.com', 22), isNull);
       expect(await inner.get('declined.example.com', 22), isNull);
+      // Nowhere at all, not just under the locator asked for: a pin written
+      // under a mangled key would slip past both lookups above.
+      expect(await trial.all(), isEmpty);
+      expect(await inner.all(), isEmpty);
     });
 
     test('an approval during a trial never reaches the real store', () async {
@@ -615,7 +624,8 @@ void main() {
       final trial = UnpinnedHostKeyStore(real);
       // A pin read through from the wrapped store is scoped to its port —
       // the path every trial takes for the pins it already has…
-      expect(await trial.get('stored.example.com', 2222), isNotNull);
+      expect((await trial.get('stored.example.com', 2222))?.fingerprintSha256,
+          'SHA256:stored-2222');
       expect(await trial.get('stored.example.com', 22), isNull);
       // …and so is one approved during the trial itself.
       await trial.put(HostKey(
@@ -625,7 +635,8 @@ void main() {
         fingerprintSha256: 'SHA256:dual-22',
         pinnedAt: 2,
       ));
-      expect(await trial.get('dual.example.com', 22), isNotNull);
+      expect((await trial.get('dual.example.com', 22))?.fingerprintSha256,
+          'SHA256:dual-22');
       expect(await trial.get('dual.example.com', 2222), isNull);
     });
   });

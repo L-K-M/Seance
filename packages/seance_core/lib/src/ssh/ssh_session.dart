@@ -200,8 +200,14 @@ const String _infoResponseToken = 'InfoResponse';
 /// rename and not the other would leave the withhold keying off a name the
 /// pattern no longer matches, which is the drift this whole mechanism exists
 /// to survive.
-final RegExp _userauthResponses =
-    RegExp('($_userauthMessage)?\\(responses\\s*:\\s*\\[.*', dotAll: true);
+/// Escaped, though today's name needs none: everything around this pattern is
+/// built to survive drift in dartssh2's spelling, and a name edited to contain
+/// a metacharacter would change the pattern's meaning silently — the one drift
+/// this file would fail open on.
+final RegExp _userauthResponses = RegExp(
+  '(${RegExp.escape(_userauthMessage)})?\\(responses\\s*:\\s*\\[.*',
+  dotAll: true,
+);
 
 /// [line] with any credential dartssh2's trace would otherwise print replaced.
 /// Public so the redaction can be asserted directly rather than only through a

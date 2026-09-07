@@ -391,6 +391,9 @@ void main() {
       final log = SshConnectionLog();
       log.add('-> sock: SSHMsgUserauthInfoResponse(answers: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
+      // Which branch, not just the outcome: the shape anchor cannot match
+      // `answers:`, so only the withhold can have produced this.
+      expect(log.toString(), contains('does not recognize'));
       // And a request line, which shares everything but that part, stays.
       final request = SshConnectionLog();
       request.add('-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])');
@@ -398,9 +401,7 @@ void main() {
       // just as well if the fail-closed branch had swallowed the record and
       // echoed the prompt inside its own sentence.
       expect(
-        redactConnectionTrace(
-          '-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])',
-        ),
+        request.toString(),
         '-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])',
       );
     });
