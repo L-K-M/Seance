@@ -336,6 +336,10 @@ void main() {
           '(responses: [secret])tail])');
       expect(log.toString(), isNot(contains('tail')));
       expect(log.toString(), isNot(contains('sword')));
+      // The head of the second answer too: every other assertion here targets
+      // what follows the bracket, so a match that started at the wrong `]`
+      // would leave the front of a credential standing.
+      expect(log.toString(), isNot(contains('secret')));
       // And on the view the transcript widget reads, not only on the render:
       // a scrub that moved to render time would hand this the raw answer.
       expect(log.lines.join('\n'), isNot(contains('tail')));
