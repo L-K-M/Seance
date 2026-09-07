@@ -3,8 +3,8 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-08-31 — sync skips and preserves unknown or malformed
-records; the shared protocol now defines bookmarks._
+_Last updated: 2026-09-07 — additive SSH keepalive controls and SFTP activity
+tracking support Poltergeist's pooled transport policy._
 
 ## Done (implemented + verified)
 
@@ -19,6 +19,21 @@ records; the shared protocol now defines bookmarks._
 AppImage users on older distros get a clear loader error instead. Deliberately
 no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system GTK3 (present on any desktop install) rather than bundling it. |
 | CI | `.github/workflows/ci.yml`: dart analyze+test, flutter analyze+test, docker build, and a client build matrix (android/linux x64/macos/ios/windows on native runners — the same matrix `release.yml` publishes; the Linux entry also runs the packaging and uploads the artifacts). |
+
+## SSH pool prerequisites (2026-09-07)
+
+`openAuthenticatedClient` accepts a positive `keepAliveInterval`, or null
+for caller-owned scheduling. Omission preserves the existing 10 s timer;
+Séance's shell flow is unchanged. `DartSshRemoteFileSystem` exposes read-only
+`hasActiveOperations` over outstanding VFS calls, including nested calls,
+streams and awaited cleanup. It does not count wire requests settling after
+a call ends. No VFS-interface, transfer-safety or crypto changes.
+
+Twenty-five socket-free tests cover timer forwarding/disable/default,
+pre-connect validation, every metadata operation, overlap, errors, timeout,
+streaming and cleanup. The timer fixture injects authentication completion;
+it makes no claim about key exchange or trust. Pool scheduling, ping timeout
+and reconnect remain Poltergeist work (03 §3.3 of its plan).
 
 ## Test inventory (what proves what)
 
