@@ -1245,7 +1245,12 @@ class AppState extends ChangeNotifier {
     // settles it: by adopting the account's record, or, once this device is
     // edited, by publishing that edit.
     await _runSyncAndRefresh();
-    if (_lastRoundAdoptedAssistant) return;
+    // The await above spans a network round, and the switch stays live
+    // throughout it. A user who turns it back off in that window has opted
+    // out before anything was adopted — stamping now would leave behind
+    // exactly the inflated stamp the entry guard exists to prevent, and it
+    // would outrank the account's record when the switch is next turned on.
+    if (_lastRoundAdoptedAssistant || !services.settings.syncAssistant) return;
     // Nothing configured here, so there is nothing worth publishing: stamping
     // now would turn this device's defaults into the account's newest write
     // and beat a phone that configured its assistant while sync was off and

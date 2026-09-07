@@ -143,6 +143,13 @@ class AssistantSettingsSync implements AssistantSettingsStore {
           masterKeys.keystoreStatus != KeystoreStatus.available) {
         return null;
       }
+      // Null with a keystore that is *available* falls through and publishes
+      // a record naming this key without carrying it, under the stamp the
+      // keyed record already has — which the record layer breaks by device id
+      // and sequence, so the keyless copy can replace the keyed one with
+      // nothing to republish the key afterwards. Right for a ref that never
+      // had a key (the Z.AI switch can be on with the field blank); wrong
+      // after a keystore wipe, which this device cannot tell apart locally.
       if (value != null) keys[name] = value;
     }
 
@@ -165,6 +172,12 @@ class AssistantSettingsSync implements AssistantSettingsStore {
 
   @override
   Future<void> putAssistantSettings(AssistantSettings value) async {
+    // A per-round answer, cleared before anything can go wrong: every early
+    // return below clears it too, but an exception escaping this method — a
+    // failing `saveSettings`, an unexpected throw from the keystore loop —
+    // would otherwise leave the previous round's `true` standing and rebuild
+    // the chat provider for a record this round did not apply.
+    applied = false;
     // The coordinator refuses an older record too, but its comparison and
     // this write are an await apart — and an assistant edit does not take the
     // app's mutation queue (`assistantSettingsEdited` stamps `settings`

@@ -136,6 +136,11 @@ void main() {
     expect(gets, greaterThanOrEqualTo(3));
     // Adopted, as the round's first half managed.
     expect(services.settings.llmModel, 'gpt-5');
+    // The whole configuration, not just the model: the failure this guards
+    // is "answers with the old provider, model and key", and a key that
+    // never reached the keystore would leave the rebuilt provider mute.
+    expect(services.settings.llmBaseUrl, 'https://api.openai.com/v1');
+    expect(await services.masterKeys.getApiKey('openai'), 'sk-remote');
     expect(services.assistantSettingsChanged, isTrue);
     // And consumed, which is the whole point: an already-built chat provider
     // notices none of a new provider, model or key on its own.

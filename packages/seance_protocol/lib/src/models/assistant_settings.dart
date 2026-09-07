@@ -172,7 +172,8 @@ class AssistantSettings {
         // rewritten through the field it exposes. The const constructor still
         // aliases a caller-supplied map; callers treat it as read-only.
         apiKeys: Map.unmodifiable(_stringMap(json['apiKeys'])),
-        updatedAt: (json['updatedAt'] as num?)?.toInt() ?? 0,
+        updatedAt:
+            json['updatedAt'] is num ? (json['updatedAt'] as num).toInt() : 0,
       );
 
   @override
@@ -215,6 +216,9 @@ Map<String, String> _stringMap(Object? value) {
           entry.value is String &&
           _isSet(entry.key as String) &&
           _isSet(entry.value as String))
-        entry.key as String: entry.value as String,
+        // Trimmed like every reference field: a padded name here sat beside a
+        // ref [_blankToNull] had already trimmed, so the adopting device
+        // wrote the entry under one name and looked it up under another.
+        (entry.key as String).trim(): (entry.value as String).trim(),
   };
 }

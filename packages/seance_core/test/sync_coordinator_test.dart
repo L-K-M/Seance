@@ -1575,13 +1575,14 @@ void main() {
   group('assistant settings', () {
     AssistantSettings assistant({
       String model = 'claude-haiku-4-5-20251001',
+      String llmApiKeyRef = 'anthropic',
       Map<String, String> apiKeys = const {'anthropic': 'sk-1'},
       int updatedAt = 10,
     }) => AssistantSettings(
           providerKind: 'anthropic',
           baseUrl: 'https://api.anthropic.com',
           model: model,
-          llmApiKeyRef: 'anthropic',
+          llmApiKeyRef: llmApiKeyRef,
           apiKeys: apiKeys,
           updatedAt: updatedAt,
         );
@@ -1792,7 +1793,15 @@ void main() {
       await coordinator('B', localB, store: storeB).run(remote);
       expect(storeB.settings!.model, isNotEmpty);
 
-      storeA.settings = assistant(model: '', apiKeys: const {}, updatedAt: 40);
+      // The ref goes with the keys: a cleared configuration that still named
+      // one would be a shape no real store produces, since publishing checks
+      // that every named key can be read.
+      storeA.settings = assistant(
+        model: '',
+        llmApiKeyRef: '',
+        apiKeys: const {},
+        updatedAt: 40,
+      );
       await coordinator('A', InMemoryLocalRecordStore(), store: storeA)
           .run(remote);
       await coordinator('B', localB, store: storeB).run(remote);

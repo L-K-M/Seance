@@ -459,6 +459,32 @@ void main() {
       expect(sync.applied, isFalse, reason: 'nothing the provider reads moved');
     });
 
+    test('a save that fails leaves nothing claiming to have been applied',
+        () async {
+      // `applied` is a per-round answer the caller rebuilds the chat provider
+      // on. An exception escaping mid-apply used to leave the previous
+      // round's `true` standing for a record this one never finished.
+      // One instance across both rounds: a fresh one starts false and could
+      // not tell a cleared flag from an untouched one.
+      var failSave = false;
+      final flaky = AssistantSettingsSync(
+        settings: settings,
+        masterKeys: keys,
+        saveSettings: () async {
+          if (failSave) throw StateError('disk full');
+        },
+      );
+      await flaky.putAssistantSettings(arriving());
+      expect(flaky.applied, isTrue);
+
+      failSave = true;
+      await expectLater(
+        flaky.putAssistantSettings(arriving(model: 'gpt-6')),
+        throwsA(isA<StateError>()),
+      );
+      expect(flaky.applied, isFalse);
+    });
+
     test('a locked keyring still adopts the configuration', () async {
       // The key is re-applied on a later round: the record is pulled again
       // every time, so a keyring that comes back catches up on its own.
@@ -551,6 +577,9 @@ void main() {
       // Nor is the sync layer's own bookkeeping: a pending key retry landing
       // would otherwise make an unchanged Save read as an edit and stamp.
       settings.unwrittenAssistantKeyRefs.add('openai');
+      // The getter could return a copy, and then the add above would be a
+      // no-op and the assertion below would pass having tested nothing.
+      expect(settings.unwrittenAssistantKeyRefs, contains('openai'));
       expect(assistantSyncFingerprint(settings), before);
 
       for (final change in <void Function()>[

@@ -168,6 +168,19 @@ void main() {
         decoded.toJson());
   });
 
+  test('a padded key name is trimmed to the ref that looks it up', () {
+    // The refs are trimmed on decode, so a padded name in `apiKeys` had the
+    // adopting device write the entry under one name and read it under
+    // another — set everywhere, answering nowhere.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['llmApiKeyRef'] = '  anthropic  '
+        ..['apiKeys'] = {'  anthropic  ': ' sk-1 '},
+    );
+    expect(decoded.llmApiKeyRef, 'anthropic');
+    expect(decoded.apiKeys, {'anthropic': 'sk-1'});
+  });
+
   test('updatedAt degrades the way Lww needs it to', () {
     // A record decoding to 0 loses to everything, which is what an absent
     // stamp should do; a double is the shape a JSON round-trip can produce.
@@ -176,6 +189,11 @@ void main() {
         0);
     expect(
         AssistantSettings.fromJson({...json, 'updatedAt': 42.0}).updatedAt, 42);
+    // And a wrong-typed one degrades rather than throwing, like every other
+    // field here: a record that loses to everything is the safe reading.
+    expect(
+        AssistantSettings.fromJson({...json, 'updatedAt': 'soon'}).updatedAt,
+        0);
   });
 
   test('copyWith clears the optional refs and keeps everything else', () {

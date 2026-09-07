@@ -933,6 +933,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // re-entered key moves the fingerprint. Trimmed on both sides, because
     // whitespace is not a key and treating it as one stamps a write with no
     // edit behind it.
+    // The guard at the top of this method cannot see an adoption that landed
+    // during the keystore writes above. Assigning over it would put the
+    // pre-adoption fields back and republish them stamped `now` — the revert
+    // that wins on every device, which is the whole reason for the guard.
+    // Refused here too, before anything is assigned to `s`; a key stored
+    // above stays stored, since refs are per provider and adoption keeps
+    // them.
+    if (state.llmConfigVersion != versionAtEntry) {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _syncAssistantFields(state);
+        });
+        showTopToastIn(
+          context,
+          message: 'The assistant settings changed on another device while '
+              'this screen was open. They have been reloaded — review them '
+              'and save again.',
+        );
+      }
+      return;
+    }
     final enteredLlmKey = _apiKey.text;
     final enteredZaiKey = _zaiApiKey.text;
     final keyEntered =
@@ -991,7 +1013,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // is an adoption, and blessing this version would let the next Save
     // revert it silently, with a fresh stamp. The fields are reloaded instead,
     // as the guard does, and the user saves again from what is configured.
-    final adoptedMeanwhile = state.llmConfigVersion != versionAtEntry + 1;
+    // The reload just above is this Save's own bump, and the only one it
+    // makes: `assistantSettingsEdited` does not touch the counter. Anything
+    // else is an adoption that landed while the awaits ran.
+    const bumpsThisSaveMakes = 1; // reloadLlmProvider
+    final adoptedMeanwhile =
+        state.llmConfigVersion != versionAtEntry + bumpsThisSaveMakes;
     if (adoptedMeanwhile) {
       if (mounted) setState(() => _syncAssistantFields(state));
     } else {
@@ -1046,6 +1073,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } catch (e) {
         // Fire-and-forget from `onChanged`, so without this the failure is an
         // unhandled async error and the switch reads as "on and adopted".
+        //
+        // Rolled back for the same reason the failed `saveSettings` above is:
+        // both mean the adopt-first step did not run, and leaving the toggle
+        // on lets the next Save stamp `now` and publish this device's
+        // configuration over the account's newer record — the clobber
+        // adopting first exists to prevent. Turning it on again retries.
+        s.syncAssistant = false;
+        try {
+          await state.services.saveSettings();
+        } catch (_) {
+          // The original failure is the one worth telling; the in-memory
+          // flag and the switch below still agree with each other.
+        }
+        if (mounted) setState(() => _syncAssistant = false);
         if (mounted) showTopToastIn(context, message: 'Assistant sync: $e');
       }
       // Adoption rewrites the assistant half of `settings`, and this screen
