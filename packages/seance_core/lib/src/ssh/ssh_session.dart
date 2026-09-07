@@ -511,10 +511,16 @@ Future<(SSHClient, AuthKind)> openAuthenticatedClient({
   if (credentials.method == AuthMethod.agent) {
     // dartssh2 has no local ssh-agent auth path; the app must resolve agent
     // keys via a platform bridge and pass them as privateKey credentials.
+    //
+    // That is the integrator's half, and it stays here in the comment. The
+    // message is the *user's*: `runConnectionTest` shows it verbatim as the
+    // verdict beside the Test button, where a sentence naming the backend,
+    // the platform bridge and a credential kind reads like a fragment of a
+    // stack trace rather than a supported-state statement, and offers
+    // nothing the reader can act on.
     throw AgentAuthUnsupportedError(
-      'Agent auth is not available through the dartssh2 backend yet; '
-      'resolve the key via the platform ssh-agent and connect with a '
-      'privateKey credential.',
+      'Signing in with the SSH agent is not supported yet. Use a key file or '
+      'a password for this server.',
     );
   }
 

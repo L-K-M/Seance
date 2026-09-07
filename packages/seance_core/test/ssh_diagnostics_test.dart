@@ -483,6 +483,10 @@ void main() {
       final log = SshConnectionLog();
       log.add('(responses: [hunter2');
       expect(log.toString(), isNot(contains('hunter2')));
+      // Redacted in place rather than dropped, like every other case in this
+      // group pins: a scrubber that discarded a line it could not parse
+      // would satisfy the absence checks while quietly deleting transcript.
+      expect(log.toString(), contains('[redacted]'));
       expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
@@ -511,7 +515,11 @@ void main() {
         redactConnectionTrace(
           'SSH_Message_Userauth_InfoResponse(replies: [pw]) B(responses: [x])',
         ),
-        isNot(contains('pw')),
+        // The branch, not only the absence: this ordering is the one the
+        // withhold covers, and an absence assertion alone would be satisfied
+        // by any other path that happened to scrub it — including
+        // over-redacting the line away entirely.
+        allOf(isNot(contains('pw')), contains('does not recognize')),
       );
     });
 

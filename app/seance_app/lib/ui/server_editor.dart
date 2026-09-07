@@ -908,19 +908,33 @@ class _ServerEditorState extends State<_ServerEditor> {
     final password = _password.text;
     final keyPem = _keyPem.text;
     final keyPassphrase = _keyPassphrase.text;
+    // The auth dropdown and the reference switch too, and for the same
+    // reason: they are as enabled as the text boxes while `_busy`, and the
+    // credential is planned *after* the vault read below. Flipped in that
+    // window, `plannedCredential` would describe a different server than the
+    // config being saved — password material written over a stored PEM while
+    // the config saves as key auth, which is the exact cross-method
+    // corruption the carry-over logic exists to prevent.
+    final auth = _auth;
+    final referenceKeyFile = _referenceKeyFile;
     // The config too, and not only the credential fields: it reads seven more
     // controllers. Its `secretRef` is the one thing that cannot be known yet
     // — whether a credential is written depends on what the vault answers —
     // so it is built against the existing ref and corrected below, which is
     // a field this form does not own rather than one the user could edit.
     final formConfig = _formConfig(secretRef: existingRef, now: now);
+    // And the grant that goes with the path this config captured. Browse…
+    // stays live too, so a bookmark minted during the vault read would be
+    // matched against a path from a different moment and silently dropped,
+    // leaving a saved config whose identity file has no grant to open it.
+    final identityFileBookmark = _bookmarkFor(formConfig.identityFilePath);
     // Only when a referenced key's passphrase is about to be written over an
     // entry that may hold a PEM: every other branch replaces the entry whole.
     Secret? stored;
     if (existingRef != null &&
         plannedCredentialReadsStored(
-          auth: _auth,
-          referenceKeyFile: _referenceKeyFile,
+          auth: auth,
+          referenceKeyFile: referenceKeyFile,
           keyPassphrase: keyPassphrase,
         )) {
       try {
@@ -936,8 +950,8 @@ class _ServerEditorState extends State<_ServerEditor> {
     }
     final secretId = existingRef ?? _draftSecretId;
     final secret = plannedCredential(
-      auth: _auth,
-      referenceKeyFile: _referenceKeyFile,
+      auth: auth,
+      referenceKeyFile: referenceKeyFile,
       password: password,
       keyPem: keyPem,
       keyPassphrase: keyPassphrase,
@@ -955,7 +969,7 @@ class _ServerEditorState extends State<_ServerEditor> {
       await widget.state.saveServer(
         config,
         secret: secret,
-        identityFileBookmark: _bookmarkFor(config.identityFilePath),
+        identityFileBookmark: identityFileBookmark,
       );
     } catch (e) {
       if (!mounted) return;

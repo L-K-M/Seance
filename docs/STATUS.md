@@ -225,8 +225,17 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     is stored", which is what makes `Test connection` faithful to Save — both
     fall back to the stored passphrase. It also means a rotation from a
     passphrase-protected key to an unprotected one cannot be expressed: the box
-    is already empty, so the old passphrase keeps being tried and the test
-    reports a decrypt failure for a configuration that is correct. Detecting
+    is already empty, so the old passphrase keeps being tried, and what that
+    costs depends on the key's format. dartssh2 3.0.2 refuses a passphrase it
+    does not need for an OpenSSH key (`openssh_key_pair.dart:111`) and for a
+    legacy EC one (`sec1_ec_key_pair.dart:46`), both with
+    `ArgumentError('Passphrase is not required for unencrypted keys')` — so
+    the attempt fails, naming the reason, for a configuration that is
+    correct. A legacy PKCS#1 RSA key takes the quieter path: `isEncrypted` is
+    false, the passphrase is never consulted
+    (`pkcs1_rsa_key_pair.dart:45-51`), and the connection succeeds while the
+    vault keeps a passphrase nothing will ever use — the worse half, since
+    nothing surfaces it. Detecting
     "new key material" is not reliable enough to hang the rule on: a changed
     path catches only a rotation to a *different* file, the macOS
     security-scoped bookmark is re-minted per grant (so it differs even for
