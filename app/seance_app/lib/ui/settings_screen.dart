@@ -867,8 +867,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // skipped on every search. Reported rather than blocked: the rest of this
     // page has been saved, and a locked keyring — which also answers null —
     // is not a reason to refuse a model change.
-    final zaiWithoutKey = _zai &&
-        await state.services.masterKeys.getApiKey(_zaiKeyRef) == null;
+    // Parenthesized: `await` does bind tighter than `==`, but the form
+    // readers misparse is one edit away from being the form that compiles and
+    // is always false.
+    final zaiWithoutKey =
+        _zai && (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
 
     await state.services.saveSettings();
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.

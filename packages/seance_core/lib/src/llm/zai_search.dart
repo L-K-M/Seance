@@ -272,7 +272,16 @@ class ZaiSearch implements SearchProvider {
       })
       ..body = jsonEncode(payload);
 
-    final response = await _client.send(request).timeout(timeout);
+    // Named, like every other deadline here: the bare `TimeoutException` this
+    // used to throw reaches the UI as "Future not completed", which is the
+    // one thing `bounded` converts its own deadlines to avoid. This is the
+    // deadline most likely to fire — it covers connect, TLS and the headers.
+    final response = await _client.send(request).timeout(
+          timeout,
+          onTimeout: () => throw http.ClientException(
+            'Z.AI did not answer the search request in time.',
+          ),
+        );
     // Case-insensitive by contract in package:http, so this is the header the
     // server sent whatever case it used.
     // Read before the write below: `headers` *is* `session` during a
@@ -678,7 +687,9 @@ class ZaiSearch implements SearchProvider {
     final seen = <String>{};
     _collect(result['structuredContent'], found, seen);
     _collect(result['content'], found, seen);
-    if (found.isNotEmpty) return found.take(limit).toList();
+    // Clamped: `take` throws a `RangeError` for a negative count, and an
+    // `Error` sails past the `on Exception` handling every caller relies on.
+    if (found.isNotEmpty) return found.take(limit < 0 ? 0 : limit).toList();
 
     final prose = _textBlocks(result['content']).join('\n').trim();
     if (prose.isEmpty) return const [];
@@ -818,6 +829,12 @@ class ZaiSearch implements SearchProvider {
         final Map<Object?, Object?> fields
             when _snippetText(fields).isNotEmpty =>
           _snippetText(fields),
+        // A list, like the snippet case below: several localized titles, or
+        // a title split into parts. Dropping it to the URL was the same
+        // asymmetry the map case was.
+        final List<Object?> parts
+            when parts.whereType<String>().join(' ').isNotEmpty =>
+          parts.whereType<String>().join(' '),
         _ => value['media'],
       };
       // Empty falls through here too: an explicitly empty `content` beside

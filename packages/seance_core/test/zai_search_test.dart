@@ -155,7 +155,9 @@ class FakeMcpServer {
   Map<String, dynamic> _result(String method, Map<String, dynamic> payload) {
     switch (method) {
       case 'initialize':
-        return {'protocolVersion': '2025-06-18'};
+        // `capabilities` is part of a real initialize result; carried so a
+        // client that starts reading it meets the shape here first.
+        return {'protocolVersion': '2025-06-18', 'capabilities': const {}};
       case 'tools/list':
         listCursors.add((payload['params'] as Map?)?['cursor']);
         if (_toolPagesServed < extraToolPages) {
@@ -227,7 +229,11 @@ class FakeMcpServer {
         'content-type': streaming
             ? (streamCase ? 'Text/Event-Stream' : 'text/event-stream')
             : 'application/json',
-        if (_issuedSessionId != null) 'mcp-session-id': _issuedSessionId!,
+        // Not on an error status: the gateway does not re-issue the id on a
+        // 404, and a client that recovered one by scraping any response would
+        // pass every re-handshake test here while failing in production.
+        if (status < 400 && _issuedSessionId != null)
+          'mcp-session-id': _issuedSessionId!,
       },
     );
   }
@@ -495,7 +501,9 @@ void main() {
               .having((e) => e.message, 'message', contains('HTTP 502'))
               .having((e) => e.message, 'message', isNot(contains('secret'))),
         ),
-      );
+        // Test-side: the drain deadline is what ends this, and a regression
+        // in it would otherwise hang until the runner's own timeout.
+      ).timeout(const Duration(seconds: 5));
     });
 
     test('a rejected key is named as such whatever shape the refusal takes',
@@ -759,11 +767,14 @@ void main() {
         apiKey: 'k',
         client: client,
         timeout: const Duration(seconds: 3),
-      ).search('dart');
+      ).search('dart').timeout(const Duration(seconds: 5));
 
       expect(results, isNotEmpty);
       expect(cancelled, isTrue);
-      expect(clock.elapsed, lessThan(const Duration(seconds: 3)));
+      // Far below the 3s deadline rather than just under it: draining instead
+      // of cancelling costs the whole deadline, and a bound sitting on it
+      // could not tell that apart from a slow machine.
+      expect(clock.elapsed, lessThan(const Duration(seconds: 1)));
     });
 
     test('an errored tool result is a failure, not an empty answer', () async {
@@ -866,6 +877,26 @@ void main() {
         ],
       }, 5);
       expect(results.map((r) => r.url), ['https://example.com/a']);
+    });
+
+    test('a title that arrives as a list is read, like a snippet is', () {
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'search_result': [
+                {
+                  'title': ['Part one', 'part two'],
+                  'link': 'https://example.com/l',
+                  'content': 'text',
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(results.single.title, 'Part one part two');
     });
 
     test('a localized title object is read, like a localized snippet', () {
@@ -1293,6 +1324,9 @@ void main() {
         _Fixed([_hit('https://x.example:443/docs')]),
       ]).search('q', limit: 5);
       expect(results, hasLength(1));
+      // And which copy callers get: a dedup that rewrote result URLs to its
+      // normalized form, or kept the last seen, would also leave one.
+      expect(results.single.url, 'https://x.example/docs');
     });
 
     test('a query string is not a duplicate', () async {
@@ -1332,7 +1366,10 @@ void main() {
     test('one backend failing does not take the search with it', () async {
       final results = await CompositeSearch([
         _Broken(),
-        _Fixed([_hit('https://a')]),
+        // Answers after the failure, so "a failure with no success yet in
+        // hand is still contained" is the property under test rather than an
+        // accident of how two immediate fakes interleave.
+        _Fixed([_hit('https://a')], delay: const Duration(milliseconds: 25)),
       ]).search('q');
       expect(results.map((r) => r.url), ['https://a']);
 
@@ -1395,7 +1432,13 @@ SearchResult _hit(String url) =>
 
 class _Fixed implements SearchProvider {
   final List<SearchResult> results;
-  _Fixed(this.results);
+
+  /// How long this backend takes to answer. A test that needs the failure to
+  /// land before any success exists sets it, rather than relying on the
+  /// microtask order of two fakes that both complete immediately.
+  final Duration delay;
+
+  _Fixed(this.results, {this.delay = Duration.zero});
 
   /// The limit this backend was asked for, which is not observable from the
   /// merged list: the merge caps at the caller's limit either way, so a
@@ -1404,6 +1447,7 @@ class _Fixed implements SearchProvider {
 
   @override
   Future<List<SearchResult>> search(String query, {int limit = 5}) async {
+    if (delay > Duration.zero) await Future<void>.delayed(delay);
     lastLimit = limit;
     return results.take(limit).toList();
   }

@@ -150,7 +150,7 @@ class CompositeSearch implements SearchProvider {
           developer.log(
             'Web search backend failed: $error',
             name: _searchLoggerName,
-            level: _warningLogLevel,
+            level: searchWarningLogLevel,
             error: error,
             stackTrace: stackTrace,
           );
@@ -202,7 +202,11 @@ class CompositeSearch implements SearchProvider {
   }
 }
 
-const int _warningLogLevel = 900;
+/// Warning, for every record of a search backend going quiet — the one this
+/// file writes when a backend fails mid-search, and the app's when one is
+/// dropped before the search starts. Public so the two cannot drift: they are
+/// halves of one signal, and a filter set at this level should see both.
+const int searchWarningLogLevel = 900;
 const String _searchLoggerName = 'seance.search';
 
 /// One backend's failure, kept with its stack so [CompositeSearch] can re-raise
