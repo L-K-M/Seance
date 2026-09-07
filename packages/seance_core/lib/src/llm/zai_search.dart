@@ -115,6 +115,15 @@ class ZaiSearch implements SearchProvider {
   /// session is empty, so an empty one never means "a live session still
   /// needs clearing". It is the same identity reasoning [_ensureHandshake]
   /// already uses when clearing a failed attempt.
+  ///
+  /// One window it does not cover, stated so nobody reads more into the
+  /// guard than it gives: a 404 from the retired session that is *processed*
+  /// after the replacement has already published clears the replacement too,
+  /// and its caller starts a third handshake. The cost is one wasted
+  /// handshake and a server-side session nobody returns to — never a wrong
+  /// result, since each caller still gets its own answer. Closing it would
+  /// mean threading the rejected id through [_SessionExpired] so a straggler
+  /// could recognize that it is not talking about the session in hand.
   void _reset() {
     if (_session.isEmpty) return;
     _session = const {};
@@ -284,10 +293,14 @@ class ZaiSearch implements SearchProvider {
         // and the response it produces would have nobody to read or cancel
         // it, so its socket would linger — the leak `bounded` exists to
         // avoid on the body, one phase earlier.
-        unawaited(sent.then(
-          (late) => late.stream.listen(null).cancel(),
-          onError: (Object _) {},
-        ));
+        // `catchError` on the chain, not `onError` on the `then`: the latter
+        // answers for `sent` alone, so a `cancel()` that fails — most likely
+        // on exactly the connection that stalled long enough to reach this
+        // deadline and then broke — landed on the result future with nothing
+        // handling it, as an unhandled async error in the caller's zone.
+        unawaited(sent
+            .then((late) => late.stream.listen(null).cancel())
+            .catchError((Object _) {}));
         throw http.ClientException(
           'Z.AI did not answer the search request in time.',
         );
@@ -794,7 +807,7 @@ class ZaiSearch implements SearchProvider {
   /// below it; this is a ceiling on what a gateway can spend, not a limit
   /// anything real runs into.
   @visibleForTesting
-  static const int maxUrlChars = 2048;
+  static const int maxUrlChars = maxSearchUrlChars;
 
   /// Walk a tool reply of any shape, collecting every result-looking map.
   ///

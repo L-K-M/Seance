@@ -240,12 +240,14 @@ class ChatController {
   ///
   /// Long URLs need no malice: a query string with a page of tracking
   /// parameters is ordinary on the open web, and SearXNG and Brave copy the
-  /// field through as they find it. Set where `ZaiSearch` already draws the
-  /// line for a *plausible* URL, so "too long to be real" means the same
-  /// thing on both paths. Clipped rather than dropped, and with the ellipsis
+  /// field through as they find it. The same constant `ZaiSearch` refuses a
+  /// link on, not a second number that happens to match it: set below the
+  /// reject threshold, every URL between the two would arrive here to be
+  /// clipped into a dead link, which is exactly what refusing one outright
+  /// exists to avoid. Clipped rather than dropped, and with the ellipsis
   /// every other cap uses: a truncated link is visibly truncated, where a
   /// silently shortened one reads as a citation that merely does not resolve.
-  static const int maxUrlChars = 2048;
+  static const int maxUrlChars = maxSearchUrlChars;
 
   /// [results] with over-long fields clipped.
   ///

@@ -135,7 +135,14 @@ class FakeMcpServer {
         headers.add(sent);
         methods.add(method);
 
-        if (method == 'initialize') _handshakes++;
+        if (method == 'initialize') {
+          _handshakes++;
+          // A fresh session lists from page one again, as the gateway does.
+          // Left running, a re-handshake's `tools/list` would land straight on
+          // the final page, and any test combining an expiry with paging
+          // could not tell a client that re-paginates from one that skips.
+          _toolPagesServed = 0;
+        }
 
         if (expireSession > 0 && method == 'tools/call') {
           expireSession--;
@@ -427,7 +434,9 @@ void main() {
       // guard in `_reset`, the first installs a fresh attempt and the second
       // nulls that still-in-flight one to start another — N handshakes and N
       // abandoned server-side sessions for one expiry.
-      final server = FakeMcpServer()..expireSession = 3;
+      final server = FakeMcpServer()
+        ..expireSession = 3
+        ..echoQueryInLinks = true;
       final search = ZaiSearch(apiKey: 'k', client: server.client);
 
       final results = await Future.wait([
@@ -437,6 +446,13 @@ void main() {
       ]);
 
       expect(results, everyElement(isNotEmpty));
+      // Shared handshake, separate calls: a guard that shared the retried
+      // `tools/call` future as well would hand every caller the first one's
+      // answer, with the handshake and call counts below unchanged. Each
+      // caller's own query has to come back to it.
+      expect(results[0].map((r) => r.url), everyElement(contains('q=a')));
+      expect(results[1].map((r) => r.url), everyElement(contains('q=b')));
+      expect(results[2].map((r) => r.url), everyElement(contains('q=c')));
       // One for the original session, one for the shared replacement.
       expect(server.methods.where((m) => m == 'initialize').length, 2);
     });
@@ -816,11 +832,16 @@ void main() {
         return server.client.send(forwarded);
       });
 
+      // Named once and used for both the deadline and the bound below: two
+      // literals a comment apart can be tuned one at a time, and lowering the
+      // deadline alone would let a drain-to-deadline regression finish inside
+      // the bound and pass.
+      const deadline = Duration(seconds: 3);
       final clock = Stopwatch()..start();
       final results = await ZaiSearch(
         apiKey: 'k',
         client: client,
-        timeout: const Duration(seconds: 3),
+        timeout: deadline,
       ).search('dart').timeout(const Duration(seconds: 5));
 
       expect(results, isNotEmpty);
@@ -828,7 +849,7 @@ void main() {
       // Well under the 3s deadline, with a second of headroom: draining
       // instead of cancelling costs the whole deadline, and a bound sitting on
       // it could not tell that apart from a loaded machine.
-      expect(clock.elapsed, lessThan(const Duration(seconds: 2)));
+      expect(clock.elapsed, lessThan(deadline - const Duration(seconds: 1)));
     });
 
     test('an errored tool result is a failure, not an empty answer', () async {
@@ -1547,6 +1568,22 @@ void main() {
       expect(results.map((r) => r.url), ['https://x.example/docs']);
     });
 
+    test('a trailing slash is the path\'s even when a query follows', () async {
+      // The path ends at the first '?', so its trailing slash is the path's
+      // wherever it sits. Skipping the trim whenever a query was present was
+      // the safe half of that and cost the common case: two backends
+      // disagreeing only about `…/docs/?q=1` versus `…/docs?q=1` each spent a
+      // slot on the same page, pushing a real result off the end of the limit.
+      final results = await CompositeSearch([
+        _Fixed([_hit('https://x.example/docs/?q=1', title: 'With slash')]),
+        _Fixed([_hit('https://x.example/docs?q=1', title: 'Without')]),
+        _Fixed([_hit('https://x.example/other')]),
+      ]).search('q', limit: 2);
+      // The duplicate must not eat the slot the third backend's page needs.
+      expect(results.map((r) => r.url),
+          ['https://x.example/docs/?q=1', 'https://x.example/other']);
+    });
+
     test('a query string is not a duplicate', () async {
       // Deliberately conservative: `?id=1` and `?id=2` are different pages,
       // so normalization stops at the fragment and trailing slashes.
@@ -1573,8 +1610,9 @@ void main() {
         _Fixed([_hit('https://b'), _hit('https://d')]),
       ]).search('q', limit: 4);
 
-      // Rank 0 from each backend, then rank 1 — where the second backend's
-      // repeat of "b" is skipped, so its "d" takes that slot.
+      // Rank 0 from each backend, then rank 1 — where the *first* backend's
+      // "b" is the duplicate (the second backend's rank-0 hit was already
+      // emitted) and is skipped, so the second backend's "d" takes that slot.
       expect(
         results.map((r) => r.url),
         ['https://a', 'https://b', 'https://d', 'https://c'],
