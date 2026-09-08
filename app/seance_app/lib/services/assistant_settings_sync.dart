@@ -36,6 +36,18 @@ String assistantSyncFingerprint(AppSettings settings) => [
 /// (terminal font, editor registry, security-scoped bookmarks, the device id
 /// that resolves every conflict). This adapter is what lets the sync layer see
 /// exactly the account-shaped half of it and nothing else.
+/// The keystore entry the sync token lives under, named once.
+///
+/// [AssistantSettingsSync.reservedKeyNames] has to hold whatever
+/// `AppServices` actually writes the token as, and the two used to be
+/// separate literals in separate files. A rename on the writing side would
+/// not fail to compile and no test would notice — it would just stop the
+/// deny-list matching, and the entry it exists to hold back would become
+/// publishable as an ordinary API key. Passed to
+/// `MasterKeyManager.putApiKey`, which prefixes it, so this is the bare
+/// name rather than the full `seance.apikey.` entry.
+const String syncTokenKeyName = 'sync.token';
+
 class AssistantSettingsSync implements AssistantSettingsStore {
   final AppSettings settings;
   final MasterKeyManager masterKeys;
@@ -103,7 +115,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
   /// record is exactly as careful as the device that wrote it. The vault key
   /// is not listed because it is not in this namespace: [MasterKeyManager]
   /// stores it under its own prefix, which no key reference resolves to.
-  static const Set<String> reservedKeyNames = {'sync.token'};
+  static const Set<String> reservedKeyNames = {syncTokenKeyName};
 
   /// Whether any of a configuration's three key references names a reserved
   /// entry.
@@ -175,6 +187,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     // can flush them below rather than trusting a later save to happen by —
     // and can take them back out if that flush fails.
     final addedThisRound = <String>[];
+    final clearedThisRound = <String>[];
     // The three guards below abort the round, and every one of them can fire
     // *after* an earlier name in this same loop was recorded as held. They
     // break rather than return so the flush still runs: a name left in memory
@@ -216,6 +229,18 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       // after a keystore wipe, which this device cannot tell apart locally.
       if (value != null) {
         keys[name] = value;
+        // Read back, so an earlier failed write to this name is no longer
+        // pending. Nothing else clears it on this path: the apply side drops
+        // a name when its own retry lands, but the recovery this sees — the
+        // key re-entered in Settings under the same reference, or a keystore
+        // that came back — never goes through the apply side at all, so the
+        // name stayed recorded as "known dropped" for a key this device
+        // demonstrably holds. No live failure follows from it today, because
+        // `_held` covers the wipe case independently and the guard above only
+        // consults this set when the value is *also* null; what it costs is
+        // that the set stops meaning what its own doc says, in
+        // `settings.json`, for whatever reads it next.
+        if (_unwritten.remove(name)) clearedThisRound.add(name);
         // Persisted, not only remembered: `_held` is what tells a key this
         // device lost from one it never had, and `settings.json` surviving a
         // keystore wipe is the whole reason it lives there. Added here and
@@ -240,7 +265,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     }
 
     // Before the abort, not after it: see `aborted`.
-    if (addedThisRound.isNotEmpty) {
+    if (addedThisRound.isNotEmpty || clearedThisRound.isNotEmpty) {
       try {
         await saveSettings();
       } catch (_) {
@@ -257,6 +282,11 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         // round, which re-runs the whole of `putAssistantSettings`; nothing
         // re-runs a collection that already answered.
         _held.removeAll(addedThisRound);
+        // Same reasoning for the cleared names, in the other direction: a
+        // removal that did not reach disk must not be believed in memory
+        // either, or `remove` answers false next round and the stale name
+        // outlives the save that was meant to drop it.
+        _unwritten.addAll(clearedThisRound);
       }
     }
     if (aborted) return null;

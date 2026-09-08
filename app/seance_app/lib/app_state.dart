@@ -1169,11 +1169,26 @@ class AppState extends ChangeNotifier {
       // swallows or rethrows the failure without looking at the flag, so this
       // is the one place that can see both halves of the round.
       //
-      // Safe in a `finally`: `reloadLlmProvider` bumps a counter and reads the
-      // keystore through the tolerant path (`refreshLlmConfigured` treats a
-      // keystore error as "no key"), so it does not throw over the sync
-      // failure on its way out.
-      if (adoptedAssistant) await reloadLlmProvider();
+      // Caught, because a throw from a `finally` *replaces* the exception
+      // already in flight. This comment used to argue the call was safe
+      // without one, on the grounds that `reloadLlmProvider` bumps a counter
+      // and reads the keystore through the tolerant path
+      // (`refreshLlmConfigured` treats a keystore error as "no key"). That
+      // enumeration was incomplete: it also calls `notifyListeners`, and
+      // `ChangeNotifier` does not catch what a listener throws — a
+      // `setState` on a widget disposed while the round ran is enough. The
+      // round's own failure is the one worth reporting, and a swallowed
+      // rebuild self-corrects, since the next adoption or settings edit
+      // rebuilds the provider anyway.
+      if (adoptedAssistant) {
+        try {
+          await reloadLlmProvider();
+        } catch (_) {
+          // Deliberately swallowed rather than reported: there is no surface
+          // here, and masking the sync round's outcome is the worse of the
+          // two silences.
+        }
+      }
     }
   }
 
@@ -1212,6 +1227,21 @@ class AppState extends ChangeNotifier {
     _scheduleAutoSync();
   }
 
+  /// The four conditions under which [assistantSyncSwitchedOn] must not
+  /// stamp, asked at both points it has to be asked.
+  ///
+  /// One definition rather than two identical blocks. Each site keeps its own
+  /// comment explaining why the question is re-asked *there* — the answer can
+  /// change across either await — but the question itself is the same one,
+  /// and it was previously written out twice, verbatim. A condition added to
+  /// one copy and not the other silently reopens whichever of the clobber and
+  /// stale-stamp races that copy was guarding, which is precisely the edit
+  /// this shape invites.
+  bool _mustNotStampOnSwitchOn() =>
+      _lastRoundAdoptedAssistant ||
+      services.settings.assistantUpdatedAt != 0 ||
+      !services.settings.syncAssistant ||
+      !services.isSyncConfigured;
   /// Assistant sync was just switched on here: take whatever the account
   /// already holds, and publish this device's configuration only if it held
   /// nothing.
@@ -1275,10 +1305,7 @@ class AppState extends ChangeNotifier {
     // configuration no account was ever consulted about, which is the inflated
     // stamp the entry guard's own comment describes: it wins the first round
     // against whatever the next account attached already held.
-    if (_lastRoundAdoptedAssistant ||
-        services.settings.assistantUpdatedAt != 0 ||
-        !services.settings.syncAssistant ||
-        !services.isSyncConfigured) {
+    if (_mustNotStampOnSwitchOn()) {
       return;
     }
     // Past here the stamp is zero, which means two different things — and only
@@ -1321,10 +1348,7 @@ class AppState extends ChangeNotifier {
     // today; not depending on that costs one `||`, and the flag can only be
     // true here if a round adopted inside the keystore read above, which is
     // exactly when this device must not stamp.
-    if (_lastRoundAdoptedAssistant ||
-        services.settings.assistantUpdatedAt != 0 ||
-        !services.settings.syncAssistant ||
-        !services.isSyncConfigured) {
+    if (_mustNotStampOnSwitchOn()) {
       return;
     }
     await assistantSettingsEdited();

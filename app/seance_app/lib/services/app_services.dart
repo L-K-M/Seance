@@ -97,7 +97,14 @@ class AppServices {
   /// failed still reports the adoption — which is the case it was put there
   /// for. Read it from a `finally` around [runSync] rather than only on the
   /// success path, or that round's adoption is the one that goes unseen.
-  bool assistantSettingsChanged = false;
+  /// Read-only to everything but [runSync], which owns both writes. The
+  /// field was public and settable, and its whole correctness argument is
+  /// about *when* it is written relative to the round — so a second writer
+  /// anywhere would not fail to compile, would not fail a test, and would
+  /// cost an adopted provider its rebuild in exactly the silent way this
+  /// flag exists to prevent.
+  bool get assistantSettingsChanged => _assistantSettingsChanged;
+  bool _assistantSettingsChanged = false;
 
   AppServices._({
     required this.configStore,
@@ -271,7 +278,7 @@ class AppServices {
       settings.syncBaseUrl = baseUrl;
       settings.syncUsername = username;
       await saveSettings();
-      await masterKeys.putApiKey('sync.token', client.token!);
+      await masterKeys.putApiKey(syncTokenKeyName, client.token!);
       await _rekeyVault(keys.vaultKey);
     });
   }
@@ -325,7 +332,7 @@ class AppServices {
     settings.syncBaseUrl = baseUrl;
     settings.syncUsername = username;
     await saveSettings();
-    await masterKeys.putApiKey('sync.token', client.token!);
+    await masterKeys.putApiKey(syncTokenKeyName, client.token!);
     await _rekeyVault(keys.vaultKey);
   });
 
@@ -336,9 +343,9 @@ class AppServices {
     // means that stays true only while they keep throwing, and a guard that
     // is one day changed to return a failure outcome would hand the caller
     // the previous round's "adopted" answer with nothing to show for it.
-    assistantSettingsChanged = false;
+    _assistantSettingsChanged = false;
     final baseUrl = settings.syncBaseUrl;
-    final token = await masterKeys.getApiKey('sync.token');
+    final token = await masterKeys.getApiKey(syncTokenKeyName);
     if (baseUrl == null || token == null) {
       // A configured account that suddenly reads as "not set up" means the
       // keystore (which holds the token) is down — say that, not "set up sync".
@@ -397,7 +404,7 @@ class AppServices {
       // `applied` was false again, and the chat provider kept answering with
       // the old model and key until some unrelated edit happened to rebuild
       // it.
-      assistantSettingsChanged = assistant?.applied ?? false;
+      _assistantSettingsChanged = assistant?.applied ?? false;
     }
   }
 

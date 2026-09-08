@@ -1110,7 +1110,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await state.services.saveSettings();
     // Stamp and publish: this is the edit the synced record's timestamp is
     // supposed to move for. A no-op when assistant sync is off.
-    if (keyEntered || assistantSyncFingerprint(s) != before) {
+    //
+    // Re-checked against `versionAtEntry`, because the guard before the
+    // assignments does not cover this. `saveSettings` is a plain disk write
+    // and not queued behind the mutation lock, so a periodic round can adopt
+    // during that await — which is the same window `adoptedMeanwhile` below
+    // exists to notice. Noticing it there is too late for the record: the
+    // publish has already stamped `now` on this Save's pre-adoption values,
+    // and `now` beats the adopted record on every device. That is the revert
+    // the guard above calls "the whole reason for the guard", reachable one
+    // await further down. Skipping the publish loses nothing the arithmetic
+    // below does not already handle — `assistantSettingsEdited` never
+    // touches the counter, so `adoptedMeanwhile` still reads true, reloads
+    // the fields and asks for the Save to be made again.
+    if (state.llmConfigVersion == versionAtEntry &&
+        (keyEntered || assistantSyncFingerprint(s) != before)) {
       try {
         await state.assistantSettingsEdited();
       } catch (e) {

@@ -381,6 +381,33 @@ void main() {
       expect(flushes, 1, reason: 'the retry is what persists it');
     });
 
+    test('a key that reads back stops being a known-failed write', () async {
+      // `_unwritten` records a reference this device adopted and failed to
+      // store. The apply side drops a name when its own retry lands — but the
+      // other recovery never goes through the apply side at all: the user
+      // re-enters the key in Settings under the same reference, or the
+      // keystore comes back, and the collect path reads it. That path added
+      // to `_held` and never removed from `_unwritten`, so the name stayed
+      // recorded as dropped for a key this device demonstrably holds, in
+      // `settings.json`, for good.
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = 'anthropic';
+      settings.unwrittenAssistantKeyRefs.add('anthropic');
+      // The getter could return a copy, in which case the add above is a
+      // no-op and the assertion below would pass having tested nothing.
+      expect(settings.unwrittenAssistantKeyRefs, contains('anthropic'));
+      await keys.putApiKey('anthropic', 'sk-llm');
+
+      expect(await sync.getAssistantSettings(), isNotNull,
+          reason: 'the key reads, so nothing withholds the round');
+      expect(settings.unwrittenAssistantKeyRefs, isEmpty);
+      // And on disk, not only in memory — the whole reason the set lives in
+      // `settings.json` is to survive a launch.
+      expect(
+          AppSettings.fromJson(settings.toJson()).unwrittenAssistantKeyRefs,
+          isEmpty);
+    });
+
     test('a key read before an abort still reaches the disk', () async {
       // The flush lived after the loop, and all three of its guards left by
       // `return` — so a name recorded as held before a later ref aborted the
