@@ -238,13 +238,13 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     passphrase-protected key to an unprotected one cannot be expressed: the box
     is already empty, so the old passphrase keeps being tried, and what that
     costs depends on the key's format. dartssh2 3.0.2 refuses a passphrase it
-    does not need for an OpenSSH key (`openssh_key_pair.dart:111`) and for a
-    legacy EC one (`sec1_ec_key_pair.dart:46`), both with
+    does not need for an OpenSSH key (`openssh_key_pair.dart`) and for a
+    legacy EC one (`sec1_ec_key_pair.dart`), both with
     `ArgumentError('Passphrase is not required for unencrypted keys')` — so
     the attempt fails, naming the reason, for a configuration that is
     correct. A legacy PKCS#1 RSA key takes the quieter path: `isEncrypted` is
     false, the passphrase is never consulted
-    (`pkcs1_rsa_key_pair.dart:45-51`), and the connection succeeds while the
+    (`pkcs1_rsa_key_pair.dart`), and the connection succeeds while the
     vault keeps a passphrase nothing will ever use — the worse half, since
     nothing surfaces it. Detecting
     "new key material" is not reliable enough to hang the rule on: a changed
@@ -266,7 +266,7 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     for the editor to notice the mismatch and say so, rather than for `_save`
     to pick one silently.
 
-19. **One passphrase slot serves two keys.** A second failure of the same
+19. **One passphrase slot serves two keys.** A second failure mode of the same
     slot, reachable without any method switch: referencing a key file writes
     the *typed* passphrase beside the PEM the entry already held, because one
     entry carries one passphrase and the referenced key needs its own. A device

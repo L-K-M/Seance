@@ -10,10 +10,9 @@ const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 
 /// Which backends a configuration actually builds.
 ///
-/// Declined once as needing a keystore seam that did not exist — it does:
-/// `FlutterSecureStorage.setMockInitialValues` is what the other
-/// `AppServices.initialize` suites already use, and it reaches the key
-/// branches as well as the URL one.
+/// Reaches the key-reference branches as well as the URL one, through the
+/// same `FlutterSecureStorage.setMockInitialValues` seam the other
+/// `AppServices.initialize` suites use.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory directory;
@@ -110,5 +109,23 @@ void main() {
     services.settings.zaiApiKeyRef = 'zai';
     await services.masterKeys.putApiKey('zai', 'sk-zai');
     expect(await services.buildSearchProvider(), isA<ZaiSearch>());
+  });
+
+  test('a key reference with spaces around it still resolves', () async {
+    // The complement the URL has and the key refs did not, and the asymmetry
+    // was load-bearing: dropping `.trim()` from both refs passes this whole
+    // file, because an untrimmed `'   '` is non-empty, misses its lookup, and
+    // is skipped as an unavailable backend — reaching the same `null` the
+    // whitespace test asserts, by the route that test exists to rule out.
+    // Only a padded ref that must still *find* its key separates them.
+    services.settings.braveApiKeyRef = '  brave  ';
+    services.settings.zaiApiKeyRef = '\tzai\n';
+    await services.masterKeys.putApiKey('brave', 'sk-brave');
+    await services.masterKeys.putApiKey('zai', 'sk-zai');
+    final provider = await services.buildSearchProvider();
+    expect(
+      (provider as CompositeSearch).providers.map((p) => p.runtimeType),
+      [BraveSearch, ZaiSearch],
+    );
   });
 }

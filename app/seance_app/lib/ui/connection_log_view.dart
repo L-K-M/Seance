@@ -15,7 +15,7 @@ import 'top_toast.dart';
 /// Redaction is the producer's contract, not this widget's: [text] is copied
 /// and rendered verbatim, so anything a person typed into an auth prompt — a
 /// password, a key passphrase, a keyboard-interactive answer — must never
-/// have reached it. [SshConnectionLog] is where that is enforced, at capture
+/// have reached it. `SshConnectionLog` is where that is enforced, at capture
 /// rather than at render, precisely so every view of a transcript inherits it
 /// without knowing to.
 class ConnectionLogView extends StatelessWidget {

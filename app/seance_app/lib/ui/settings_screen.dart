@@ -326,13 +326,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         subtitle: const Text('Needs a Z.AI key with a GLM Coding Plan.'),
         value: _zai,
         // Frozen while a save runs, like the Save button and the sync
-        // switches. `_save` reads `_zai` twice — before the awaits to decide
-        // whether to write the key, and after them to set the reference — so
-        // a toggle in between makes one save act on two different answers:
-        // off-to-on persists a reference with nothing stored behind it, and
-        // on-to-off stores a key the settings it just wrote call unused. The
-        // text fields' mid-save edits are already snapshotted; this was the
-        // one control gating a keystore write that was not.
+        // switches. This used to be the invariant: `_save` read `_zai` twice,
+        // before the awaits to decide whether to write the key and after them
+        // to set the reference, so a toggle in between made one save act on
+        // two different answers — off-to-on persisting a reference with
+        // nothing stored behind it, on-to-off storing a key the settings it
+        // just wrote call unused. `_saveInner` snapshots `_zai` once now,
+        // before any await, so the two writes can no longer disagree and this
+        // gate is defense in depth rather than the thing holding it up.
         onChanged: _saving ? null : (v) => setState(() => _zai = v),
       ),
       if (_zai)
@@ -1136,16 +1137,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // the awaits above, and text typed into one meanwhile was never
       // persisted — clearing it would discard it without a trace.
       if (_apiKey.text == enteredLlmKey) _apiKey.clear();
-      // `_zai` as well, because the write above is gated on it: a key typed
-      // with the switch off is never stored, and clearing it would discard
-      // it without a trace — which is exactly what the paragraph above
-      // promises not to do. The LLM key needs no equivalent; its write is
-      // gated only on the text being non-blank, and blank is nothing to
-      // lose.
+      // `zaiEnabled` as well, because the write above is gated on it — the
+      // same snapshot, so the clear cannot decide on a switch position the
+      // write never saw. A key typed with the switch off is never stored,
+      // and clearing it would discard it without a trace, which is exactly
+      // what the paragraph above promises not to do. The LLM key needs no
+      // equivalent; its write is gated only on the text being non-blank, and
+      // blank is nothing to lose.
       if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
     }
-    // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
-    await state.reloadLlmProvider();
+    // Rebuild the chat provider (new key/model) and refresh sidebar
+    // visibility.
+    //
+    // Caught rather than left to `_save`'s handler: everything above is past
+    // the point of no return — the keystores, `settings.json` and the
+    // published record are all written — so letting this escape reported
+    // "Settings not saved" for a save that succeeded, and told the user to
+    // re-enter secrets that are on disk. The failure still surfaces, as the
+    // rebuild failure it is. Catching it also keeps the version arithmetic
+    // below correct rather than breaking it: `reloadLlmProvider` does
+    // `llmConfigVersion++` as its first statement, before any await, so the
+    // one bump `bumpsThisSaveMakes` accounts for has already landed even
+    // when a later step throws. Letting the error escape would skip that
+    // arithmetic entirely and leave `_assistantVersionSeen` stale.
+    Object? reloadError;
+    try {
+      await state.reloadLlmProvider();
+    } catch (e) {
+      reloadError = e;
+    }
     // This Save is the configuration the fields now show — unless a periodic
     // round adopted another device's configuration during the awaits above,
     // past the guard at the top. The reload just made is one bump; any other
@@ -1166,14 +1186,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) {
       showTopToastIn(
         context,
+        // Ordered by what the user has to act on. An adoption means this
+        // Save's values are not what is configured any more and it has to be
+        // made again — nothing else matters until that is done. A reload
+        // failure is next: the assistant in this process is still the old
+        // one. The Z.AI notice is last, about a key the next search reads.
         message: adoptedMeanwhile
             ? 'Saved — but the assistant settings changed on another device '
                   'meanwhile. The fields show what is configured now; review '
                   'them and save again.'
-            : zaiWithoutKey
-                ? 'Saved — but no Z.AI key could be read (none stored, or the '
-                      'keyring is locked), so Z.AI search will be skipped.'
-                : 'Saved',
+            : reloadError != null
+                ? 'Saved — but the assistant could not be reloaded, so it is '
+                      'still running the previous configuration: $reloadError'
+                : zaiWithoutKey
+                    ? 'Saved — but no Z.AI key could be read (none stored, or '
+                          'the keyring is locked), so Z.AI search will be '
+                          'skipped.'
+                    : 'Saved',
       );
     }
   }

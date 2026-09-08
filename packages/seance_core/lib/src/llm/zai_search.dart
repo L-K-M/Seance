@@ -67,14 +67,25 @@ class ZaiSearch implements SearchProvider {
   int _nextId = 0;
 
   ZaiSearch({
-    required this.apiKey,
+    required String apiKey,
     this.endpoint = defaultEndpoint,
     http.Client? client,
     // Per request, not per search: one search is a handshake, a listing of
     // up to [maxToolPages] pages and the call, doubled once if the session
     // is retired mid-way — so the worst case is a multiple of this.
     this.timeout = const Duration(seconds: 20),
-  }) : _client = client ?? http.Client();
+  })  :
+        // Trimmed here rather than trusting the caller. The settings screen
+        // does trim what it stores, but a key also arrives from a
+        // hand-edited `settings.json` or over sync, and a pasted one carries
+        // a trailing newline more often than not. Two costs, and the second
+        // is the reason this is not cosmetic: it goes into the
+        // `Authorization` header, and it is what the tool-error branch
+        // redacts with — `detail.replaceAll(apiKey, …)` cannot match a key
+        // the gateway echoed back without the stray whitespace, so an
+        // untrimmed key silently disarms its own redaction.
+        apiKey = apiKey.trim(),
+        _client = client ?? http.Client();
 
   @override
   Future<List<SearchResult>> search(String query, {int limit = 5}) async {
@@ -415,9 +426,21 @@ class ZaiSearch implements SearchProvider {
     // clears itself. No retry here — the caller decides when to ask again.
     if (response.statusCode == 429) {
       await _drainQuietly(response.stream);
+      // `Retry-After` when the gateway sends a parseable one: this message
+      // tells the user to try again, and the caller decides when — neither
+      // can act on a number that was thrown away. `int.tryParse` rather than
+      // a date parse: the header's other legal form is an HTTP-date, which
+      // falls back to the unqualified wording rather than inventing a delay.
+      // package:http lower-cases response header names.
+      final retryAfter = int.tryParse(
+        response.headers['retry-after']?.trim() ?? '',
+      );
       throw http.ClientException(
-        'Z.AI is rate-limiting the search. That is usually temporary — try '
-        'the search again.',
+        retryAfter == null
+            ? 'Z.AI is rate-limiting the search. That is usually temporary — '
+                'try the search again.'
+            : 'Z.AI is rate-limiting the search. That is usually temporary — '
+                'try the search again in $retryAfter seconds.',
       );
     }
     if (response.statusCode >= 400) {
@@ -1063,10 +1086,15 @@ class ZaiSearch implements SearchProvider {
       // A text block's payload is itself JSON when the tool has results to
       // report; plain prose simply doesn't decode and is left to the caller.
       try {
-        final decoded = jsonDecode(value);
-        if (decoded is Map || decoded is List) {
-          _collect(decoded, out, seen, depth + 1);
-        }
+        // Whatever it decoded to, including another String: a tool that
+        // encoded its payload twice — `json.dumps` applied to its own output,
+        // a common enough wart — used to be dropped here on the spot, and the
+        // results with it. Scalars fall straight back out of the Map test
+        // below, and prose stops at the first `FormatException`, so the only
+        // shape this adds is the one that was being lost. It terminates
+        // because every re-entry counts against the same depth cap and no
+        // string decodes to itself.
+        _collect(jsonDecode(value), out, seen, depth + 1);
       } on FormatException {
         // Not JSON. Nothing to collect from it here.
       }
