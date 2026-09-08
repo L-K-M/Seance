@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:posix/posix.dart' as posix;
 import 'package:seance_app/services/identity_audit_log.dart';
 
 void main() {
@@ -59,6 +60,58 @@ void main() {
     expect(entries.last.serverId, 'srv-10');
   });
 
+  test(
+      'a fresh audit log is created owner-only on desktop POSIX', () async {
+    // A traversable app directory must not yield a traversable log: the
+    // file carries private-key paths.
+    posix.chmod(dir.path, _permissiveDirectoryPermissions);
+    await IdentityAuditLog(file).record(event(1));
+    expect(
+        (await file.stat()).mode & _permissionBits, _ownerOnlyFileMode);
+  },
+      skip: !Platform.isLinux && !Platform.isMacOS ? 'POSIX only' : false);
+
+  test('recording repairs a permissive existing log', () async {
+    await file.create();
+    posix.chmod(file.path, _permissiveFilePermissions);
+    await IdentityAuditLog(file).record(event(1));
+    expect(
+        (await file.stat()).mode & _permissionBits, _ownerOnlyFileMode);
+  },
+      skip: !Platform.isLinux && !Platform.isMacOS ? 'POSIX only' : false);
+
+  test('reading repairs a permissive existing log', () async {
+    final log = IdentityAuditLog(file);
+    await log.record(event(1));
+    posix.chmod(file.path, _permissiveFilePermissions);
+
+    final entries = await log.readAll();
+
+    expect(entries.map((e) => e.serverId), ['srv-1']);
+    expect(
+        (await file.stat()).mode & _permissionBits, _ownerOnlyFileMode);
+  },
+      skip: !Platform.isLinux && !Platform.isMacOS ? 'POSIX only' : false);
+
+  test('audit storage stays owner-only on desktop POSIX', () async {
+    await file.create();
+    posix.chmod(dir.path, _permissiveDirectoryPermissions);
+    posix.chmod(file.path, _permissiveFilePermissions);
+
+    // Three writes force the atomic-rotation path at maxEntries 1.
+    final log = IdentityAuditLog(file, maxEntries: 1);
+    for (var n = 0; n < 3; n++) {
+      await log.record(event(n));
+    }
+
+    // Privacy belongs to the file, even under a traversable app directory.
+    expect((await dir.stat()).mode & _permissionBits,
+        _permissiveDirectoryMode);
+    expect(
+        (await file.stat()).mode & _permissionBits, _ownerOnlyFileMode);
+  },
+      skip: !Platform.isLinux && !Platform.isMacOS ? 'POSIX only' : false);
+
   test('malformed lines are skipped, not fatal', () async {
     final log = IdentityAuditLog(file);
     await log.record(event(1));
@@ -70,9 +123,46 @@ void main() {
     expect(entries.map((e) => e.serverId), ['srv-1', 'srv-2']);
   });
 
+  // A hand edit can leave valid JSON whose field types no longer match —
+  // that must skip like any other malformed line, not poison the trail.
+  test('wrong-typed fields are skipped, not fatal', () async {
+    final log = IdentityAuditLog(file);
+    await log.record(event(1));
+    await file.writeAsString(
+        '{"at":"2026-07-19T08:00:03.000Z","serverId":"srv-3",'
+        '"path":"/Users/ada/.ssh/id_3","ok":"yes"}\n',
+        mode: FileMode.append,
+        flush: true);
+    await log.record(event(2));
+
+    final entries = await log.readAll();
+    expect(entries.map((e) => e.serverId), ['srv-1', 'srv-2']);
+  });
+
+  test('absent optional fields fall back to their defaults', () async {
+    await file.writeAsString(
+        '{"at":"2026-07-19T08:00:03.000Z","serverId":"srv-3",'
+        '"path":"/Users/ada/.ssh/id_3"}\n',
+        flush: true);
+
+    final entries = await IdentityAuditLog(file).readAll();
+
+    expect(entries, hasLength(1));
+    expect(entries.single.serverLabel, '');
+    expect(entries.single.viaBookmark, isFalse);
+    expect(entries.single.ok, isFalse);
+    expect(entries.single.error, isNull);
+  });
+
   test('concurrent records are serialized without interleaving', () async {
     final log = IdentityAuditLog(file);
     await Future.wait([for (var n = 0; n < 20; n++) log.record(event(n))]);
     expect(await log.readAll(), hasLength(20));
   });
 }
+
+const _permissionBits = 0x1ff;
+const _ownerOnlyFileMode = 0x180;
+const _permissiveDirectoryMode = 0x1ed;
+const _permissiveDirectoryPermissions = '755';
+const _permissiveFilePermissions = '644';

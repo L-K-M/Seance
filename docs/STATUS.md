@@ -4,9 +4,11 @@ Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
 _Last updated: 2026-09-08. Periodic probe lifecycle repair prevents
-overlapping sweeps and stale queued work; upload CAS coverage with hashing
-off pins the
-SFTP adapter's preflight/compare-and-swap guards; before that, a server can
+overlapping sweeps and stale queued work; the identity audit log now
+skips wrong-typed optional fields instead of poisoning a full read and
+is stored owner-only on desktop POSIX; before that, upload CAS coverage
+with hashing off pins the SFTP adapter's preflight/compare-and-swap
+guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
@@ -73,6 +75,33 @@ before the revert). No production code changed; `dart analyze` is clean and
 all `seance_protocol` + `seance_core` tests pass (the sync server's
 SQLite tests need libsqlite3, which this no-root container lacks; CI runs
 them).
+
+## Identity audit log hardening (2026-09-08)
+
+The device-local identity audit log carries private-key paths, so its
+storage is now owner-only (mode 0600) on desktop POSIX: `record` creates
+and restricts the file before appending, rotation restricts its temporary
+before the rename, and `readAll` repairs a log an older build left
+permissive — an already-private log is read without a chmod attempt, so
+chmod-incapable mounts keep a private trail readable, while a permissive
+log that cannot be restricted fails the read instead of silently
+returning a world-readable one. Windows and mobile keep their storage
+ACLs. A JSON
+line whose optional fields (`serverLabel`, `viaBookmark`, `ok`, `error`)
+have the wrong type is now skipped as malformed like any other bad line —
+previously a valid line such as `"ok": "yes"` threw a type-cast error
+that poisoned the whole `readAll`. Absent fields keep their defaults, and
+the record shape, rotation retention, and serialization are unchanged;
+`writeStringAtomically` grew an optional `privacy` parameter whose default
+preserves every ordinary store's behavior.
+
+Six new tests cover the wrong-typed line (valid neighbors preserved),
+absent-field defaults, fresh-file creation, read-side and write-side repair
+of a permissive log, and rotation retaining owner-only mode under a
+traversable (0755) directory; the POSIX-mode tests skip off Linux/macOS.
+All five behavior regressions failed against the previous code before the
+repair. Ported back from Poltergeist (its PR #38 review findings, plan
+04 §6 priority 1). `flutter analyze` is clean and all 455 app tests pass.
 
 ## Test inventory (what proves what)
 

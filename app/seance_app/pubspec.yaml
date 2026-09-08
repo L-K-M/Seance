@@ -41,6 +41,9 @@ dependencies:
   share_plus: ^12.0.2
   # Opens the releases page in the browser when an update is available.
   url_launcher: ^6.3.0
+  # Owner-only mode bits for path-bearing local files (identity audit log);
+  # the calls are guarded to desktop POSIX, other platforms use storage ACLs.
+  posix: ^6.5.0
 
 dev_dependencies:
   # Mock network lifetimes at the AppServices boundary.
