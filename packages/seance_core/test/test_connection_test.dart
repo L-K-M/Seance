@@ -5,14 +5,18 @@ import 'dart:typed_data';
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
 
-ServerConfig config({String? jumpHostId, String host = 'prod.example.com'}) =>
+ServerConfig config({
+  String? jumpHostId,
+  String host = 'prod.example.com',
+  AuthMethod authMethod = AuthMethod.password,
+}) =>
     ServerConfig(
       id: 's1',
       label: 'prod',
       host: host,
       port: 2222,
       username: 'deploy',
-      authMethod: AuthMethod.password,
+      authMethod: authMethod,
       jumpHostId: jumpHostId,
       createdAt: 1,
       updatedAt: 2,
@@ -127,7 +131,12 @@ void main() {
       // still get a red result rather than an unhandled async error — loudly
       // *and* gracefully.
       final result = await runConnectionTest(
-        config: config(),
+        // Key auth, because that is the only method whose resolution can
+        // reach an `identityFilePath` at all. The `credentials` seam means
+        // the config's method is not read on this path, so the old
+        // `AuthMethod.password` default changed nothing — it just described
+        // a server that could not produce the failure being simulated.
+        config: config(authMethod: AuthMethod.privateKey),
         credentials: () async =>
             throw ArgumentError.value(null, 'identityFilePath', 'missing'),
         authenticate: (_, _, _) async => AuthKind.key,
@@ -786,66 +795,65 @@ void main() {
       // user is the whole security boundary.
       expect(reoffered, isTrue,
           reason: 'a changed key must be re-asked, never assumed');
-      // The braces that used to be here were `if (reoffered) {`, replaced in
-      // round 28 and left behind scoping nothing. What follows is the same
-      // scenario continuing, not a second one: each step depends on the pin
-      // the step before it left, so it cannot be lifted into a test of its
-      // own without repeating the four approvals that build that state.
-        // Exactly two — the first pin and the one re-ask — not merely "more
-        // than one": a manager that re-prompted on every reconnect would also
-        // satisfy a lower bound.
-        expect(prompts, 2,
-            reason: 'a changed key must be refused or re-asked, never assumed');
-        // Both keys, in the right roles: the offered one is what the user is
-        // being asked to accept, and the pinned one is what it would replace.
-        // Swapped, the dialog reads as a re-confirmation of a key the user
-        // already knows while trusting the attacker's.
-        expect(shown.last.presented.fingerprintSha256,
-            sha256Fingerprint('attacker'),
-            reason: 'the re-ask must show the key being offered');
-        expect(shown.last.pinned?.fingerprintSha256, sha256Fingerprint('new'),
-            reason: 'and the one it would replace');
-        // An approved re-ask pins the key that was approved — in the trial
-        // store, and only there. A "yes" that left the old pin standing would
-        // re-prompt on every reconnect, or trust the old key while reporting
-        // the new one verified.
-        expect(
-          (await trial.get('new.example.com', 22))?.fingerprintSha256,
+      // Each step below depends on the pin the one before it left, so the
+      // scenario continues inline rather than becoming a test of its own:
+      // lifting it would mean repeating the four approvals that build the
+      // state it starts from.
+      // Exactly two — the first pin and the one re-ask — not merely "more
+      // than one": a manager that re-prompted on every reconnect would also
+      // satisfy a lower bound.
+      expect(prompts, 2,
+          reason: 'a changed key must be refused or re-asked, never assumed');
+      // Both keys, in the right roles: the offered one is what the user is
+      // being asked to accept, and the pinned one is what it would replace.
+      // Swapped, the dialog reads as a re-confirmation of a key the user
+      // already knows while trusting the attacker's.
+      expect(shown.last.presented.fingerprintSha256,
           sha256Fingerprint('attacker'),
-          reason: 'an approved re-ask must pin the key that was approved',
-        );
-        // And the other direction, which "one approval trusts one key" also
-        // means: offering the *replaced* key must ask again rather than be
-        // answered from a host-level "already trusted" cache. The prompt
-        // always says yes, so the count is what tells the two apart.
-        expect(
-          await manager.verifyHostKey(
-            host: 'new.example.com',
-            port: 22,
-            type: 'ssh-ed25519',
-            fingerprintBytes: fingerprint('new'),
-          ),
-          isTrue,
-        );
-        expect(prompts, 3,
-            reason: 'a superseded key must not linger as a trusted alternative');
-        // And the roles in *that* prompt, not only in the one before it. The
-        // swap this test guards against on the second ask — showing the user
-        // the key being replaced while trusting the one offered — is exactly
-        // as available on the third, and a count cannot see it.
-        expect(shown.last.presented.fingerprintSha256, sha256Fingerprint('new'),
-            reason: 'the re-ask must present the key being offered');
-        expect(shown.last.pinned?.fingerprintSha256,
-            sha256Fingerprint('attacker'),
-            reason: 'and name the one it would replace');
-        // And that approval lands, like the one before it: a manager that
-        // re-asked and returned true without writing would leave the pin on
-        // the attacker key and re-prompt on every reconnect.
-        expect(
-          (await trial.get('new.example.com', 22))?.fingerprintSha256,
-          sha256Fingerprint('new'),
-          reason: 'a re-approved key must become the pin again',
-        );
+          reason: 'the re-ask must show the key being offered');
+      expect(shown.last.pinned?.fingerprintSha256, sha256Fingerprint('new'),
+          reason: 'and the one it would replace');
+      // An approved re-ask pins the key that was approved — in the trial
+      // store, and only there. A "yes" that left the old pin standing would
+      // re-prompt on every reconnect, or trust the old key while reporting
+      // the new one verified.
+      expect(
+        (await trial.get('new.example.com', 22))?.fingerprintSha256,
+        sha256Fingerprint('attacker'),
+        reason: 'an approved re-ask must pin the key that was approved',
+      );
+      // And the other direction, which "one approval trusts one key" also
+      // means: offering the *replaced* key must ask again rather than be
+      // answered from a host-level "already trusted" cache. The prompt
+      // always says yes, so the count is what tells the two apart.
+      expect(
+        await manager.verifyHostKey(
+          host: 'new.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('new'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 3,
+          reason: 'a superseded key must not linger as a trusted alternative');
+      // And the roles in *that* prompt, not only in the one before it. The
+      // swap this test guards against on the second ask — showing the user
+      // the key being replaced while trusting the one offered — is exactly
+      // as available on the third, and a count cannot see it.
+      expect(shown.last.presented.fingerprintSha256, sha256Fingerprint('new'),
+          reason: 'the re-ask must present the key being offered');
+      expect(shown.last.pinned?.fingerprintSha256,
+          sha256Fingerprint('attacker'),
+          reason: 'and name the one it would replace');
+      // And that approval lands, like the one before it: a manager that
+      // re-asked and returned true without writing would leave the pin on
+      // the attacker key and re-prompt on every reconnect.
+      expect(
+        (await trial.get('new.example.com', 22))?.fingerprintSha256,
+        sha256Fingerprint('new'),
+        reason: 'a re-approved key must become the pin again',
+      );
       // And nothing above reached the wrapped store. This test drives three
       // distinct `put` paths — a first-sight pin, the re-ask that replaces
       // it, and the superseded key re-pinned — while asserting only what the

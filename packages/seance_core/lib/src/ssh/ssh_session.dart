@@ -839,7 +839,9 @@ class SshSessionManager {
     const marker = 'Offering key: ';
     // Forward, keeping the last match, rather than iterating a reversed
     // view: `reversed` is a `List` member and `lines` is an `Iterable`, so
-    // `log.lines.reversed` does not compile. Same answer, one pass, no copy.
+    // `log.lines.reversed` does not compile. Same answer, one pass. (Not a
+    // saved copy: `List.reversed` is a lazy view too — what is unavailable
+    // here is the member, not a cheap reversal.)
     String? offered;
     for (final line in log.lines) {
       final i = line.indexOf(marker);

@@ -961,9 +961,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // stay editable while a save is in flight, so what is cleared afterwards
     // has to be what this save actually stored rather than whatever the box
     // holds by then.
+    //
+    // And read from below, not just cleared against: the LLM key's own write
+    // sits *after* the Z.AI keystore write's `await`, so reading the live
+    // controller there stores whatever the box holds by then. A user
+    // correcting a typo while the Z.AI key is being written had the
+    // half-typed value persisted, and the clear check then failed — leaving
+    // plaintext in the field and the assistant authenticating with the
+    // fragment until the next save. Same fix as the Z.AI switch (round 23)
+    // and the provider dropdown (round 24): read once, up here.
     final enteredLlmKey = _apiKey.text;
     final enteredZaiKey = _zaiApiKey.text;
-    if (_zai && _zaiApiKey.text.trim().isNotEmpty) {
+    if (_zai && enteredZaiKey.trim().isNotEmpty) {
       try {
         await state.services.masterKeys.putApiKey(
           _zaiKeyRef,
@@ -971,7 +980,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // manager carries a trailing newline more often than not, and it
           // authenticates as garbage that CompositeSearch swallows into a log
           // line.
-          _zaiApiKey.text.trim(),
+          enteredZaiKey.trim(),
         );
       } catch (e) {
         if (!mounted) return;
@@ -990,9 +999,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // garbage leaves the others working, while this key is the assistant's
     // only one. A whitespace-only paste is no key at all, so it does not
     // overwrite the stored one.
-    if (_apiKey.text.trim().isNotEmpty) {
+    if (enteredLlmKey.trim().isNotEmpty) {
       try {
-        await state.services.masterKeys.putApiKey(ref, _apiKey.text.trim());
+        await state.services.masterKeys.putApiKey(ref, enteredLlmKey.trim());
       } catch (e) {
         // KeystoreException: the OS keyring is unavailable — don't report
         // "Saved" for a key that never landed.
@@ -1004,6 +1013,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return;
       }
     }
+
+    // Ordered deliberately, and the two halves came from different
+    // branches: the Z.AI keystore read below is an `await`, and the
+    // adoption guard after it is written to be the last thing before the
+    // assignments. Put the read second and an adoption landing inside it
+    // lands *after* the guard has passed, which is the race the guard
+    // exists for. Read first, then guard, then assign.
+    // Parenthesized: `await` does bind tighter than `==`, but the form
+    // readers misparse is one edit away from being the form that compiles and
+    // is always false.
+    //
+    // Read before the assignments below rather than between them and
+    // `saveSettings`: this method's rule is keys first, settings after, so
+    // that nothing can leave `s` mutated and unsaved. `getApiKey` answers
+    // null on a locked keyring rather than throwing, so the old position was
+    // sound — but only because of that, and it is the one await that had to
+    // stay sound for a reason outside this file.
+    final zaiWithoutKey =
+        _zai && (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
 
     // Both taken before the assignments below, and before any `await`, so a
     // Save that changes nothing does not stamp: see
@@ -1050,12 +1078,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // skipped on every search. Reported rather than blocked: the rest of this
     // page has been saved, and a locked keyring — which also answers null —
     // is not a reason to refuse a model change.
-    // Parenthesized: `await` does bind tighter than `==`, but the form
-    // readers misparse is one edit away from being the form that compiles and
-    // is always false.
-    final zaiWithoutKey =
-        _zai && (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
-
     await state.services.saveSettings();
     // Stamp and publish: this is the edit the synced record's timestamp is
     // supposed to move for. A no-op when assistant sync is off.
@@ -1086,7 +1108,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // the awaits above, and text typed into one meanwhile was never
       // persisted — clearing it would discard it without a trace.
       if (_apiKey.text == enteredLlmKey) _apiKey.clear();
-      if (_zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
+      // `_zai` as well, because the write above is gated on it: a key typed
+      // with the switch off is never stored, and clearing it would discard
+      // it without a trace — which is exactly what the paragraph above
+      // promises not to do. The LLM key needs no equivalent; its write is
+      // gated only on the text being non-blank, and blank is nothing to
+      // lose.
+      if (_zai && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
     }
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();

@@ -155,11 +155,8 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
    but the sidebar uses non-streaming `chat()`; switch for nicer UX.
 7. **Provider-native web search** (Anthropic/OpenAI server-side tool) is unused;
    only client-side SearXNG, Brave and Z.AI, queried together and interleaved
-   by `CompositeSearch`. Add the native path for cloud providers. The three
-   backends also own an `http.Client` each with no release path, and the chat
-   controller drops the whole set when the provider version changes rather
-   than closing it — one leak, fixed properly by giving `SearchProvider` and
-   `LlmProvider` a `close()` and disposing the superseded controller.
+   by `CompositeSearch`. Add the native path for cloud providers. (The
+   client-lifecycle leak these backends share is item 22, not this one.)
 8. **Terminal PTY initial size** is 80×24 for the moment between connect and the
    first widget layout, then the xterm `autoResize` fits the grid to the pane and
    forwards it to the remote PTY. (This resize path used to recurse infinitely —
@@ -272,13 +269,14 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
 19. **One passphrase slot serves two keys.** A second failure of the same
     slot, reachable without any method switch: referencing a key file writes
     the *typed* passphrase beside the PEM the entry already held, because one
-    entry carries one passphrase and the referenced key needs its own. A device that had a pasted key under
-    passphrase A, then referenced a different key file under passphrase B,
-    stores `{PEM A, passphrase B}` — and switching back to a pasted key
-    without re-pasting leaves a PEM that no longer decrypts. Carrying the old
-    passphrase instead would break the referenced key, which is the one the
-    server is actually set to use, so this needs the same fix as the paragraph
-    17: two slots, or an editor that says which key a passphrase belongs to.
+    entry carries one passphrase and the referenced key needs its own. A device
+    that had a pasted key under passphrase A, then referenced a different key
+    file under passphrase B, stores `{PEM A, passphrase B}` — and switching
+    back to a pasted key without re-pasting leaves a PEM that no longer
+    decrypts. Carrying the old passphrase instead would break the referenced
+    key, which is the one the server is actually set to use, so this wants the
+    same family of fix as item 18: two slots, or an editor that says which key
+    a passphrase belongs to.
 
 20. **Test connection validates the whole form, not the connection.**
     `_testConnection` opens with `_form.currentState!.validate()`, which runs
@@ -309,9 +307,12 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     re-pasting the old, and the box is blank in both cases for the same
     reason. The editor cannot tell them apart because it never shows whether
     a passphrase is stored. That, and not the branch, is the fix — and it is
-    the same fix items 17, 18 and 19 want. Four notes in one family is a
-    design asking for one change: an editor that says which key a stored
-    passphrase belongs to, and lets it be cleared.
+    the same family of fix items 17, 18 and 19 want — each names a different
+    affordance (a "no passphrase" choice, a kind-mismatch notice, passphrase
+    ownership), and all four are the editor saying what is stored instead of
+    leaving it implied. Four notes in one family is a design asking for one
+    change: an editor that says which key a stored passphrase belongs to, and
+    lets it be cleared.
 
 22. **Nothing closes an LLM or search client's connection pool.** Every
     provider in `seance_core/lib/src/llm` takes an optional `http.Client` and
