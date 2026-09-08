@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
@@ -618,17 +619,72 @@ class AppServices {
     }
   }
 
-  /// Build the web-search backend for the chat tool, if one is configured.
+  /// A backend the user configured that this launch could not build.
+  ///
+  /// `CompositeSearch` logs a backend that fails mid-search "because this is
+  /// the only record it happened"; one dropped before the search starts leaves
+  /// exactly the same symptom — quietly worse results — and deserves the same
+  /// record. Never the key or the ref, only which backend and why.
+  static void _searchBackendUnavailable(String backend) {
+    developer.log(
+      '$backend search key unavailable (locked keyring or missing entry); '
+      'backend skipped for this session',
+      name: searchLoggerName,
+      // Warning, like `CompositeSearch`'s record of a backend failing
+      // mid-search: the two are halves of one signal, and a filter at
+      // warning level should see both. Through the shared constant, which is
+      // public so the halves cannot drift — restating the number here was the
+      // drift it exists to prevent.
+      level: searchWarningLogLevel,
+    );
+  }
+
+  /// The chat tool's web search: every configured backend, merged.
+  ///
+  /// Configured means used, rather than a priority order that would quietly
+  /// ignore a backend someone took the trouble to set up. Clearing a field is
+  /// how you drop one; filling several is how you use them all (see
+  /// [CompositeSearch]). Null when nothing is configured, which
+  /// is what hides the search tool from the assistant.
   Future<SearchProvider?> buildSearchProvider() async {
-    if (settings.searxngUrl != null && settings.searxngUrl!.isNotEmpty) {
-      return SearxngSearch(baseUrl: settings.searxngUrl!);
+    final backends = <SearchProvider>[];
+    // Trimmed, like the key refs below it: a URL that is only whitespace has
+    // nothing to resolve against — it would build a `SearxngSearch` whose
+    // every request fails, and the only sign would be the mid-search failure
+    // log. The settings screen already writes trimmed-or-null; a hand-edited
+    // or synced `settings.json` need not.
+    final searxngUrl = settings.searxngUrl?.trim() ?? '';
+    if (searxngUrl.isNotEmpty) {
+      backends.add(SearxngSearch(baseUrl: searxngUrl));
     }
-    if (settings.braveApiKeyRef != null &&
-        settings.braveApiKeyRef!.isNotEmpty) {
-      final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
-      if (key != null) return BraveSearch(apiKey: key);
+    // Trimmed for the reason the URL above is: these arrive from a
+    // hand-edited `settings.json` or over sync, and a padded name addresses no
+    // keystore entry. Untrimmed, it passes the emptiness check, misses its
+    // lookup, and is reported as a locked keyring — sending the user to debug
+    // a keystore that is working.
+    final braveRef = settings.braveApiKeyRef?.trim() ?? '';
+    if (braveRef.isNotEmpty) {
+      // getApiKey answers null on a locked keyring rather than throwing, so a
+      // keystore that is down reads as "this backend is not available" and the
+      // others still work.
+      final key = await masterKeys.getApiKey(braveRef);
+      if (key != null) {
+        backends.add(BraveSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Brave');
+      }
     }
-    return null;
+    final zaiRef = settings.zaiApiKeyRef?.trim() ?? '';
+    if (zaiRef.isNotEmpty) {
+      final key = await masterKeys.getApiKey(zaiRef);
+      if (key != null) {
+        backends.add(ZaiSearch(apiKey: key));
+      } else {
+        _searchBackendUnavailable('Z.AI');
+      }
+    }
+    if (backends.isEmpty) return null;
+    return backends.length == 1 ? backends.single : CompositeSearch(backends);
   }
 
   /// A caller-owned sync client, or null if sync isn't set up. Close after use.

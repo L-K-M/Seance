@@ -22,11 +22,16 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
+/// Keystore entry name for the Z.AI search key. A constant rather than a typed
+/// value: settings hold key *names*, never keys.
+const String _zaiKeyRef = 'zai';
+
 class _SettingsScreenState extends State<SettingsScreen> {
   late final _baseUrl = TextEditingController();
   late final _model = TextEditingController();
   late final _apiKey = TextEditingController();
   late final _searxng = TextEditingController();
+  final _zaiApiKey = TextEditingController();
   late final _syncUrl = TextEditingController();
   late final _syncUser = TextEditingController();
   final _syncPassword = TextEditingController();
@@ -34,6 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _syncEncryptionPassphraseConfirm = TextEditingController();
 
   late LlmProviderKind _kind;
+  late bool _zai;
   late bool _redaction;
   late bool _autoSync;
   late bool _syncSecrets;
@@ -70,6 +76,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrl.text = s.llmBaseUrl;
     _model.text = s.llmModel;
     _searxng.text = s.searxngUrl ?? '';
+    // Only whether it is on — never the key itself, which stays in the OS
+    // keystore and is not something a settings screen should be able to show.
+    // Trimmed, like `buildSearchProvider` reads it: a hand-edited or synced
+    // `settings.json` holding `"   "` would otherwise show the switch on for
+    // a backend every search silently skips.
+    _zai = (s.zaiApiKeyRef ?? '').trim().isNotEmpty;
     _redaction = s.redactionEnabled;
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;
@@ -91,6 +103,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _model,
       _apiKey,
       _searxng,
+      _zaiApiKey,
       _syncUrl,
       _syncUser,
       _syncPassword,
@@ -251,7 +264,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
       const SizedBox(height: 16),
-      _section('Web search (chat tool)'),
+      _section(
+        'Web search (chat tool)',
+        helpTitle: 'Web search backends',
+        help:
+            'Every backend you configure is used, and their results are '
+            'merged — so filling in more than one uses them all, and '
+            'clearing one leaves the others. With none configured, the '
+            'assistant '
+            'has no search tool at all.',
+      ),
       TextField(
         controller: _searxng,
         decoration: const InputDecoration(
@@ -259,6 +281,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
           hintText: 'https://searx.example.com',
         ),
       ),
+      const SizedBox(height: 8),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Z.AI Web Search Prime'),
+        subtitle: const Text('Needs a Z.AI key with a GLM Coding Plan.'),
+        value: _zai,
+        // Frozen while a save runs, like the Save button and the sync
+        // switches. This used to be the invariant: `_save` read `_zai` twice,
+        // before the awaits to decide whether to write the key and after them
+        // to set the reference, so a toggle in between made one save act on
+        // two different answers — off-to-on persisting a reference with
+        // nothing stored behind it, on-to-off storing a key the settings it
+        // just wrote call unused. `_saveInner` snapshots `_zai` once now,
+        // before any await, so the two writes can no longer disagree and this
+        // gate is defense in depth rather than the thing holding it up.
+        onChanged: _saving ? null : (v) => setState(() => _zai = v),
+      ),
+      if (_zai)
+        TextField(
+          controller: _zaiApiKey,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Z.AI API key (stored in OS keystore, never synced)',
+            hintText: 'leave blank to keep the existing key',
+          ),
+        ),
       const SizedBox(height: 8),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
@@ -765,33 +813,200 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _save(AppState state) async {
     setState(() => _saving = true);
+    // Every await below can throw — the keystore reads and writes,
+    // `saveSettings`, the provider reload. Without this, one escaping leaves
+    // `_saving` set, and that flag disables Save *and* the Z.AI switch this
+    // branch added, so a transient disk failure locked the section until the
+    // screen was closed and reopened. Called from `onPressed` with no
+    // awaiter, so an escaping error is also unhandled and reports nothing.
+    try {
+      await _saveInner(state);
+    } catch (e) {
+      if (mounted) {
+        showTopToastIn(context, message: 'Settings not saved — $e');
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveInner(AppState state) async {
     final s = state.services.settings;
-    s.llmKind = _kind;
-    s.llmBaseUrl = _baseUrl.text.trim();
-    s.llmModel = _model.text.trim();
-    s.redactionEnabled = _redaction;
-    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
     // Store the API key under a per-provider name.
-    final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
-    s.llmApiKeyRef = ref;
-    if (_apiKey.text.isNotEmpty) {
+    //
+    // Snapshotted with the key fields below, and for the same reason: the
+    // keystore writes are awaits and the provider dropdown is not frozen
+    // while one runs. `ref` was taken from `_kind` here and `s.llmKind` read
+    // it again afterwards, so a flip in between wrote a provider with the
+    // *other* provider's key reference beside it — `openaiCompatible`
+    // holding `'anthropic'` — which authenticates against nothing until the
+    // user notices and saves again. Reading it once also stops the invariant
+    // depending on a widget six hundred lines up keeping its `onChanged`
+    // gated on `_saving`.
+    final kind = _kind;
+    final ref = kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
+
+    // Keys first, settings after. A keystore failure returns without saving,
+    // and the settings object is the one the running app reads — leaving it
+    // mutated to say "Z.AI is on" behind a key that never landed would make
+    // the failed save take effect anyway, until the next launch.
+    // Snapshotted before the writes below, and before any await: the fields
+    // stay editable while a save is in flight, so what is cleared afterwards
+    // has to be what this save actually stored rather than whatever the box
+    // holds by then.
+    //
+    // And read from below, not just cleared against: the LLM key's own write
+    // sits *after* the Z.AI keystore write's `await`, so reading the live
+    // controller there stores whatever the box holds by then. A user
+    // correcting a typo while the Z.AI key is being written had the
+    // half-typed value persisted, and the clear check then failed — leaving
+    // plaintext in the field and the assistant authenticating with the
+    // fragment until the next save. Same fix as the Z.AI switch (round 23)
+    // and the provider dropdown (round 24): read once, up here.
+    final enteredLlmKey = _apiKey.text;
+    final enteredZaiKey = _zaiApiKey.text;
+    // The rest of the form, for the same reason and in the same place. Round
+    // 25 snapshotted the two key fields and left these four reading live at
+    // assignment time, several awaits later — and a keystore write is
+    // exactly where a save stalls, since an OS keyring can put a prompt in
+    // front of it. Text typed into the endpoint box during that stall was
+    // folded into the save already in flight and handed straight to
+    // `reloadLlmProvider`. It also made the comment on the Z.AI switch
+    // ("the text fields' mid-save edits are already snapshotted") false for
+    // every field but the two it was written about.
+    final enteredBaseUrl = _baseUrl.text.trim();
+    final enteredModel = _model.text.trim();
+    final enteredSearxng = _searxng.text.trim();
+    final enteredRedaction = _redaction;
+    // The switch too, and this is the last live read in the method. It is
+    // safe today only because the `SwitchListTile` six hundred lines up is
+    // gated on `_saving` — which is exactly the external dependency the
+    // provider snapshot beside it was added to remove. Make that switch
+    // responsive during a save, a natural thing to want, and the split-brain
+    // returns: one save writing the key while writing `zaiApiKeyRef: null`,
+    // or setting the ref with nothing stored behind it.
+    final zaiEnabled = _zai;
+    if (zaiEnabled && enteredZaiKey.trim().isNotEmpty) {
       try {
-        await state.services.masterKeys.putApiKey(ref, _apiKey.text);
+        await state.services.masterKeys.putApiKey(
+          _zaiKeyRef,
+          // Trimmed like every other field here: a key pasted from a password
+          // manager carries a trailing newline more often than not, and it
+          // authenticates as garbage that CompositeSearch swallows into a log
+          // line.
+          enteredZaiKey.trim(),
+        );
+      } catch (e) {
+        if (!mounted) return;
+        // Named like the LLM key's failure below: the same class of error
+        // otherwise produced a bare `KeystoreException` string with nothing
+        // saying which of the two keys failed to save.
+        showTopToastIn(
+          context,
+          message: 'Settings not saved — could not store the Z.AI key: $e',
+        );
+        return;
+      }
+    }
+    // Trimmed and tested trimmed, for the same reason as the Z.AI key above —
+    // and it matters more here: a search backend that authenticates as
+    // garbage leaves the others working, while this key is the assistant's
+    // only one. A whitespace-only paste is no key at all, so it does not
+    // overwrite the stored one.
+    if (enteredLlmKey.trim().isNotEmpty) {
+      try {
+        await state.services.masterKeys.putApiKey(ref, enteredLlmKey.trim());
       } catch (e) {
         // KeystoreException: the OS keyring is unavailable — don't report
         // "Saved" for a key that never landed.
         if (!mounted) return;
-        setState(() => _saving = false);
-        showTopToastIn(context, message: '$e');
+        showTopToastIn(
+          context,
+          message: 'Settings not saved — could not store the API key: $e',
+        );
         return;
       }
     }
+
+    // Parenthesized: `await` does bind tighter than `==`, but the form
+    // readers misparse is one edit away from being the form that compiles and
+    // is always false.
+    //
+    // Read before the assignments below rather than between them and
+    // `saveSettings`: this method's rule is keys first, settings after, so
+    // that nothing can leave `s` mutated and unsaved. `getApiKey` answers
+    // null on a locked keyring rather than throwing, so the old position was
+    // sound — but only because of that, and it is the one await that had to
+    // stay sound for a reason outside this file.
+    final zaiWithoutKey =
+        zaiEnabled &&
+            (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
+
+    s.llmKind = kind;
+    s.llmBaseUrl = enteredBaseUrl;
+    s.llmModel = enteredModel;
+    s.llmApiKeyRef = ref;
+    s.redactionEnabled = enteredRedaction;
+    s.searxngUrl = enteredSearxng.isEmpty ? null : enteredSearxng;
+    // The reference is what switches the backend on; turning it off leaves the
+    // key in the keystore rather than deleting it, like every other key here.
+    s.zaiApiKeyRef = zaiEnabled ? _zaiKeyRef : null;
+    // Turning the switch on with the field left blank and nothing stored is
+    // the one way to end up with a backend that reads as on and is silently
+    // skipped on every search. Reported rather than blocked: the rest of this
+    // page has been saved, and a locked keyring — which also answers null —
+    // is not a reason to refuse a model change.
     await state.services.saveSettings();
-    // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
-    await state.reloadLlmProvider();
+    // Rebuild the chat provider (new key/model) and refresh sidebar
+    // visibility.
+    //
+    // Caught rather than left to `_save`'s handler, which is the last await
+    // that can throw and the only one past the point of no return: the
+    // keystores and `settings.json` are already written by the time it runs,
+    // so letting it escape reported "Settings not saved" for a save that
+    // succeeded — telling the user to re-enter secrets that are on disk. The
+    // failure is real and still surfaces; it is a rebuild failure, not a
+    // save failure, and the clearing below must still run because those
+    // fields *were* stored.
+    Object? reloadError;
+    try {
+      await state.reloadLlmProvider();
+    } catch (e) {
+      reloadError = e;
+    }
+    // `mounted` first: these are `TextEditingController`s this widget owns,
+    // and the awaits above give the user time to leave the screen — clearing
+    // a disposed one throws, out of a save that otherwise worked.
+    //
+    // Cleared once stored, because the field is write-only: it is never
+    // populated from the keystore, the hint says a blank box keeps the
+    // existing key, and plaintext left in an editable controller outlives the
+    // moment it was needed for no benefit. Only what this save stored,
+    // though — text typed into the box during the awaits was never persisted,
+    // and clearing it would discard it without a trace.
     if (mounted) {
-      setState(() => _saving = false);
-      showTopToastIn(context, message: 'Saved');
+      if (_apiKey.text == enteredLlmKey) _apiKey.clear();
+      // `zaiEnabled` as well, because the write above is gated on it — the
+      // same snapshot, so the clear cannot decide on a switch position the
+      // write never saw. A key typed with the switch off is never stored,
+      // and clearing it would discard it without a trace, which is exactly
+      // what the paragraph above promises not to do. The LLM key needs no
+      // equivalent; its write is gated only on the text being non-blank, and
+      // blank is nothing to lose.
+      if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
+      showTopToastIn(
+        context,
+        // The reload failure first: it means the assistant in this process is
+        // still the old one, which outranks a note about a key that will be
+        // read on the next search.
+        message: reloadError != null
+            ? 'Saved — but the assistant could not be reloaded, so it is '
+                  'still running the previous configuration: $reloadError'
+            : zaiWithoutKey
+            ? 'Saved — but no Z.AI key could be read (none stored, or the '
+                  'keyring is locked), so Z.AI search will be skipped.'
+            : 'Saved',
+      );
     }
   }
 

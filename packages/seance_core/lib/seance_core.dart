@@ -49,6 +49,7 @@ export 'src/llm/provider.dart';
 export 'src/llm/anthropic_provider.dart';
 export 'src/llm/openai_provider.dart';
 export 'src/llm/search.dart';
+export 'src/llm/zai_search.dart';
 export 'src/llm/chat_controller.dart';
 export 'src/llm/danger_linter.dart';
 export 'src/llm/redaction.dart';

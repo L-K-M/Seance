@@ -502,4 +502,259 @@ void main() {
       );
     });
   });
+
+  group('clipSearchSnippets', () {
+    SearchResult hit(String snippet,
+            {String title = 't', String url = 'https://x.example'}) =>
+        SearchResult(title: title, url: url, snippet: snippet);
+
+    test('a snippet under the cap is passed through untouched', () {
+      final result = ChatController.clipSearchSnippets([hit('short')]).single;
+      expect(result.snippet, 'short');
+    });
+
+    test('a snippet exactly at the cap is passed through untouched', () {
+      // The boundary itself: a `>=` in place of `>` would clip a snippet that
+      // fits, and neither neighbour above or below can tell.
+      final edge = 'y' * ChatController.maxSnippetChars;
+      // The same instance, as the URL boundary case asserts: passthrough is
+      // the contract when nothing needs clipping, and pinning it in one of
+      // three "fits" cases left the other two able to rebuild silently.
+      final fits = hit(edge);
+      expect(ChatController.clipSearchSnippets([fits]).single, same(fits));
+    });
+
+    test('the cut never splits a surrogate pair', () {
+      // The cap counts UTF-16 code units, and an emoji is two of them. A cut
+      // between its halves leaves a lone high surrogate that serializes into
+      // the tool result as U+FFFD.
+      final long = '${'x' * (ChatController.maxSnippetChars - 1)}😀 and more';
+      final result = ChatController.clipSearchSnippets([hit(long)]).single;
+      expect(result.snippet.endsWith('…'), isTrue);
+      final beforeEllipsis =
+          result.snippet.codeUnitAt(result.snippet.length - 2);
+      // Only the *high* half can be stranded: the kept text is a contiguous
+      // prefix, so a trailing lone low surrogate is not reachable here. A
+      // copy of this check applied to arbitrary text would need both.
+      expect(beforeEllipsis & 0xFC00, isNot(0xD800));
+      expect(result.snippet, '${'x' * (ChatController.maxSnippetChars - 1)}…');
+    });
+
+    test('a cut that lands after a complete pair keeps the whole cap', () {
+      // The complement of the case above: with the pair ending exactly at the
+      // cap there is nothing to back off, and an implementation that always
+      // dropped a unit would pass that test and fail this one.
+      final long = '${'x' * (ChatController.maxSnippetChars - 2)}😀 and more';
+      final result = ChatController.clipSearchSnippets([hit(long)]).single;
+      expect(
+        result.snippet,
+        '${'x' * (ChatController.maxSnippetChars - 2)}😀…',
+      );
+    });
+
+    test('a title is capped too, by the same rule', () {
+      // Only the snippet used to be: a title is whatever text the service put
+      // in the field, so a gateway answering with a megabyte of it spends the
+      // budget the snippet cap exists to protect.
+      // Distinct at both ends rather than a run of one character: the kept
+      // prefix is asserted exactly below, and a clip taken from the wrong
+      // offset reproduces `'y' * n` perfectly.
+      final long = 'START${'y' * (ChatController.maxTitleChars + 50)}';
+      final result =
+          ChatController.clipSearchSnippets([hit('short', title: long)]).single;
+      // The kept prefix itself, not just its length: a clip taken from the
+      // wrong offset, or one that doubled a character while keeping the
+      // count, satisfies a length-and-suffix pair exactly as well.
+      expect(result.title,
+          '${long.substring(0, ChatController.maxTitleChars)}…');
+      expect(result.title.length, ChatController.maxTitleChars + 1);
+    });
+
+    test('a title that fits is left alone, under the cap and at it', () {
+      // Its own test rather than a tail on the clip case above: Dart stops a
+      // test at the first failed expectation, so a title-clip regression used
+      // to take the passthrough and boundary assertions with it — and the
+      // group pins the snippet's and the URL's fit cases separately for that
+      // reason.
+      final fitsAll = hit('short');
+      final kept = ChatController.clipSearchSnippets([fitsAll]).single;
+      expect(kept, same(fitsAll));
+      expect(kept.title, 't');
+      expect(kept.snippet, 'short');
+      // And the boundary itself, which the snippet and URL cases pin and this
+      // one did not: exactly at the cap is a fit, so the instance rides
+      // through. `'t'` above is comfortably under, and a `<` where the
+      // condition wants `<=` on the title clause alone is invisible to it.
+      final edgeTitle = hit('short', title: 'y' * ChatController.maxTitleChars);
+      expect(
+        ChatController.clipSearchSnippets([edgeTitle]).single,
+        same(edgeTitle),
+      );
+    });
+
+    test('an over-long snippet is clipped, and says it was', () {
+      // Every backend is unbounded in the same way: a snippet is whatever
+      // text the search service put in the field. Z.AI's prose fallback can
+      // hand back a whole tool reply — its byte cap is 2 MiB, which protects
+      // memory rather than the token bill — and SearXNG and Brave copy their
+      // `content` through verbatim. This is where they converge before being
+      // serialized into a tool result, so it is where the cap belongs.
+      final long = 'x' * (ChatController.maxSnippetChars + 500);
+      final result = ChatController.clipSearchSnippets([hit(long)]).single;
+      expect(result.snippet.length, ChatController.maxSnippetChars + 1);
+      expect(result.snippet.endsWith('…'), isTrue);
+      // Only the snippet is touched.
+      expect(result.title, 't');
+      expect(result.url, 'https://x.example');
+    });
+
+    test('an over-long URL is clipped to its exact prefix, and only it', () {
+      // The third field serialized into the same tool result, and the one the
+      // other two caps left open. A query string with a page of tracking
+      // parameters is ordinary on the open web, and SearXNG and Brave copy
+      // the field through as they find it.
+      final long = 'https://x.example/?q=${'z' * ChatController.maxUrlChars}';
+      final result =
+          ChatController.clipSearchSnippets([hit('short', url: long)]).single;
+      // Visibly truncated, not silently shortened: a link that merely does
+      // not resolve reads as a citation. Pinned as the exact prefix, for the
+      // reason the title's is — the scheme and host have to survive the clip
+      // for the truncation to read as one.
+      expect(result.url, '${long.substring(0, ChatController.maxUrlChars)}…');
+      expect(result.url.length, ChatController.maxUrlChars + 1);
+      // The rest of the result rides through unchanged.
+      expect(result.title, 't');
+      expect(result.snippet, 'short');
+
+    });
+
+    test('a URL cut that would split a surrogate backs off one unit', () {
+      // The snippet and the title each have an emoji-at-the-cap case; the URL
+      // had none, so a clip that reached for a bare `substring` here instead
+      // of the shared `clipText` passed the whole group — while a non-ASCII
+      // path or query, ordinary for a non-English result, came back with a
+      // lone surrogate that serializes as U+FFFD.
+      //
+      // Its own test rather than a tail on the clip case above, for the
+      // reason the title cases were split: Dart stops at the first failed
+      // expectation, and this is the one the group's comments say slipped
+      // through before.
+      const seed = 'https://x.example/';
+      final emojiUrl =
+          '$seed${'u' * (ChatController.maxUrlChars - seed.length - 1)}😀/p';
+      final emojiResult =
+          ChatController.clipSearchSnippets([hit('short', url: emojiUrl)])
+              .single;
+      expect(
+        emojiResult.url,
+        '$seed${'u' * (ChatController.maxUrlChars - seed.length - 1)}…',
+      );
+      // One unit shorter than the ordinary clip: the back-off drops the high
+      // half rather than keeping it, so the kept text stops one before the
+      // cap and the whole string lands exactly on it.
+      expect(emojiResult.url.length, ChatController.maxUrlChars);
+
+    });
+
+    test('a URL exactly at the cap rides through as the same instance', () {
+      // The boundary: a URL exactly at the cap is not touched, and the
+      // instance itself is passed through rather than rebuilt.
+      final edge = 'https://x.example/'.padRight(ChatController.maxUrlChars, 'a');
+      expect(edge.length, ChatController.maxUrlChars);
+      final fits = hit('short', url: edge);
+      expect(
+        ChatController.clipSearchSnippets([fits]).single,
+        same(fits),
+      );
+    });
+
+    test('all three fields clip together without disturbing each other', () {
+      // Every other case in this group varies one field, so a rebuild that
+      // clipped the one it was given and dropped, blanked or mis-copied a
+      // sibling would pass all of them. The title also carries an emoji at
+      // the boundary: the surrogate back-off is pinned for snippets, and a
+      // title clipped with a bare `substring` would strand a lone half here.
+      final item = hit(
+        'x' * (ChatController.maxSnippetChars + 1),
+        title: '${'T' * (ChatController.maxTitleChars - 1)}😀 and more',
+        url: 'https://x.example/${'u' * ChatController.maxUrlChars}',
+      );
+
+      final result = ChatController.clipSearchSnippets([item]).single;
+
+      expect(result.snippet, '${'x' * ChatController.maxSnippetChars}…');
+      expect(result.title, '${'T' * (ChatController.maxTitleChars - 1)}…');
+      expect(
+        result.url,
+        '${item.url.substring(0, ChatController.maxUrlChars)}…',
+      );
+    });
+
+    test('a list keeps its count, its order and a per-item decision', () {
+      // Every case above hands over one result and reads `.single`, so the
+      // function's list contract — clip each, keep all, in order — is
+      // untested: an early return, or an accumulator that kept only the last
+      // rebuild, passes the entire group.
+      final fits = hit('short');
+      final over = hit('x' * (ChatController.maxSnippetChars + 1));
+      final edge = hit('y' * ChatController.maxSnippetChars);
+
+      final results = ChatController.clipSearchSnippets([fits, over, edge]);
+
+      expect(results, hasLength(3));
+      expect(results[0], same(fits));
+      expect(results[1].snippet, '${'x' * ChatController.maxSnippetChars}…');
+      expect(results[2], same(edge));
+    });
+
+    test('an empty list comes back empty', () {
+      // Zero hits is an ordinary answer from every backend, and it is the one
+      // shape a `first` or a `reduce` would throw on — which every case above
+      // hands at least one result and so cannot see.
+      expect(ChatController.clipSearchSnippets(const []), isEmpty);
+    });
+  });
+
+  group('clipText', () {
+    test('a cap of zero or less yields the empty string', () {
+      // A shared public helper: the surrogate check indexes at `max - 1`, so
+      // a nonsensical cap used to come back as a RangeError from inside a
+      // text-clipping utility rather than as a degenerate clip.
+      expect(clipText('abc', 0), isEmpty);
+      expect(clipText('abc', -1), isEmpty);
+      // Empty text is already at or under any cap, so it comes back as it is.
+      expect(clipText('', 0), isEmpty);
+    });
+
+    test('text exactly at the cap is returned as it is', () {
+      // The boundary of the comparison itself. Both callers pin it through
+      // their own fields, but this is the helper they share: a `>=` here
+      // would clip text that fits, and every caller would inherit it.
+      expect(clipText('abcd', 4), 'abcd');
+      expect(clipText('abc', 4), 'abc');
+      // And with a surrogate pair completing exactly at the cap. Every other
+      // pair case in this group goes through the *clip* path, so the back-off
+      // could be applied before the fits guard — or keyed on the low half
+      // instead of the high one — and 'abcd' cannot tell the difference.
+      // A fit is a fit: no back-off, no ellipsis.
+      expect('ab\u{1F600}'.length, 4);
+      expect(clipText('ab\u{1F600}', 4), 'ab\u{1F600}');
+    });
+
+    test('a clipped string is one unit longer than the cap', () {
+      // [max] bounds the kept content, not the result. Documented because a
+      // caller with a hard server-side limit has to pass `max - 1`; every cap
+      // here is a token budget, so the extra unit costs nothing.
+      expect(clipText('abcdef', 4), 'abcd…');
+      expect(clipText('abcdef', 4).length, 5);
+    });
+
+    test('a cap of one backs off a surrogate rather than splitting it', () {
+      // The boundary of the back-off: cutting at 1 lands between the halves
+      // of the emoji, so the kept content is empty and only the ellipsis is
+      // left — not a lone high surrogate that serializes as U+FFFD.
+      expect(clipText('😀abc', 1), '…');
+      expect(clipText('😀abc', 2), '😀…');
+    });
+  });
 }
