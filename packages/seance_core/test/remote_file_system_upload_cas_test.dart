@@ -36,6 +36,12 @@ void main() {
   DateTime seconds(int value) =>
       DateTime.fromMillisecondsSinceEpoch(value * 1000, isUtc: true);
 
+  // Fail fast and pointed when a regression stops the upload before any
+  // byte lands, instead of hanging until the suite's 30 s timeout.
+  const stagingTimeout = Duration(seconds: 5);
+  const stagingTimeoutMessage =
+      'upload never staged bytes - check the first preflight';
+
   group('DartSshRemoteFileSystem upload CAS with hashing off', () {
     test('rejects a stale expectedTarget before staging anything', () async {
       final client = _PathAwareSftpClient();
@@ -90,7 +96,13 @@ void main() {
       );
 
       content.add([9, 9, 9, 9, 9]);
-      await staged.future;
+      await staged.future.timeout(
+        stagingTimeout,
+        onTimeout: () async {
+          await content.close();
+          throw StateError(stagingTimeoutMessage);
+        },
+      );
       // An external writer replaces the target mid-staging.
       client.putFile(targetPath, [4, 5, 6, 7], modifyTime: laterModifySecond);
       await content.close();
@@ -124,7 +136,13 @@ void main() {
       );
 
       content.add([7, 8, 9]);
-      await staged.future;
+      await staged.future.timeout(
+        stagingTimeout,
+        onTimeout: () async {
+          await content.close();
+          throw StateError(stagingTimeoutMessage);
+        },
+      );
       // An external writer removes the target mid-staging.
       client.deletePath(targetPath);
       await content.close();
@@ -155,7 +173,13 @@ void main() {
         );
 
         content.add([1, 2, 3]);
-        await staged.future;
+        await staged.future.timeout(
+          stagingTimeout,
+          onTimeout: () async {
+            await content.close();
+            throw StateError(stagingTimeoutMessage);
+          },
+        );
         // An external writer creates the destination mid-staging; the
         // non-overwrite upload must refuse to replace it.
         client.putFile(targetPath, [7, 7], modifyTime: firstModifySecond);
@@ -356,6 +380,11 @@ class _PathAwareSftpClient implements SftpClient {
 
   @override
   Future<void> rename(String oldPath, String newPath) async {
+    // Models dartssh2's client-side rename: it prefers the
+    // posix-rename@openssh.com extension (atomic, replaces an existing
+    // destination), which the adapter's commit relies on. Bare
+    // SSH_FXP_RENAME would refuse an existing [newPath]; modeling that
+    // extension-less server would sit below this API's negotiation.
     final stored = _files.remove(oldPath);
     if (stored == null) {
       throw SftpStatusError(SftpStatusCode.noSuchFile, 'no such file');
@@ -423,13 +452,18 @@ class _FakeWritableSftpFile extends SftpFile {
 
   @override
   Future<void> writeBytes(Uint8List data, {int offset = 0}) async {
-    // The upload protocol writes sequentially; tolerate gaps defensively.
+    // The upload protocol writes sequentially; tolerate gaps and
+    // overlapping writes that extend the file, defensively.
     final gap = offset - stored.content.length;
     if (gap > 0) stored.content.addAll(List.filled(gap, 0));
     if (offset == stored.content.length) {
       stored.content.addAll(data);
     } else {
-      stored.content.setRange(offset, offset + data.length, data);
+      final end = offset + data.length;
+      if (end > stored.content.length) {
+        stored.content.addAll(List.filled(end - stored.content.length, 0));
+      }
+      stored.content.setRange(offset, end, data);
     }
     _onWrite?.call(path);
   }
