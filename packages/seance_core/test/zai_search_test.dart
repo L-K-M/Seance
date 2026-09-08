@@ -128,7 +128,12 @@ class FakeMcpServer {
   /// media type spelled the way RFC 9110 allows and this client once misread.
   final bool streamCase;
 
-  http.Client get client => MockClient.streaming((request, body) async {
+  // `late final`, not a getter: a getter mints a fresh `MockClient` on every
+  // read, so two reads of `server.client` hand out different objects that
+  // only coincidentally share this fake's recording state. Nothing does that
+  // today; the contract "server.client is *the* client talking to this fake"
+  // is worth being true rather than observed.
+  late final http.Client client = MockClient.streaming((request, body) async {
         // Kept for this request rather than read back as `headers.last`
         // below: the body read that follows is an await, and a concurrent
         // request can append its own headers before this one resumes. The
@@ -1039,7 +1044,10 @@ void main() {
       // so tuning the deadline down tightens this with it. Parenthesised
       // because `*` and `~/` only associate left by luck of equal precedence,
       // and a clarifying `deadline * (3 ~/ 4)` would be zero — a bound
-      // nothing can violate, silently retiring the check.
+      // nothing can satisfy, since `clock.elapsed` is never below zero, so
+      // the check would fail on every run rather than pass on every run.
+      // (Written the other way round here last round, which had it exactly
+      // backwards.)
       expect(clock.elapsed, lessThan((deadline * 3) ~/ 4));
     });
 
@@ -1486,6 +1494,20 @@ void main() {
           'required': ['search_query', 'search_engine'],
         }, 'dart', 5),
         {'search_query': 'dart', 'search_engine': 'search-prime'},
+      );
+      // And a default fills a gap rather than replacing an answer: a required
+      // count that declares one still takes the caller's. The case above uses
+      // a string parameter, and the count cases elsewhere pass limit 0, so
+      // the precedence between the two was the combination nothing pinned.
+      expect(
+        ZaiSearch.buildArguments(const {
+          'properties': {
+            'search_query': {'type': 'string'},
+            'count': {'type': 'integer', 'default': 10},
+          },
+          'required': ['count'],
+        }, 'dart', 3),
+        {'search_query': 'dart', 'count': 3},
       );
     });
 

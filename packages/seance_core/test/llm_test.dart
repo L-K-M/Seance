@@ -608,7 +608,7 @@ void main() {
       expect(result.url, 'https://x.example');
     });
 
-    test('a URL is capped too, and one that fits is left exact', () {
+    test('an over-long URL is clipped to its exact prefix, and only it', () {
       // The third field serialized into the same tool result, and the one the
       // other two caps left open. A query string with a page of tracking
       // parameters is ordinary on the open web, and SearXNG and Brave copy
@@ -626,12 +626,19 @@ void main() {
       expect(result.title, 't');
       expect(result.snippet, 'short');
 
-      // And the surrogate back-off on this field too. The snippet and the
-      // title each have an emoji-at-the-cap case; the URL had none, so a clip
-      // that reached for a bare `substring` here instead of the shared
-      // `clipText` passed the whole group — while a non-ASCII path or query,
-      // which is ordinary for a non-English result, came back with a lone
-      // surrogate that serializes as U+FFFD.
+    });
+
+    test('a URL cut that would split a surrogate backs off one unit', () {
+      // The snippet and the title each have an emoji-at-the-cap case; the URL
+      // had none, so a clip that reached for a bare `substring` here instead
+      // of the shared `clipText` passed the whole group — while a non-ASCII
+      // path or query, ordinary for a non-English result, came back with a
+      // lone surrogate that serializes as U+FFFD.
+      //
+      // Its own test rather than a tail on the clip case above, for the
+      // reason the title cases were split: Dart stops at the first failed
+      // expectation, and this is the one the group's comments say slipped
+      // through before.
       const seed = 'https://x.example/';
       final emojiUrl =
           '$seed${'u' * (ChatController.maxUrlChars - seed.length - 1)}😀/p';
@@ -647,6 +654,9 @@ void main() {
       // cap and the whole string lands exactly on it.
       expect(emojiResult.url.length, ChatController.maxUrlChars);
 
+    });
+
+    test('a URL exactly at the cap rides through as the same instance', () {
       // The boundary: a URL exactly at the cap is not touched, and the
       // instance itself is passed through rather than rebuilt.
       final edge = 'https://x.example/'.padRight(ChatController.maxUrlChars, 'a');

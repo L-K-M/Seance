@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:meta/meta.dart';
@@ -452,16 +453,21 @@ class ZaiSearch implements SearchProvider {
   }
 
   Future<String> _readBounded(Stream<List<int>> bytes) async {
-    final buffer = <int>[];
+    // A `BytesBuilder`, not a growable `List<int>`: the list gives every
+    // byte a full tagged slot and copies the lot on each regrowth, so a reply
+    // near `maxResponseBytes` costs several times its own size to receive.
+    // `dart:typed_data` rather than `dart:io`, which also exports it — this
+    // package stays platform-neutral.
+    final buffer = BytesBuilder(copy: false);
     await for (final chunk in bounded(
       bytes,
       maxResponseBytes,
       timeout,
       total: timeout,
     )) {
-      buffer.addAll(chunk);
+      buffer.add(chunk);
     }
-    return utf8.decode(buffer, allowMalformed: true);
+    return utf8.decode(buffer.takeBytes(), allowMalformed: true);
   }
 
   /// [bytes] capped at [maxBytes] and cut off after [idle] without an event.

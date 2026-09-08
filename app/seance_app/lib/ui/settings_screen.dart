@@ -814,7 +814,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _saving = true);
     final s = state.services.settings;
     // Store the API key under a per-provider name.
-    final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
+    //
+    // Snapshotted with the key fields below, and for the same reason: the
+    // keystore writes are awaits and the provider dropdown is not frozen
+    // while one runs. `ref` was taken from `_kind` here and `s.llmKind` read
+    // it again afterwards, so a flip in between wrote a provider with the
+    // *other* provider's key reference beside it — `openaiCompatible`
+    // holding `'anthropic'` — which authenticates against nothing until the
+    // user notices and saves again. Reading it once also stops the invariant
+    // depending on a widget six hundred lines up keeping its `onChanged`
+    // gated on `_saving`.
+    final kind = _kind;
+    final ref = kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
 
     // Keys first, settings after. A keystore failure returns without saving,
     // and the settings object is the one the running app reads — leaving it
@@ -870,7 +881,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     }
 
-    s.llmKind = _kind;
+    s.llmKind = kind;
     s.llmBaseUrl = _baseUrl.text.trim();
     s.llmModel = _model.text.trim();
     s.llmApiKeyRef = ref;
