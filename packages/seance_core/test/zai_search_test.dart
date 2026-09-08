@@ -1032,20 +1032,15 @@ void main() {
 
       expect(results, isNotEmpty);
       expect(cancelled, isTrue);
-      // Well under the 3s deadline, with a second of headroom: draining
-      // instead of cancelling costs the whole deadline, and a bound sitting on
-      // it could not tell that apart from a loaded machine.
-      // Relative to the deadline, not a second under it: the comment above
-      // warns these are tuned one at a time, and a deadline dropped below a
-      // second would make an absolute bound negative and this test unpassable
-      // for a reason that has nothing to do with cancellation.
-      // Still relative to the deadline, so tuning that down tightens this
-      // with it — but three quarters rather than half. The failure being
-      // caught is timer-bounded at exactly `deadline`; the passing path is
-      // in-process mock I/O whose cost is whatever the runner is doing. A
-      // bound anywhere meaningfully below the deadline discriminates, and the
-      // closer half gave a loaded container no room.
-      expect(clock.elapsed, lessThan(deadline * 3 ~/ 4));
+      // Draining instead of cancelling costs the whole `deadline`, while the
+      // passing path is in-process mock I/O costing whatever the runner is
+      // doing — so any bound meaningfully below the deadline tells the two
+      // apart, and three quarters leaves a loaded container room. Relative,
+      // so tuning the deadline down tightens this with it. Parenthesised
+      // because `*` and `~/` only associate left by luck of equal precedence,
+      // and a clarifying `deadline * (3 ~/ 4)` would be zero — a bound
+      // nothing can violate, silently retiring the check.
+      expect(clock.elapsed, lessThan((deadline * 3) ~/ 4));
     });
 
     test('an over-long tool error is clipped without splitting a character',
@@ -1372,7 +1367,11 @@ void main() {
         )),
       );
       // No code, no parenthesis; an error that is not even a map, the same.
-      for (final error in [const <String, Object>{}, 'down', 1]) {
+      // A distinctive number rather than `1`: the matcher below bans the
+      // payload's own string form anywhere in the message, and `1` bans the
+      // digit — which any future wording carrying a count or an id would
+      // trip, for a reason that has nothing to do with echoing a payload.
+      for (final error in [const <String, Object>{}, 'down', 987654]) {
         expect(
           () => ZaiSearch.readRpcResult({
             'jsonrpc': '2.0',
@@ -1401,8 +1400,8 @@ void main() {
   group('readRpcResult id', () {
     test('a reply for another request is not this call\'s answer', () {
       // The SSE reader filters by id, but the plain-JSON path hands whatever
-      // came back straight over — and `readRpcResult` checks the id at line
-      // 680 for exactly that. Every other fixture in this file passes a
+      // came back straight over — and `readRpcResult` re-checks the reply's
+      // id for exactly that. Every other fixture in this file passes a
       // matching id, so the guard was unpinned.
       expect(
         () => ZaiSearch.readRpcResult({
@@ -1526,29 +1525,40 @@ void main() {
     test('the echoed name is not cut between the halves of an emoji', () {
       // Same fixture shape as the test above, and for the same reason: the
       // name has to reach the message before its cut can be asserted.
-      final name = '${'p' * 47}😀tail';
-      expect(
-        () => ZaiSearch.buildArguments({
-          'properties': {
-            'search_query': const {'type': 'string'},
-            name: const {'type': 'string'},
-          },
-          'required': ['search_query', name],
-        }, 'dart', 5),
-        throwsA(isA<http.ClientException>().having(
-          (e) => e.message,
-          'message',
-          // Any lone surrogate, not only one followed by the ellipsis: a cut
-          // on raw code units that appended nothing would leave one at the
-          // end, and U+FFFD only appears once such a string is encoded.
-          predicate<String>(
-            (m) =>
-                !m.contains('\uFFFD') &&
-                !m.runes.any((r) => r >= 0xD800 && r <= 0xDFFF),
-            'free of replacement characters and unpaired surrogates',
-          ),
-        )),
-      );
+      // Swept rather than tuned to one length. The assertion is a negative —
+      // no replacement character, no lone surrogate — and a name the clip
+      // never reached satisfies it just as well as one it cut safely. A
+      // single `'p' * 47` put the pair on the cut only while the message
+      // prefix and the 48-unit cap were exactly what they are today, so any
+      // edit to either would have slid the emoji clear and left this green
+      // for a reason unrelated to its subject. The range straddles the cap
+      // from both sides.
+      for (var prefix = 32; prefix <= 64; prefix++) {
+        final name = '${'p' * prefix}😀tail';
+        expect(
+          () => ZaiSearch.buildArguments({
+            'properties': {
+              'search_query': const {'type': 'string'},
+              name: const {'type': 'string'},
+            },
+            'required': ['search_query', name],
+          }, 'dart', 5),
+          throwsA(isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            // Any lone surrogate, not only one followed by the ellipsis: a
+            // cut on raw code units that appended nothing would leave one at
+            // the end, and U+FFFD only appears once such a string is encoded.
+            predicate<String>(
+              (m) =>
+                  !m.contains('\uFFFD') &&
+                  !m.runes.any((r) => r >= 0xD800 && r <= 0xDFFF),
+              'free of replacement characters and unpaired surrogates',
+            ),
+          )),
+          reason: 'name prefix length $prefix',
+        );
+      }
     });
 
     test('refuses to guess a required parameter it cannot fill', () {

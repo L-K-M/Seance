@@ -626,6 +626,27 @@ void main() {
       expect(result.title, 't');
       expect(result.snippet, 'short');
 
+      // And the surrogate back-off on this field too. The snippet and the
+      // title each have an emoji-at-the-cap case; the URL had none, so a clip
+      // that reached for a bare `substring` here instead of the shared
+      // `clipText` passed the whole group — while a non-ASCII path or query,
+      // which is ordinary for a non-English result, came back with a lone
+      // surrogate that serializes as U+FFFD.
+      const seed = 'https://x.example/';
+      final emojiUrl =
+          '$seed${'u' * (ChatController.maxUrlChars - seed.length - 1)}😀/p';
+      final emojiResult =
+          ChatController.clipSearchSnippets([hit('short', url: emojiUrl)])
+              .single;
+      expect(
+        emojiResult.url,
+        '$seed${'u' * (ChatController.maxUrlChars - seed.length - 1)}…',
+      );
+      // One unit shorter than the ordinary clip: the back-off drops the high
+      // half rather than keeping it, so the kept text stops one before the
+      // cap and the whole string lands exactly on it.
+      expect(emojiResult.url.length, ChatController.maxUrlChars);
+
       // The boundary: a URL exactly at the cap is not touched, and the
       // instance itself is passed through rather than rebuilt.
       final edge = 'https://x.example/'.padRight(ChatController.maxUrlChars, 'a');

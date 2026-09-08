@@ -287,7 +287,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: const Text('Z.AI Web Search Prime'),
         subtitle: const Text('Needs a Z.AI key with a GLM Coding Plan.'),
         value: _zai,
-        onChanged: (v) => setState(() => _zai = v),
+        // Frozen while a save runs, like the Save button and the sync
+        // switches. `_save` reads `_zai` twice — before the awaits to decide
+        // whether to write the key, and after them to set the reference — so
+        // a toggle in between makes one save act on two different answers:
+        // off-to-on persists a reference with nothing stored behind it, and
+        // on-to-off stores a key the settings it just wrote call unused. The
+        // text fields' mid-save edits are already snapshotted; this was the
+        // one control gating a keystore write that was not.
+        onChanged: _saving ? null : (v) => setState(() => _zai = v),
       ),
       if (_zai)
         TextField(

@@ -595,7 +595,13 @@ class ZaiSearch implements SearchProvider {
 
     await for (final line in lines) {
       if (line.startsWith('data:')) {
-        data.add(line.substring(5).trimLeft());
+        // One leading space, which is what SSE says to remove — not every
+        // leading blank. It makes no difference to `jsonDecode`, and every
+        // payload this reader consumes is JSON; it matters the day the field
+        // carries something whose indentation means anything, which is a
+        // cheaper thing to get right now than to find out later.
+        final body = line.substring(5);
+        data.add(body.startsWith(' ') ? body.substring(1) : body);
       } else if (line.isEmpty) {
         final message = finish();
         if (message != null) return message;
