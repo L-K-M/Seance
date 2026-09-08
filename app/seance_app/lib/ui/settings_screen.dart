@@ -78,7 +78,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _searxng.text = s.searxngUrl ?? '';
     // Only whether it is on — never the key itself, which stays in the OS
     // keystore and is not something a settings screen should be able to show.
-    _zai = s.zaiApiKeyRef != null && s.zaiApiKeyRef!.isNotEmpty;
+    // Trimmed, like `buildSearchProvider` reads it: a hand-edited or synced
+    // `settings.json` holding `"   "` would otherwise show the switch on for
+    // a backend every search silently skips.
+    _zai = (s.zaiApiKeyRef ?? '').trim().isNotEmpty;
     _redaction = s.redactionEnabled;
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;

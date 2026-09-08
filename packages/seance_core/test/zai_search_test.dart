@@ -76,6 +76,16 @@ class FakeMcpServer {
   /// Answer 404 to this many `tools/call`s, as a retired session id does.
   int expireSession = 0;
 
+  /// The id the first [expireSession] 404 invalidated.
+  ///
+  /// A gateway retires an id for good. Without this the countdown ends and
+  /// the id is *un*-retired: the check below compares against
+  /// [_issuedSessionId], which has not moved because no re-handshake
+  /// happened, so a client that answers the 404 by resending the same id gets
+  /// a 200 on the next attempt and passes every expiry test that does not
+  /// independently count `initialize`s.
+  String? _retiredId;
+
   /// Tag each result link with the query it answered, so racing callers can
   /// be told apart: the same reply handed to both would be wrong for one.
   bool echoQueryInLinks = false;
@@ -171,7 +181,14 @@ class FakeMcpServer {
         }
 
         if (expireSession > 0 && method == 'tools/call') {
+          _retiredId ??= _issuedSessionId;
           expireSession--;
+          return _stream(404, '');
+        }
+        // Dead for good, not for the length of the countdown: see [_retiredId].
+        if (method != 'initialize' &&
+            _retiredId != null &&
+            sent['mcp-session-id'] == _retiredId) {
           return _stream(404, '');
         }
         // A retired id answers 404, like the gateway does — so a client that
@@ -411,8 +428,12 @@ void main() {
 
     test('re-handshakes once when the session id has been retired', () async {
       final server = FakeMcpServer()..expireSession = 1;
-      final results =
-          await ZaiSearch(apiKey: 'k', client: server.client).search('dart');
+      final results = await ZaiSearch(apiKey: 'k', client: server.client)
+          .search('dart')
+          // Test-side only, like both neighbours': this drives the same
+          // `_reset` path, and a deadlock in it should fail here rather than
+          // stall the suite until the runner's own timeout.
+          .timeout(const Duration(seconds: 5));
 
       expect(results, isNotEmpty);
       // initialize, notify, list, (404), initialize, notify, list, call.
@@ -575,6 +596,44 @@ void main() {
                 .having((e) => e.message, 'message', contains('quota')),
           ),
           reason: '"$msg" is a quota failure, not a key failure',
+        );
+      }
+    });
+
+    test('a transient failure is blamed on neither the key nor the plan',
+        () async {
+      // gRPC-shaped gateways say "deadline exceeded" and "timeout" for a
+      // failure a retry fixes. The first two carry an auth word beside the
+      // transient one and the third carries `token`, so without the veto each
+      // reaches "rejected the search API key" and sends a user with a working
+      // key to Settings for a wall that would have cleared itself.
+      //
+      // `exceeded` is not what this pins: a message that reads as quota
+      // already lands on the generic text, so vetoing the quota reading —
+      // where this veto first went — was a no-op there and reopened the key
+      // message here.
+      for (final msg in [
+        'Auth deadline exceeded',
+        'Unauthorized: upstream timeout',
+        'Token validation timeout',
+      ]) {
+        final server = FakeMcpServer();
+        server.overrides['initialize'] = {
+          'success': false,
+          'code': 1002,
+          'msg': msg,
+        };
+
+        await expectLater(
+          ZaiSearch(apiKey: 'good', client: server.client).search('dart'),
+          throwsA(
+            isA<http.ClientException>().having(
+              (e) => e.message,
+              'message',
+              isNot(contains('rejected the search API key')),
+            ),
+          ),
+          reason: '"$msg" is a timeout, not a rejected key',
         );
       }
     });
@@ -961,6 +1020,38 @@ void main() {
       // second would make an absolute bound negative and this test unpassable
       // for a reason that has nothing to do with cancellation.
       expect(clock.elapsed, lessThan(deadline ~/ 2));
+    });
+
+    test('an over-long tool error is clipped without splitting a character',
+        () async {
+      // The quoted prose is capped because a server that answers an error
+      // with its whole corpus should not put it in a sentence — and it is
+      // free text from a search engine, so an emoji lands astride the cut
+      // about as often as anything else. A bare `substring` strands the high
+      // half of the pair, which renders as a replacement character and is
+      // mangled on its way into a log.
+      final server = FakeMcpServer();
+      server.overrides['tools/call'] = {
+        'jsonrpc': '2.0',
+        'result': {
+          'isError': true,
+          'content': [
+            {'type': 'text', 'text': '${'a' * 511}\u{1F600} and more'},
+          ],
+        },
+      };
+      await expectLater(
+        ZaiSearch(apiKey: 'k', client: server.client).search('dart'),
+        throwsA(
+          isA<http.ClientException>().having(
+            (e) => e.message,
+            'message',
+            // 511, not 512: the cut lands on the pair, so the clip steps back
+            // off it rather than through it.
+            'Z.AI search failed: ${'a' * 511}…',
+          ),
+        ),
+      );
     });
 
     test('an errored tool result is a failure, not an empty answer', () async {
@@ -1666,7 +1757,13 @@ void main() {
         throwsA(isA<http.ClientException>()),
       );
       await expectLater(
-        ZaiSearch.bounded(source(), 5000, const Duration(seconds: 1))
+        // 30 s, like the trickle test's, and for the same reason: this is the
+        // one expectation here that passes only if *no* guard fires, so a
+        // second of event-loop stall on a loaded runner would trip the idle
+        // deadline and fail it with the other guard's message. The byte-vs-
+        // code-unit distinction is carried by the 1000-cap expectation above,
+        // which a stall cannot make pass.
+        ZaiSearch.bounded(source(), 5000, const Duration(seconds: 30))
             .toList()
             .timeout(const Duration(seconds: 5)),
         completion(hasLength(3)),
@@ -1777,6 +1874,47 @@ void main() {
         ),
       );
       expect(cancelled, isTrue);
+    });
+  });
+
+  group('readSseRpcMessage', () {
+    Stream<List<int>> sse(List<String> events) =>
+        Stream.fromIterable(events.map(utf8.encode));
+
+    test('a server request carrying our id is walked past, not answered',
+        () async {
+      // JSON-RPC ids are scoped per direction: the server's own counter can
+      // hand a `sampling/createMessage` — or any request it initiates — the
+      // number this request is using. Matched on the id alone, that message
+      // ends the read and `readRpcResult` rejects it as an invalid reply,
+      // while the answer is still inbound on the same stream.
+      final message = await ZaiSearch.readSseRpcMessage(
+        sse([
+          'data: {"jsonrpc":"2.0","id":7,"method":"sampling/createMessage",'
+              '"params":{}}\n',
+          '\n',
+          'data: {"jsonrpc":"2.0","id":7,"result":{"content":[]}}\n',
+          '\n',
+        ]),
+        7,
+      ).timeout(const Duration(seconds: 5));
+
+      expect(message, isNotNull);
+      expect(message!['result'], isNotNull);
+    });
+
+    test('a reply with neither result nor error still ends the read', () async {
+      // The narrow reading is deliberate: skipping on "carries no result and
+      // no error" would swallow a malformed *response* too, turning the fast
+      // "invalid reply" from `readRpcResult` into a wait for the stream to
+      // end. A message with no `method` is a response, however broken.
+      final message = await ZaiSearch.readSseRpcMessage(
+        sse(['data: {"jsonrpc":"2.0","id":7}\n', '\n']),
+        7,
+      ).timeout(const Duration(seconds: 5));
+
+      expect(message, isNotNull);
+      expect(message!.containsKey('result'), isFalse);
     });
   });
 
@@ -1965,6 +2103,20 @@ void main() {
       await expectLater(
         CompositeSearch([_Broken(boom), _Broken(boom)]).search('q'),
         throwsA(same(boom)),
+      );
+    });
+
+    test('a backend that failed does not make an empty answer an error',
+        () async {
+      // The middle case between the two tests above, and the one a user hits
+      // with a wrong key on one backend and no matches on the other: not
+      // every backend failed, so "nothing found" is the honest answer even
+      // with an error in hand. Two readings pass both neighbours — throw
+      // whenever the merged list is empty and something failed, or throw only
+      // when every backend failed — and only this tells them apart.
+      expect(
+        await CompositeSearch([_Broken(), _Fixed(const [])]).search('q'),
+        isEmpty,
       );
     });
 

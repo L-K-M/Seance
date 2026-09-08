@@ -154,7 +154,11 @@ class ZaiSearch implements SearchProvider {
       // bounded at two megabytes, and it lands in a message meant to be read
       // and logged. A server that answers an error with its whole corpus
       // should not put it in a sentence.
-      if (detail.length > 512) detail = '${detail.substring(0, 512)}…';
+      // Through [clipText], not a substring of its own: that helper's whole
+      // reason for being shared is that the rule is subtle — it steps back
+      // off a UTF-16 surrogate pair rather than splitting it — and a server's
+      // error prose is exactly where an emoji lands astride a cut.
+      detail = clipText(detail, 512);
       throw http.ClientException(
         detail.isEmpty
             ? 'Z.AI search failed. Check the search key, Coding Plan access, '
@@ -568,6 +572,16 @@ class ZaiSearch implements SearchProvider {
       // A server may interleave other messages (a notification, a ping)
       // before the answer; only the matching id ends the read.
       if (decoded['id'] != id) return null;
+      // And a *request* of the server's own — sampling, elicitation, a roots
+      // listing. JSON-RPC ids are scoped per direction, so the server's
+      // counter can hand out the number this request is using, and such a
+      // message would otherwise be returned as the reply and rejected as
+      // invalid while the real one was still inbound. `method` is what tells
+      // the two apart: a response never carries one. Not "has neither
+      // `result` nor `error`" — that reading would also swallow a malformed
+      // reply, turning a fast "invalid reply" into a wait for the stream to
+      // end.
+      if (decoded.containsKey('method')) return null;
       return decoded;
     }
 
@@ -610,27 +624,33 @@ class ZaiSearch implements SearchProvider {
       // "tokens exhausted" and "token budget depleted" carry neither of the
       // first four words and every bit of the same meaning, so without them
       // the "token" test below sends someone with a working key to rotate it.
-      // `exceeded` is the widest of these, and gRPC-shaped stacks say
-      // "deadline exceeded" and "timeout exceeded" for a transient failure a
-      // retry fixes. Sending that user to check their key, their plan and
-      // their balance is the same wrong-advice failure the clauses below are
-      // written against, pointing the other way — so a transient word vetoes
-      // the quota reading rather than being one more keyword beside it.
+      final quota = text.contains('quota') ||
+          text.contains('limit') ||
+          text.contains('balance') ||
+          text.contains('insufficient') ||
+          text.contains('exhausted') ||
+          text.contains('depleted') ||
+          text.contains('exceeded');
+      // gRPC-shaped stacks say "deadline exceeded" and "timeout exceeded" for
+      // a transient failure a retry fixes, and both `exceeded` above and
+      // `token` below claim those words. Neither claim is useful: the
+      // remediation for a timeout is to try again, not to rotate a key or
+      // top up a plan.
+      //
+      // It vetoes the *key* message rather than the quota reading, which is
+      // where an earlier attempt at this put it. There is no quota message —
+      // `quota` only holds the key message back, and everything else falls
+      // through to the generic one — so vetoing the reading changed nothing
+      // for "deadline exceeded" and made "auth deadline exceeded" worse: it
+      // reopened the very key message it was written to prevent.
       final transient = text.contains('deadline') || text.contains('timeout');
-      final quota = !transient &&
-          (text.contains('quota') ||
-              text.contains('limit') ||
-              text.contains('balance') ||
-              text.contains('insufficient') ||
-              text.contains('exhausted') ||
-              text.contains('depleted') ||
-              text.contains('exceeded'));
       // Both spellings: gateways write "invalid api key" and "invalid apikey"
       // about equally, and the one-word form used to fall through to the
       // generic message that lists three things to check instead of naming
       // the one that is wrong. ("unauthorized" needs no clause of its own —
       // it contains "auth".)
       if (!quota &&
+          !transient &&
           (text.contains('auth') ||
               text.contains('api key') ||
               text.contains('apikey') ||

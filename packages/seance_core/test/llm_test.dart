@@ -577,6 +577,15 @@ void main() {
       expect(kept, same(fitsAll));
       expect(kept.title, 't');
       expect(kept.snippet, 'short');
+      // And the boundary itself, which the snippet and URL cases pin and this
+      // one did not: exactly at the cap is a fit, so the instance rides
+      // through. `'t'` above is comfortably under, and a `<` where the
+      // condition wants `<=` on the title clause alone is invisible to it.
+      final edgeTitle = hit('short', title: 'y' * ChatController.maxTitleChars);
+      expect(
+        ChatController.clipSearchSnippets([edgeTitle]).single,
+        same(edgeTitle),
+      );
     });
 
     test('an over-long snippet is clipped, and says it was', () {
@@ -644,6 +653,23 @@ void main() {
         result.url,
         '${item.url.substring(0, ChatController.maxUrlChars)}…',
       );
+    });
+
+    test('a list keeps its count, its order and a per-item decision', () {
+      // Every case above hands over one result and reads `.single`, so the
+      // function's list contract — clip each, keep all, in order — is
+      // untested: an early return, or an accumulator that kept only the last
+      // rebuild, passes the entire group.
+      final fits = hit('short');
+      final over = hit('x' * (ChatController.maxSnippetChars + 1));
+      final edge = hit('y' * ChatController.maxSnippetChars);
+
+      final results = ChatController.clipSearchSnippets([fits, over, edge]);
+
+      expect(results, hasLength(3));
+      expect(results[0], same(fits));
+      expect(results[1].snippet, '${'x' * ChatController.maxSnippetChars}…');
+      expect(results[2], same(edge));
     });
   });
 
