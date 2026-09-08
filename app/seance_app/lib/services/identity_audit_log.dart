@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'atomic_file.dart';
+import 'file_permissions.dart';
 
 /// One identity-file read attempt (successful or not).
 class IdentityReadEvent {
@@ -42,16 +43,26 @@ class IdentityReadEvent {
     if (json is! Map<String, dynamic>) return null;
     final at = json['at'];
     final serverId = json['serverId'];
+    final serverLabel = json['serverLabel'];
     final path = json['path'];
+    final viaBookmark = json['viaBookmark'];
+    final ok = json['ok'];
+    final error = json['error'];
     if (at is! String || serverId is! String || path is! String) return null;
+    // Optional fields may be absent (defaults below), but a wrong-typed
+    // field makes the line malformed — skipping it must not wedge the read.
+    if (serverLabel != null && serverLabel is! String) return null;
+    if (viaBookmark != null && viaBookmark is! bool) return null;
+    if (ok != null && ok is! bool) return null;
+    if (error != null && error is! String) return null;
     return IdentityReadEvent(
       at: at,
       serverId: serverId,
-      serverLabel: json['serverLabel'] as String? ?? '',
+      serverLabel: serverLabel as String? ?? '',
       path: path,
-      viaBookmark: json['viaBookmark'] as bool? ?? false,
-      ok: json['ok'] as bool? ?? false,
-      error: json['error'] as String?,
+      viaBookmark: viaBookmark as bool? ?? false,
+      ok: ok as bool? ?? false,
+      error: error as String?,
     );
   }
 }
@@ -78,6 +89,10 @@ class IdentityAuditLog {
     _tail = _tail.then((_) async {
       try {
         await file.parent.create(recursive: true);
+        // Create empty, restrict, then append path-bearing audit data — the
+        // log names private-key paths, so it is owner-only on desktop POSIX.
+        await file.create();
+        restrictFileToOwner(file);
         await file.writeAsString('${jsonEncode(event.toJson())}\n',
             mode: FileMode.append, flush: true);
         await _rotateIfNeeded();
@@ -93,6 +108,9 @@ class IdentityAuditLog {
   /// hand edits) are skipped rather than wedging the log.
   Future<List<IdentityReadEvent>> readAll() async {
     if (!await file.exists()) return const [];
+    // Reading is also the repair path for a log left permissive by an older
+    // build; a chmod failure surfaces rather than reading a world-readable log.
+    restrictFileToOwner(file);
     final entries = <IdentityReadEvent>[];
     for (final line in const LineSplitter().convert(await file.readAsString())) {
       if (line.trim().isEmpty) continue;
@@ -110,6 +128,7 @@ class IdentityAuditLog {
     final lines = const LineSplitter().convert(await file.readAsString());
     if (lines.length <= maxEntries * 2) return;
     final kept = lines.sublist(lines.length - maxEntries);
-    await writeStringAtomically(file, '${kept.join('\n')}\n');
+    await writeStringAtomically(file, '${kept.join('\n')}\n',
+        privacy: AtomicFilePrivacy.ownerOnly);
   }
 }

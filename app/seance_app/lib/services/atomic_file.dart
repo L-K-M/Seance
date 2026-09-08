@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'file_permissions.dart';
+
 /// Durable, crash-safe helpers for the JSON-file stores.
 ///
 /// The stores used to write with a bare `file.writeAsString(...)`, which
@@ -7,14 +9,33 @@ import 'dart:io';
 /// a truncated, unparseable file (including `vault.json`, which holds secrets).
 /// These helpers make that impossible.
 
+/// Who may read a file written atomically.
+enum AtomicFilePrivacy {
+  /// The process's default file-creation mode — today's behavior, kept by
+  /// every ordinary store write.
+  processDefault,
+
+  /// Owner-only mode bits on desktop POSIX; other platforms keep their
+  /// storage ACLs.
+  ownerOnly,
+}
+
 /// Write [contents] to [file] atomically: write a sibling temp file, flush it to
 /// disk, then rename it over the target. `rename` replaces the destination in a
 /// single filesystem operation on POSIX, so a reader (or a crash) can only ever
 /// see the old file or the new one, never a half-written one. The parent
-/// directory is created if needed.
-Future<void> writeStringAtomically(File file, String contents) async {
+/// directory is created if needed. Pass [privacy] to restrict who may read the
+/// result; the default preserves the ordinary stores' behavior.
+Future<void> writeStringAtomically(File file, String contents,
+    {AtomicFilePrivacy privacy = AtomicFilePrivacy.processDefault}) async {
   await file.parent.create(recursive: true);
   final tmp = File('${file.path}.tmp');
+  // Create the file empty first so a restricted write never materializes its
+  // contents under the default mode first.
+  await tmp.create();
+  if (privacy == AtomicFilePrivacy.ownerOnly) {
+    restrictFileToOwner(tmp);
+  }
   await tmp.writeAsString(contents, flush: true);
   try {
     await tmp.rename(file.path);

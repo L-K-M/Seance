@@ -601,7 +601,7 @@ packages:
     source: hosted
     version: "4.0.0"
   posix:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: posix
       sha256: "185ef7606574f789b40f289c233efa52e96dead518aed988e040a10737febb07"
