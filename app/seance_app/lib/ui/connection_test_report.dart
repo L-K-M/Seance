@@ -53,7 +53,7 @@ class ConnectionTestReport extends StatelessWidget {
             child: SelectableText(
               note,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.hintColor,
+                color: scheme.onSurfaceVariant,
               ),
             ),
           ),

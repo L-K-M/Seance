@@ -36,10 +36,24 @@ bool excludingNeedsConfirmation({
 /// The credential this Save writes, or null when the form describes none and
 /// the stored one should stay as it is.
 ///
-/// Blank means "keep what is stored", the same for every credential box: the
-/// fields start empty when an existing server is opened, so writing a blank
-/// through would replace the stored credential with nothing on any save that
-/// only touched some other field.
+/// Blank means "keep what is stored" when every box of that method is blank:
+/// the fields start empty when an existing server is opened, so writing a
+/// blank through would replace the stored credential with nothing on any save
+/// that only touched some other field.
+///
+/// Not box by box, though, and the passphrase is where that shows: a *typed*
+/// PEM writes `keyPassphrase: null` even when the passphrase box is blank,
+/// because a newly pasted key brings its own — so re-pasting the same
+/// encrypted key and leaving the passphrase alone drops the stored one.
+///
+/// Known gap, pre-existing and not closed here: when the auth *method*
+/// changed and nothing was typed, "what is stored" is a credential of the old
+/// kind. Nothing is written, so the config keeps its `secretRef` — now
+/// pointing at, say, a password under a server set to key auth, until a
+/// credential for the new method is entered. Clearing the ref instead would
+/// throw away a working credential on a method switch the user may undo in
+/// the same sitting, which is the worse of the two. `docs/STATUS.md`
+/// follow-up 17 tracks it.
 ///
 /// A *referenced* key is the case this exists for. Its passphrase is the only
 /// credential that mode has, and it used to be dropped — the box was shown,
@@ -82,9 +96,35 @@ Secret? plannedCredential({
     // before would otherwise have that password stored as its PEM — read back
     // as one the next time the key is typed rather than referenced.
     value: stored?.kind == SecretKind.privateKey ? stored!.value : '',
+    // The typed passphrase belongs to the key *file*, and it lands beside the
+    // PEM carried above — which was stored with a passphrase of its own. One
+    // entry holds one passphrase, so the pair can end up mismatched, and
+    // switching back to a pasted key without re-pasting finds a PEM that no
+    // longer decrypts. Carrying the old passphrase instead would break the
+    // referenced key, which is the one the server is set to use. STATUS
+    // follow-up 17 has both halves of the single-slot problem.
     keyPassphrase: keyPassphrase,
   );
 }
+
+/// Whether [plannedCredential] will read [stored], so a caller knows when it
+/// has to fetch the existing vault entry first.
+///
+/// The condition lives here rather than being restated at the call site: read
+/// too narrowly, `stored` arrives null on a branch that carries it through and
+/// an existing PEM is overwritten with nothing — the data loss the carry-over
+/// exists to prevent. A test fuzzes the two together: wherever this is false,
+/// [plannedCredential] must return the same thing with and without a [Secret]
+/// in hand.
+@visibleForTesting
+bool plannedCredentialReadsStored({
+  required AuthMethod auth,
+  required bool referenceKeyFile,
+  required String keyPassphrase,
+}) =>
+    auth == AuthMethod.privateKey &&
+    referenceKeyFile &&
+    keyPassphrase.isNotEmpty;
 
 /// The timestamp a save should carry: the wall clock, but never one this
 /// config has already passed.
@@ -195,6 +235,14 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// and so a save that failed and is retried does not mint a second identity.
   final String _draftId = uuidV4();
 
+  /// The vault id a *new* server's credential is saved under, minted once for
+  /// the same reason as [_draftId] and one the credential needs more:
+  /// `_saveServerNow` writes the vault before the config store, so a save that
+  /// stored the secret and then failed on the config write left an entry
+  /// behind — and a retry minting a fresh id orphaned it in the keyring with
+  /// nothing pointing at it and nothing that would ever clean it up.
+  final String _draftSecretId = uuidV4();
+
   /// The connection test: whether one is running, what the last one found,
   /// and which attempt is current. The counter is the cancellation flag — the
   /// SSH layer has no cancel seam, so a superseded or abandoned attempt is
@@ -287,8 +335,10 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// reads as current, and the report's whole claim is that it describes the
   /// server about to be saved. An attempt *in flight* is the same problem
   /// arriving late, so the counter moves too and its result lands as
-  /// superseded — which means clearing [_testing] here as well, or the Save
-  /// button would stay disabled waiting for a result that will be dropped.
+  /// superseded — which means clearing [_testing] here as well, or the *Test*
+  /// button would stay disabled behind a live spinner, waiting on a result
+  /// that will be dropped. Save is never gated on a running test: it takes
+  /// `_busy` alone, so a test in flight does not block saving.
   ///
   /// Guarded so typing does not rebuild the dialog on every keystroke.
   void _dropTestResult() {
@@ -863,13 +913,44 @@ class _ServerEditorState extends State<_ServerEditor> {
     );
 
     final existingRef = existing?.secretRef;
+    // Everything the form says, read here — before the awaited vault call
+    // below. `_busy` disables the buttons, not the fields, so a keyring that
+    // prompts (macOS) or is slow to answer leaves them editable for as long
+    // as it takes: read afterwards, a keystroke landing in that window is
+    // saved without ever passing the `validate()` this method opened with,
+    // and a host cleared after Save was pressed is written empty.
+    final password = _password.text;
+    final keyPem = _keyPem.text;
+    final keyPassphrase = _keyPassphrase.text;
+    // The auth dropdown and the reference switch too, and for the same
+    // reason: they are as enabled as the text boxes while `_busy`, and the
+    // credential is planned *after* the vault read below. Flipped in that
+    // window, `plannedCredential` would describe a different server than the
+    // config being saved — password material written over a stored PEM while
+    // the config saves as key auth, which is the exact cross-method
+    // corruption the carry-over logic exists to prevent.
+    final auth = _auth;
+    final referenceKeyFile = _referenceKeyFile;
+    // The config too, and not only the credential fields: it reads seven more
+    // controllers. Its `secretRef` is the one thing that cannot be known yet
+    // — whether a credential is written depends on what the vault answers —
+    // so it is built against the existing ref and corrected below, which is
+    // a field this form does not own rather than one the user could edit.
+    final formConfig = _formConfig(secretRef: existingRef, now: now);
+    // And the grant that goes with the path this config captured. Browse…
+    // stays live too, so a bookmark minted during the vault read would be
+    // matched against a path from a different moment and silently dropped,
+    // leaving a saved config whose identity file has no grant to open it.
+    final identityFileBookmark = _bookmarkFor(formConfig.identityFilePath);
     // Only when a referenced key's passphrase is about to be written over an
     // entry that may hold a PEM: every other branch replaces the entry whole.
     Secret? stored;
     if (existingRef != null &&
-        _auth == AuthMethod.privateKey &&
-        _referenceKeyFile &&
-        _keyPassphrase.text.isNotEmpty) {
+        plannedCredentialReadsStored(
+          auth: auth,
+          referenceKeyFile: referenceKeyFile,
+          keyPassphrase: keyPassphrase,
+        )) {
       try {
         stored = await widget.state.services.vault.getSecret(existingRef);
       } catch (e) {
@@ -881,21 +962,23 @@ class _ServerEditorState extends State<_ServerEditor> {
         return;
       }
     }
-    final secretId = existingRef ?? uuidV4();
+    final secretId = existingRef ?? _draftSecretId;
     final secret = plannedCredential(
-      auth: _auth,
-      referenceKeyFile: _referenceKeyFile,
-      password: _password.text,
-      keyPem: _keyPem.text,
-      keyPassphrase: _keyPassphrase.text,
+      auth: auth,
+      referenceKeyFile: referenceKeyFile,
+      password: password,
+      keyPem: keyPem,
+      keyPassphrase: keyPassphrase,
       secretId: secretId,
       stored: stored,
     );
 
-    final config = _formConfig(
-      secretRef: secret != null ? secretId : existingRef,
-      now: now,
-    );
+    final config = secret != null && secretId != existingRef
+        // `updatedAt` is not restated here: `_formConfig` already stamped it
+        // with the same `now`, and repeating it reads as though a save that
+        // reuses its secret entry keeps an older one.
+        ? formConfig.copyWith(secretRef: secretId)
+        : formConfig;
     try {
       // The vault write inside throws (VaultLockedException) when the OS
       // keyring is unavailable — tell the user instead of wedging the editor
@@ -903,7 +986,7 @@ class _ServerEditorState extends State<_ServerEditor> {
       await widget.state.saveServer(
         config,
         secret: secret,
-        identityFileBookmark: _bookmarkFor(config.identityFilePath),
+        identityFileBookmark: identityFileBookmark,
       );
     } catch (e) {
       if (!mounted) return;

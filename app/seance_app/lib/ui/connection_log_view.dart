@@ -11,6 +11,13 @@ import 'top_toast.dart';
 /// — a failed terminal tab and the server editor's connection test — read the
 /// same, including the "(no log captured)" placeholder and the copy affordance
 /// people reach for when they are about to paste it into a bug report.
+///
+/// Redaction is the producer's contract, not this widget's: [text] is copied
+/// and rendered verbatim, so anything a person typed into an auth prompt — a
+/// password, a key passphrase, a keyboard-interactive answer — must never
+/// have reached it. [SshConnectionLog] is where that is enforced, at capture
+/// rather than at render, precisely so every view of a transcript inherits it
+/// without knowing to.
 class ConnectionLogView extends StatelessWidget {
   final String text;
   const ConnectionLogView({super.key, required this.text});
