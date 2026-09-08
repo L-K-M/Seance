@@ -443,7 +443,15 @@ class ZaiSearch implements SearchProvider {
                 'try the search again in $retryAfter seconds.',
       );
     }
-    if (response.statusCode >= 400) {
+    // 300, not 400. A redirect this client did not follow is not a reply:
+    // `send` does not rewrite a POST, so a 3xx arrives whole and used to fall
+    // past every branch here into the content-type dispatch, where an empty
+    // or HTML body failed as "an unexpected search reply". A hand-entered
+    // `http://` endpoint that the gateway bounces to `https://` is the
+    // ordinary way to reach it, and that message sends the user to audit a
+    // key for a URL they could have fixed. 202 is below this and still
+    // reaches its own branch further down.
+    if (response.statusCode >= 300) {
       await _drainQuietly(response.stream);
       // Deliberately without the body, unlike the LLM providers': this is a
       // gateway that can echo the request — including its Authorization

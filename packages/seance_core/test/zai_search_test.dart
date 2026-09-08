@@ -648,6 +648,35 @@ void main() {
       }
     });
 
+    test('a redirect is a status, not a reply to parse', () async {
+      // `send` does not follow a redirect on a POST, so a 3xx arrives whole.
+      // It used to fall past every branch in the status ladder into the
+      // content-type dispatch, where an empty or HTML body failed as "an
+      // unexpected search reply" — sending the user to audit a key for a
+      // hand-entered `http://` endpoint the gateway had simply bounced.
+      final client = MockClient.streaming(
+        (request, body) async => http.StreamedResponse(
+          const Stream.empty(),
+          302,
+          headers: const {'location': 'https://api.z.ai/api/mcp/'},
+        ),
+      );
+
+      await expectLater(
+        ZaiSearch(apiKey: 'k', client: client).search('dart'),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('HTTP 302'),
+            // Not the body-parsing path's wording, which is what it used to
+            // reach.
+            isNot(contains('unexpected')),
+          ),
+        )),
+      );
+    });
+
     test('a transport 429 says it is temporary, not a bare status', () async {
       // The gateway's own throttling reply is classified by `readRpcResult`;
       // this is the transport-level twin, from the gateway or anything in
