@@ -16,6 +16,10 @@ export 'src/terminal/shell_command.dart';
 
 export 'src/ssh/home_path.dart';
 export 'src/ssh/ssh_session.dart';
+// Named `test_connection` rather than `connection_test`: `dart test <package>`
+// globs `**_test.dart`, so the latter would be collected as a test file and
+// fail to load.
+export 'src/ssh/test_connection.dart';
 export 'src/ssh/remote_file_system.dart'
     show
         RemoteFileType,

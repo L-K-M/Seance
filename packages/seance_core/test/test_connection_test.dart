@@ -1,0 +1,1038 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:seance_core/seance_core.dart';
+import 'package:test/test.dart';
+
+ServerConfig config({
+  String? jumpHostId,
+  String host = 'prod.example.com',
+  AuthMethod authMethod = AuthMethod.password,
+}) =>
+    ServerConfig(
+      id: 's1',
+      label: 'prod',
+      host: host,
+      port: 2222,
+      username: 'deploy',
+      authMethod: authMethod,
+      jumpHostId: jumpHostId,
+      createdAt: 1,
+      updatedAt: 2,
+    );
+
+/// The stored form of a fingerprint: what a [HostKey] built with
+/// `fingerprintSha256: 'SHA256:<s>'` carries.
+String sha256Fingerprint(String s) => 'SHA256:$s';
+
+/// Pass-through bytes, not a digest: dartssh2 hands `onVerifyHostKey` the
+/// `SHA256:…` fingerprint *string* as bytes. Built from [sha256Fingerprint]
+/// so a pin written as a string and a challenge written as bytes cannot drift
+/// into comparing different formats.
+Uint8List fingerprint(String s) => utf8.encode(sha256Fingerprint(s));
+
+void main() {
+  group('runConnectionTest', () {
+    test('reports how authentication completed, not merely that it did',
+        () async {
+      SshCredentials? seen;
+      // The caller's own log, not just the result's: the editor renders this
+      // instance live while the attempt runs, and only the failure path had
+      // anything asserting the transcript reaches it.
+      final callerLog = SshConnectionLog();
+      final result = await runConnectionTest(
+        config: config(),
+        log: callerLog,
+        credentials: () async => const SshCredentials.password('hunter2'),
+        authenticate: (_, creds, log) async {
+          seen = creds;
+          log.add('handshake');
+          return AuthKind.key;
+        },
+      );
+      // The seam the `credentials` parameter exists for: every stub in this
+      // file discarded it, so nothing observed that the resolver's answer is
+      // what authentication is actually attempted with.
+      expect(seen, const SshCredentials.password('hunter2'));
+
+      expect(result.ok, isTrue);
+      // "Connected" alone would not tell the user their key was the thing that
+      // worked — which is exactly what a test of a key-auth server is asking.
+      expect(result.summary, contains('deploy@prod.example.com:2222'));
+      expect(result.summary, contains('public key'));
+      expect(result.log, contains('handshake'));
+      // The result's own transcript, not only the caller's live instance:
+      // that is the string a Copy button hands over, and the failure paths
+      // pin this tail while the success path did not.
+      expect(result.log.trimRight().split('\n').last, result.summary);
+      expect(callerLog.lines.join('\n'), contains('handshake'));
+      // And the summary closes it, the same way a failure transcript does, so
+      // a copied successful test does not end on whatever the close happened
+      // to log.
+      expect(callerLog.lines.last, result.summary);
+      // A tripwire, not a redaction test: nothing should ever put the
+      // credential into a transcript shown with a Copy button and meant for
+      // bug reports, and one negative assertion keeps it that way.
+      expect(result.log, isNot(contains('hunter2')));
+      expect(result.summary, isNot(contains('hunter2')));
+      // The caller's instance too — the one the editor renders while the
+      // attempt runs. A credential written there and trimmed out of
+      // `result.log` would satisfy both assertions above and still be on
+      // screen.
+      expect(callerLog.lines.join('\n'), isNot(contains('hunter2')));
+      expect(result.notes, isEmpty);
+    });
+
+    test('a refused connection reuses the real failure summary', () async {
+      final log = SshConnectionLog();
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password(''),
+        authenticate: (_, _, transcript) async {
+          transcript.add('  <- sock: auth failed');
+          throw SshConnectException(
+            'Password rejected by prod.example.com. Check the credential.',
+            // An Exception, not an Error: this file's own rule is that an
+            // Error means our bug and keeps a stack trace, while a rejected
+            // password is the expected, readable kind of failure.
+            Exception('auth rejected'),
+            transcript,
+          );
+        },
+        log: log,
+      );
+
+      expect(result.ok, isFalse);
+      // Verbatim: a second wording here would be a second thing to keep true,
+      // and the user would see two different sentences about one host.
+      expect(
+        result.summary,
+        'Password rejected by prod.example.com. Check the credential.',
+      );
+      expect(result.log, contains('auth failed'));
+      // And no trace under it. This is the readable kind of failure the
+      // policy at the top of this group names — a rejected credential, the
+      // most common one a user sees — and every other branch of that policy
+      // asserts the trace's presence or absence while this one asserted
+      // neither. A regression that started appending our frames here would
+      // put them in a transcript with a Copy button on it.
+      expect(result.log, isNot(contains('runConnectionTest')));
+      // The caller's own instance, not just `result.log`: a runConnectionTest
+      // that ignored `log:` and wrote to one of its own would render the same
+      // string into the result and pass every assertion above.
+      expect(log.lines.join('\n'), contains('auth failed'));
+    });
+
+    test('a bookmark with no path fails the test instead of the app',
+        () async {
+      // `resolveCredentials` throws `ArgumentError` on that wiring mistake,
+      // deliberately, so it cannot be missed. A user-triggered button must
+      // still get a red result rather than an unhandled async error — loudly
+      // *and* gracefully.
+      final result = await runConnectionTest(
+        // Key auth, because that is the only method whose resolution can
+        // reach an `identityFilePath` at all. The `credentials` seam means
+        // the config's method is not read on this path, so the old
+        // `AuthMethod.password` default changed nothing — it just described
+        // a server that could not produce the failure being simulated.
+        config: config(authMethod: AuthMethod.privateKey),
+        credentials: () async =>
+            throw ArgumentError.value(null, 'identityFilePath', 'missing'),
+        authenticate: (_, _, _) async => AuthKind.key,
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.summary, contains('identityFilePath'));
+      // An Error is our bug, so the transcript keeps the trace that locates it.
+      expect(result.log, contains('identityFilePath'));
+      expect(result.log, contains('runConnectionTest'));
+    });
+
+    test('a failure before the handshake still lands in the transcript',
+        () async {
+      // Resolving credentials can fail on its own — a locked keyring, an
+      // identity file the sandbox will not open. Nothing has written to the
+      // log at that point, so an expanded log would stop mid-sentence.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw StateError('keyring is locked'),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.summary, contains('keyring is locked'));
+      expect(result.log, contains('keyring is locked'));
+      // And keeps its trace: an Error before the handshake is our bug, which
+      // is the policy the later stack-trace test states in full.
+      expect(result.log, contains('runConnectionTest'));
+    });
+
+    test('a resolver\'s own log ends with the summary exactly once', () async {
+      // The summary is appended after the copied lines, where a failure
+      // transcript is documented to end — and not again when the resolver's
+      // log already closes with it.
+      final own = SshConnectionLog()
+        ..add('reading the identity file')
+        ..add('keyring is locked');
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async =>
+            throw SshConnectException('keyring is locked', StateError('x'), own),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      // Failed first, and only then how it read: every trace assertion here
+      // describes a failure report, and a run that came back *successful*
+      // while still logging its trace would satisfy them all.
+      expect(result.ok, isFalse);
+      final lines = result.log.trimRight().split('\n');
+      expect(lines.last, 'keyring is locked');
+      // Substring occurrences, like the sibling test two above: counting
+      // whole lines misses a summary repeated inside a longer one, and this
+      // file would then pin the same "exactly once" contract at two
+      // different strengths.
+      expect('keyring is locked'.allMatches(result.log).length, 1);
+      expect(lines, contains('reading the identity file'));
+      // And no trace, even though the cause here is an `Error`. The policy
+      // keys on what was *thrown*, not on what it wraps: an
+      // `SshConnectException` is the readable kind of failure and says
+      // everything a person can act on, so frames under it are noise. Every
+      // other branch of that policy pins the trace's presence or absence and
+      // this combination — a resolver throwing the readable type over an
+      // Error cause — was the one left open.
+      expect(result.log, isNot(contains('runConnectionTest')));
+    });
+
+    test('a log an authenticator attached is kept, not only a resolver\'s',
+        () async {
+      // The live authenticator writes into the transcript it is handed and
+      // attaches that same instance; a double — or a future implementation —
+      // that logs into one of its own would otherwise lose that detail, and
+      // the merge below only ever ran for the resolver.
+      final callerLog = SshConnectionLog();
+      final result = await runConnectionTest(
+        config: config(),
+        log: callerLog,
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async => throw SshConnectException(
+          'auth failed',
+          StateError('cause'),
+          SshConnectionLog()..add('the authenticator\'s own detail'),
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.log, contains('the authenticator\'s own detail'));
+      // Into the caller's instance as well: a merge that only reached
+      // `result.log` would leave the editor's live transcript missing the
+      // detail while the attempt was still on screen.
+      expect(callerLog.lines.join('\n'),
+          contains('the authenticator\'s own detail'));
+      // And it still ends with the summary the result carries. The live SSH
+      // layer writes that sentence itself before throwing, so the stage used
+      // to be enough to decide; an authenticator whose own log ends in
+      // something else returned a transcript that stopped mid-detail.
+      expect(result.log.trimRight().split('\n').last, 'auth failed');
+    });
+
+    test('the unimplemented agent path reads as a sentence, not a crash',
+        () async {
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.agent(),
+        authenticate: (_, _, _) async =>
+            throw AgentAuthUnsupportedError('Agent auth is not available yet.'),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.summary, 'Agent auth is not available yet.');
+      expect(result.summary, isNot(contains('Unsupported operation')));
+    });
+
+    // The host field is free text, so a literal pasted out of
+    // `ssh://user@[::1]:22` arrives with its brackets on. Wrapped again it
+    // renders `[[::1]]` in the one line this file calls the one people quote
+    // back; left unwrapped, a bare `::1` runs into the port.
+    //
+    // One test per spelling rather than a loop inside one, which is the
+    // policy the Error-vs-Exception branches below already state: a
+    // sequential loop stops at the first failure, so a regression in the
+    // already-bracketed case or in leaving a hostname alone would hide behind
+    // whichever ran first.
+    for (final (typed, shown) in [
+      ('::1', '[::1]:2222'),
+      ('[::1]', '[::1]:2222'),
+      // Half-bracketed, both ways. The guard used to ask only whether the
+      // host *starts* with `[`, which a truncated paste satisfies — rendered
+      // `[::1:2222`, port boundary unreadable — and a stray trailing bracket
+      // does not, wrapped into `[::1]]:2222`.
+      ('[::1', '[::1]:2222'),
+      ('::1]', '[::1]:2222'),
+      // A zone id survives the strip: it carries no brackets.
+      ('fe80::1%en0', '[fe80::1%en0]:2222'),
+      ('prod.example.com', 'prod.example.com:2222'),
+    ]) {
+      test('a host typed as "$typed" is bracketed once in the summary',
+          () async {
+        final result = await runConnectionTest(
+          config: config(host: typed),
+          credentials: () async => const SshCredentials.password('pw'),
+          authenticate: (_, _, _) async => AuthKind.storedPassword,
+        );
+        expect(result.summary, contains('deploy@$shown'));
+      });
+    }
+
+    test('a jump host is called out rather than silently ignored', () async {
+      // ProxyJump is modelled but not executed, so a direct success here does
+      // not mean the server is reachable the way it will be used.
+      final result = await runConnectionTest(
+        config: config(jumpHostId: 'bastion'),
+        credentials: () async => const SshCredentials.password('x'),
+        authenticate: (_, _, _) async => AuthKind.storedPassword,
+      );
+
+      expect(result.ok, isTrue);
+      // The summary names the credential that worked, as the `AuthKind.key`
+      // case is pinned to at the top of this file. Only that one was: a
+      // summary that dropped the label for every other kind — "Connected to
+      // deploy@…" with nothing about how — passed the whole suite, so the
+      // two kinds were pinned at very different strengths. Measured.
+      expect(result.summary, contains('stored password'));
+      expect(result.notes, hasLength(1));
+      expect(result.notes.single, contains('jump host'));
+    });
+
+    test('the jump-host caveat also accompanies a failure', () async {
+      // The caveat matters most on the failure it explains: "could not reach
+      // the host" means something different for a host only reachable through
+      // a bastion the test did not use.
+      final result = await runConnectionTest(
+        config: config(jumpHostId: 'bastion'),
+        credentials: () async => const SshCredentials.password('x'),
+        authenticate: (_, _, transcript) async => throw SshConnectException(
+          'Could not reach prod.example.com:2222.',
+          const SocketException('refused'),
+          transcript,
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.notes.single, contains('jump host'));
+      // Unmodifiable on this path too: `notes` is built at two
+      // construction sites and only the success one was pinned.
+      expect(() => result.notes.add('late'), throwsUnsupportedError);
+    });
+
+    // One test per branch of the Error-vs-Exception trace policy: as a single
+    // sequential test the first failure aborted the rest, so a regression
+    // showed one red branch and three unverified ones under a name that said
+    // which none of them.
+    test('an Error while resolving credentials keeps its stack trace',
+        () async {
+      // An Error here is our bug, and its message alone rarely says where it
+      // came from.
+      final bug = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw StateError('bad state'),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(bug.ok, isFalse);
+      expect(bug.log, contains('runConnectionTest'));
+    });
+
+    test('an Exception while resolving credentials stays readable', () async {
+      // A locked keyring, an unreadable key file: it already says everything
+      // a person can act on, and a stack trace under one is noise in a
+      // transcript people read.
+      final expected = await runConnectionTest(
+        config: config(),
+        credentials: () async =>
+            throw const FormatException('unreadable identity file'),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(expected.ok, isFalse);
+      expect(expected.log, contains('unreadable identity file'));
+      expect(expected.log, isNot(contains('runConnectionTest')));
+    });
+
+    test('a bare Exception from authenticate keeps its stack trace', () async {
+      // Past the credentials call the calculus flips. openAuthenticatedClient
+      // wraps every failure it can name in SshConnectException, so a bare
+      // Exception from authenticate is one nothing was written to expect —
+      // and the trace is the only thing that says where it came from.
+      final unexpected = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async =>
+            throw const FormatException('unwrapped transport failure'),
+      );
+      expect(unexpected.ok, isFalse);
+      expect(unexpected.log, contains('unwrapped transport failure'));
+      expect(unexpected.log, contains('runConnectionTest'));
+    });
+
+    test('AgentAuthUnsupportedError stays quiet wherever it is thrown',
+        () async {
+      // The one Error that stays quiet: the ssh-agent path the backend
+      // deliberately does not implement.
+      final unsupported = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async =>
+            throw AgentAuthUnsupportedError('no agent'),
+      );
+      expect(unsupported.ok, isFalse);
+      expect(unsupported.log, contains('no agent'));
+      expect(unsupported.log, isNot(contains('runConnectionTest')));
+      // "Wherever": the resolver reaches the same catch, and a future split
+      // of the two stages has to keep both of them quiet.
+      final fromResolver = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw AgentAuthUnsupportedError('no agent yet'),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(fromResolver.ok, isFalse);
+      expect(fromResolver.log, contains('no agent yet'));
+      expect(fromResolver.log, isNot(contains('runConnectionTest')));
+    });
+
+    test('a stock UnsupportedError is a bug and keeps its trace', () async {
+      // The quiet treatment is for the one deliberate throw, not for the type:
+      // `UnsupportedError` is stock Dart, raised by unmodifiable collections,
+      // platform stubs and any package under here. Matched by type alone, a
+      // real bug would come back as a polished sentence about the host with
+      // nothing in the transcript to locate it.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async =>
+            throw UnsupportedError('Cannot add to an unmodifiable list'),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.log, contains('runConnectionTest'),
+          reason: 'an unexpected Error must keep the trace that locates it');
+      // The message is still not unwrapped into a sentence about the host: an
+      // `UnsupportedError` this layer did not throw prints as what it is.
+      expect(result.summary, contains('Unsupported operation'));
+    });
+
+    test('the summary is the last line even under a stack trace', () async {
+      // ConnectionTestResult.log documents a failure transcript as ending
+      // with the summary. A trace appended after it leaves anything that
+      // reads the tail as the headline showing a stack frame instead.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async => throw StateError('boom'),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.log, contains('runConnectionTest'),
+          reason: 'the precondition: this failure does earn a trace');
+      expect(result.log.trimRight().split('\n').last, result.summary);
+    });
+
+    test('a summary an authenticator already logged is not repeated', () async {
+      // The contract on HostAuthenticator: log the summary only when throwing
+      // SshConnectException, whose message runConnectionTest takes verbatim.
+      // Asserted here so the shipped authenticator's own behaviour is pinned
+      // rather than assumed.
+      const summary = 'Could not reach host.example.com:22 — refused';
+      final log = SshConnectionLog();
+      final result = await runConnectionTest(
+        config: config(),
+        log: log,
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, transcript) async {
+          transcript.add(summary);
+          throw SshConnectException(
+            summary,
+            const SocketException('refused'),
+            transcript,
+          );
+        },
+      );
+      expect(result.ok, isFalse);
+      // The whole summary, not a word it shares with its own cause: counting
+      // 'refused' would also count the SocketException if that were ever
+      // logged, and then this would fail for the wrong reason.
+      expect(
+        summary.allMatches(log.lines.join('\n')).length,
+        1,
+        reason: "the caller's own log must not repeat it either",
+      );
+      expect(
+        summary.allMatches(result.log).length,
+        1,
+        reason: 'the summary must appear once, not once per writer',
+      );
+    });
+
+    test('a pre-handshake SshConnectException still lands in the transcript',
+        () async {
+      // The SSH layer logs its own summary before throwing this type, which is
+      // why the branch appends nothing — but a resolver that reuses the type
+      // has logged nothing, and the transcript would end mid-sentence.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw SshConnectException(
+          'The identity file could not be read',
+          const FormatException('bad key'),
+          SshConnectionLog(),
+        ),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(result.ok, isFalse);
+      expect(result.log, contains('The identity file could not be read'));
+    });
+
+    test('a resolver failure keeps the transcript it brought', () async {
+      // The SSH layer writes into the transcript it is handed, so on that
+      // path the exception's log *is* the transcript. A resolver that raised
+      // the same type attached a log of its own, and that log was the only
+      // place its detail lived — appending the summary alone dropped it.
+      final carried = SshConnectionLog()
+        ..add('identity file: ~/.ssh/id_ed25519')
+        ..add('permission denied reading it');
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => throw SshConnectException(
+          'The identity file could not be read',
+          const FormatException('bad key'),
+          carried,
+        ),
+        authenticate: (_, _, _) async => fail('must not be reached'),
+      );
+      expect(result.ok, isFalse);
+      expect(result.log, contains('The identity file could not be read'));
+      expect(result.log, contains('permission denied reading it'));
+    });
+
+    test('an authenticate failure does not repeat its transcript', () async {
+      // The other half: the log `authenticate` attaches is the transcript
+      // itself, and appending that to itself would double every line.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, transcript) async {
+          transcript.add('only once');
+          throw SshConnectException(
+            'refused',
+            const FormatException('no'),
+            transcript,
+          );
+        },
+      );
+      expect(result.ok, isFalse);
+      expect('only once'.allMatches(result.log).length, 1);
+    });
+
+    test('the notes a result carries cannot be edited through it', () async {
+      // `notes` is a view of the list `runConnectionTest` built, so a caller
+      // that sorted or filtered it in place would be editing the result it
+      // was handed rather than a list of its own.
+      final result = await runConnectionTest(
+        config: config(),
+        credentials: () async => const SshCredentials.password('pw'),
+        authenticate: (_, _, _) async => AuthKind.storedPassword,
+      );
+      expect(() => result.notes.add('mine'), throwsUnsupportedError);
+    });
+
+    test('every auth kind has a distinct, non-empty label', () {
+      // Distinct as well as present: two kinds sharing a label would report
+      // the wrong thing about how authentication completed, which is the one
+      // distinction the summary exists to draw.
+      final labels = <String>{};
+      for (final kind in AuthKind.values) {
+        expect(authKindLabel(kind), isNotEmpty);
+        expect(labels.add(authKindLabel(kind)), isTrue,
+            reason: 'duplicate label for ${kind.name}');
+      }
+    });
+  });
+
+  group('UnpinnedHostKeyStore', () {
+    test('reads existing pins but never writes one through', () async {
+      final real = InMemoryHostKeyStore();
+      final pinned = HostKey(
+        host: 'known.example.com',
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('known'),
+        pinnedAt: 1,
+      );
+      await real.put(pinned);
+      final trial = UnpinnedHostKeyStore(real);
+
+      expect(await trial.get('known.example.com', 22), same(pinned));
+
+      // Approving an unknown host inside a trial holds for the trial…
+      final fresh = HostKey(
+        host: 'new.example.com',
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('new'),
+        pinnedAt: 2,
+      );
+      await trial.put(fresh);
+      expect(await trial.get('new.example.com', 22), same(fresh));
+      expect((await trial.all()).length, 2);
+
+      // Re-approving a host that is already pinned lists once, not twice, and
+      // lists as the trial's version — the precedence get() establishes.
+      final reapproved = HostKey(
+        host: 'known.example.com',
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('rotated'),
+        pinnedAt: 3,
+      );
+      await trial.put(reapproved);
+      final merged = await trial.all();
+      expect(merged, hasLength(2));
+      // Named, not just counted: a concatenating `all()` that returned the
+      // original pin would also be length 2 while contradicting `get`.
+      expect(merged, containsAll([fresh, reapproved]));
+      expect(merged, isNot(contains(pinned)));
+      expect(await trial.get('known.example.com', 22), same(reapproved));
+
+      // …and nowhere else. The first real connection asks again and pins for
+      // real, so a form that is never saved leaves no trust behind.
+      expect(await real.get('new.example.com', 22), isNull);
+      expect(await real.all(), [pinned]);
+    });
+
+    test('a declined host key is neither trusted nor pinned', () async {
+      // Consent is the whole security boundary here, and every other callback
+      // in this file answers yes — so an implementation that ignored the
+      // decline and pinned anyway passed the suite.
+      final inner = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(inner);
+      // Captured, not discarded: the outcomes below — false, nothing pinned
+      // in either store — are exactly what a manager that auto-declined every
+      // unknown host would produce, and that manager would make a first
+      // connection impossible. Consent is the boundary this test names, so
+      // the prompt having been asked is part of what it has to assert.
+      var prompts = 0;
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(trial),
+        onHostKey: (_) async {
+          prompts++;
+          return false;
+        },
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'declined.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('declined'),
+        ),
+        isFalse,
+      );
+      expect(prompts, 1,
+          reason: 'the refusal has to be an answered prompt, not a silent no');
+      // And the decline answers *that offer*, not the host. Nothing was
+      // pinned, so the next attempt has the same question to ask — a manager
+      // that remembered the "no" would answer from it and make a first
+      // connection permanently impossible after one mis-click, which is the
+      // flow this store exists to support. Measured: caching declines passes
+      // every other test in this package.
+      expect(
+        await manager.verifyHostKey(
+          host: 'declined.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('declined'),
+        ),
+        isFalse,
+      );
+      expect(prompts, 2, reason: 'a decline is not a cached verdict');
+      expect(await trial.get('declined.example.com', 22), isNull);
+      expect(await inner.get('declined.example.com', 22), isNull);
+      // Nowhere at all, not just under the locator asked for: a pin written
+      // under a mangled key would slip past both lookups above.
+      expect(await trial.all(), isEmpty);
+      expect(await inner.all(), isEmpty);
+    });
+
+    test('a changed key the user refuses never touches the approved pin',
+        () async {
+      // The one path this file exists to protect that no test drove: a
+      // *changed* key answered with "no". The declined-host-key test covers a
+      // first sight; this covers the replacement, where the pin already
+      // exists and could be overwritten by the key that was just refused.
+      //
+      // Deliberately silent on the prompt count. `a trial approval satisfies
+      // the verifier it is wrapped in` pins that a changed key is re-asked;
+      // what this test asserts holds even under a manager that refused one
+      // without asking, so it stays a test about the pin rather than a second
+      // copy of that contract.
+      final inner = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(inner);
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(trial),
+        // Approve a first sight, refuse anything replacing it.
+        onHostKey: (decision) async => decision.pinned == null,
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'refused.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('first'),
+        ),
+        isTrue,
+      );
+      expect(
+        await manager.verifyHostKey(
+          host: 'refused.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('attacker'),
+        ),
+        isFalse,
+        reason: 'a refused replacement must not be trusted',
+      );
+      expect(
+        (await trial.get('refused.example.com', 22))?.fingerprintSha256,
+        sha256Fingerprint('first'),
+        reason: 'and must not overwrite the key that was approved',
+      );
+      // The same sweep the declined-first-sight test does: a refused key
+      // written under a mangled locator answers neither `get` above.
+      expect(await trial.all(), hasLength(1));
+      expect(await inner.all(), isEmpty);
+    });
+
+    test('an approval during a trial never reaches the real store', () async {
+      // The promise the editor makes in copy — "trusted for the test only, the
+      // first real connection asks again" — enforced rather than asserted in a
+      // comment. `UnpinnedHostKeyStore.put` writes only its own map, and this
+      // is what would fail if it ever delegated.
+      final persistent = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(persistent);
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(trial),
+        onHostKey: (_) async => true,
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'trial.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('trial'),
+        ),
+        isTrue,
+      );
+      // Approved and usable for the rest of this attempt…
+      expect((await trial.get('trial.example.com', 22))?.fingerprintSha256,
+          sha256Fingerprint('trial'),
+          reason: 'and it is the approved key that was pinned, not a default');
+      // …and invisible to the store a real session would consult.
+      expect(await persistent.get('trial.example.com', 22), isNull);
+      expect(await persistent.all(), isEmpty);
+    });
+
+    test('a trial approval satisfies the verifier it is wrapped in', () async {
+      final inner = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(inner);
+      final verifier = TofuVerifier(trial);
+      // Counted, because a pin is not consent: an implementation that trusted
+      // and pinned an unknown key without asking would satisfy every verdict
+      // assertion below while skipping the one step this whole design is for.
+      var prompts = 0;
+      // What the prompt was *shown*, not only that it fired. The dialog is
+      // where consent is given, so it has to describe the key being offered:
+      // handed the pinned key instead, a user re-confirming a familiar
+      // fingerprint would be approving the one replacing it, and every count
+      // and verdict below would still pass.
+      final shown = <HostKeyDecision>[];
+      final manager = SshSessionManager(
+        tofu: verifier,
+        onHostKey: (decision) async {
+          prompts++;
+          shown.add(decision);
+          return true;
+        },
+      );
+
+      // First use: prompted, approved, pinned into the trial store.
+      expect(
+        await manager.verifyHostKey(
+          host: 'new.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('new'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1, reason: 'first sight must ask, not silently pin');
+      expect(shown.single.presented.fingerprintSha256, sha256Fingerprint('new'));
+      expect(shown.single.pinned, isNull,
+          reason: 'nothing is being replaced on a first sight');
+
+      // Second offer of the same key is trusted without another prompt, so a
+      // reconnect inside one attempt does not re-ask.
+      expect(
+        await manager.verifyHostKey(
+          host: 'new.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('new'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1, reason: 'the pin from this attempt answers for it');
+
+      final decision = await verifier.check(HostKey(
+        host: 'new.example.com',
+        port: 22,
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('new'),
+        pinnedAt: 3,
+      ));
+      expect(decision.verdict, HostKeyVerdict.trusted);
+
+      // And a *different* key for that host is still the MITM case: one
+      // approval trusts one key, not the host forever.
+      final mismatch = await verifier.check(HostKey(
+        host: 'new.example.com',
+        port: 22,
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('attacker'),
+        pinnedAt: 4,
+      ));
+      expect(mismatch.verdict, HostKeyVerdict.changed);
+
+      // Through the manager as well, not only the verifier: if
+      // `verifyHostKey` consulted the verifier for unknown hosts and short-cut
+      // a host it had already pinned, every assertion above still passes and
+      // a changed key is silently trusted.
+      final reoffered = await manager.verifyHostKey(
+        host: 'new.example.com',
+        port: 22,
+        type: 'ssh-ed25519',
+        fingerprintBytes: fingerprint('attacker'),
+      );
+      // Measured rather than left open: `_verifyHostKey` returns early only
+      // for a decision that is already trusted and prompts for everything
+      // else, so a changed key is re-asked. Pinned as behaviour on purpose —
+      // changing it is worth failing a test for, on the one dialog where the
+      // user is the whole security boundary.
+      expect(reoffered, isTrue,
+          reason: 'a changed key must be re-asked, never assumed');
+      // Each step below depends on the pin the one before it left, so the
+      // scenario continues inline rather than becoming a test of its own:
+      // lifting it would mean repeating the four approvals that build the
+      // state it starts from.
+      // Exactly two — the first pin and the one re-ask — not merely "more
+      // than one": a manager that re-prompted on every reconnect would also
+      // satisfy a lower bound.
+      expect(prompts, 2,
+          reason: 'a changed key must be refused or re-asked, never assumed');
+      // Both keys, in the right roles: the offered one is what the user is
+      // being asked to accept, and the pinned one is what it would replace.
+      // Swapped, the dialog reads as a re-confirmation of a key the user
+      // already knows while trusting the attacker's.
+      expect(shown.last.presented.fingerprintSha256,
+          sha256Fingerprint('attacker'),
+          reason: 'the re-ask must show the key being offered');
+      expect(shown.last.pinned?.fingerprintSha256, sha256Fingerprint('new'),
+          reason: 'and the one it would replace');
+      // An approved re-ask pins the key that was approved — in the trial
+      // store, and only there. A "yes" that left the old pin standing would
+      // re-prompt on every reconnect, or trust the old key while reporting
+      // the new one verified.
+      expect(
+        (await trial.get('new.example.com', 22))?.fingerprintSha256,
+        sha256Fingerprint('attacker'),
+        reason: 'an approved re-ask must pin the key that was approved',
+      );
+      // And the other direction, which "one approval trusts one key" also
+      // means: offering the *replaced* key must ask again rather than be
+      // answered from a host-level "already trusted" cache. The prompt
+      // always says yes, so the count is what tells the two apart.
+      expect(
+        await manager.verifyHostKey(
+          host: 'new.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('new'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 3,
+          reason: 'a superseded key must not linger as a trusted alternative');
+      // And the roles in *that* prompt, not only in the one before it. The
+      // swap this test guards against on the second ask — showing the user
+      // the key being replaced while trusting the one offered — is exactly
+      // as available on the third, and a count cannot see it.
+      expect(shown.last.presented.fingerprintSha256, sha256Fingerprint('new'),
+          reason: 'the re-ask must present the key being offered');
+      expect(shown.last.pinned?.fingerprintSha256,
+          sha256Fingerprint('attacker'),
+          reason: 'and name the one it would replace');
+      // And that approval lands, like the one before it: a manager that
+      // re-asked and returned true without writing would leave the pin on
+      // the attacker key and re-prompt on every reconnect.
+      expect(
+        (await trial.get('new.example.com', 22))?.fingerprintSha256,
+        sha256Fingerprint('new'),
+        reason: 'a re-approved key must become the pin again',
+      );
+      // And nothing above reached the wrapped store. This test drives three
+      // distinct `put` paths — a first-sight pin, the re-ask that replaces
+      // it, and the superseded key re-pinned — while asserting only what the
+      // trial store holds. Its siblings keep that reference and check it; the
+      // test with the most ways to leak was the one that could not.
+      expect(await inner.all(), isEmpty,
+          reason: 'no approval in this test may reach the wrapped store');
+    });
+
+    test('a pin is scoped to the port it was approved on', () async {
+      // Every other test here uses port 22, and the app's own sample config
+      // targets 2222: a store keyed by host alone would let a pin for one
+      // port answer for the other, in either direction, unnoticed.
+      final real = InMemoryHostKeyStore();
+      await real.put(HostKey(
+        host: 'stored.example.com',
+        port: 2222,
+        type: 'ssh-ed25519',
+        // Distinct per fixture, so a store that ignored the port names the
+        // pin that leaked instead of failing with a bare `Instance of`.
+        fingerprintSha256: sha256Fingerprint('stored-2222'),
+        pinnedAt: 1,
+      ));
+      final trial = UnpinnedHostKeyStore(real);
+      // A pin read through from the wrapped store is scoped to its port —
+      // the path every trial takes for the pins it already has…
+      expect((await trial.get('stored.example.com', 2222))?.fingerprintSha256,
+          sha256Fingerprint('stored-2222'));
+      expect(await trial.get('stored.example.com', 22), isNull);
+      // …and so is one approved during the trial itself.
+      await trial.put(HostKey(
+        host: 'dual.example.com',
+        port: 22,
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('dual-22'),
+        pinnedAt: 2,
+      ));
+      expect((await trial.get('dual.example.com', 22))?.fingerprintSha256,
+          sha256Fingerprint('dual-22'));
+      expect(await trial.get('dual.example.com', 2222), isNull);
+      // And `all()`, which is the inventory the same scoping has to survive.
+      // Every other `all()` assertion in this file collides on the *same*
+      // port, so a merge keyed by host alone drops one of two pins and no
+      // test notices — measured: keying both sides by host passes the whole
+      // file. `get`'s port scoping is pinned three ways; its listing was not
+      // pinned at all.
+      await trial.put(HostKey(
+        host: 'dual.example.com',
+        port: 2222,
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('dual-2222'),
+        pinnedAt: 4,
+      ));
+      expect(
+        (await trial.all())
+            .where((k) => k.host == 'dual.example.com')
+            .map((k) => k.fingerprintSha256)
+            .toSet(),
+        {sha256Fingerprint('dual-22'), sha256Fingerprint('dual-2222')},
+      );
+    });
+
+    test('the manager consults the store with the port it was given', () async {
+      // The test above proves the *store* keys by port; nothing proves the
+      // manager passes the port through. Every other verifyHostKey call in
+      // this file uses 22, so a manager that hardcoded it — or dropped the
+      // argument — would satisfy the whole suite while the app's own sample
+      // config, on 2222, took the wrong pin.
+      final real = InMemoryHostKeyStore();
+      await real.put(HostKey(
+        host: 'portful.example.com',
+        port: 2222,
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('portful-2222'),
+        pinnedAt: 1,
+      ));
+      var prompts = 0;
+      final trial = UnpinnedHostKeyStore(real);
+      final manager = SshSessionManager(
+        tofu: TofuVerifier(trial),
+        onHostKey: (_) async {
+          prompts++;
+          return true;
+        },
+      );
+
+      expect(
+        await manager.verifyHostKey(
+          host: 'portful.example.com',
+          port: 2222,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('portful-2222'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 0,
+          reason: 'a pin on the offered port answers without asking');
+
+      // The same key on another port is a host this manager has never seen,
+      // so it must ask rather than answer from the 2222 pin. Answered yes, so
+      // a manager that hardcoded 22 fails on the count rather than the
+      // verdict — the two outcomes are otherwise identical.
+      expect(
+        await manager.verifyHostKey(
+          host: 'portful.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('portful-2222'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1,
+          reason: 'a pin must not answer for a port it was not approved on');
+      // Where the approval landed, not only that one was asked for: a manager
+      // that prompted and then pinned under the wrong port would satisfy both
+      // counts above — the same bug this test is about, one direction over.
+      expect((await trial.get('portful.example.com', 22))?.fingerprintSha256,
+          sha256Fingerprint('portful-2222'),
+          reason: 'an approved first sight must pin the port it was offered on');
+      // On the port, not the fingerprint: both pins carry the same key
+      // material by design — that is what isolates the prompt count above —
+      // so a fingerprint check here cannot tell "left alone" from
+      // "overwritten with an identical value".
+      final otherPort = await trial.get('portful.example.com', 2222);
+      expect(otherPort?.port, 2222,
+          reason: 'and must leave the pin for the other port alone');
+      // On the stamp, because neither of the other two fields can tell an
+      // untouched pin from one rewritten with the same material on the same
+      // port — which is what a manager pinning under 2222 instead of 22 would
+      // do. Only the fixture's own `pinnedAt` of 1 survives that.
+      expect(otherPort?.pinnedAt, 1,
+          reason: 'the original pin, not an identical-looking rewrite');
+      expect(otherPort?.fingerprintSha256, sha256Fingerprint('portful-2222'));
+      // And the pin this test just wrote does what a pin is for: offered
+      // again on the port it was approved on, it answers without asking. The
+      // read-back is only exercised above for the fixture-seeded 2222 pin, so
+      // a manager that writes correctly and then fails to consult its own
+      // new pin would pass everything before this line.
+      expect(
+        await manager.verifyHostKey(
+          host: 'portful.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('portful-2222'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1,
+          reason: 'the pin approved on this port must answer the next offer');
+    });
+  });
+}

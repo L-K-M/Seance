@@ -13,6 +13,7 @@ import '../services/xterm_engine.dart';
 import '../theme.dart';
 import 'app_menus.dart';
 import 'command_generator.dart';
+import 'connection_log_view.dart';
 import 'files_pane.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_appearance.dart';
@@ -1037,65 +1038,20 @@ class _Disconnected extends StatelessWidget {
   }
 }
 
-/// A collapsible view of the raw connection transcript, with a copy button.
+/// The failed tab's transcript. Wraps the shared [ConnectionLogView] with the
+/// session's own log notifier — not with AppState: a handshake appends a line
+/// per packet, and routing those through the app-wide notifier rebuilt the
+/// entire tree hundreds of times per connection.
 class _ConnectionLogView extends StatelessWidget {
   final TerminalSession session;
   const _ConnectionLogView({required this.session});
 
   @override
   Widget build(BuildContext context) {
-    // Listens to the session's own log notifier, not to AppState: a handshake
-    // appends a line per packet, and routing those through the app-wide
-    // notifier rebuilt the entire tree hundreds of times per connection.
     return ListenableBuilder(
       listenable: session.logNotifier,
-      builder: (context, _) => _log(context, session.log.toString()),
-    );
-  }
-
-  Widget _log(BuildContext context, String text) {
-    final scheme = Theme.of(context).colorScheme;
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        tilePadding: EdgeInsets.zero,
-        title: const Text('Connection log'),
-        childrenPadding: EdgeInsets.zero,
-        children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: text.isEmpty
-                  ? null
-                  : () {
-                      Clipboard.setData(ClipboardData(text: text));
-                      showTopToastIn(context, message: 'Log copied');
-                    },
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text('Copy'),
-            ),
-          ),
-          Container(
-            width: double.infinity,
-            constraints: const BoxConstraints(maxHeight: 260),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: SingleChildScrollView(
-              child: SelectableText(
-                text.isEmpty ? '(no log captured)' : text,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  height: 1.4,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+      builder: (context, _) =>
+          ConnectionLogView(text: session.log.toString()),
     );
   }
 }
