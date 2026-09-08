@@ -171,6 +171,16 @@ class ZaiSearch implements SearchProvider {
       // reason for being shared is that the rule is subtle — it steps back
       // off a UTF-16 surrogate pair rather than splitting it — and a server's
       // error prose is exactly where an emoji lands astride a cut.
+      // The key first, then the clip. This text is the tool's, and the same
+      // paragraph two branches down refuses to quote a transport body
+      // because a gateway "can echo the request, Authorization header
+      // included" — tool content is server-controlled in exactly the same
+      // way, and this string is written to be read *and logged*. Guarded on
+      // empty, since `replaceAll('')` splices the marker between every
+      // character.
+      if (apiKey.isNotEmpty) {
+        detail = detail.replaceAll(apiKey, '[redacted]');
+      }
       detail = clipText(detail, 512);
       throw http.ClientException(
         detail.isEmpty
@@ -619,7 +629,14 @@ class ZaiSearch implements SearchProvider {
       // burns the idle deadline and gets "Z.AI sent no reply", where the same
       // rejection over the plain-JSON transport says which of key, plan and
       // quota to look at. The two transports must fail the same way.
-      if (decoded['success'] == false) return decoded;
+      // Unless it carries a `method`, which the gateway's envelope does not:
+      // that is a notification or a server-initiated request, and this reader
+      // is written to walk past those. Returned instead, one stray event
+      // carrying a top-level `success: false` ends the read and reports the
+      // whole call as a rejection while the real reply is still inbound.
+      if (decoded['success'] == false && !decoded.containsKey('method')) {
+        return decoded;
+      }
       // A server may interleave other messages (a notification, a ping)
       // before the answer; only the matching id ends the read.
       if (decoded['id'] != id) return null;
@@ -923,6 +940,12 @@ class ZaiSearch implements SearchProvider {
       return decoded.values.whereType<String>().join(' ').trim();
     }
     if (decoded is List) return '';
+    // The *decoded* string, not the block: a text block that is one JSON
+    // string returned its own source, quotes included, into a snippet meant
+    // to be read. And a block of literal `null` decodes to null, which is
+    // not an answer — returning `block` made the word "null" one.
+    if (decoded is String) return decoded;
+    if (decoded == null) return '';
     return block;
   }
 
@@ -1074,7 +1097,13 @@ class ZaiSearch implements SearchProvider {
         final String? text = switch (candidate) {
           final String value => value,
           final Map<Object?, Object?> fields => _snippetText(fields),
-          final List<Object?> parts => parts.whereType<String>().join(' '),
+          // Each part by this same rule, not `whereType<String>()`: a list of
+          // localized objects — the shape the arm above exists for, one level
+          // down — was filtered away whole, and the field fell through to the
+          // URL or to nothing. Recursion terminates because `jsonDecode`
+          // output is acyclic.
+          final List<Object?> parts =>
+            parts.map(textOf).whereType<String>().join(' '),
           _ => null,
         };
         return text != null && text.isNotEmpty ? text : null;

@@ -1324,6 +1324,52 @@ void main() {
       expect(mixed.single.snippet, 'No matches for that query.');
     });
 
+    test('a list of localized parts is text, not nothing', () {
+      // The list arm filtered with `whereType<String>()`, so a list of the
+      // very objects the map arm exists to read was dropped whole and the
+      // field fell through — an empty snippet beside a perfectly good one.
+      final r = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'results': [
+                {
+                  'url': 'https://example.com/a',
+                  'title': 'T',
+                  'content': [
+                    {'text': 'first'},
+                    {'text': 'second'},
+                  ],
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(r.single.snippet, 'first second');
+    });
+
+    test('a bare JSON scalar block is prose, not its own source', () {
+      // `jsonDecode` succeeds on a lone quoted string, and returning the
+      // block handed back the quotes with it.
+      final quoted = ZaiSearch.parseToolResult({
+        'content': [
+          {'type': 'text', 'text': '"No results for that query."'},
+        ],
+      }, 5);
+      expect(quoted.single.snippet, 'No results for that query.');
+      // And `null` is not an answer, which returning the block made it.
+      expect(
+        ZaiSearch.parseToolResult({
+          'content': [
+            {'type': 'text', 'text': 'null'},
+          ],
+        }, 5),
+        isEmpty,
+      );
+    });
+
     test('a media name in any shape titles the result, not the URL', () {
       // `media` was the one field the shape walk did not go through: the
       // title switch returned it raw, so a localized object or a list failed
@@ -2242,6 +2288,24 @@ void main() {
       // And which copy callers get: a dedup that rewrote result URLs to its
       // normalized form, or kept the last seen, would also leave one.
       expect(results.single.url, 'https://x.example/docs');
+    });
+
+    test('a bare query marker is no query at all', () async {
+      // Backends emit `…/docs?` after stripping tracking parameters. The key
+      // took everything from the first '?', so the bare marker made a second
+      // key for one page — two slots, and a real result off the end of the
+      // limit.
+      final results = await CompositeSearch([
+        _Fixed([_hit('https://x.example/docs?')]),
+        _Fixed([_hit('https://x.example/docs')]),
+      ]).search('q', limit: 5);
+      expect(results, hasLength(1));
+      // And a query that carries something is still data, untouched.
+      final kept = await CompositeSearch([
+        _Fixed([_hit('https://x.example/docs?next=/docs/')]),
+        _Fixed([_hit('https://x.example/docs')]),
+      ]).search('q', limit: 5);
+      expect(kept, hasLength(2));
     });
 
     test('two forms of one page from a single backend are one result',

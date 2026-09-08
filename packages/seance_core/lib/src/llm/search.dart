@@ -124,7 +124,14 @@ String _dedupKey(String url) {
   final path = queryStart == -1
       ? withoutFragment
       : withoutFragment.substring(0, queryStart);
-  final query = queryStart == -1 ? '' : withoutFragment.substring(queryStart);
+  // A marker with nothing after it is not a query. `…/docs?` and `…/docs`
+  // are the same page, and backends do emit the bare form after stripping
+  // tracking parameters — two slots for one page, and a real result falls
+  // off the end of the limit, which is the near-miss this function exists
+  // to catch.
+  final query = queryStart == -1 || queryStart == withoutFragment.length - 1
+      ? ''
+      : withoutFragment.substring(queryStart);
   return path.replaceFirst(_trailingSlashes, '') + query;
 }
 
