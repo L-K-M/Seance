@@ -53,6 +53,9 @@ class FakeMcpServer {
   /// Pages of extra tools to hand back before the real listing, to exercise
   /// `tools/list` pagination.
   int extraToolPages = 0;
+
+  /// A `nextCursor` of the wrong type, to exercise the malformed-reply guard.
+  Object? malformedCursor;
   int _toolPagesServed = 0;
   Map<String, dynamic>? lastArguments;
 
@@ -247,6 +250,7 @@ class FakeMcpServer {
             {'name': 'unrelated_tool', 'inputSchema': const {}},
             {'name': 'web_search_prime', 'inputSchema': _schema},
           ],
+          if (malformedCursor != null) 'nextCursor': malformedCursor,
         };
       case 'tools/call':
         // Null-aware: MCP allows a tools/call with no arguments, and a hard
@@ -529,6 +533,34 @@ void main() {
       expect(results[2].map((r) => r.url), everyElement(contains('q=c')));
       // One for the original session, one for the shared replacement.
       expect(server.methods.where((m) => m == 'initialize').length, 2);
+      // And the call count the comment above leans on, which was never
+      // actually asserted: three that met the retired session, three retries
+      // after the shared re-handshake. A caller that inherited another's
+      // retried call, or sent its own twice, leaves the initialize count and
+      // the per-query echoes intact.
+      expect(server.methods.where((m) => m == 'tools/call').length, 6);
+    });
+
+    test('a cursor of the wrong type is a malformed reply, not an ending',
+        () async {
+      // Read as "no more pages", a wrong-typed cursor ended the walk with the
+      // listing truncated — and left no cursor for the pagination guard to
+      // trip, so the search tool went missing and the user was told to check
+      // their Coding Plan. That is the plan accusation for a transport fault
+      // that the guard beside it exists to prevent.
+      final server = FakeMcpServer()..malformedCursor = 3;
+
+      await expectLater(
+        ZaiSearch(apiKey: 'k', client: server.client).search('dart'),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('unexpected search reply'),
+            isNot(contains('Coding Plan')),
+          ),
+        )),
+      );
     });
 
     test('a listing that never stops paginating says so', () async {
@@ -614,6 +646,30 @@ void main() {
           reason: '"$msg" is a quota failure, not a key failure',
         );
       }
+    });
+
+    test('a transport 429 says it is temporary, not a bare status', () async {
+      // The gateway's own throttling reply is classified by `readRpcResult`;
+      // this is the transport-level twin, from the gateway or anything in
+      // front of it. It used to fall into the catch-all and read "Z.AI
+      // search error HTTP 429", which says nothing about a failure that
+      // clears itself.
+      final client = MockClient.streaming((request, body) async =>
+          http.StreamedResponse(Stream.value(utf8.encode('slow down')), 429));
+
+      await expectLater(
+        ZaiSearch(apiKey: 'k', client: client).search('dart'),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('try the search again'),
+            isNot(contains('HTTP 429')),
+            // And not the body, like every other status branch here.
+            isNot(contains('slow down')),
+          ),
+        )),
+      );
     });
 
     test('throttling is blamed on neither the key nor the plan', () async {
@@ -764,7 +820,7 @@ void main() {
                 .having((e) => e.message, 'message', contains(actionable))
                 .having((e) => e.message, 'message', isNot(contains('secret'))),
             ),
-          reason: 'HTTP $status should name the key',
+          reason: 'HTTP $status should name "$actionable"',
           // The same guard the stall tests carry: this drives the same
           // non-2xx body drain, so a regressed deadline would hang the loop
           // rather than fail it.
@@ -1292,6 +1348,109 @@ void main() {
       }, 5);
       expect(mixed, hasLength(1));
       expect(mixed.single.snippet, 'No matches for that query.');
+    });
+
+    test('a list of localized parts is text, not nothing', () {
+      // The list arm filtered with `whereType<String>()`, so a list of the
+      // very objects the map arm exists to read was dropped whole and the
+      // field fell through — an empty snippet beside a perfectly good one.
+      final r = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode({
+              'results': [
+                {
+                  'url': 'https://example.com/a',
+                  'title': 'T',
+                  'content': [
+                    {'text': 'first'},
+                    {'text': 'second'},
+                  ],
+                },
+              ],
+            }),
+          },
+        ],
+      }, 5);
+      expect(r.single.snippet, 'first second');
+    });
+
+    test('a bare JSON scalar block is prose, not its own source', () {
+      // `jsonDecode` succeeds on a lone quoted string, and returning the
+      // block handed back the quotes with it.
+      final quoted = ZaiSearch.parseToolResult({
+        'content': [
+          {'type': 'text', 'text': '"No results for that query."'},
+        ],
+      }, 5);
+      expect(quoted.single.snippet, 'No results for that query.');
+      // And `null` is not an answer, which returning the block made it.
+      expect(
+        ZaiSearch.parseToolResult({
+          'content': [
+            {'type': 'text', 'text': 'null'},
+          ],
+        }, 5),
+        isEmpty,
+      );
+    });
+
+    test('a media name in any shape titles the result, not the URL', () {
+      // `media` was the one field the shape walk did not go through: the
+      // title switch returned it raw, so a localized object or a list failed
+      // the `title is String` test at the bottom and the row rendered its
+      // own URL — the exact symptom the map and list cases beside it exist
+      // to prevent.
+      for (final media in [
+        {'en': 'A title'},
+        ['A title'],
+      ]) {
+        final r = ZaiSearch.parseToolResult({
+          'content': [
+            {
+              'type': 'text',
+              'text': jsonEncode({
+                'results': [
+                  {
+                    'url': 'https://example.com/a',
+                    'media': media,
+                    'snippet': 's',
+                  },
+                ],
+              }),
+            },
+          ],
+        }, 5);
+        expect(r.single.title, 'A title', reason: 'media $media');
+      }
+    });
+
+    test('an answer wrapped in an envelope is not thrown away with it', () {
+      // The other half of the rule above, and the half the first version of
+      // it broke: excluding every JSON container dropped a real answer that
+      // happens to arrive inside one. `results` is empty so nothing
+      // link-shaped is found, and the words are the whole reply.
+      final answered = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': '{"answer": "Paris is the capital", "results": []}',
+          },
+        ],
+      }, 5);
+      expect(answered, hasLength(1));
+      expect(answered.single.snippet, 'Paris is the capital');
+      // Nested structure is not prose: `_collect` has already walked it, and
+      // its punctuation is not an answer.
+      expect(
+        ZaiSearch.parseToolResult({
+          'content': [
+            {'type': 'text', 'text': '{"data": {"title": "unusable"}}'},
+          ],
+        }, 5),
+        isEmpty,
+      );
     });
 
     test('an empty snippet of any shape does not hide the description', () {
@@ -1945,9 +2104,13 @@ void main() {
           const Duration(seconds: 30),
           total: const Duration(milliseconds: 40),
           totalMessage: 'held open',
-          // Test-side only: a deadline that stopped being enforced would
-          // otherwise hang this until the runner's own timeout.
-        ).toList().timeout(const Duration(seconds: 5)),
+        ).toList()
+            // Test-side only, and it sat above beside `total:` and
+            // `totalMessage:` — two production arguments, one of which this
+            // test asserts the message of. It guards the line it is now on:
+            // a deadline that stopped being enforced would hang this until
+            // the runner's own timeout.
+            .timeout(const Duration(seconds: 5)),
         throwsA(isA<http.ClientException>().having(
           (e) => e.message,
           'message',
@@ -2151,6 +2314,24 @@ void main() {
       // And which copy callers get: a dedup that rewrote result URLs to its
       // normalized form, or kept the last seen, would also leave one.
       expect(results.single.url, 'https://x.example/docs');
+    });
+
+    test('a bare query marker is no query at all', () async {
+      // Backends emit `…/docs?` after stripping tracking parameters. The key
+      // took everything from the first '?', so the bare marker made a second
+      // key for one page — two slots, and a real result off the end of the
+      // limit.
+      final results = await CompositeSearch([
+        _Fixed([_hit('https://x.example/docs?')]),
+        _Fixed([_hit('https://x.example/docs')]),
+      ]).search('q', limit: 5);
+      expect(results, hasLength(1));
+      // And a query that carries something is still data, untouched.
+      final kept = await CompositeSearch([
+        _Fixed([_hit('https://x.example/docs?next=/docs/')]),
+        _Fixed([_hit('https://x.example/docs')]),
+      ]).search('q', limit: 5);
+      expect(kept, hasLength(2));
     });
 
     test('two forms of one page from a single backend are one result',

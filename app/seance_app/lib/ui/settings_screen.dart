@@ -911,8 +911,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Every await below can throw — the keystore reads, `saveSettings`, and
     // the provider reload. Without this, one of them escaping leaves `_saving`
     // set, and it is what disables Save *and* all three sync switches, the
-    // mode selector and both sync buttons: a transient disk failure would lock
-    // the whole sync section of this screen until it is closed and reopened.
+    // Z.AI switch, the mode selector and both sync buttons: a transient disk
+    // failure would lock the whole assistant section of this screen until it
+    // is closed and reopened.
     try {
       await _saveInner(state, versionAtEntry, enteredLlmKey, enteredZaiKey,
           keyEntered);
@@ -970,9 +971,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // plaintext in the field and the assistant authenticating with the
     // fragment until the next save. Same fix as the Z.AI switch (round 23)
     // and the provider dropdown (round 24): read once, up here.
-    final enteredLlmKey = _apiKey.text;
-    final enteredZaiKey = _zaiApiKey.text;
-    if (_zai && enteredZaiKey.trim().isNotEmpty) {
+    //
+    // The two key fields are read one frame earlier still, in `_save`, and
+    // arrive as parameters — this branch needs `keyEntered` before the
+    // `setState` that disables the form, and re-reading the controllers here
+    // would have shadowed the parameters with values the caller never saw.
+    // The Z.AI merge brought the reads back as locals; keeping both would
+    // leave two of the parameters dead.
+    // The rest of the form, for the same reason and in the same place. Round
+    // 25 snapshotted the two key fields and left these four reading live at
+    // assignment time, several awaits later — and a keystore write is
+    // exactly where a save stalls, since an OS keyring can put a prompt in
+    // front of it. Text typed into the endpoint box during that stall was
+    // folded into the save already in flight and handed straight to
+    // `reloadLlmProvider`. It also made the comment on the Z.AI switch
+    // ("the text fields' mid-save edits are already snapshotted") false for
+    // every field but the two it was written about.
+    final enteredBaseUrl = _baseUrl.text.trim();
+    final enteredModel = _model.text.trim();
+    final enteredSearxng = _searxng.text.trim();
+    final enteredRedaction = _redaction;
+    // The switch too, and this is the last live read in the method. It is
+    // safe today only because the `SwitchListTile` six hundred lines up is
+    // gated on `_saving` — which is exactly the external dependency the
+    // provider snapshot beside it was added to remove. Make that switch
+    // responsive during a save, a natural thing to want, and the split-brain
+    // returns: one save writing the key while writing `zaiApiKeyRef: null`,
+    // or setting the ref with nothing stored behind it.
+    final zaiEnabled = _zai;
+    if (zaiEnabled && enteredZaiKey.trim().isNotEmpty) {
       try {
         await state.services.masterKeys.putApiKey(
           _zaiKeyRef,
@@ -1031,7 +1058,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // sound — but only because of that, and it is the one await that had to
     // stay sound for a reason outside this file.
     final zaiWithoutKey =
-        _zai && (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
+        zaiEnabled &&
+            (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
 
     // Both taken before the assignments below, and before any `await`, so a
     // Save that changes nothing does not stamp: see
@@ -1065,14 +1093,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final before = assistantSyncFingerprint(s);
     s.llmKind = kind;
-    s.llmBaseUrl = _baseUrl.text.trim();
-    s.llmModel = _model.text.trim();
+    s.llmBaseUrl = enteredBaseUrl;
+    s.llmModel = enteredModel;
     s.llmApiKeyRef = ref;
-    s.redactionEnabled = _redaction;
-    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
+    s.redactionEnabled = enteredRedaction;
+    s.searxngUrl = enteredSearxng.isEmpty ? null : enteredSearxng;
     // The reference is what switches the backend on; turning it off leaves the
     // key in the keystore rather than deleting it, like every other key here.
-    s.zaiApiKeyRef = _zai ? _zaiKeyRef : null;
+    s.zaiApiKeyRef = zaiEnabled ? _zaiKeyRef : null;
     // Turning the switch on with the field left blank and nothing stored is
     // the one way to end up with a backend that reads as on and is silently
     // skipped on every search. Reported rather than blocked: the rest of this
@@ -1114,7 +1142,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // promises not to do. The LLM key needs no equivalent; its write is
       // gated only on the text being non-blank, and blank is nothing to
       // lose.
-      if (_zai && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
+      if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
     }
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();

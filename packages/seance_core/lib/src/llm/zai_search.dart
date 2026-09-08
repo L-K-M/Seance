@@ -62,7 +62,8 @@ class ZaiSearch implements SearchProvider {
   /// field, a concurrent reset could null it between the handshake completing
   /// and the caller reading it, and the read was a `!`. There is no window to
   /// lose here.
-  Future<Map<String, dynamic>>? _handshake;
+  Future<({Map<String, dynamic> tool, Map<String, String> session})>?
+      _handshake;
   int _nextId = 0;
 
   ZaiSearch({
@@ -99,7 +100,17 @@ class ZaiSearch implements SearchProvider {
   }
 
   Future<List<SearchResult>> _attempt(String query, int limit) async {
-    return _callSearch(await _ensureHandshake(), query, limit);
+    // The session comes back *with* the tool rather than being read from the
+    // field at send time. `_send` falls back to `_session` when handed none,
+    // so a concurrent expiry landing between this await and the POST below
+    // stripped the id from a request that had legitimately negotiated one —
+    // and an id-less 404 fails `sentSessionId`, drops out of the
+    // session-expiry branch into the generic `>= 400` one, and surfaces as a
+    // bare "HTTP 404" that `search`'s retry never sees. Threaded, the
+    // straggler still recognizes its own expiry and re-handshakes, which is
+    // what makes [_reset]'s "never a wrong result" true.
+    final ready = await _ensureHandshake();
+    return _callSearch(ready.tool, ready.session, query, limit);
   }
 
   /// Forget the negotiated session so the next search starts a new one.
@@ -133,10 +144,11 @@ class ZaiSearch implements SearchProvider {
 
   Future<List<SearchResult>> _callSearch(
     Map<String, dynamic> tool,
+    Map<String, String> session,
     String query,
     int limit,
   ) async {
-    final result = await _call('tools/call', {
+    final result = await _call('tools/call', session: session, {
       'name': tool['name'],
       'arguments': buildArguments(
         _asStringMap(tool['inputSchema']),
@@ -159,6 +171,16 @@ class ZaiSearch implements SearchProvider {
       // reason for being shared is that the rule is subtle — it steps back
       // off a UTF-16 surrogate pair rather than splitting it — and a server's
       // error prose is exactly where an emoji lands astride a cut.
+      // The key first, then the clip. This text is the tool's, and the same
+      // paragraph two branches down refuses to quote a transport body
+      // because a gateway "can echo the request, Authorization header
+      // included" — tool content is server-controlled in exactly the same
+      // way, and this string is written to be read *and logged*. Guarded on
+      // empty, since `replaceAll('')` splices the marker between every
+      // character.
+      if (apiKey.isNotEmpty) {
+        detail = detail.replaceAll(apiKey, '[redacted]');
+      }
       detail = clipText(detail, 512);
       throw http.ClientException(
         detail.isEmpty
@@ -171,7 +193,8 @@ class ZaiSearch implements SearchProvider {
   }
 
   /// Run the handshake once, and let concurrent callers await the same one.
-  Future<Map<String, dynamic>> _ensureHandshake() async {
+  Future<({Map<String, dynamic> tool, Map<String, String> session})>
+      _ensureHandshake() async {
     final pending = _handshake;
     if (pending != null) return pending;
     final attempt = _runHandshake();
@@ -188,7 +211,8 @@ class ZaiSearch implements SearchProvider {
     }
   }
 
-  Future<Map<String, dynamic>> _runHandshake() async {
+  Future<({Map<String, dynamic> tool, Map<String, String> session})>
+      _runHandshake() async {
     // Staged locally and published only on success. A handshake that edited
     // `_session` as it went could have its freshly negotiated id wiped by a
     // *second* caller's expiry reset arriving mid-flight, and would then send
@@ -202,6 +226,7 @@ class ZaiSearch implements SearchProvider {
         'clientInfo': {'name': 'seance', 'version': '1'},
       },
       session: staged,
+      stageIssuedId: true,
     );
     // Read with `is`, not `as`. These values are the gateway's, and a failed
     // cast throws `TypeError` — an `Error`, which sails past the `on
@@ -216,6 +241,7 @@ class ZaiSearch implements SearchProvider {
     await _send(
       {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
       session: staged,
+      stageIssuedId: true,
     );
 
     final tools = <Map>[];
@@ -227,10 +253,20 @@ class ZaiSearch implements SearchProvider {
         'tools/list',
         cursor == null ? const <String, dynamic>{} : {'cursor': cursor},
         session: staged,
+        stageIssuedId: true,
       );
       tools.addAll(_asList(listing['tools']).whereType<Map>());
       final next = listing['nextCursor'];
-      cursor = next is String ? next : null;
+      // A wrong-typed cursor is a malformed reply, not the end of the list.
+      // Read as "no more pages", it fell out of the loop with the listing
+      // truncated and no cursor left to trip the guard below — so the search
+      // tool went missing and the user was told to check their Coding Plan,
+      // which is the plan accusation for a transport fault that guard exists
+      // to prevent.
+      if (next != null && next is! String) {
+        throw http.ClientException('Z.AI returned an unexpected search reply.');
+      }
+      cursor = next as String?;
       if (cursor == null || cursor.isEmpty) break;
     }
     if (cursor != null && cursor.isNotEmpty) {
@@ -247,7 +283,7 @@ class ZaiSearch implements SearchProvider {
       for (final tool in tools) {
         if (tool['name'] == name) {
           _session = Map.unmodifiable(staged);
-          return tool.cast<String, dynamic>();
+          return (tool: tool.cast<String, dynamic>(), session: _session);
         }
       }
     }
@@ -262,6 +298,7 @@ class ZaiSearch implements SearchProvider {
     String method,
     Map<String, dynamic> params, {
     Map<String, String>? session,
+    bool stageIssuedId = false,
   }) async {
     final id = ++_nextId;
     final message = await _send({
@@ -269,7 +306,7 @@ class ZaiSearch implements SearchProvider {
       'id': id,
       'method': method,
       'params': params,
-    }, id: id, session: session);
+    }, id: id, session: session, stageIssuedId: stageIssuedId);
     return readRpcResult(message, method: method, id: id);
   }
 
@@ -279,6 +316,7 @@ class ZaiSearch implements SearchProvider {
     Map<String, dynamic> payload, {
     int? id,
     Map<String, String>? session,
+    bool stageIssuedId = false,
   }) async {
     final headers = session ?? _session;
     final request = http.Request('POST', Uri.parse(endpoint))
@@ -327,8 +365,15 @@ class ZaiSearch implements SearchProvider {
     final sentSessionId = headers.containsKey('mcp-session-id');
     final issued = response.headers['mcp-session-id'];
     // Only a staged (in-handshake) map is written to; the published one is
-    // replaced wholesale when the handshake completes.
-    if (issued != null && session != null) session['mcp-session-id'] = issued;
+    // replaced wholesale when the handshake completes. Asked for explicitly
+    // rather than inferred from `session != null`, which stopped being the
+    // same question once `tools/call` began passing the *published* session:
+    // that map is `Map.unmodifiable`, so a gateway reissuing an id on an
+    // ordinary call would throw `UnsupportedError` from here — an `Error`,
+    // past every `on Exception` this class's callers rely on.
+    if (issued != null && stageIssuedId && session != null) {
+      session['mcp-session-id'] = issued;
+    }
 
     // Both drains are deadlined like the SSE one: `send` only bounds the wait
     // for headers, so a gateway that answers 4xx and then stalls the body
@@ -362,6 +407,17 @@ class ZaiSearch implements SearchProvider {
             ? 'Z.AI rejected the search API key. Check the key in Settings.'
             : 'Z.AI refused the search request. The key may be valid but lack '
                 'Web Search Prime access, which needs a GLM Coding Plan.',
+      );
+    }
+    // Named like the gateway's own throttling reply, which `readRpcResult`
+    // sends to the `throttled` branch: this is the transport-level twin, and
+    // "Z.AI search error HTTP 429" tells a user nothing about a failure that
+    // clears itself. No retry here — the caller decides when to ask again.
+    if (response.statusCode == 429) {
+      await _drainQuietly(response.stream);
+      throw http.ClientException(
+        'Z.AI is rate-limiting the search. That is usually temporary — try '
+        'the search again.',
       );
     }
     if (response.statusCode >= 400) {
@@ -582,7 +638,14 @@ class ZaiSearch implements SearchProvider {
       // burns the idle deadline and gets "Z.AI sent no reply", where the same
       // rejection over the plain-JSON transport says which of key, plan and
       // quota to look at. The two transports must fail the same way.
-      if (decoded['success'] == false) return decoded;
+      // Unless it carries a `method`, which the gateway's envelope does not:
+      // that is a notification or a server-initiated request, and this reader
+      // is written to walk past those. Returned instead, one stray event
+      // carrying a top-level `success: false` ends the read and reports the
+      // whole call as a rejection while the real reply is still inbound.
+      if (decoded['success'] == false && !decoded.containsKey('method')) {
+        return decoded;
+      }
       // A server may interleave other messages (a notification, a ping)
       // before the answer; only the matching id ends the read.
       if (decoded['id'] != id) return null;
@@ -837,16 +900,11 @@ class ZaiSearch implements SearchProvider {
     // `Error` sails past the `on Exception` handling every caller relies on.
     if (found.isNotEmpty) return found.take(limit < 0 ? 0 : limit).toList();
 
-    // JSON containers excluded: `_collect` above already walked them and
-    // found nothing link-shaped, so joining them here re-emits the same
-    // bytes as an *answer* — a synthetic result whose snippet is raw JSON,
-    // handed to the model and shown in the UI. A tool that reported
-    // `{"results": []}`, or results whose links were all unusable, means
-    // "nothing found"; that is an empty list, not noise. Map-or-List is the
-    // same test `_collect` uses, so the two paths agree on what is data: a
-    // bare JSON string or number still reads as prose, because it is.
+    // Each block reduced to the text a person wrote in it, so an envelope
+    // contributes its prose and not its punctuation. See [_answerProse].
     final prose = _textBlocks(result['content'])
-        .where((block) => !_isJsonContainer(block))
+        .map(_answerProse)
+        .where((text) => text.isNotEmpty)
         .join('\n')
         .trim();
     // The limit binds here too: the link path takes none when asked for none,
@@ -855,13 +913,49 @@ class ZaiSearch implements SearchProvider {
     return [SearchResult(title: 'Z.AI web search', url: '', snippet: prose)];
   }
 
-  static bool _isJsonContainer(String text) {
+  /// The prose in one text block, or empty when it holds none.
+  ///
+  /// The fallback exists because a tool may answer in words rather than
+  /// links, and this function's rule is that dropping an answer it did find
+  /// is the worse failure. Two shapes have to be told apart, and the first
+  /// version of this guard got it wrong in each direction in turn.
+  ///
+  /// Joining every block verbatim re-emitted a *results envelope* — which
+  /// `_collect` has already walked and found nothing link-shaped in — as a
+  /// synthetic result whose snippet is raw JSON, into the model's context
+  /// and the UI. Excluding every block that decodes to a Map or List fixed
+  /// that and broke the other half: an *answer envelope* like
+  /// `{"answer": "…", "results": []}` decodes to a Map, so a real answer was
+  /// silently dropped and the caller saw "nothing found".
+  ///
+  /// So: a block that is not JSON is prose as it stands, and a bare JSON
+  /// scalar reads as prose too. A JSON object contributes its string values,
+  /// which is where a tool puts words; anything nested is structure
+  /// `_collect` has seen. A JSON list is the results shape itself and
+  /// contributes nothing.
+  ///
+  /// The residual cost, stated rather than hidden: an envelope whose only
+  /// string is incidental — `{"query": "dart", "results": []}` — answers
+  /// with "dart". That is a thin result where the alternative is a lost one,
+  /// and this function's own contract picks the thin one.
+  static String _answerProse(String block) {
+    final Object? decoded;
     try {
-      final decoded = jsonDecode(text);
-      return decoded is Map || decoded is List;
+      decoded = jsonDecode(block);
     } on FormatException {
-      return false;
+      return block;
     }
+    if (decoded is Map) {
+      return decoded.values.whereType<String>().join(' ').trim();
+    }
+    if (decoded is List) return '';
+    // The *decoded* string, not the block: a text block that is one JSON
+    // string returned its own source, quotes included, into a snippet meant
+    // to be read. And a block of literal `null` decodes to null, which is
+    // not an answer — returning `block` made the word "null" one.
+    if (decoded is String) return decoded;
+    if (decoded == null) return '';
+    return block;
   }
 
   static Iterable<String> _textBlocks(Object? content) sync* {
@@ -910,8 +1004,17 @@ class ZaiSearch implements SearchProvider {
   /// body that never arrives adds nothing, so its `TimeoutException` is
   /// dropped and the caller throws the error the status line earned.
   Future<void> _drainQuietly(http.ByteStream stream) async {
+    // The subscription is held, not just the future. `Future.timeout`
+    // completes the future it *returns* and never touches the subscription
+    // `drain` opened underneath it — so a body that stalls forever left this
+    // method returning while the read went on holding the response stream,
+    // and with it a pooled connection. That is the same "frees the caller
+    // while the socket lived on" failure `bounded` exists to prevent,
+    // reproduced on the error path, where every caller arrives already
+    // failing. Owning the subscription is what makes `cancel` possible.
+    final subscription = stream.listen(null, onError: (Object _) {});
     try {
-      await stream.drain<void>().timeout(timeout);
+      await subscription.asFuture<void>().timeout(timeout);
     } on Exception {
       // A stall, a reset, a truncated body: none of it changes what the
       // status line already said, and the caller's exception is the one that
@@ -919,6 +1022,8 @@ class ZaiSearch implements SearchProvider {
       // dropped mid-body preempt "HTTP 502" with a bare transport error — and
       // on the 404 branch displace the session-expiry signal, the same way
       // the deadline used to.
+    } finally {
+      await subscription.cancel();
     }
   }
 
@@ -994,60 +1099,44 @@ class ZaiSearch implements SearchProvider {
       // Empty falls through, like `link` two lines up: `??` only handles
       // null, so an explicitly empty title would keep the empty string and
       // render the raw URL with a perfectly good `media` name beside it.
-      final rawTitle = value['title'];
-      final title = switch (rawTitle) {
-        final String text when text.isNotEmpty => text,
-        // The localized-object shape the snippet case below reads: a title
-        // deserves the same tolerance, one field over, or a result with a
-        // perfectly good title renders as its URL.
-        final Map<Object?, Object?> fields
-            when _snippetText(fields).isNotEmpty =>
-          _snippetText(fields),
-        // A list, like the snippet case below: several localized titles, or
-        // a title split into parts. Dropping it to the URL was the same
-        // asymmetry the map case was.
-        final List<Object?> parts
-            when parts.whereType<String>().join(' ').isNotEmpty =>
-          parts.whereType<String>().join(' '),
-        _ => value['media'],
-      };
-      // Empty falls through here too: an explicitly empty `content` beside
-      // a usable `snippet` was rendering as no snippet at all.
+      // One walk, four callers. The rule — a String as it stands, a
+      // localized object's text, parts joined on spaces, nothing otherwise —
+      // was written out four times: twice in the title switch (guard and
+      // body, so `_snippetText` ran twice per field), once in a `rendersText`
+      // predicate, and once more in the snippet switch below. The comments
+      // above record two bugs that came from those copies drifting apart, and
+      // a third was still here: `media` was returned *raw* from the title
+      // switch, so a localized-object or list `media` failed the
+      // `title is String` test at the bottom and rendered the URL — the exact
+      // symptom the map and list cases one line up exist to prevent.
       //
-      // One question for both fields, and it is the renderer's own: will this
-      // put text in front of a person? `??` answers for null alone, so an
-      // explicitly empty value — in any shape, not only as a string — hid a
-      // usable field beside it. Asking it in the switch's own terms is what
-      // keeps the two from disagreeing: a list of numbers or a map with no
-      // text renders to nothing, so treating either as present drops a good
-      // `description` for a field that shows the reader an empty line.
-      bool rendersText(Object? value) => switch (value) {
-        final String text => text.isNotEmpty,
-        final List<Object?> parts =>
-          parts.whereType<String>().join(' ').isNotEmpty,
-        final Map<Object?, Object?> fields => _snippetText(fields).isNotEmpty,
-        _ => false,
-      };
-      final content = value['content'];
-      final rawSnippet = value['snippet'];
-      final snippet = rendersText(content)
-          ? content
-          : rendersText(rawSnippet)
-              ? rawSnippet
-              : value['description'];
-      out.add(SearchResult(
-        title: title is String && title.isNotEmpty ? title : url,
-        url: url,
-        snippet: switch (snippet) {
-          final String text => text,
-          final List<Object?> parts => parts.whereType<String>().join(' '),
-          // The localized-object shape the comment above names — `{lang: en,
-          // text: …}`. The list case is already joined, so dropping the map
-          // case to '' was an asymmetry rather than a policy: it vanished the
-          // whole snippet for exactly the payload this walk is built for.
+      // Null means "puts no text in front of a person", which is what lets
+      // `??` express the precedence directly: empty, absent, a number, a list
+      // of numbers and a map with no text all fall through alike.
+      String? textOf(Object? candidate) {
+        final String? text = switch (candidate) {
+          final String value => value,
           final Map<Object?, Object?> fields => _snippetText(fields),
-          _ => '',
-        },
+          // Each part by this same rule, not `whereType<String>()`: a list of
+          // localized objects — the shape the arm above exists for, one level
+          // down — was filtered away whole, and the field fell through to the
+          // URL or to nothing. Recursion terminates because `jsonDecode`
+          // output is acyclic.
+          final List<Object?> parts =>
+            parts.map(textOf).whereType<String>().join(' '),
+          _ => null,
+        };
+        return text != null && text.isNotEmpty ? text : null;
+      }
+
+      final title = textOf(value['title']) ?? textOf(value['media']);
+      final snippet = textOf(value['content']) ??
+          textOf(value['snippet']) ??
+          textOf(value['description']);
+      out.add(SearchResult(
+        title: title ?? url,
+        url: url,
+        snippet: snippet ?? '',
       ));
       return;
     }
