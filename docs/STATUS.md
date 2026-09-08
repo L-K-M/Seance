@@ -258,13 +258,14 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
 18. **One passphrase slot serves two keys.** A second failure of the same
     slot, reachable without any method switch: referencing a key file writes
     the *typed* passphrase beside the PEM the entry already held, because one
-    entry carries one passphrase and the referenced key needs its own. A device that had a pasted key under
-    passphrase A, then referenced a different key file under passphrase B,
-    stores `{PEM A, passphrase B}` — and switching back to a pasted key
-    without re-pasting leaves a PEM that no longer decrypts. Carrying the old
-    passphrase instead would break the referenced key, which is the one the
-    server is actually set to use, so this needs the same fix as the paragraph
-    17: two slots, or an editor that says which key a passphrase belongs to.
+    entry carries one passphrase and the referenced key needs its own. A device
+    that had a pasted key under passphrase A, then referenced a different key
+    file under passphrase B, stores `{PEM A, passphrase B}` — and switching
+    back to a pasted key without re-pasting leaves a PEM that no longer
+    decrypts. Carrying the old passphrase instead would break the referenced
+    key, which is the one the server is actually set to use, so this wants the
+    same family of fix as item 17: two slots, or an editor that says which key
+    a passphrase belongs to.
 
 19. **Test connection validates the whole form, not the connection.**
     `_testConnection` opens with `_form.currentState!.validate()`, which runs
@@ -295,9 +296,12 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     re-pasting the old, and the box is blank in both cases for the same
     reason. The editor cannot tell them apart because it never shows whether
     a passphrase is stored. That, and not the branch, is the fix — and it is
-    the same fix items 16, 17 and 18 want. Four notes in one family is a
-    design asking for one change: an editor that says which key a stored
-    passphrase belongs to, and lets it be cleared.
+    the same family of fix items 16, 17 and 18 want — each names a different
+    affordance (a "no passphrase" choice, a kind-mismatch notice, passphrase
+    ownership), and all four are the editor saying what is stored instead of
+    leaving it implied. Four notes in one family is a design asking for one
+    change: an editor that says which key a stored passphrase belongs to, and
+    lets it be cleared.
 
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
