@@ -32,8 +32,36 @@ class SyncCoordinator {
   /// Optional snippet store. When present, snippets sync like server configs.
   final SnippetStore? snippetStore;
 
+  /// Opt-in assistant-configuration syncing. Null — the default — means the
+  /// record is neither pushed nor applied, so a device that has not opted in
+  /// keeps its own provider, model and keys whatever the account carries.
+  ///
+  /// When it is set, the assistant's API keys travel inside the sealed record
+  /// whether or not [syncSecrets] is on. The two switches are about different
+  /// things — [syncSecrets] governs the credentials servers authenticate with
+  /// — but `syncSecrets: false` is the flag a reader would reach for to keep
+  /// key material off the server, so the exception is worth stating here. The
+  /// seal is the protection, the same one synced passwords get.
+  final AssistantSettingsStore? assistantStore;
+
+  /// Whether an assistant record is worth having on the account at all.
+  ///
+  /// One predicate for both sides on purpose. [collectLocal] asks it before
+  /// publishing and the apply loop asks it before adopting, and the two must
+  /// answer identically: a record one side publishes and the other skips is
+  /// parked on the account under a stamp nothing older can displace, and one
+  /// the publish side would refuse but the apply side takes is adopted over a
+  /// working configuration. Written out twice, that symmetry survives only
+  /// until someone edits one copy. The reasoning behind each clause is at the
+  /// two call sites, which is where it is load-bearing.
+  static bool _isViableAssistantRecord(AssistantSettings s) =>
+      s.providerKind.isNotEmpty && s.updatedAt > 0;
+
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be
   /// provided so secrets can be sealed into records.
+  ///
+  /// Governs server credentials only: the assistant's API keys travel with
+  /// [assistantStore]'s record whatever this says — see there.
   final bool syncSecrets;
   final SecretVault? secretVault;
 
@@ -44,6 +72,7 @@ class SyncCoordinator {
     required this.local,
     required this.deviceId,
     this.snippetStore,
+    this.assistantStore,
     this.syncSecrets = false,
     this.secretVault,
   });
@@ -120,6 +149,47 @@ class SyncCoordinator {
         updatedAt: hk.pinnedAt,
         deviceId: deviceId,
         data: hk.toJson(),
+      )));
+    }
+    // The contract reserves null for "the keys could not be vouched for this
+    // round", but the real store backs onto an OS keyring, and a locked or
+    // missing one surfaces from a platform channel as a throw. Uncaught, one
+    // failed keystore read would abandon the rest of this method — the
+    // snippets below it would never be collected, and a round's worth of
+    // unrelated records would pay for the assistant's keyring. Degrading to
+    // null costs the assistant the round it was going to sit out anyway.
+    AssistantSettings? assistant;
+    try {
+      assistant = await assistantStore?.getAssistantSettings();
+    } catch (_) {
+      assistant = null;
+    }
+    // The apply side's guard, at the boundary where bad data enters: an empty
+    // provider means a payload this build could not read, not a configuration
+    // — the same degradation `fromJson` makes of a missing field can happen
+    // to a device's own settings file — and publishing one would park a
+    // record no device adopts on the account under this device's stamp,
+    // where nothing older can displace it.
+    // And the stamp, which is the other half of "is this worth publishing".
+    // Zero means this device has never edited its assistant — the sentinel
+    // `AppState.assistantSyncSwitchedOn` reads before it decides to stamp and
+    // publish. Without it here, a device that opted in with nothing
+    // configured parks its *shipped defaults* on the account at stamp zero,
+    // and the next device to opt in — every install that configured its
+    // assistant before this feature existed reads zero too — adopts them over
+    // a working provider, model and keys, because `0 < 0` is false. That is
+    // the exact harm the switch-on guard exists to prevent; guarding the
+    // stamp bump alone left this path open.
+    if (assistant != null && _isViableAssistantRecord(assistant)) {
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        // The settings' own timestamp, not the round's: collectLocal runs
+        // every five minutes, and a moving one would make each round a fresh
+        // winning write and set two devices trading the record forever.
+        updatedAt: assistant.updatedAt,
+        deviceId: deviceId,
+        data: assistant.toJson(),
       )));
     }
     final snippets = snippetStore;
@@ -366,6 +436,52 @@ class SyncCoordinator {
             if (store == null) continue;
 
             await store.putSnippet(Snippet.fromJson(dec.data));
+          case RecordKind.assistantSettings:
+            final store = assistantStore;
+            if (store == null) continue;
+
+            final assistant = AssistantSettings.fromJson(dec.data);
+            // `fromJson` degrades a missing field to '' rather than throwing,
+            // so that a record from a newer build stays readable. A provider
+            // name is the one field that can never legitimately be empty — it
+            // is written from an enum — so an empty one means the payload is
+            // not a configuration, and adopting it would replace a working
+            // assistant with nothing on every device that pulled it.
+            // And a stamp of zero, for the same reason one is never
+            // published: zero means "never edited here", so no compliant
+            // client puts one on the wire and two devices cannot legitimately
+            // tie at it. Refusing it here costs no convergence — unlike
+            // widening the comparison below, which would refuse a real tie —
+            // and it keeps a record parked by an older build, or by a client
+            // that does not follow this rule, from being adopted over a
+            // working configuration by every device still reading zero.
+            if (!_isViableAssistantRecord(assistant)) {
+              continue;
+            }
+
+            // This record won last-write-wins against the synced *mirror*,
+            // which is only as fresh as the last [collectLocal]. Unlike a
+            // server config, the assistant configuration is edited straight
+            // into its store between rounds — so an edit made while a round
+            // was already in flight is newer than anything the mirror knows,
+            // and applying an older pulled record over it would lose the edit
+            // silently, then re-collect and publish the loss.
+            //
+            // Strictly older, not older-or-equal: a tie between two records
+            // is already resolved at the record layer by device id and
+            // sequence, and skipping ties here would stop two devices ever
+            // converging on one of them. The tie that resolution never sees is
+            // a local edit that did not reach the mirror this round — made
+            // after [collectLocal] ran, or withheld by it because a key it
+            // references could not be read. That edit loses to a pulled record
+            // sharing its stamp, which is the narrow price of convergence and
+            // why the edit stamp is minted as fine-grained as the clock
+            // allows.
+            if (assistant.updatedAt < await store.assistantSettingsUpdatedAt()) {
+              continue;
+            }
+
+            await store.putAssistantSettings(assistant);
           case RecordKind.bookmark:
           case RecordKind.unknown:
             continue;

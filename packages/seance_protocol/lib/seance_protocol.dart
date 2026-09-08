@@ -16,6 +16,7 @@ export 'src/models/server_config.dart';
 export 'src/models/secret.dart';
 export 'src/models/host_key.dart';
 export 'src/models/snippet.dart';
+export 'src/models/assistant_settings.dart';
 export 'src/models/bookmark.dart';
 
 export 'src/records/record.dart';
