@@ -307,6 +307,19 @@ class SshConnectException implements Exception {
 /// no trace in the transcript people paste into bug reports.
 class AgentAuthUnsupportedError extends UnsupportedError {
   AgentAuthUnsupportedError(super.message);
+
+  // Like [SshConnectException] above, and for its reason.
+  // `UnsupportedError.toString()` prefixes "Unsupported operation: ", which
+  // is the fragment-of-a-stack-trace reading this message was written to
+  // avoid — and only a caller that knew to unwrap `.message` escaped it.
+  // Every renderer that reaches for the object now gets the sentence.
+  //
+  // Interpolated rather than returned: the inherited *field* is nullable
+  // even though the constructor above takes a plain `String`, so this is
+  // what satisfies the return type without a fallback for a state no caller
+  // can produce.
+  @override
+  String toString() => '$message';
 }
 
 /// A live SSH shell session wired to a [TerminalEngine].

@@ -339,7 +339,13 @@ void main() {
       // And the head of the first answer, which every other assertion here
       // leaves to the second line: a match anchored after a `]` would redact
       // `sword])` and leave `pas` standing.
-      expect(log.toString(), isNot(contains('pas]')));
+      //
+      // Bare `pas`, not `pas]`: that regression *consumes* the bracket on its
+      // way past, so the transcript holds `pas` with no `]` after it and a
+      // `pas]` probe passes while the head sits in the bug report. The
+      // retained text on both lines is `(responses: [redacted])`, which
+      // contains no `pas` — the newline test below already relies on that.
+      expect(log.toString(), isNot(contains('pas')));
       // The head of the second answer too: every other assertion here targets
       // what follows the bracket, so a match that started at the wrong `]`
       // would leave the front of a credential standing.
@@ -351,7 +357,7 @@ void main() {
       // The heads too, which the view assertions above left to `toString`:
       // if the two ever diverge, the front of a credential is as much of a
       // leak on the widget's side as the tail is.
-      expect(log.lines.join('\n'), isNot(contains('pas]')));
+      expect(log.lines.join('\n'), isNot(contains('pas')));
       expect(log.lines.join('\n'), isNot(contains('secret')));
       expect(log.toString(), contains('[redacted])'));
     });

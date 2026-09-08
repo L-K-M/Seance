@@ -240,25 +240,31 @@ void main() {
       expect(result.summary, isNot(contains('Unsupported operation')));
     });
 
-    test('an IPv6 host is bracketed once, however it was typed', () async {
-      // The host field is free text, so a literal pasted out of
-      // `ssh://user@[::1]:22` arrives with its brackets on. Wrapped again it
-      // renders `[[::1]]` in the one line this file calls the one people
-      // quote back; left unwrapped, a bare `::1` runs into the port.
-      for (final (typed, shown) in [
-        ('::1', '[::1]:2222'),
-        ('[::1]', '[::1]:2222'),
-        ('prod.example.com', 'prod.example.com:2222'),
-      ]) {
+    // The host field is free text, so a literal pasted out of
+    // `ssh://user@[::1]:22` arrives with its brackets on. Wrapped again it
+    // renders `[[::1]]` in the one line this file calls the one people quote
+    // back; left unwrapped, a bare `::1` runs into the port.
+    //
+    // One test per spelling rather than a loop inside one, which is the
+    // policy the Error-vs-Exception branches below already state: a
+    // sequential loop stops at the first failure, so a regression in the
+    // already-bracketed case or in leaving a hostname alone would hide behind
+    // whichever ran first.
+    for (final (typed, shown) in [
+      ('::1', '[::1]:2222'),
+      ('[::1]', '[::1]:2222'),
+      ('prod.example.com', 'prod.example.com:2222'),
+    ]) {
+      test('a host typed as "$typed" is bracketed once in the summary',
+          () async {
         final result = await runConnectionTest(
           config: config(host: typed),
           credentials: () async => const SshCredentials.password('pw'),
           authenticate: (_, _, _) async => AuthKind.storedPassword,
         );
-        expect(result.summary, contains('deploy@$shown'),
-            reason: 'host typed as $typed');
-      }
-    });
+        expect(result.summary, contains('deploy@$shown'));
+      });
+    }
 
     test('a jump host is called out rather than silently ignored', () async {
       // ProxyJump is modelled but not executed, so a direct success here does
@@ -693,7 +699,8 @@ void main() {
     });
 
     test('a trial approval satisfies the verifier it is wrapped in', () async {
-      final trial = UnpinnedHostKeyStore(InMemoryHostKeyStore());
+      final inner = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(inner);
       final verifier = TofuVerifier(trial);
       // Counted, because a pin is not consent: an implementation that trusted
       // and pinned an unknown key without asking would satisfy every verdict
@@ -779,7 +786,11 @@ void main() {
       // user is the whole security boundary.
       expect(reoffered, isTrue,
           reason: 'a changed key must be re-asked, never assumed');
-      {
+      // The braces that used to be here were `if (reoffered) {`, replaced in
+      // round 28 and left behind scoping nothing. What follows is the same
+      // scenario continuing, not a second one: each step depends on the pin
+      // the step before it left, so it cannot be lifted into a test of its
+      // own without repeating the four approvals that build that state.
         // Exactly two — the first pin and the one re-ask — not merely "more
         // than one": a manager that re-prompted on every reconnect would also
         // satisfy a lower bound.
@@ -835,7 +846,13 @@ void main() {
           sha256Fingerprint('new'),
           reason: 'a re-approved key must become the pin again',
         );
-      }
+      // And nothing above reached the wrapped store. This test drives three
+      // distinct `put` paths — a first-sight pin, the re-ask that replaces
+      // it, and the superseded key re-pinned — while asserting only what the
+      // trial store holds. Its siblings keep that reference and check it; the
+      // test with the most ways to leak was the one that could not.
+      expect(await inner.all(), isEmpty,
+          reason: 'no approval in this test may reach the wrapped store');
     });
 
     test('a pin is scoped to the port it was approved on', () async {

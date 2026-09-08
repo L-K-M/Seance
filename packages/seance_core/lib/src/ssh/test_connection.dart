@@ -243,17 +243,14 @@ Future<ConnectionTestResult> runConnectionTest({
       log: transcript.toString(),
     );
   } catch (error, stackTrace) {
-    final summary = error is AgentAuthUnsupportedError
-        // "Unsupported operation: …" reads as a crash. The message alone is
-        // the sentence the SSH layer wrote for a person to read — this is the
-        // ssh-agent path, which the backend does not implement yet.
-        //
-        // The dedicated type, not `UnsupportedError`: that one is stock Dart,
-        // thrown from collections, platform stubs and any package under here,
-        // and unwrapping every one of them into a polished user sentence
-        // would dress a bug up as a fact about the host.
-        ? (error.message?.toString() ?? '$error')
-        : '$error';
+    // No unwrapping: `AgentAuthUnsupportedError` overrides `toString` to be
+    // its message, so the sentence the SSH layer wrote arrives here whole.
+    // Reaching for `.message` was this branch working around the
+    // "Unsupported operation: " prefix one caller at a time, which left the
+    // prefix in place for every other renderer of the same object — and had
+    // a `?? '$error'` tail that would have put `Instance of …` in front of a
+    // user. The type still matters below, for the trace.
+    final summary = '$error';
     // An `Error` is a bug rather than a fact about the host, and its message
     // alone rarely says where it came from. `Exception`s raised while
     // resolving credentials — a locked keyring, an unreadable identity file —
