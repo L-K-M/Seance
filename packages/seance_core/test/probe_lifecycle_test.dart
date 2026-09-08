@@ -11,6 +11,7 @@ const _longPause = Duration(minutes: 5);
 /// Completers keep sockets in flight while lifecycle changes race the sweep.
 class _GatedProber implements Prober {
   final _hosts = <String>[];
+  final _ports = <int>[];
   final _pending = <Completer<ProbeStatus>>[];
   int _inFlight = 0;
   int _peakInFlight = 0;
@@ -22,6 +23,7 @@ class _GatedProber implements Prober {
     Duration timeout = const Duration(seconds: 5),
   }) async {
     _hosts.add(host);
+    _ports.add(port);
     final pending = Completer<ProbeStatus>();
     _pending.add(pending);
     _inFlight++;
@@ -67,6 +69,101 @@ ProbeService _service(_GatedProber prober) => ProbeService(
 );
 
 void main() {
+  test(
+    'equivalent target updates preserve the active sweep and latest order',
+    () {
+      fakeAsync((clock) {
+        final prober = _GatedProber();
+        final service = _service(prober);
+        final events = <Map<String, ProbeStatus>>[];
+        service.statuses.listen(events.add);
+        final initial = [_server('a'), _server('b'), _server('queued')];
+        service.start(initial);
+        clock.elapse(Duration.zero);
+        service.updateServers(initial);
+        final rebuilt = [
+          for (final server in initial.reversed)
+            server.copyWith(
+              label: 'Renamed',
+              username: 'other-user',
+              authMethod: AuthMethod.privateKey,
+              updatedAt: 1,
+            ),
+        ];
+        service.updateServers(rebuilt);
+        rebuilt.clear();
+
+        prober._complete(0);
+        clock.flushMicrotasks();
+        expect(prober._hosts, ['a', 'b', 'queued']);
+        prober._complete(1);
+        prober._complete(2);
+        clock.flushMicrotasks();
+        expect(events.single.keys, unorderedEquals(['a', 'b', 'queued']));
+        clock.elapse(_interval);
+        expect(prober._hosts, ['a', 'b', 'queued', 'queued', 'b']);
+        unawaited(service.dispose());
+        prober._complete(3);
+        prober._complete(4);
+        clock.flushMicrotasks();
+      });
+    },
+  );
+
+  test('explicit same-target start invalidates and restarts after drain', () {
+    fakeAsync((clock) {
+      final prober = _GatedProber();
+      final service = _service(prober);
+      final events = <Map<String, ProbeStatus>>[];
+      service.statuses.listen(events.add);
+      final targets = [_server('a'), _server('b'), _server('queued')];
+      service.start(targets);
+      clock.elapse(Duration.zero);
+      service.start(targets);
+      prober._complete(0);
+      clock.elapse(Duration.zero);
+      expect(prober._hosts, ['a', 'b']);
+      prober._complete(1);
+      clock.elapse(Duration.zero);
+      expect(prober._hosts, ['a', 'b', 'a', 'b']);
+      expect(events, isEmpty);
+      expect(prober._peakInFlight, 2);
+      unawaited(service.dispose());
+      prober._complete(2);
+      prober._complete(3);
+      clock.flushMicrotasks();
+    });
+  });
+
+  for (final (field, replacement) in [
+    ('host', _server('a').copyWith(host: 'new-host')),
+    ('port', _server('a').copyWith(port: 2222)),
+    ('id', _server('new-id').copyWith(host: 'a')),
+  ]) {
+    test('changing target $field invalidates its in-flight status', () {
+      fakeAsync((clock) {
+        final prober = _GatedProber();
+        final service = _service(prober);
+        final events = <Map<String, ProbeStatus>>[];
+        service.statuses.listen(events.add);
+        service.start([_server('a')]);
+        clock.elapse(Duration.zero);
+        service.updateServers([replacement]);
+        prober._complete(0);
+        clock.flushMicrotasks();
+        expect(events, isEmpty);
+        clock.elapse(_interval);
+        expect(prober._hosts.last, replacement.host);
+        expect(prober._ports.last, replacement.port);
+        prober._complete(1);
+        clock.flushMicrotasks();
+        expect(events.single, {replacement.id: ProbeStatus.online});
+        unawaited(service.dispose());
+        clock.flushMicrotasks();
+      });
+    });
+  }
+
   test('pause drops results and queued hosts; resume probes immediately', () {
     fakeAsync((clock) {
       final prober = _GatedProber();

@@ -107,6 +107,9 @@ class ProbeService {
 
   /// Probe every server once, at most [maxConcurrentProbes] at a time.
   ///
+  /// The cap applies per call, independently of periodic sweeps and other
+  /// calls. Periodic lifecycle changes do not cancel this call.
+  ///
   /// Servers in [alreadyConnected] are reported [ProbeStatus.online] without a
   /// probe. Servers whose reachability is unknown still get a status; the map
   /// is keyed by server id.
@@ -168,7 +171,8 @@ class ProbeService {
 
   void start(List<ServerConfig> servers) {
     if (_controller.isClosed) return;
-    updateServers(servers);
+    _servers = List.unmodifiable(servers);
+    _generation++;
     _started = true;
     _immediateSweepPending = true;
     _scheduleNext();
@@ -177,8 +181,32 @@ class ProbeService {
   /// Replace targets without accelerating the periodic schedule.
   void updateServers(List<ServerConfig> servers) {
     if (_controller.isClosed) return;
-    _servers = List.unmodifiable(servers);
-    _generation++;
+    final snapshot = List<ServerConfig>.unmodifiable(servers);
+    if (!_hasSameTargets(snapshot)) _generation++;
+    _servers = snapshot;
+  }
+
+  // Metadata edits and reordering leave probe results valid. Count endpoint
+  // occurrences so duplicate ids cannot conceal an added or removed target.
+  bool _hasSameTargets(List<ServerConfig> servers) {
+    if (servers.length != _servers.length) return false;
+    final remaining = <(String, String, int), int>{};
+    for (final server in _servers) {
+      final target = (server.id, server.host, server.port);
+      remaining[target] = (remaining[target] ?? 0) + 1;
+    }
+
+    for (final server in servers) {
+      final target = (server.id, server.host, server.port);
+      final count = remaining[target];
+      if (count == null) return false;
+      if (count == 1) {
+        remaining.remove(target);
+        continue;
+      }
+      remaining[target] = count - 1;
+    }
+    return remaining.isEmpty;
   }
 
   /// Whether probing is currently paused (e.g. the app is backgrounded).
