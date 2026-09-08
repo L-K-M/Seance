@@ -3,7 +3,9 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-08 — a server can be excluded from sync and kept on
+_Last updated: 2026-09-08 — upload CAS coverage with hashing off pins the
+SFTP adapter's preflight/compare-and-swap guards; before that, a server can
+be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
 
@@ -35,6 +37,26 @@ pre-connect validation, every metadata operation, overlap, errors, timeout,
 streaming and cleanup. The timer fixture injects authentication completion;
 it makes no claim about key exchange or trust. Pool scheduling, ping timeout
 and reconnect remain Poltergeist work (03 §3.3 of its plan).
+
+## Upload CAS coverage with hashing off (2026-09-08)
+
+Six socket-free tests through the real `DartSshRemoteFileSystem` over a new
+path-aware SFTP fake cover the upload conflict guards when callers skip the
+inline digest (`computeHash: false`, the bulk-transfer default downstream in
+Poltergeist): both preflights, the `expectedTarget` snapshot and content-hash
+CAS, preservation of externally written targets, refusal without a commit
+rename, and temporary-file cleanup. The `expectedTarget` digest check is
+independent of the outgoing inline hash — verified against the source and
+pinned by the same-metadata-different-bytes test.
+
+This closes a coverage gap, not a bug: the guards already behaved correctly.
+Passing tests against existing behavior were cross-checked by isolated,
+reverted adapter mutations (initial-preflight bypass, second-preflight bypass,
+CAS digest bypass, temp-cleanup bypass — each demonstrably failing the suite
+before the revert). No production code changed; `dart analyze` is clean and
+all 378 `seance_protocol` + `seance_core` tests pass (the sync server's
+SQLite tests need libsqlite3, which this no-root container lacks; CI runs
+them).
 
 ## Test inventory (what proves what)
 
@@ -107,6 +129,18 @@ and reconnect remain Poltergeist work (03 §3.3 of its plan).
   (trailing slash / whitespace tolerated).
 - `packages/seance_core/test/remote_file_system_test.dart` — remote POSIX paths, sticky
   cancellation, POSIX metadata, chmod, readlink, and symlink creation.
+- `packages/seance_core/test/remote_file_system_upload_cas_test.dart` — upload
+  conflict guards with the inline digest off (`computeHash: false`) through the
+  real adapter over a path-aware in-memory SFTP fake: stale `expectedTarget`
+  rejected before staging, a target that changed or disappeared mid-staging
+  rejected at the second preflight, a destination appearing during a
+  non-overwrite upload preserved rather than replaced, same-metadata-different-
+  bytes rejected through the `expectedTarget` content hash (disabling the
+  outgoing digest never disables the CAS hash), and a matching-target success
+  control with committed bytes, one commit rename, and no inline digest. Each
+  guard was proven live by an isolated, reverted mutation of the adapter
+  (preflight bypasses, digest bypass, cleanup bypass); refusal cases assert no
+  commit rename, preservation of the external target, and temp cleanup.
 - `app/seance_app/test/remote_files_controller_test.dart` — SFTP browser home,
   sorting/filtering/selection/bookmarks, OSC-directory follow, aggregate
   recursive transfers, durable managed copies, concurrent checkout, and
