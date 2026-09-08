@@ -16,10 +16,14 @@ import 'ssh_session.dart';
 /// One contract on failures: write the summary into the log only when
 /// throwing an [SshConnectException]. [runConnectionTest] takes that
 /// exception's own message verbatim and appends a summary itself for anything
-/// else. A duplicated line is caught by the `lastOrNull != summary` guard
-/// there, so the contract is not about duplication: it is that the transcript
-/// ends with the summary, which only holds when the last line an
-/// implementation writes on failure is that summary.
+/// else. The guard there appends the summary whenever it is not already the
+/// last line, so the transcript ends with it whatever an implementation did —
+/// the ending needs no promise from anyone. What the guard cannot do is take
+/// a line back: an implementation that writes the summary and then keeps
+/// logging gets the summary appended a second time. So the contract is about
+/// duplication, and it is to make the summary the last line written on
+/// failure. (On the paths that append a stack trace, `runConnectionTest`
+/// duplicates it itself and says why at that branch.)
 typedef HostAuthenticator =
     Future<AuthKind> Function(
       ServerConfig config,

@@ -585,6 +585,10 @@ void main() {
       // transcript widget reads `lines` on each repaint, so a scrub that
       // only held at `toString` time would render the raw answer.
       expect(log.lines.join('\n'), isNot(contains('hunter2')));
+      // Redacted there, not dropped: absence alone is also what a view that
+      // discarded the record entirely would give, and that loses transcript
+      // from the widget without a word.
+      expect(log.lines.join('\n'), contains('(responses: [redacted])'));
     });
 
     test('a renamed field still hits the fail-closed branch', () {
@@ -599,6 +603,10 @@ void main() {
       // every case: a scrub moved to render time would leave the
       // transcript widget reading the raw record on each repaint.
       expect(log.lines.join('\n'), isNot(contains('hunter2')));
+      // Withheld there too rather than filtered away: absence alone is also
+      // what a view that dropped a record it could not parse would give, and
+      // that loses transcript from the widget without a word.
+      expect(log.lines.join('\n'), contains('does not recognize'));
     });
 
     test('the canonical line still redacts to exactly what it always did', () {

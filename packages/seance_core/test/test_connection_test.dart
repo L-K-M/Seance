@@ -178,8 +178,20 @@ void main() {
       expect(result.ok, isFalse);
       final lines = result.log.trimRight().split('\n');
       expect(lines.last, 'keyring is locked');
-      expect(lines.where((l) => l == 'keyring is locked').length, 1);
+      // Substring occurrences, like the sibling test two above: counting
+      // whole lines misses a summary repeated inside a longer one, and this
+      // file would then pin the same "exactly once" contract at two
+      // different strengths.
+      expect('keyring is locked'.allMatches(result.log).length, 1);
       expect(lines, contains('reading the identity file'));
+      // And no trace, even though the cause here is an `Error`. The policy
+      // keys on what was *thrown*, not on what it wraps: an
+      // `SshConnectException` is the readable kind of failure and says
+      // everything a person can act on, so frames under it are noise. Every
+      // other branch of that policy pins the trace's presence or absence and
+      // this combination — a resolver throwing the readable type over an
+      // Error cause — was the one left open.
+      expect(result.log, isNot(contains('runConnectionTest')));
     });
 
     test('a log an authenticator attached is kept, not only a resolver\'s',
@@ -607,10 +619,11 @@ void main() {
       // first sight; this covers the replacement, where the pin already
       // exists and could be overwritten by the key that was just refused.
       //
-      // Deliberately silent on whether a changed key is re-asked — that is
-      // the behaviour the `if (reoffered)` disjunction below leaves open, and
-      // pinning it here would settle by the back door a question this PR
-      // does not answer. What is asserted holds under either reading.
+      // Deliberately silent on the prompt count. `a trial approval satisfies
+      // the verifier it is wrapped in` pins that a changed key is re-asked;
+      // what this test asserts holds even under a manager that refused one
+      // without asking, so it stays a test about the pin rather than a second
+      // copy of that contract.
       final inner = InMemoryHostKeyStore();
       final trial = UnpinnedHostKeyStore(inner);
       final manager = SshSessionManager(
@@ -759,14 +772,11 @@ void main() {
         type: 'ssh-ed25519',
         fingerprintBytes: fingerprint('attacker'),
       );
-      // Measured rather than left open. `_verifyHostKey` returns early only
-      // for `decision.isTrusted` (ssh_session.dart:78) and prompts for
-      // everything else, so a changed key is re-asked and this is the arm
-      // that runs — which meant the refusal arm below it never did, and half
-      // this test's assertions were dead on every pass. Pinned as the
-      // behaviour rather than as a decided policy: changing it is a change
-      // worth failing a test for, on the one dialog where the user is the
-      // whole security boundary.
+      // Measured rather than left open: `_verifyHostKey` returns early only
+      // for a decision that is already trusted and prompts for everything
+      // else, so a changed key is re-asked. Pinned as behaviour on purpose —
+      // changing it is worth failing a test for, on the one dialog where the
+      // user is the whole security boundary.
       expect(reoffered, isTrue,
           reason: 'a changed key must be re-asked, never assumed');
       {

@@ -279,6 +279,26 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     tree — a restructure rather than a guard, which is why it is written down
     here instead.
 
+20. **A re-pasted key with a blank passphrase box loses its passphrase.**
+    Every other blank credential box in the editor means "keep what is
+    stored" — a blank password keeps the stored password, a blank PEM keeps
+    the stored key. The passphrase box in *pasted-key* mode is the one that
+    means "no passphrase": `plannedCredential` writes `keyPassphrase: null`
+    whenever the box is empty and a PEM was pasted. Re-paste the same
+    encrypted key without retyping the passphrase and the stored one is gone,
+    with nothing in the UI saying a passphrase was ever there — the break
+    only shows at the next connect.
+
+    Not simply a bug to invert, which is why it is written down rather than
+    fixed: carrying the stored passphrase forward would attach it to a key
+    that may not have one, since pasting a *new* key is at least as common as
+    re-pasting the old, and the box is blank in both cases for the same
+    reason. The editor cannot tell them apart because it never shows whether
+    a passphrase is stored. That, and not the branch, is the fix — and it is
+    the same fix items 16, 17 and 18 want. Four notes in one family is a
+    design asking for one change: an editor that says which key a stored
+    passphrase belongs to, and lets it be cleared.
+
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
 terminal **splits** (multiple panes visible at once), OIDC on the sync server,

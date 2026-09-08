@@ -23,11 +23,24 @@ void main() {
       // toString, so an upgrade that changes the format fails here rather
       // than at the fail-closed branch in production.
       final log = SshConnectionLog();
-      log.add('-> sock: '
-          '${SSH_Message_Userauth_InfoResponse(responses: const [
-            'hunter2',
-            'second-answer',
-          ])}');
+      final raw = '${SSH_Message_Userauth_InfoResponse(responses: const [
+        'hunter2',
+        'second-answer',
+      ])}';
+      // The precondition, asserted the way the password-request test below
+      // asserts its own: every check under this one is a *negative*, and a
+      // dartssh2 that stopped printing `responses` would satisfy all of them
+      // without the scrubber being exercised at all — the vacuous pass this
+      // file exists to rule out, arriving through the dependency rather than
+      // through a hand-written fixture.
+      expect(
+        raw,
+        contains('hunter2'),
+        reason: 'dartssh2 no longer prints the responses this scrubs. That '
+            'is a dependency change: re-audit the message/ toStrings and '
+            're-base the pattern before upgrading.',
+      );
+      log.add('-> sock: $raw');
       // The framing survives: a scrubber that nuked the whole line would
       // satisfy every assertion below while destroying the transcript.
       expect(log.toString(), contains('-> sock:'));
