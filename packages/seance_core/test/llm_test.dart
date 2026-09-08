@@ -732,6 +732,13 @@ void main() {
       // would clip text that fits, and every caller would inherit it.
       expect(clipText('abcd', 4), 'abcd');
       expect(clipText('abc', 4), 'abc');
+      // And with a surrogate pair completing exactly at the cap. Every other
+      // pair case in this group goes through the *clip* path, so the back-off
+      // could be applied before the fits guard — or keyed on the low half
+      // instead of the high one — and 'abcd' cannot tell the difference.
+      // A fit is a fit: no back-off, no ellipsis.
+      expect('ab\u{1F600}'.length, 4);
+      expect(clipText('ab\u{1F600}', 4), 'ab\u{1F600}');
     });
 
     test('a clipped string is one unit longer than the cap', () {

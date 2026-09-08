@@ -160,12 +160,21 @@ class CompositeSearch implements SearchProvider {
           //
           // Logged either way: a partial failure is invisible from the
           // outside — an expired key alongside a working backend just looks
-          // like worse results — so this is the only record it happened.
+          // like worse results.
+          //
+          // How far that reaches, stated rather than assumed: `dart:developer`
+          // writes to an attached VM service, so this is a record during
+          // development and in DevTools, and nothing at all in a release
+          // build with no service attached. Mirroring it to stderr would buy
+          // production visibility at the cost of `dart:io`, which this
+          // package deliberately does not import — surfacing a degraded
+          // search in the UI is the fix, and it is a follow-up rather than
+          // something this line can do.
           developer.log(
             // Named: with several backends configured, an operator reading
             // this cannot tell which key to rotate or endpoint to check, and
             // a bare FormatException or HttpException rarely says. `p` is
-            // right here, and this line is the only record it happened.
+            // right here, and a bare exception rarely names the backend.
             'Web search backend (${p.runtimeType}) failed: $error',
             name: searchLoggerName,
             level: searchWarningLogLevel,

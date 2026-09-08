@@ -846,6 +846,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // and the provider dropdown (round 24): read once, up here.
     final enteredLlmKey = _apiKey.text;
     final enteredZaiKey = _zaiApiKey.text;
+    // The rest of the form, for the same reason and in the same place. Round
+    // 25 snapshotted the two key fields and left these four reading live at
+    // assignment time, several awaits later — and a keystore write is
+    // exactly where a save stalls, since an OS keyring can put a prompt in
+    // front of it. Text typed into the endpoint box during that stall was
+    // folded into the save already in flight and handed straight to
+    // `reloadLlmProvider`. It also made the comment on the Z.AI switch
+    // ("the text fields' mid-save edits are already snapshotted") false for
+    // every field but the two it was written about.
+    final enteredBaseUrl = _baseUrl.text.trim();
+    final enteredModel = _model.text.trim();
+    final enteredSearxng = _searxng.text.trim();
+    final enteredRedaction = _redaction;
     if (_zai && enteredZaiKey.trim().isNotEmpty) {
       try {
         await state.services.masterKeys.putApiKey(
@@ -904,11 +917,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _zai && (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
 
     s.llmKind = kind;
-    s.llmBaseUrl = _baseUrl.text.trim();
-    s.llmModel = _model.text.trim();
+    s.llmBaseUrl = enteredBaseUrl;
+    s.llmModel = enteredModel;
     s.llmApiKeyRef = ref;
-    s.redactionEnabled = _redaction;
-    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
+    s.redactionEnabled = enteredRedaction;
+    s.searxngUrl = enteredSearxng.isEmpty ? null : enteredSearxng;
     // The reference is what switches the backend on; turning it off leaves the
     // key in the keystore rather than deleting it, like every other key here.
     s.zaiApiKeyRef = _zai ? _zaiKeyRef : null;

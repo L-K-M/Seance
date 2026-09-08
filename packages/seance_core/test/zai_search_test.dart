@@ -764,7 +764,7 @@ void main() {
                 .having((e) => e.message, 'message', contains(actionable))
                 .having((e) => e.message, 'message', isNot(contains('secret'))),
             ),
-          reason: 'HTTP $status should name the key',
+          reason: 'HTTP $status should name "$actionable"',
           // The same guard the stall tests carry: this drives the same
           // non-2xx body drain, so a regressed deadline would hang the loop
           // rather than fail it.
@@ -1292,6 +1292,33 @@ void main() {
       }, 5);
       expect(mixed, hasLength(1));
       expect(mixed.single.snippet, 'No matches for that query.');
+    });
+
+    test('an answer wrapped in an envelope is not thrown away with it', () {
+      // The other half of the rule above, and the half the first version of
+      // it broke: excluding every JSON container dropped a real answer that
+      // happens to arrive inside one. `results` is empty so nothing
+      // link-shaped is found, and the words are the whole reply.
+      final answered = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': '{"answer": "Paris is the capital", "results": []}',
+          },
+        ],
+      }, 5);
+      expect(answered, hasLength(1));
+      expect(answered.single.snippet, 'Paris is the capital');
+      // Nested structure is not prose: `_collect` has already walked it, and
+      // its punctuation is not an answer.
+      expect(
+        ZaiSearch.parseToolResult({
+          'content': [
+            {'type': 'text', 'text': '{"data": {"title": "unusable"}}'},
+          ],
+        }, 5),
+        isEmpty,
+      );
     });
 
     test('an empty snippet of any shape does not hide the description', () {
@@ -1945,9 +1972,13 @@ void main() {
           const Duration(seconds: 30),
           total: const Duration(milliseconds: 40),
           totalMessage: 'held open',
-          // Test-side only: a deadline that stopped being enforced would
-          // otherwise hang this until the runner's own timeout.
-        ).toList().timeout(const Duration(seconds: 5)),
+        ).toList()
+            // Test-side only, and it sat above beside `total:` and
+            // `totalMessage:` — two production arguments, one of which this
+            // test asserts the message of. It guards the line it is now on:
+            // a deadline that stopped being enforced would hang this until
+            // the runner's own timeout.
+            .timeout(const Duration(seconds: 5)),
         throwsA(isA<http.ClientException>().having(
           (e) => e.message,
           'message',
