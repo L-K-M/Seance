@@ -262,6 +262,14 @@ void main() {
     for (final (typed, shown) in [
       ('::1', '[::1]:2222'),
       ('[::1]', '[::1]:2222'),
+      // Half-bracketed, both ways. The guard used to ask only whether the
+      // host *starts* with `[`, which a truncated paste satisfies — rendered
+      // `[::1:2222`, port boundary unreadable — and a stray trailing bracket
+      // does not, wrapped into `[::1]]:2222`.
+      ('[::1', '[::1]:2222'),
+      ('::1]', '[::1]:2222'),
+      // A zone id survives the strip: it carries no brackets.
+      ('fe80::1%en0', '[fe80::1%en0]:2222'),
       ('prod.example.com', 'prod.example.com:2222'),
     ]) {
       test('a host typed as "$typed" is bracketed once in the summary',
@@ -916,6 +924,26 @@ void main() {
       expect((await trial.get('dual.example.com', 22))?.fingerprintSha256,
           sha256Fingerprint('dual-22'));
       expect(await trial.get('dual.example.com', 2222), isNull);
+      // And `all()`, which is the inventory the same scoping has to survive.
+      // Every other `all()` assertion in this file collides on the *same*
+      // port, so a merge keyed by host alone drops one of two pins and no
+      // test notices — measured: keying both sides by host passes the whole
+      // file. `get`'s port scoping is pinned three ways; its listing was not
+      // pinned at all.
+      await trial.put(HostKey(
+        host: 'dual.example.com',
+        port: 2222,
+        type: 'ssh-ed25519',
+        fingerprintSha256: sha256Fingerprint('dual-2222'),
+        pinnedAt: 4,
+      ));
+      expect(
+        (await trial.all())
+            .where((k) => k.host == 'dual.example.com')
+            .map((k) => k.fingerprintSha256)
+            .toSet(),
+        {sha256Fingerprint('dual-22'), sha256Fingerprint('dual-2222')},
+      );
     });
 
     test('the manager consults the store with the port it was given', () async {
