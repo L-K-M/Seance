@@ -54,7 +54,7 @@ Passing tests against existing behavior were cross-checked by isolated,
 reverted adapter mutations (initial-preflight bypass, second-preflight bypass,
 CAS digest bypass, temp-cleanup bypass — each demonstrably failing the suite
 before the revert). No production code changed; `dart analyze` is clean and
-all 378 `seance_protocol` + `seance_core` tests pass (the sync server's
+all `seance_protocol` + `seance_core` tests pass (the sync server's
 SQLite tests need libsqlite3, which this no-root container lacks; CI runs
 them).
 
@@ -134,10 +134,10 @@ them).
   real adapter over a path-aware in-memory SFTP fake: stale `expectedTarget`
   rejected before staging, a target that changed or disappeared mid-staging
   rejected at the second preflight, a destination appearing during a
-  non-overwrite upload preserved rather than replaced, same-metadata-different-
-  bytes rejected through the `expectedTarget` content hash (disabling the
-  outgoing digest never disables the CAS hash), and a matching-target success
-  control with committed bytes, one commit rename, and no inline digest. Each
+  non-overwrite upload preserved rather than replaced,
+  same-metadata-different-bytes rejected through the `expectedTarget`
+  content hash (disabling the outgoing digest never disables the CAS
+  hash), and a matching-target success control with committed bytes, one commit rename, and no inline digest. Each
   guard was proven live by an isolated, reverted mutation of the adapter
   (preflight bypasses, digest bypass, cleanup bypass); refusal cases assert no
   commit rename, preservation of the external target, and temp cleanup.

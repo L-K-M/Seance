@@ -16,6 +16,13 @@ import 'package:test/test.dart';
 /// target mid-upload gate on the first staged write and hold the content
 /// stream open, so the mutation always lands strictly between the two
 /// preflights.
+/// Matches the adapter's exclusive sibling temp files in /srv, so tests
+/// and the fake's helpers share one statement of the staging layout.
+final tempPathPattern = RegExp(
+  '^${RegExp.escape('/srv/')}'
+  r'\.seance-upload-[0-9a-f]{8}\.tmp$',
+);
+
 void main() {
   const targetPath = '/srv/report.txt';
   const regularFileMode = 0x81A4;
@@ -23,11 +30,6 @@ void main() {
   // Distinct whole-second mtimes, the granularity SFTP v3 reports.
   const firstModifySecond = 1700000100;
   const laterModifySecond = 1700000200;
-
-  final tempPathPattern = RegExp(
-    '^${RegExp.escape('/srv/')}'
-    r'\.seance-upload-[0-9a-f]{8}\.tmp$',
-  );
 
   final conflictUpload = isA<RemoteFileException>()
       .having((error) => error.kind, 'kind', RemoteFileErrorKind.conflict)
@@ -98,8 +100,9 @@ void main() {
       content.add([9, 9, 9, 9, 9]);
       await staged.future.timeout(
         stagingTimeout,
-        onTimeout: () async {
-          await content.close();
+        onTimeout: () {
+          unawaited(content.close());
+          upload.ignore();
           throw StateError(stagingTimeoutMessage);
         },
       );
@@ -138,8 +141,9 @@ void main() {
       content.add([7, 8, 9]);
       await staged.future.timeout(
         stagingTimeout,
-        onTimeout: () async {
-          await content.close();
+        onTimeout: () {
+          unawaited(content.close());
+          upload.ignore();
           throw StateError(stagingTimeoutMessage);
         },
       );
@@ -175,8 +179,9 @@ void main() {
         content.add([1, 2, 3]);
         await staged.future.timeout(
           stagingTimeout,
-          onTimeout: () async {
-            await content.close();
+          onTimeout: () {
+            unawaited(content.close());
+            upload.ignore();
             throw StateError(stagingTimeoutMessage);
           },
         );
@@ -310,8 +315,7 @@ class _PathAwareSftpClient implements SftpClient {
 
   Iterable<String> get paths => _files.keys;
 
-  bool hasTemporaryUpload() =>
-      _files.keys.any((path) => path.contains('.seance-upload-'));
+  bool hasTemporaryUpload() => _files.keys.any(tempPathPattern.hasMatch);
 
   /// The expectedTarget a caller would hold after previously downloading
   /// [path]: the current snapshot plus its content digest.
@@ -431,7 +435,8 @@ class _FakeReadableSftpFile extends SftpFile {
     if (offset < end) {
       yield Uint8List.sublistView(content, offset, end);
     }
-    onProgress?.call(end - offset);
+    // Real servers report a short/empty read, never negative progress.
+    onProgress?.call(offset < end ? end - offset : 0);
   }
 
   @override
