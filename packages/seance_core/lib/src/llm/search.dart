@@ -99,9 +99,11 @@ class BraveSearch implements SearchProvider {
 
 /// [url] reduced to the identity two backends should agree on.
 ///
-/// Falls back to the raw string when it will not parse: an unparseable URL is
-/// still a distinct result, and collapsing every one of them onto `''` would
-/// let the first swallow the rest.
+/// Falls back to the string ahead of any '#' when it will not parse — the
+/// same fragment rule the parsed branch applies, which the comment inside
+/// spells out. Not the raw string, as this line used to say: an unparseable
+/// URL is still a distinct result, and collapsing every one of them onto
+/// `''` would let the first swallow the rest, but `…#a` and `…#b` are one.
 /// Hoisted: `_dedupKey` runs once per result from every backend, and Dart
 /// compiles a pattern per construction.
 final RegExp _trailingSlashes = RegExp(r'/+$');

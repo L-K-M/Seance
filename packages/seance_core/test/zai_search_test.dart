@@ -672,6 +672,76 @@ void main() {
       );
     });
 
+    test('a 429 that says when passes the wait on; one that does not, does '
+        'not', () async {
+      // The header is the only thing in the reply that answers "when", and
+      // the message and its caller both ask. Its other legal form is an
+      // HTTP-date, which has to fall back rather than invent a delay — a
+      // parse that reached for the leading digits would read `Wed, 21 Oct`
+      // as "try again in 21 seconds".
+      Future<String> messageFor(Map<String, String> headers) async {
+        final client = MockClient.streaming(
+          (request, body) async => http.StreamedResponse(
+            Stream.value(utf8.encode('slow down')),
+            429,
+            headers: headers,
+          ),
+        );
+        try {
+          await ZaiSearch(apiKey: 'k', client: client).search('dart');
+        } on http.ClientException catch (e) {
+          return e.message;
+        }
+        return fail('a 429 should not answer with results');
+      }
+
+      expect(
+        await messageFor({'retry-after': ' 30 '}),
+        contains('try the search again in 30 seconds'),
+      );
+      expect(
+        await messageFor({'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT'}),
+        allOf(
+          contains('try the search again.'),
+          isNot(contains('21')),
+          isNot(contains('seconds')),
+        ),
+      );
+      expect(
+        await messageFor(const {}),
+        allOf(contains('try the search again.'), isNot(contains('seconds'))),
+      );
+    });
+
+    test('an untrimmed key still redacts itself out of a tool error',
+        () async {
+      // The reason the constructor trims, and it is not cosmetic. A key
+      // pasted with the newline its password manager appended went into the
+      // `Authorization` header verbatim *and* became the needle the
+      // tool-error branch redacts with — and the gateway echoes back the key
+      // it actually parsed, without the newline. `replaceAll` then matched
+      // nothing and the error message carried the key into the UI and the
+      // log.
+      final server = FakeMcpServer();
+      server.overrides['tools/call'] = {
+        'jsonrpc': '2.0',
+        'result': {
+          'isError': true,
+          'content': [
+            {'type': 'text', 'text': 'bad key: sk-secret'},
+          ],
+        },
+      };
+      await expectLater(
+        ZaiSearch(apiKey: 'sk-secret\n', client: server.client).search('dart'),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('[redacted]'), isNot(contains('sk-secret'))),
+        )),
+      );
+    });
+
     test('throttling is blamed on neither the key nor the plan', () async {
       // Three spellings of one self-clearing failure. "rate limit exceeded"
       // sets the quota veto twice over and landed on the generic "check the
@@ -1243,6 +1313,34 @@ void main() {
         ],
       }, 5);
       expect(results.map((r) => r.url), ['https://example.com/x']);
+    });
+
+    test('a double-encoded payload is decoded again, not dropped', () {
+      // A tool that JSON-encodes its payload and then puts *that* string in
+      // the text block — `json.dumps` applied twice, a common enough MCP
+      // wart. The block decodes to a String, which the walk used to drop on
+      // the spot: the results were lost whole and the caller fell through to
+      // the prose path, which reports a JSON blob or nothing. Each re-entry
+      // still counts against the depth cap, and prose that is not JSON stops
+      // at the first `FormatException` as it always did.
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': jsonEncode(jsonEncode({
+              'search_result': [
+                {
+                  'title': 'Wrapped twice',
+                  'link': 'https://example.com/deep',
+                  'content': 'text',
+                },
+              ],
+            })),
+          },
+        ],
+      }, 5);
+      expect(results.map((r) => r.url), ['https://example.com/deep']);
+      expect(results.single.title, 'Wrapped twice');
     });
 
     test('a duplicate result is a leaf, not a container to walk', () {

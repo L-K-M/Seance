@@ -288,13 +288,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         subtitle: const Text('Needs a Z.AI key with a GLM Coding Plan.'),
         value: _zai,
         // Frozen while a save runs, like the Save button and the sync
-        // switches. `_save` reads `_zai` twice — before the awaits to decide
-        // whether to write the key, and after them to set the reference — so
-        // a toggle in between makes one save act on two different answers:
-        // off-to-on persists a reference with nothing stored behind it, and
-        // on-to-off stores a key the settings it just wrote call unused. The
-        // text fields' mid-save edits are already snapshotted; this was the
-        // one control gating a keystore write that was not.
+        // switches. This used to be the invariant: `_save` read `_zai` twice,
+        // before the awaits to decide whether to write the key and after them
+        // to set the reference, so a toggle in between made one save act on
+        // two different answers — off-to-on persisting a reference with
+        // nothing stored behind it, on-to-off storing a key the settings it
+        // just wrote call unused. `_saveInner` snapshots `_zai` once now,
+        // before any await, so the two writes can no longer disagree and this
+        // gate is defense in depth rather than the thing holding it up.
         onChanged: _saving ? null : (v) => setState(() => _zai = v),
       ),
       if (_zai)
@@ -956,8 +957,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // page has been saved, and a locked keyring — which also answers null —
     // is not a reason to refuse a model change.
     await state.services.saveSettings();
-    // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
-    await state.reloadLlmProvider();
+    // Rebuild the chat provider (new key/model) and refresh sidebar
+    // visibility.
+    //
+    // Caught rather than left to `_save`'s handler, which is the last await
+    // that can throw and the only one past the point of no return: the
+    // keystores and `settings.json` are already written by the time it runs,
+    // so letting it escape reported "Settings not saved" for a save that
+    // succeeded — telling the user to re-enter secrets that are on disk. The
+    // failure is real and still surfaces; it is a rebuild failure, not a
+    // save failure, and the clearing below must still run because those
+    // fields *were* stored.
+    Object? reloadError;
+    try {
+      await state.reloadLlmProvider();
+    } catch (e) {
+      reloadError = e;
+    }
     // `mounted` first: these are `TextEditingController`s this widget owns,
     // and the awaits above give the user time to leave the screen — clearing
     // a disposed one throws, out of a save that otherwise worked.
@@ -970,16 +986,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // and clearing it would discard it without a trace.
     if (mounted) {
       if (_apiKey.text == enteredLlmKey) _apiKey.clear();
-      // `_zai` as well, because the write above is gated on it: a key typed
-      // with the switch off is never stored, and clearing it would discard
-      // it without a trace — which is exactly what the paragraph above
-      // promises not to do. The LLM key needs no equivalent; its write is
-      // gated only on the text being non-blank, and blank is nothing to
-      // lose.
+      // `zaiEnabled` as well, because the write above is gated on it — the
+      // same snapshot, so the clear cannot decide on a switch position the
+      // write never saw. A key typed with the switch off is never stored,
+      // and clearing it would discard it without a trace, which is exactly
+      // what the paragraph above promises not to do. The LLM key needs no
+      // equivalent; its write is gated only on the text being non-blank, and
+      // blank is nothing to lose.
       if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
       showTopToastIn(
         context,
-        message: zaiWithoutKey
+        // The reload failure first: it means the assistant in this process is
+        // still the old one, which outranks a note about a key that will be
+        // read on the next search.
+        message: reloadError != null
+            ? 'Saved — but the assistant could not be reloaded, so it is '
+                  'still running the previous configuration: $reloadError'
+            : zaiWithoutKey
             ? 'Saved — but no Z.AI key could be read (none stored, or the '
                   'keyring is locked), so Z.AI search will be skipped.'
             : 'Saved',
