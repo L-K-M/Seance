@@ -635,20 +635,26 @@ class AppServices {
     if (searxngUrl.isNotEmpty) {
       backends.add(SearxngSearch(baseUrl: searxngUrl));
     }
-    if (settings.braveApiKeyRef != null &&
-        settings.braveApiKeyRef!.isNotEmpty) {
+    // Trimmed for the reason the URL above is: these arrive from a
+    // hand-edited `settings.json` or over sync, and a padded name addresses no
+    // keystore entry. Untrimmed, it passes the emptiness check, misses its
+    // lookup, and is reported as a locked keyring — sending the user to debug
+    // a keystore that is working.
+    final braveRef = settings.braveApiKeyRef?.trim() ?? '';
+    if (braveRef.isNotEmpty) {
       // getApiKey answers null on a locked keyring rather than throwing, so a
       // keystore that is down reads as "this backend is not available" and the
       // others still work.
-      final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
+      final key = await masterKeys.getApiKey(braveRef);
       if (key != null) {
         backends.add(BraveSearch(apiKey: key));
       } else {
         _searchBackendUnavailable('Brave');
       }
     }
-    if (settings.zaiApiKeyRef != null && settings.zaiApiKeyRef!.isNotEmpty) {
-      final key = await masterKeys.getApiKey(settings.zaiApiKeyRef!);
+    final zaiRef = settings.zaiApiKeyRef?.trim() ?? '';
+    if (zaiRef.isNotEmpty) {
+      final key = await masterKeys.getApiKey(zaiRef);
       if (key != null) {
         backends.add(ZaiSearch(apiKey: key));
       } else {

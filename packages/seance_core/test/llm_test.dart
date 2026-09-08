@@ -569,7 +569,12 @@ void main() {
           '${long.substring(0, ChatController.maxTitleChars)}…');
       expect(result.title.length, ChatController.maxTitleChars + 1);
       // And a title that fits is left alone, along with its snippet.
-      final kept = ChatController.clipSearchSnippets([hit('short')]).single;
+      // Held in a local so passthrough is pinned here too: the contract was
+      // asserted for the snippet and URL fits cases and not this one, leaving
+      // a rebuild on the title path able to happen silently.
+      final fitsAll = hit('short');
+      final kept = ChatController.clipSearchSnippets([fitsAll]).single;
+      expect(kept, same(fitsAll));
       expect(kept.title, 't');
       expect(kept.snippet, 'short');
     });
@@ -616,6 +621,28 @@ void main() {
       expect(
         ChatController.clipSearchSnippets([fits]).single,
         same(fits),
+      );
+    });
+
+    test('all three fields clip together without disturbing each other', () {
+      // Every other case in this group varies one field, so a rebuild that
+      // clipped the one it was given and dropped, blanked or mis-copied a
+      // sibling would pass all of them. The title also carries an emoji at
+      // the boundary: the surrogate back-off is pinned for snippets, and a
+      // title clipped with a bare `substring` would strand a lone half here.
+      final item = hit(
+        'x' * (ChatController.maxSnippetChars + 1),
+        title: '${'T' * (ChatController.maxTitleChars - 1)}😀 and more',
+        url: 'https://x.example/${'u' * ChatController.maxUrlChars}',
+      );
+
+      final result = ChatController.clipSearchSnippets([item]).single;
+
+      expect(result.snippet, '${'x' * ChatController.maxSnippetChars}…');
+      expect(result.title, '${'T' * (ChatController.maxTitleChars - 1)}…');
+      expect(
+        result.url,
+        '${item.url.substring(0, ChatController.maxUrlChars)}…',
       );
     });
   });

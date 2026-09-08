@@ -149,7 +149,12 @@ class ZaiSearch implements SearchProvider {
       // the only place that says *which* of key, plan and quota is the
       // problem. A transport body still never gets quoted — that one can echo
       // the request, Authorization header included.
-      final detail = _textBlocks(result['content']).join(' ').trim();
+      var detail = _textBlocks(result['content']).join(' ').trim();
+      // The reply is capped at `maxResponseBytes`, so this is bounded — but
+      // bounded at two megabytes, and it lands in a message meant to be read
+      // and logged. A server that answers an error with its whole corpus
+      // should not put it in a sentence.
+      if (detail.length > 512) detail = '${detail.substring(0, 512)}…';
       throw http.ClientException(
         detail.isEmpty
             ? 'Z.AI search failed. Check the search key, Coding Plan access, '
@@ -605,13 +610,21 @@ class ZaiSearch implements SearchProvider {
       // "tokens exhausted" and "token budget depleted" carry neither of the
       // first four words and every bit of the same meaning, so without them
       // the "token" test below sends someone with a working key to rotate it.
-      final quota = text.contains('quota') ||
-          text.contains('limit') ||
-          text.contains('balance') ||
-          text.contains('insufficient') ||
-          text.contains('exhausted') ||
-          text.contains('depleted') ||
-          text.contains('exceeded');
+      // `exceeded` is the widest of these, and gRPC-shaped stacks say
+      // "deadline exceeded" and "timeout exceeded" for a transient failure a
+      // retry fixes. Sending that user to check their key, their plan and
+      // their balance is the same wrong-advice failure the clauses below are
+      // written against, pointing the other way — so a transient word vetoes
+      // the quota reading rather than being one more keyword beside it.
+      final transient = text.contains('deadline') || text.contains('timeout');
+      final quota = !transient &&
+          (text.contains('quota') ||
+              text.contains('limit') ||
+              text.contains('balance') ||
+              text.contains('insufficient') ||
+              text.contains('exhausted') ||
+              text.contains('depleted') ||
+              text.contains('exceeded'));
       // Both spellings: gateways write "invalid api key" and "invalid apikey"
       // about equally, and the one-word form used to fall through to the
       // generic message that lists three things to check instead of naming

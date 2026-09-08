@@ -401,8 +401,11 @@ void main() {
       // Same conversation over text/event-stream, with the payload split
       // across two data: lines and an unrelated event in front of it.
       final server = FakeMcpServer(sse: true);
-      final results =
-          await ZaiSearch(apiKey: 'k', client: server.client).search('dart');
+      final results = await ZaiSearch(apiKey: 'k', client: server.client)
+          .search('dart')
+          // Test-side only, like the racing tests': a reset that awaited
+          // itself would hang here rather than fail the expectations below.
+          .timeout(const Duration(seconds: 5));
       expect(results.map((r) => r.url), contains('https://dart.dev/3'));
     });
 
@@ -423,7 +426,11 @@ void main() {
       // internal marker must never reach a caller.
       final server = FakeMcpServer()..expireSession = 5;
       await expectLater(
-        ZaiSearch(apiKey: 'k', client: server.client).search('dart'),
+        ZaiSearch(apiKey: 'k', client: server.client)
+            .search('dart')
+            // Test-side only, like the racing tests': a retry loop that spun
+            // would stall the suite rather than fail this expectation.
+            .timeout(const Duration(seconds: 5)),
         throwsA(
           isA<http.ClientException>().having(
             (e) => e.message,
@@ -821,6 +828,11 @@ void main() {
       expect(await search.search('dart'), isNotEmpty);
       // The original, the retry's replacement, and a fresh one afterwards.
       expect(server.methods.where((m) => m == 'initialize').length, 3);
+      // And the listings, which are what tell the two readings apart. A client
+      // that kept the dead session would send it, eat a fourth 404 and only
+      // then handshake — same three `initialize` calls, same result, one more
+      // doomed listing. Two in the first search, one in the second.
+      expect(server.methods.where((m) => m == 'tools/list').length, 3);
     });
 
     test('a notification whose stream never closes is a named failure',
@@ -840,10 +852,15 @@ void main() {
       addTearDown(() {
         unawaited(stalled.close());
       });
+      // The guard below only saw id-bearing payloads, so the other half of
+      // the reorder space — a notification sent before `initialize` — matched
+      // no branch and passed with the same message.
+      var initialized = false;
       final client = MockClient.streaming((request, body) async {
         final payload =
             jsonDecode(await body.bytesToString()) as Map<String, dynamic>;
         if (payload['method'] == 'initialize') {
+          initialized = true;
           return http.StreamedResponse(
             Stream.value(utf8.encode(jsonEncode({
               'jsonrpc': '2.0',
@@ -857,6 +874,9 @@ void main() {
         // Anything else means the client reordered the handshake, and this
         // test's stall would then be reported as "no web search tool" —
         // pointing at the wrong layer entirely.
+        if (!initialized) {
+          fail('${payload['method']} was sent before initialize');
+        }
         if (payload.containsKey('id')) {
           fail('unexpected ${payload['method']} before the notification');
         }
@@ -936,7 +956,11 @@ void main() {
       // Well under the 3s deadline, with a second of headroom: draining
       // instead of cancelling costs the whole deadline, and a bound sitting on
       // it could not tell that apart from a loaded machine.
-      expect(clock.elapsed, lessThan(deadline - const Duration(seconds: 1)));
+      // Relative to the deadline, not a second under it: the comment above
+      // warns these are tuned one at a time, and a deadline dropped below a
+      // second would make an absolute bound negative and this test unpassable
+      // for a reason that has nothing to do with cancellation.
+      expect(clock.elapsed, lessThan(deadline ~/ 2));
     });
 
     test('an errored tool result is a failure, not an empty answer', () async {
@@ -1634,11 +1658,17 @@ void main() {
       // bytes trips at 1200 on the second chunk, counting decoded units only
       // ever reaches 600. A cap of 500 was tripped by both.
       await expectLater(
-        ZaiSearch.bounded(source(), 1000, const Duration(seconds: 1)).toList(),
+        ZaiSearch.bounded(source(), 1000, const Duration(seconds: 1))
+            .toList()
+            // Test-side only, like the deadline tests below: a byte cap that
+            // stopped being enforced should fail here, not hang.
+            .timeout(const Duration(seconds: 5)),
         throwsA(isA<http.ClientException>()),
       );
       await expectLater(
-        ZaiSearch.bounded(source(), 5000, const Duration(seconds: 1)).toList(),
+        ZaiSearch.bounded(source(), 5000, const Duration(seconds: 1))
+            .toList()
+            .timeout(const Duration(seconds: 5)),
         completion(hasLength(3)),
       );
     });

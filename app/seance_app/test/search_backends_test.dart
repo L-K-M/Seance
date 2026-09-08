@@ -50,6 +50,15 @@ void main() {
     expect(await services.buildSearchProvider(), isNull);
   });
 
+  test('a key reference of only whitespace builds no backend', () async {
+    // Same exposure as the URL above — a hand-edited `settings.json` or a
+    // synced one — and untrimmed it reads as configured, misses its lookup,
+    // and is reported as a locked keyring rather than a bad reference.
+    services.settings.zaiApiKeyRef = '   ';
+    services.settings.braveApiKeyRef = '  ';
+    expect(await services.buildSearchProvider(), isNull);
+  });
+
   test('one backend is used directly, not wrapped', () async {
     services.settings.searxngUrl = 'https://searx.example.com';
     expect(await services.buildSearchProvider(), isA<SearxngSearch>());
