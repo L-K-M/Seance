@@ -812,6 +812,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _save(AppState state) async {
     setState(() => _saving = true);
+    // Every await below can throw — the keystore reads and writes,
+    // `saveSettings`, the provider reload. Without this, one escaping leaves
+    // `_saving` set, and that flag disables Save *and* the Z.AI switch this
+    // branch added, so a transient disk failure locked the section until the
+    // screen was closed and reopened. Called from `onPressed` with no
+    // awaiter, so an escaping error is also unhandled and reports nothing.
+    try {
+      await _saveInner(state);
+    } catch (e) {
+      if (mounted) {
+        showTopToastIn(context, message: 'Settings not saved — $e');
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveInner(AppState state) async {
     final s = state.services.settings;
     // Store the API key under a per-provider name.
     //
@@ -879,7 +897,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       } catch (e) {
         if (!mounted) return;
-        setState(() => _saving = false);
         // Named like the LLM key's failure below: the same class of error
         // otherwise produced a bare `KeystoreException` string with nothing
         // saying which of the two keys failed to save.
@@ -902,7 +919,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // KeystoreException: the OS keyring is unavailable — don't report
         // "Saved" for a key that never landed.
         if (!mounted) return;
-        setState(() => _saving = false);
         showTopToastIn(
           context,
           message: 'Settings not saved — could not store the API key: $e',
@@ -961,7 +977,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // gated only on the text being non-blank, and blank is nothing to
       // lose.
       if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
-      setState(() => _saving = false);
       showTopToastIn(
         context,
         message: zaiWithoutKey

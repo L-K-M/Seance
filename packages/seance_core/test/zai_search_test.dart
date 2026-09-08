@@ -53,6 +53,9 @@ class FakeMcpServer {
   /// Pages of extra tools to hand back before the real listing, to exercise
   /// `tools/list` pagination.
   int extraToolPages = 0;
+
+  /// A `nextCursor` of the wrong type, to exercise the malformed-reply guard.
+  Object? malformedCursor;
   int _toolPagesServed = 0;
   Map<String, dynamic>? lastArguments;
 
@@ -247,6 +250,7 @@ class FakeMcpServer {
             {'name': 'unrelated_tool', 'inputSchema': const {}},
             {'name': 'web_search_prime', 'inputSchema': _schema},
           ],
+          if (malformedCursor != null) 'nextCursor': malformedCursor,
         };
       case 'tools/call':
         // Null-aware: MCP allows a tools/call with no arguments, and a hard
@@ -535,6 +539,28 @@ void main() {
       // retried call, or sent its own twice, leaves the initialize count and
       // the per-query echoes intact.
       expect(server.methods.where((m) => m == 'tools/call').length, 6);
+    });
+
+    test('a cursor of the wrong type is a malformed reply, not an ending',
+        () async {
+      // Read as "no more pages", a wrong-typed cursor ended the walk with the
+      // listing truncated — and left no cursor for the pagination guard to
+      // trip, so the search tool went missing and the user was told to check
+      // their Coding Plan. That is the plan accusation for a transport fault
+      // that the guard beside it exists to prevent.
+      final server = FakeMcpServer()..malformedCursor = 3;
+
+      await expectLater(
+        ZaiSearch(apiKey: 'k', client: server.client).search('dart'),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('unexpected search reply'),
+            isNot(contains('Coding Plan')),
+          ),
+        )),
+      );
     });
 
     test('a listing that never stops paginating says so', () async {

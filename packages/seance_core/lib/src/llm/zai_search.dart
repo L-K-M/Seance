@@ -257,7 +257,16 @@ class ZaiSearch implements SearchProvider {
       );
       tools.addAll(_asList(listing['tools']).whereType<Map>());
       final next = listing['nextCursor'];
-      cursor = next is String ? next : null;
+      // A wrong-typed cursor is a malformed reply, not the end of the list.
+      // Read as "no more pages", it fell out of the loop with the listing
+      // truncated and no cursor left to trip the guard below — so the search
+      // tool went missing and the user was told to check their Coding Plan,
+      // which is the plan accusation for a transport fault that guard exists
+      // to prevent.
+      if (next != null && next is! String) {
+        throw http.ClientException('Z.AI returned an unexpected search reply.');
+      }
+      cursor = next as String?;
       if (cursor == null || cursor.isEmpty) break;
     }
     if (cursor != null && cursor.isNotEmpty) {
@@ -995,8 +1004,17 @@ class ZaiSearch implements SearchProvider {
   /// body that never arrives adds nothing, so its `TimeoutException` is
   /// dropped and the caller throws the error the status line earned.
   Future<void> _drainQuietly(http.ByteStream stream) async {
+    // The subscription is held, not just the future. `Future.timeout`
+    // completes the future it *returns* and never touches the subscription
+    // `drain` opened underneath it — so a body that stalls forever left this
+    // method returning while the read went on holding the response stream,
+    // and with it a pooled connection. That is the same "frees the caller
+    // while the socket lived on" failure `bounded` exists to prevent,
+    // reproduced on the error path, where every caller arrives already
+    // failing. Owning the subscription is what makes `cancel` possible.
+    final subscription = stream.listen(null, onError: (Object _) {});
     try {
-      await stream.drain<void>().timeout(timeout);
+      await subscription.asFuture<void>().timeout(timeout);
     } on Exception {
       // A stall, a reset, a truncated body: none of it changes what the
       // status line already said, and the caller's exception is the one that
@@ -1004,6 +1022,8 @@ class ZaiSearch implements SearchProvider {
       // dropped mid-body preempt "HTTP 502" with a bare transport error — and
       // on the 404 branch displace the session-expiry signal, the same way
       // the deadline used to.
+    } finally {
+      await subscription.cancel();
     }
   }
 
