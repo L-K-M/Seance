@@ -568,10 +568,14 @@ void main() {
       expect(result.title,
           '${long.substring(0, ChatController.maxTitleChars)}…');
       expect(result.title.length, ChatController.maxTitleChars + 1);
-      // And a title that fits is left alone, along with its snippet.
-      // Held in a local so passthrough is pinned here too: the contract was
-      // asserted for the snippet and URL fits cases and not this one, leaving
-      // a rebuild on the title path able to happen silently.
+    });
+
+    test('a title that fits is left alone, under the cap and at it', () {
+      // Its own test rather than a tail on the clip case above: Dart stops a
+      // test at the first failed expectation, so a title-clip regression used
+      // to take the passthrough and boundary assertions with it — and the
+      // group pins the snippet's and the URL's fit cases separately for that
+      // reason.
       final fitsAll = hit('short');
       final kept = ChatController.clipSearchSnippets([fitsAll]).single;
       expect(kept, same(fitsAll));
@@ -670,6 +674,13 @@ void main() {
       expect(results[0], same(fits));
       expect(results[1].snippet, '${'x' * ChatController.maxSnippetChars}…');
       expect(results[2], same(edge));
+    });
+
+    test('an empty list comes back empty', () {
+      // Zero hits is an ordinary answer from every backend, and it is the one
+      // shape a `first` or a `reduce` would throw on — which every case above
+      // hands at least one result and so cannot see.
+      expect(ChatController.clipSearchSnippets(const []), isEmpty);
     });
   });
 

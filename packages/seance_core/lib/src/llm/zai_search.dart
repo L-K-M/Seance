@@ -569,6 +569,14 @@ class ZaiSearch implements SearchProvider {
         return null;
       }
       if (decoded is! Map<String, dynamic>) return null;
+      // The gateway's own rejection is not a JSON-RPC message and carries no
+      // id — which is why `readRpcResult` checks `success` before it checks
+      // anything else. Filtered out here as an unrelated event, it would
+      // leave the read waiting for a reply that is never coming: the caller
+      // burns the idle deadline and gets "Z.AI sent no reply", where the same
+      // rejection over the plain-JSON transport says which of key, plan and
+      // quota to look at. The two transports must fail the same way.
+      if (decoded['success'] == false) return decoded;
       // A server may interleave other messages (a notification, a ping)
       // before the answer; only the matching id ends the read.
       if (decoded['id'] != id) return null;
@@ -657,6 +665,17 @@ class ZaiSearch implements SearchProvider {
               text.contains('token'))) {
         throw http.ClientException(
           'Z.AI rejected the search API key. Check the key in Settings.',
+        );
+      }
+      // Before the generic message, not after it: that one lists the key
+      // first, and "deadline exceeded" sets `quota` through `exceeded`, so no
+      // ordering of the other two throws can reach a timeout. Vetoing the key
+      // message was only half of it — the advice a transient failure needs is
+      // to try again, and neither of the other two says so.
+      if (transient) {
+        throw http.ClientException(
+          'Z.AI timed out answering $method. That is usually temporary — try '
+          'the search again.',
         );
       }
       throw http.ClientException(

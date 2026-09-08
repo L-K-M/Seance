@@ -812,6 +812,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // and the settings object is the one the running app reads — leaving it
     // mutated to say "Z.AI is on" behind a key that never landed would make
     // the failed save take effect anyway, until the next launch.
+    // Snapshotted before the writes below, and before any await: the fields
+    // stay editable while a save is in flight, so what is cleared afterwards
+    // has to be what this save actually stored rather than whatever the box
+    // holds by then.
+    final enteredLlmKey = _apiKey.text;
+    final enteredZaiKey = _zaiApiKey.text;
     if (_zai && _zaiApiKey.text.trim().isNotEmpty) {
       try {
         await state.services.masterKeys.putApiKey(
@@ -879,7 +885,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await state.services.saveSettings();
     // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
     await state.reloadLlmProvider();
+    // `mounted` first: these are `TextEditingController`s this widget owns,
+    // and the awaits above give the user time to leave the screen — clearing
+    // a disposed one throws, out of a save that otherwise worked.
+    //
+    // Cleared once stored, because the field is write-only: it is never
+    // populated from the keystore, the hint says a blank box keeps the
+    // existing key, and plaintext left in an editable controller outlives the
+    // moment it was needed for no benefit. Only what this save stored,
+    // though — text typed into the box during the awaits was never persisted,
+    // and clearing it would discard it without a trace.
     if (mounted) {
+      if (_apiKey.text == enteredLlmKey) _apiKey.clear();
+      if (_zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
       setState(() => _saving = false);
       showTopToastIn(
         context,

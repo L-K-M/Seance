@@ -235,6 +235,19 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     unretracted pin on the other devices. An authenticator over id, kind and
     date keyed like the payload closes all three at once.
 
+17. **Nothing closes an LLM or search client's connection pool.** Every
+    provider in `seance_core/lib/src/llm` takes an optional `http.Client` and
+    falls back to `http.Client()` when none is passed — `AnthropicProvider`,
+    `OpenAiCompatibleProvider`, `SearxngSearch`, `BraveSearch` and now
+    `ZaiSearch` — and none of them exposes a `close`. An instance discarded
+    rather than kept for the process (the app rebuilds its search provider
+    whenever the settings change) leaves its keep-alive sockets open until
+    exit. The fix is one shape applied to all five: remember whether the
+    client was created here, expose `close()` that only closes that one, and
+    have `AppServices` close the provider it is replacing. Not Z.AI's alone,
+    which is why it is written here rather than fixed in the branch that
+    added the fifth one.
+
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
 terminal **splits** (multiple panes visible at once), OIDC on the sync server,

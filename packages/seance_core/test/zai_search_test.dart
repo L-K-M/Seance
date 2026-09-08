@@ -74,6 +74,13 @@ class FakeMcpServer {
   final Map<String, Map<String, dynamic>> overrides = {};
 
   /// Answer 404 to this many `tools/call`s, as a retired session id does.
+  ///
+  /// Every `tools/call` while the count stands, whichever session id it
+  /// carries — including one from a re-handshake that has already happened.
+  /// That is what `a session that keeps dropping` is built on: a gateway
+  /// whose sessions die faster than the client can replace them, which the
+  /// retry limit has to give up on rather than spin against. A countdown that
+  /// only drained on the retired id could not express it.
   int expireSession = 0;
 
   /// The id the first [expireSession] 404 invalidated.
@@ -528,7 +535,11 @@ void main() {
       final search = ZaiSearch(apiKey: 'k', client: server.client);
 
       await expectLater(
-        search.search('dart'),
+        // Test-side only, like the other loop tests': a pagination cap that
+        // regressed into an unbounded walk should fail here rather than stall
+        // the runner until its own generic timeout, where nothing says which
+        // test was responsible.
+        search.search('dart').timeout(const Duration(seconds: 5)),
         throwsA(
           isA<http.ClientException>().having(
             (e) => e.message,
@@ -630,7 +641,16 @@ void main() {
             isA<http.ClientException>().having(
               (e) => e.message,
               'message',
-              isNot(contains('rejected the search API key')),
+              // Both halves. Pinned only on the absence, a regression that
+              // moved these into the generic "check the key, Coding Plan
+              // access, and quota" bucket — which still lists the key first —
+              // would pass while giving the same wrong advice by another
+              // route.
+              allOf(
+                isNot(contains('rejected the search API key')),
+                isNot(contains('Coding Plan')),
+                contains('try the search again'),
+              ),
             ),
           ),
           reason: '"$msg" is a timeout, not a rejected key',
@@ -1019,7 +1039,13 @@ void main() {
       // warns these are tuned one at a time, and a deadline dropped below a
       // second would make an absolute bound negative and this test unpassable
       // for a reason that has nothing to do with cancellation.
-      expect(clock.elapsed, lessThan(deadline ~/ 2));
+      // Still relative to the deadline, so tuning that down tightens this
+      // with it — but three quarters rather than half. The failure being
+      // caught is timer-bounded at exactly `deadline`; the passing path is
+      // in-process mock I/O whose cost is whatever the runner is doing. A
+      // bound anywhere meaningfully below the deadline discriminates, and the
+      // closer half gave a loaded container no room.
+      expect(clock.elapsed, lessThan(deadline * 3 ~/ 4));
     });
 
     test('an over-long tool error is clipped without splitting a character',
@@ -1360,12 +1386,32 @@ void main() {
             // else" is the claim, and only the map case was checking it.
             allOf(
               isNot(contains('(code')),
-              isNot(contains('down')),
+              // Each payload against its own echo. `'down'` only says
+              // anything for the string case; the map and the number were
+              // asserted against a word they could not contain.
+              isNot(contains('$error')),
               isNotEmpty,
             ),
           )),
         );
       }
+    });
+  });
+
+  group('readRpcResult id', () {
+    test('a reply for another request is not this call\'s answer', () {
+      // The SSE reader filters by id, but the plain-JSON path hands whatever
+      // came back straight over — and `readRpcResult` checks the id at line
+      // 680 for exactly that. Every other fixture in this file passes a
+      // matching id, so the guard was unpinned.
+      expect(
+        () => ZaiSearch.readRpcResult({
+          'jsonrpc': '2.0',
+          'id': 8,
+          'result': {'content': <Object?>[]},
+        }, method: 'tools/call', id: 7),
+        throwsA(isA<http.ClientException>()),
+      );
     });
   });
 
@@ -1901,6 +1947,30 @@ void main() {
 
       expect(message, isNotNull);
       expect(message!['result'], isNotNull);
+    });
+
+    test('a gateway rejection with no id ends the read', () async {
+      // The gateway's `{"success": false}` envelope is not a JSON-RPC message
+      // and carries no id, so an id filter drops it: the read waits out its
+      // deadline and the caller is told nothing replied, where the same
+      // rejection over plain JSON says which of key, plan and quota is wrong.
+      final message = await ZaiSearch.readSseRpcMessage(
+        sse([
+          'data: {"success":false,"msg":"invalid api key"}\n',
+          '\n',
+        ]),
+        7,
+      ).timeout(const Duration(seconds: 5));
+
+      expect(message, isNotNull);
+      expect(
+        () => ZaiSearch.readRpcResult(message, method: 'tools/call', id: 7),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          contains('rejected the search API key'),
+        )),
+      );
     });
 
     test('a reply with neither result nor error still ends the read', () async {
