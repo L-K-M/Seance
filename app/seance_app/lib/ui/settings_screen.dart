@@ -290,7 +290,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         controller: _apiKey,
         obscureText: true,
         decoration: const InputDecoration(
-          labelText: 'API key (stored in OS keystore, never synced)',
+          // Not "never synced" any more, which is what this said before the
+          // record below existed and carried these keys. It is the sentence a
+          // user reads before deciding to paste a credential in, so it has to
+          // describe what the switch further down actually does.
+          labelText: 'API key (OS keystore; synced if assistant sync is on)',
           hintText: 'leave blank to keep the existing key / keyless local',
         ),
       ),
@@ -325,7 +329,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           controller: _zaiApiKey,
           obscureText: true,
           decoration: const InputDecoration(
-            labelText: 'Z.AI API key (stored in OS keystore, never synced)',
+            // Same correction as the LLM key's above: this one rides the
+            // assistant record too.
+            labelText:
+                'Z.AI API key (OS keystore; synced if assistant sync is on)',
             hintText: 'leave blank to keep the existing key',
           ),
         ),
