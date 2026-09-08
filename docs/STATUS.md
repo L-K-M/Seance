@@ -3,7 +3,9 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-08 — upload CAS coverage with hashing off pins the
+_Last updated: 2026-09-08. Periodic probe lifecycle repair prevents
+overlapping sweeps and stale queued work; upload CAS coverage with hashing
+off pins the
 SFTP adapter's preflight/compare-and-swap guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
@@ -22,6 +24,20 @@ tracking that support Poltergeist's pooled transport policy._
 AppImage users on older distros get a clear loader error instead. Deliberately
 no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system GTK3 (present on any desktop install) rather than bundling it. |
 | CI | `.github/workflows/ci.yml`: dart analyze+test, flutter analyze+test, docker build, and a client build matrix (android/linux x64/macos/ios/windows on native runners — the same matrix `release.yml` publishes; the Linux entry also runs the packaging and uploads the artifacts). |
+
+## Probe lifecycle (2026-09-08)
+
+Periodic sweeps serialize across repeated start and pause/resume. Pausing,
+replacing targets, or disposing invalidates queued work and stale results;
+already active probes may finish. Target lists are snapshotted. Server updates
+preserve cadence and never start or resume the service. Public one-shot
+`probeAll`, connected-server skipping, timeout, and jitter remain unchanged.
+Metadata-only edits and reordering preserve active results; id, host, or
+port changes invalidate them. Explicit start still restarts identical targets.
+
+Seven regression tests failed before their repairs. All 16 fake-clock lifecycle
+tests, 594 Dart tests, and 449 Flutter tests pass; analysis is clean. This fixes a
+prerequisite found while preparing Poltergeist M2's probe integration.
 
 ## SSH pool prerequisites (2026-09-07)
 
