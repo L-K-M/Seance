@@ -14,6 +14,7 @@ import 'sequential_cleanup.dart';
 
 const _cleanupActionTimeout = Duration(seconds: 5);
 const _sshAuthenticationTimeout = Duration(minutes: 5);
+const _defaultSshKeepAliveInterval = Duration(seconds: 10);
 
 Future<void> _discardCleanup(CleanupAction action) => runSequentialCleanup(
       [action],
@@ -330,6 +331,9 @@ SSHUserInfoRequestHandler? _keyboardInteractiveHandler(
 ///
 /// The caller owns the returned [SSHClient] and must close it when finished.
 /// On any error the client is closed before the exception is thrown.
+///
+/// [keepAliveInterval] preserves dartssh2's default. Pass null when a pool
+/// owns keepalive scheduling; non-null intervals must be positive.
 Future<(SSHClient, AuthKind)> openAuthenticatedClient({
   required ServerConfig config,
   required SshCredentials credentials,
@@ -338,8 +342,18 @@ Future<(SSHClient, AuthKind)> openAuthenticatedClient({
   KeyboardInteractiveResponder? onKeyboardInteractive,
   Future<SSHSocket> Function(String, int, Duration)? connect,
   Duration timeout = const Duration(seconds: 15),
+  Duration? keepAliveInterval = _defaultSshKeepAliveInterval,
   SshConnectionLog? log,
 }) async {
+  // Reject a busy-loop timer before acquiring a socket.
+  if (keepAliveInterval != null && keepAliveInterval <= Duration.zero) {
+    throw ArgumentError.value(
+      keepAliveInterval,
+      'keepAliveInterval',
+      'must be positive or null',
+    );
+  }
+
   void note(String message) => log?.add(message);
 
   if (credentials.method == AuthMethod.agent) {
@@ -404,6 +418,7 @@ Future<(SSHClient, AuthKind)> openAuthenticatedClient({
   final client = SSHClient(
     socket,
     username: config.username,
+    keepAliveInterval: keepAliveInterval,
     onVerifyHostKey: (type, fingerprint) => _verifyHostKey(
       tofu: tofu,
       onHostKey: onHostKey,
