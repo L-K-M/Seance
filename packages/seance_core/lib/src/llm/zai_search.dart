@@ -342,8 +342,16 @@ class ZaiSearch implements SearchProvider {
       // 403 is the same failure from anything else in front of the endpoint,
       // and "HTTP 401" leaves the user with nothing to act on. Still no body:
       // an error page here can echo the request, Authorization header and all.
+      // Split, because only one of the two points at the key. A 403 from this
+      // gateway is as often a valid key without Web Search Prime — the
+      // entitlement this class documents a few hundred lines up — and sending
+      // that user to re-check or rotate a working key is the one piece of
+      // advice that cannot help them.
       throw http.ClientException(
-        'Z.AI rejected the search API key. Check the key in Settings.',
+        response.statusCode == 401
+            ? 'Z.AI rejected the search API key. Check the key in Settings.'
+            : 'Z.AI refused the search request. The key may be valid but lack '
+                'Web Search Prime access, which needs a GLM Coding Plan.',
       );
     }
     if (response.statusCode >= 400) {

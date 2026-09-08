@@ -517,8 +517,11 @@ void main() {
       // The boundary itself: a `>=` in place of `>` would clip a snippet that
       // fits, and neither neighbour above or below can tell.
       final edge = 'y' * ChatController.maxSnippetChars;
-      final result = ChatController.clipSearchSnippets([hit(edge)]).single;
-      expect(result.snippet, edge);
+      // The same instance, as the URL boundary case asserts: passthrough is
+      // the contract when nothing needs clipping, and pinning it in one of
+      // three "fits" cases left the other two able to rebuild silently.
+      final fits = hit(edge);
+      expect(ChatController.clipSearchSnippets([fits]).single, same(fits));
     });
 
     test('the cut never splits a surrogate pair', () {
@@ -530,6 +533,9 @@ void main() {
       expect(result.snippet.endsWith('…'), isTrue);
       final beforeEllipsis =
           result.snippet.codeUnitAt(result.snippet.length - 2);
+      // Only the *high* half can be stranded: the kept text is a contiguous
+      // prefix, so a trailing lone low surrogate is not reachable here. A
+      // copy of this check applied to arbitrary text would need both.
       expect(beforeEllipsis & 0xFC00, isNot(0xD800));
       expect(result.snippet, '${'x' * (ChatController.maxSnippetChars - 1)}…');
     });

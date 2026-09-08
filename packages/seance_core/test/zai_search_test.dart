@@ -98,7 +98,14 @@ class FakeMcpServer {
     this.noise = false,
     this.sessionId = 'session-1',
     this.streamCase = false,
-  });
+  }) : assert(
+          !noise || sse || streamCase,
+          // `noise` is only read inside `_asSse`, which only runs for an SSE
+          // reply — so on its own it produces a fake identical to the default
+          // one, and a test written to prove the reader walks past a heartbeat
+          // would pass having sent none.
+          'noise only shapes SSE replies: pass sse or streamCase with it',
+        );
 
   /// Answer every reply as SSE typed `Text/Event-Stream`, which is the same
   /// media type spelled the way RFC 9110 allows and this client once misread.
@@ -150,6 +157,17 @@ class FakeMcpServer {
           // the final page, and any test combining an expiry with paging
           // could not tell a client that re-paginates from one that skips.
           _toolPagesServed = 0;
+          // And the one field MCP requires the *client* to propose. The
+          // guards above fail a malformed request as an expectation rather
+          // than as a mysterious result; this is the same, for the handshake
+          // the real gateway would reject. Nothing else in this file checks
+          // it — the version every later request sends is echoed from the
+          // server's reply, so a client that proposed none would pass.
+          final initParams = payload['params'];
+          if (initParams is! Map || initParams['protocolVersion'] is! String) {
+            throw StateError(
+                'initialize proposed no protocolVersion to ${request.url}');
+          }
         }
 
         if (expireSession > 0 && method == 'tools/call') {
@@ -600,7 +618,13 @@ void main() {
       // which `readRpcResult` names. A plain 401 or 403 — anything else in
       // front of the endpoint — is the same failure, and "HTTP 401" leaves
       // the user with nothing to act on.
+      //
+      // The two do not say the same thing, though: a 403 from this gateway is
+      // as often a valid key without Web Search Prime, and re-checking a
+      // working key is advice that cannot help. What both must do is name
+      // something actionable and never echo the request.
       for (final status in [401, 403]) {
+        final actionable = status == 401 ? 'Check the key' : 'Coding Plan';
         final client = MockClient.streaming((request, body) async =>
             http.StreamedResponse(
               Stream.value(utf8.encode('Bearer zai-secret was rejected')),
@@ -610,7 +634,7 @@ void main() {
           ZaiSearch(apiKey: 'zai-secret', client: client).search('dart'),
           throwsA(
             isA<http.ClientException>()
-                .having((e) => e.message, 'message', contains('Check the key'))
+                .having((e) => e.message, 'message', contains(actionable))
                 .having((e) => e.message, 'message', isNot(contains('secret'))),
             ),
           reason: 'HTTP $status should name the key',
@@ -1644,7 +1668,12 @@ void main() {
         ZaiSearch.bounded(
           controller.stream,
           1 << 20,
-          const Duration(seconds: 1),
+          // Wide enough that only the *total* deadline can fire, which is what
+          // this test is about. The drip resets the idle one every 5 ms, so a
+          // second is plenty in the ordinary case — but an event-loop stall on
+          // a loaded runner would trip it and fail this with the other guard's
+          // message, pointing at code the test does not exercise.
+          const Duration(seconds: 30),
           total: const Duration(milliseconds: 40),
           totalMessage: 'held open',
           // Test-side only: a deadline that stopped being enforced would
@@ -1655,6 +1684,30 @@ void main() {
           'message',
           'held open',
         )),
+      );
+      expect(cancelled, isTrue);
+    });
+
+    test('a stream that never sends anything is cut off too', () async {
+      // The stall test below delivers a byte first, so both it and the trickle
+      // test only reach the idle guard once data has flowed. `bytes.timeout`
+      // arms at subscription, which is what makes a server that accepts the
+      // connection and then says nothing — a hung handshake — fail rather
+      // than hang; nothing pinned that.
+      var cancelled = false;
+      final controller = StreamController<List<int>>(
+        onCancel: () => cancelled = true,
+      );
+      addTearDown(controller.close);
+
+      await expectLater(
+        ZaiSearch.bounded(
+          controller.stream,
+          1024,
+          const Duration(milliseconds: 20),
+        ).toList().timeout(const Duration(seconds: 5)),
+        throwsA(isA<http.ClientException>()
+            .having((e) => e.message, 'message', contains('stopped sending'))),
       );
       expect(cancelled, isTrue);
     });
@@ -1677,10 +1730,11 @@ void main() {
           controller.stream,
           1024,
           const Duration(milliseconds: 20),
-          // Test-side only, like the trickle test's: an idle deadline that
-          // stopped being enforced would hang here on a controller that never
-          // closes, rather than failing the expectation.
-        ).toList().timeout(const Duration(seconds: 5)),
+        ).toList()
+            // Test-side only, like the trickle test's: an idle deadline that
+            // stopped being enforced would hang here on a controller that
+            // never closes, rather than failing the expectation.
+            .timeout(const Duration(seconds: 5)),
         // Readable, like the byte cap's: both guards exist for the same
         // 200-then-stall case and both reach the UI, so neither surfaces as
         // "Future not completed".
