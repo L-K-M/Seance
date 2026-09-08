@@ -80,9 +80,15 @@ class ProbeService {
   Set<String> Function()? connectedServerIds;
 
   final Random _random;
+  static const _minimumJitterFactor = 0.7;
+  static const _jitterRange = 0.6;
 
   Timer? _timer;
   bool _paused = false;
+  bool _started = false;
+  bool _sweepInFlight = false;
+  bool _immediateSweepPending = false;
+  int _generation = 0;
   List<ServerConfig> _servers = const [];
   final _controller = StreamController<Map<String, ProbeStatus>>.broadcast();
 
@@ -107,7 +113,16 @@ class ProbeService {
   Future<Map<String, ProbeStatus>> probeAll(
     List<ServerConfig> servers, {
     Set<String> alreadyConnected = const {},
+  }) => _probeAll(servers, alreadyConnected: alreadyConnected);
+
+  // Only periodic sweeps carry a generation; standalone calls always finish.
+  Future<Map<String, ProbeStatus>> _probeAll(
+    List<ServerConfig> servers, {
+    required Set<String> alreadyConnected,
+    int? generation,
   }) async {
+    bool isCurrent() => generation == null || _isCurrentSweep(generation);
+
     final results = <String, ProbeStatus>{};
     final pending = <ServerConfig>[];
     for (final server in servers) {
@@ -120,14 +135,20 @@ class ProbeService {
 
     var next = 0;
     Future<void> worker() async {
-      while (true) {
+      while (isCurrent()) {
         final index = next++;
         if (index >= pending.length) return;
         final server = pending[index];
         try {
-          results[server.id] =
-              await prober.probe(server.host, server.port, timeout: timeout);
+          final status = await prober.probe(
+            server.host,
+            server.port,
+            timeout: timeout,
+          );
+          if (!isCurrent()) return;
+          results[server.id] = status;
         } catch (_) {
+          if (!isCurrent()) return;
           // One misbehaving host must not take the rest of the sweep with it.
           // [unknown], not [offline]: an unexpected error is not evidence that
           // the host is down, and claiming otherwise would be the lie this
@@ -146,71 +167,93 @@ class ProbeService {
   }
 
   void start(List<ServerConfig> servers) {
-    _servers = servers;
-    _scheduleNext(immediate: true);
+    if (_controller.isClosed) return;
+    updateServers(servers);
+    _started = true;
+    _immediateSweepPending = true;
+    _scheduleNext();
   }
 
-  void updateServers(List<ServerConfig> servers) => _servers = servers;
+  /// Replace targets without accelerating the periodic schedule.
+  void updateServers(List<ServerConfig> servers) {
+    if (_controller.isClosed) return;
+    _servers = List.unmodifiable(servers);
+    _generation++;
+  }
 
   /// Whether probing is currently paused (e.g. the app is backgrounded).
   bool get isPaused => _paused;
 
-  void pause() => _paused = true;
-  void resume() {
-    if (_paused) {
-      _paused = false;
-      _scheduleNext(immediate: true);
-    }
+  void pause() {
+    _paused = true;
+    _generation++;
+    _timer?.cancel();
+    _timer = null;
+    _immediateSweepPending = false;
   }
 
-  void _scheduleNext({bool immediate = false}) {
+  void resume() {
+    if (!_paused || _controller.isClosed) return;
+    _paused = false;
+    _immediateSweepPending = true;
+    _scheduleNext();
+  }
+
+  bool _isCurrentSweep(int generation) =>
+      generation == _generation && !_paused && !_controller.isClosed;
+
+  void _scheduleNext() {
+    if (!_started || _paused || _controller.isClosed || _sweepInFlight) return;
     _timer?.cancel();
     // Jitter ±30% so many servers aren't probed in lockstep.
     final jitterMs =
-        (interval.inMilliseconds * (0.7 + _random.nextDouble() * 0.6)).round();
-    final delay = immediate ? Duration.zero : Duration(milliseconds: jitterMs);
-    _timer = Timer(delay, () async {
-      if (_paused) return;
-      try {
-        if (!_controller.isClosed && _servers.isNotEmpty) {
-          final statuses = await probeAll(
-            _servers,
-            alreadyConnected: connectedServerIds?.call() ?? const <String>{},
-          );
-          // Re-checked after the await: a sweep can take seconds, and a
-          // `dispose` landing inside that window would make this `add` throw
-          // on a closed controller — reported below as "probe sweep failed",
-          // which is a lie about an ordinary shutdown.
-          if (!_controller.isClosed) _controller.add(statuses);
-        }
-      } catch (error, stack) {
-        // A failed sweep must not become an unhandled async error, and must
-        // not stop the schedule: the next one is still queued below. It must
-        // not be invisible either — `connectedServerIds` is caller-supplied
-        // and could throw, and a sweep that silently stops updating every
-        // status is undiagnosable without this.
-        developer.log(
-          'probe sweep failed',
-          name: 'seance.probe',
-          error: error,
-          stackTrace: stack,
+        (interval.inMilliseconds *
+                (_minimumJitterFactor + _random.nextDouble() * _jitterRange))
+            .round();
+    final delay = _immediateSweepPending
+        ? Duration.zero
+        : Duration(milliseconds: jitterMs);
+    _timer = Timer(delay, _runSweep);
+  }
+
+  Future<void> _runSweep() async {
+    _timer = null;
+    if (_paused || _controller.isClosed) return;
+    _sweepInFlight = true;
+    _immediateSweepPending = false;
+    final generation = _generation;
+    final servers = _servers;
+
+    try {
+      if (servers.isNotEmpty) {
+        final statuses = await _probeAll(
+          servers,
+          alreadyConnected: connectedServerIds?.call() ?? const <String>{},
+          generation: generation,
         );
-      } finally {
-        // In the finally, not after the catch: the comment above promises the
-        // schedule survives a failed sweep, and it only actually does if a
-        // throw from the logging path cannot skip this line.
-        //
-        // Closed, not just paused: `dispose` cancels the timer, but a sweep
-        // already running by then has nothing left to cancel, and re-arming
-        // here would leave a disposed service waking every interval for the
-        // life of the process.
-        if (!_paused && !_controller.isClosed) _scheduleNext();
+        if (_isCurrentSweep(generation)) _controller.add(statuses);
       }
-    });
+    } catch (error, stack) {
+      // A caller-supplied connectedServerIds callback can fail. Report it and
+      // keep the next sweep scheduled so statuses can recover.
+      developer.log(
+        'probe sweep failed',
+        name: 'seance.probe',
+        error: error,
+        stackTrace: stack,
+      );
+    } finally {
+      // Restarts wait for every existing probe to drain. Only this owner
+      // rearms the timer, preserving the concurrency cap across generations.
+      _sweepInFlight = false;
+      _scheduleNext();
+    }
   }
 
   Future<void> dispose() async {
+    _generation++;
     _timer?.cancel();
+    _timer = null;
     await _controller.close();
   }
 }
