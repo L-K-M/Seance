@@ -1,5 +1,9 @@
 # AGENTS.md — working guide for Séance
 
+!Important!
+
+**Always pull the latest code from the repo before building.**
+
 Read this first. It captures what isn't obvious from the code: how to get a
 toolchain in a fresh environment, how to build/test each piece, the non-obvious
 API constraints that shaped the code, and where the bodies are buried.
