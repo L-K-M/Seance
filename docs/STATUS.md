@@ -255,17 +255,16 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     for the editor to notice the mismatch and say so, rather than for `_save`
     to pick one silently.
 
-    The same single slot has a second failure, reachable without any method
-    switch: referencing a key file writes the *typed* passphrase beside the
-    PEM the entry already held, because one entry carries one passphrase and
-    the referenced key needs its own. A device that had a pasted key under
+18. **One passphrase slot serves two keys.** A second failure of the same
+    slot, reachable without any method switch: referencing a key file writes
+    the *typed* passphrase beside the PEM the entry already held, because one
+    entry carries one passphrase and the referenced key needs its own. A device that had a pasted key under
     passphrase A, then referenced a different key file under passphrase B,
     stores `{PEM A, passphrase B}` — and switching back to a pasted key
     without re-pasting leaves a PEM that no longer decrypts. Carrying the old
     passphrase instead would break the referenced key, which is the one the
     server is actually set to use, so this needs the same fix as the paragraph
-    above: two slots, or an editor that says which key a passphrase belongs
-    to.
+    17: two slots, or an editor that says which key a passphrase belongs to.
 
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,

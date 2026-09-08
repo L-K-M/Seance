@@ -348,6 +348,11 @@ void main() {
       // a scrub that moved to render time would hand this the raw answer.
       expect(log.lines.join('\n'), isNot(contains('tail')));
       expect(log.lines.join('\n'), isNot(contains('sword')));
+      // The heads too, which the view assertions above left to `toString`:
+      // if the two ever diverge, the front of a credential is as much of a
+      // leak on the widget's side as the tail is.
+      expect(log.lines.join('\n'), isNot(contains('pas]')));
+      expect(log.lines.join('\n'), isNot(contains('secret')));
       expect(log.toString(), contains('[redacted])'));
     });
 
@@ -524,7 +529,12 @@ void main() {
         redactConnectionTrace(
           'A(responses: [x]) SSH_Message_Userauth_InfoResponse(replies: [pw])',
         ),
-        isNot(contains('pw')),
+        // Which branch, not only the absence: the comment above says the
+        // withhold is skipped here and the leftmost match swallows the rest,
+        // so the output is the in-place redaction. Asserted, because
+        // over-redacting to a withhold satisfies an absence check while the
+        // composition this case is named for stopped happening.
+        allOf(isNot(contains('pw')), contains('A(responses: [redacted])')),
       );
       // And the same two messages the other way round, where the withhold is
       // what covers it: the token comes first, so the later match cannot

@@ -5,10 +5,11 @@ import 'dart:typed_data';
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
 
-ServerConfig config({String? jumpHostId}) => ServerConfig(
+ServerConfig config({String? jumpHostId, String host = 'prod.example.com'}) =>
+    ServerConfig(
       id: 's1',
       label: 'prod',
-      host: 'prod.example.com',
+      host: host,
       port: 2222,
       username: 'deploy',
       authMethod: AuthMethod.password,
@@ -221,6 +222,26 @@ void main() {
       expect(result.ok, isFalse);
       expect(result.summary, 'Agent auth is not available yet.');
       expect(result.summary, isNot(contains('Unsupported operation')));
+    });
+
+    test('an IPv6 host is bracketed once, however it was typed', () async {
+      // The host field is free text, so a literal pasted out of
+      // `ssh://user@[::1]:22` arrives with its brackets on. Wrapped again it
+      // renders `[[::1]]` in the one line this file calls the one people
+      // quote back; left unwrapped, a bare `::1` runs into the port.
+      for (final (typed, shown) in [
+        ('::1', '[::1]:2222'),
+        ('[::1]', '[::1]:2222'),
+        ('prod.example.com', 'prod.example.com:2222'),
+      ]) {
+        final result = await runConnectionTest(
+          config: config(host: typed),
+          credentials: () async => const SshCredentials.password('pw'),
+          authenticate: (_, _, _) async => AuthKind.storedPassword,
+        );
+        expect(result.summary, contains('deploy@$shown'),
+            reason: 'host typed as $typed');
+      }
     });
 
     test('a jump host is called out rather than silently ignored', () async {

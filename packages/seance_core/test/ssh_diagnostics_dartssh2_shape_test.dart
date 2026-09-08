@@ -56,7 +56,15 @@ void main() {
       // scrub" instead — which is how this read until now — pinned the same
       // fact by forbidding a scrub, so adding one later would have failed a
       // test whose subject is the library, not us.
-      expect(raw, isNot(contains('hunter2')));
+      expect(
+        raw,
+        isNot(contains('hunter2')),
+        reason: 'dartssh2 has started printing the password in '
+            'SSH_Message_Userauth_Request.toString(). This is a dependency '
+            'change, not a redaction regression: scrub it at capture in '
+            'SshConnectionLog, or hold the previous dartssh2, before '
+            'upgrading.',
+      );
 
       final log = SshConnectionLog();
       log.add('-> sock: $raw');

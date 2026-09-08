@@ -173,8 +173,15 @@ Future<ConnectionTestResult> runConnectionTest({
     final kind = await authenticate(config, resolved, transcript);
     // Bracketed when the host carries colons of its own: `alice@::1:22` hides
     // where the address ends, and this line is the one people quote back.
-    final host =
-        config.host.contains(':') ? '[${config.host}]' : config.host;
+    // Bracketed only if it is not already. The field is free text
+    // (`_host.text.trim()`), so a host pasted out of `ssh://user@[::1]:22`
+    // arrives with its brackets on, and wrapping again renders `[[::1]]` in
+    // the one line this file's comments call the one people quote back. A
+    // hostname cannot contain a colon, so a leading `[` beside one is always
+    // the bracketed form already.
+    final host = config.host.contains(':') && !config.host.startsWith('[')
+        ? '[${config.host}]'
+        : config.host;
     final summary = 'Authenticated as ${config.username}@$host:${config.port} '
         '(${authKindLabel(kind)}).';
     // Into the transcript too, not only onto the result. A success ended with
