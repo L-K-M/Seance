@@ -438,6 +438,22 @@ class AppServices {
   /// file: its macOS security-scoped grant is keyed by server id and is not
   /// written to settings until save, so without it a key outside `~/.ssh`
   /// would fall back to the raw path and fail with EPERM.
+  ///
+  /// A *newly picked* identity file is not carved out the way a typed PEM is,
+  /// and the asymmetry is deliberate. Save keeps the stored passphrase when
+  /// the box is blank (the editor writes no secret in referenced-key mode
+  /// without one), so falling back to it here is what makes the test faithful
+  /// to the save — the property this whole method is built on. Treating the
+  /// pick as new key material instead would need a way to tell "a different
+  /// key" from "the same key re-picked", and the only signal available is the
+  /// bookmark: a macOS-only blob that is re-minted per grant, so it differs
+  /// for the same file and is null everywhere else. That would drop a correct
+  /// stored passphrase on every re-pick on one platform and never fire on the
+  /// others. The cost is that rotating to an unprotected key cannot be
+  /// expressed — the box is already blank — so the test reports a decrypt
+  /// failure for a configuration that is correct, and saving would store the
+  /// same stale passphrase. `docs/STATUS.md` follow-up 16 tracks the explicit
+  /// "no passphrase" affordance that closes it in both places at once.
   Future<SshCredentials> resolveCredentials(
     ServerConfig config, {
     String? draftPassword,
@@ -494,12 +510,19 @@ class AppServices {
             config,
             bookmarkOverride: draftIdentityBookmark,
           );
-          final storedPass = config.secretRef == null
-              ? null
-              : (await vault.getSecret(config.secretRef!))?.keyPassphrase;
           return SshCredentials.privateKey(
             pem,
-            keyPassphrase: draft(draftKeyPassphrase) ?? storedPass,
+            // Behind the `??`, so a typed passphrase skips the read that was
+            // about to be discarded. Only a read: the vault is `vault.json`
+            // (`FileVaultStore`), and the keyring holds the vault key alone —
+            // already resolved by the time this runs — so there is no unlock
+            // prompt or keychain failure to avoid here, and no behaviour
+            // difference to test. Free, and one less thing happening.
+            keyPassphrase: draft(draftKeyPassphrase) ??
+                (config.secretRef == null
+                    ? null
+                    : (await vault.getSecret(config.secretRef!))
+                        ?.keyPassphrase),
           );
         }
         final typedPem = draft(draftPrivateKey);
@@ -670,23 +693,36 @@ class AppServices {
   /// is what hides the search tool from the assistant.
   Future<SearchProvider?> buildSearchProvider() async {
     final backends = <SearchProvider>[];
-    if (settings.searxngUrl != null && settings.searxngUrl!.isNotEmpty) {
-      backends.add(SearxngSearch(baseUrl: settings.searxngUrl!));
+    // Trimmed, unlike the key refs beside it: a ref that is only whitespace
+    // resolves to no key and the backend is skipped with a toast, but a URL
+    // that is only whitespace has nothing to resolve against — it would build
+    // a `SearxngSearch` whose every request fails, and the only sign would be
+    // the mid-search failure log. The settings screen already writes
+    // trimmed-or-null; a hand-edited or synced `settings.json` need not.
+    final searxngUrl = settings.searxngUrl?.trim() ?? '';
+    if (searxngUrl.isNotEmpty) {
+      backends.add(SearxngSearch(baseUrl: searxngUrl));
     }
-    if (settings.braveApiKeyRef != null &&
-        settings.braveApiKeyRef!.isNotEmpty) {
+    // Trimmed for the reason the URL above is: these arrive from a
+    // hand-edited `settings.json` or over sync, and a padded name addresses no
+    // keystore entry. Untrimmed, it passes the emptiness check, misses its
+    // lookup, and is reported as a locked keyring — sending the user to debug
+    // a keystore that is working.
+    final braveRef = settings.braveApiKeyRef?.trim() ?? '';
+    if (braveRef.isNotEmpty) {
       // getApiKey answers null on a locked keyring rather than throwing, so a
       // keystore that is down reads as "this backend is not available" and the
       // others still work.
-      final key = await masterKeys.getApiKey(settings.braveApiKeyRef!);
+      final key = await masterKeys.getApiKey(braveRef);
       if (key != null) {
         backends.add(BraveSearch(apiKey: key));
       } else {
         _searchBackendUnavailable('Brave');
       }
     }
-    if (settings.zaiApiKeyRef != null && settings.zaiApiKeyRef!.isNotEmpty) {
-      final key = await masterKeys.getApiKey(settings.zaiApiKeyRef!);
+    final zaiRef = settings.zaiApiKeyRef?.trim() ?? '';
+    if (zaiRef.isNotEmpty) {
+      final key = await masterKeys.getApiKey(zaiRef);
       if (key != null) {
         backends.add(ZaiSearch(apiKey: key));
       } else {

@@ -46,12 +46,17 @@ void main() {
   test('a stray grant under key auth with no path is refused', () async {
     // Dropped silently, the vault credential would be tested instead — a
     // green result for a key nobody asked to try.
+    // Named, not merely `throwsArgumentError`: this is the one test whose
+    // whole job is to pin that guard, and a generic validation added later
+    // ("key auth with nothing to authenticate with") would satisfy the bare
+    // matcher while the guard was gone.
     await expectLater(
       services.resolveCredentials(
         config(AuthMethod.privateKey),
         draftIdentityBookmark: stray,
       ),
-      throwsArgumentError,
+      throwsA(isA<ArgumentError>()
+          .having((e) => e.name, 'name', 'draftIdentityBookmark')),
     );
   });
 
@@ -64,6 +69,34 @@ void main() {
       draftIdentityBookmark: stray,
     );
     expect(credentials.privateKeyPem, 'PEM');
+  });
+
+  test('a grant beside a configured identity path is not refused', () async {
+    // The complement of the first test, and the mode the grant exists for:
+    // referenced-key auth is what the editor's Test connection runs in, so a
+    // guard that fired whenever a bookmark was present — comparing the wrong
+    // field, or trimming too hard — would break the only path that needs it
+    // while every other test here stayed green. The file does not exist, so
+    // reading it fails; what matters is that it got that far.
+    //
+    // Under this test's own temp directory rather than `stray.path`: that one
+    // is absent because no machine happens to have `/keys/id`, which is an
+    // assumption about the host rather than something this test controls —
+    // and on Windows it resolves against the current drive's root. The two
+    // tests either side are unaffected, since the guard fires before any file
+    // is opened.
+    final absent = '${directory.path}/absent-id';
+    await expectLater(
+      services.resolveCredentials(
+        config(AuthMethod.privateKey).copyWith(identityFilePath: absent),
+        draftIdentityBookmark:
+            IdentityFileBookmark(path: absent, bookmark: 'grant'),
+      ),
+      // The concrete failure, not merely "not the guard": a regression that
+      // failed earlier for an unrelated reason would satisfy a negative
+      // matcher while this path lost its coverage silently.
+      throwsA(isA<IdentityFileException>()),
+    );
   });
 
   test('a stray grant under password auth is a harmless leftover', () async {

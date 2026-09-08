@@ -89,7 +89,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _searxng.text = s.searxngUrl ?? '';
     // Only whether it is on — never the key itself, which stays in the OS
     // keystore and is not something a settings screen should be able to show.
-    _zai = s.zaiApiKeyRef != null && s.zaiApiKeyRef!.isNotEmpty;
+    // Trimmed, like `buildSearchProvider` reads it: a hand-edited or synced
+    // `settings.json` holding `"   "` would otherwise show the switch on for
+    // a backend every search silently skips.
+    _zai = (s.zaiApiKeyRef ?? '').trim().isNotEmpty;
     _redaction = s.redactionEnabled;
   }
 
@@ -322,7 +325,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: const Text('Z.AI Web Search Prime'),
         subtitle: const Text('Needs a Z.AI key with a GLM Coding Plan.'),
         value: _zai,
-        onChanged: (v) => setState(() => _zai = v),
+        // Frozen while a save runs, like the Save button and the sync
+        // switches. `_save` reads `_zai` twice — before the awaits to decide
+        // whether to write the key, and after them to set the reference — so
+        // a toggle in between makes one save act on two different answers:
+        // off-to-on persists a reference with nothing stored behind it, and
+        // on-to-off stores a key the settings it just wrote call unused. The
+        // text fields' mid-save edits are already snapshotted; this was the
+        // one control gating a keystore write that was not.
+        onChanged: _saving ? null : (v) => setState(() => _zai = v),
       ),
       if (_zai)
         TextField(
@@ -929,12 +940,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ) async {
     final s = state.services.settings;
     // Store the API key under a per-provider name.
-    final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
+    //
+    // Snapshotted with the key fields below, and for the same reason: the
+    // keystore writes are awaits and the provider dropdown is not frozen
+    // while one runs. `ref` was taken from `_kind` here and `s.llmKind` read
+    // it again afterwards, so a flip in between wrote a provider with the
+    // *other* provider's key reference beside it — `openaiCompatible`
+    // holding `'anthropic'` — which authenticates against nothing until the
+    // user notices and saves again. Reading it once also stops the invariant
+    // depending on a widget six hundred lines up keeping its `onChanged`
+    // gated on `_saving`.
+    final kind = _kind;
+    final ref = kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
 
     // Keys first, settings after. A keystore failure returns without saving,
     // and the settings object is the one the running app reads — leaving it
     // mutated to say "Z.AI is on" behind a key that never landed would make
     // the failed save take effect anyway, until the next launch.
+    // Snapshotted before the writes below, and before any await: the fields
+    // stay editable while a save is in flight, so what is cleared afterwards
+    // has to be what this save actually stored rather than whatever the box
+    // holds by then.
+    final enteredLlmKey = _apiKey.text;
+    final enteredZaiKey = _zaiApiKey.text;
     if (_zai && _zaiApiKey.text.trim().isNotEmpty) {
       try {
         await state.services.masterKeys.putApiKey(
@@ -1008,7 +1036,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
     final before = assistantSyncFingerprint(s);
-    s.llmKind = _kind;
+    s.llmKind = kind;
     s.llmBaseUrl = _baseUrl.text.trim();
     s.llmModel = _model.text.trim();
     s.llmApiKeyRef = ref;

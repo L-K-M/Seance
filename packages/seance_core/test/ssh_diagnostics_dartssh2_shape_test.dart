@@ -23,11 +23,24 @@ void main() {
       // toString, so an upgrade that changes the format fails here rather
       // than at the fail-closed branch in production.
       final log = SshConnectionLog();
-      log.add('-> sock: '
-          '${SSH_Message_Userauth_InfoResponse(responses: const [
-            'hunter2',
-            'second-answer',
-          ])}');
+      final raw = '${SSH_Message_Userauth_InfoResponse(responses: const [
+        'hunter2',
+        'second-answer',
+      ])}';
+      // The precondition, asserted the way the password-request test below
+      // asserts its own: every check under this one is a *negative*, and a
+      // dartssh2 that stopped printing `responses` would satisfy all of them
+      // without the scrubber being exercised at all — the vacuous pass this
+      // file exists to rule out, arriving through the dependency rather than
+      // through a hand-written fixture.
+      expect(
+        raw,
+        contains('hunter2'),
+        reason: 'dartssh2 no longer prints the responses this scrubs. That '
+            'is a dependency change: re-audit the message/ toStrings and '
+            're-base the pattern before upgrading.',
+      );
+      log.add('-> sock: $raw');
       // The framing survives: a scrubber that nuked the whole line would
       // satisfy every assertion below while destroying the transcript.
       expect(log.toString(), contains('-> sock:'));
@@ -46,18 +59,30 @@ void main() {
       // into bug reports. Built from the real message for the same reason the
       // InfoResponse one is: a hand-written line would pin my reading of
       // dartssh2 rather than dartssh2.
+      final raw = '${SSH_Message_Userauth_Request.password(
+        user: 'deploy',
+        password: 'hunter2',
+      )}';
+      // The mechanism, asserted on the message itself rather than through the
+      // log: the password is absent because dartssh2 omits it, and an upgrade
+      // that started printing it fails here. Asserting it as "the log did not
+      // scrub" instead — which is how this read until now — pinned the same
+      // fact by forbidding a scrub, so adding one later would have failed a
+      // test whose subject is the library, not us.
+      expect(
+        raw,
+        isNot(contains('hunter2')),
+        reason: 'dartssh2 has started printing the password in '
+            'SSH_Message_Userauth_Request.toString(). This is a dependency '
+            'change, not a redaction regression: scrub it at capture in '
+            'SshConnectionLog, or hold the previous dartssh2, before '
+            'upgrading.',
+      );
+
       final log = SshConnectionLog();
-      log.add('-> sock: '
-          '${SSH_Message_Userauth_Request.password(
-            user: 'deploy',
-            password: 'hunter2',
-          )}');
+      log.add('-> sock: $raw');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('deploy'));
-      // The mechanism, pinned like the InfoResponse test pins its own: the
-      // password is absent because dartssh2 omits it, not because the log
-      // scrubbed it — a scrub here would mean the assumption above moved.
-      expect(log.toString(), isNot(contains('[redacted]')));
     });
   });
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:meta/meta.dart';
@@ -115,6 +116,15 @@ class ZaiSearch implements SearchProvider {
   /// session is empty, so an empty one never means "a live session still
   /// needs clearing". It is the same identity reasoning [_ensureHandshake]
   /// already uses when clearing a failed attempt.
+  ///
+  /// One window it does not cover, stated so nobody reads more into the
+  /// guard than it gives: a 404 from the retired session that is *processed*
+  /// after the replacement has already published clears the replacement too,
+  /// and its caller starts a third handshake. The cost is one wasted
+  /// handshake and a server-side session nobody returns to — never a wrong
+  /// result, since each caller still gets its own answer. Closing it would
+  /// mean threading the rejected id through [_SessionExpired] so a straggler
+  /// could recognize that it is not talking about the session in hand.
   void _reset() {
     if (_session.isEmpty) return;
     _session = const {};
@@ -140,7 +150,16 @@ class ZaiSearch implements SearchProvider {
       // the only place that says *which* of key, plan and quota is the
       // problem. A transport body still never gets quoted — that one can echo
       // the request, Authorization header included.
-      final detail = _textBlocks(result['content']).join(' ').trim();
+      var detail = _textBlocks(result['content']).join(' ').trim();
+      // The reply is capped at `maxResponseBytes`, so this is bounded — but
+      // bounded at two megabytes, and it lands in a message meant to be read
+      // and logged. A server that answers an error with its whole corpus
+      // should not put it in a sentence.
+      // Through [clipText], not a substring of its own: that helper's whole
+      // reason for being shared is that the rule is subtle — it steps back
+      // off a UTF-16 surrogate pair rather than splitting it — and a server's
+      // error prose is exactly where an emoji lands astride a cut.
+      detail = clipText(detail, 512);
       throw http.ClientException(
         detail.isEmpty
             ? 'Z.AI search failed. Check the search key, Coding Plan access, '
@@ -284,10 +303,14 @@ class ZaiSearch implements SearchProvider {
         // and the response it produces would have nobody to read or cancel
         // it, so its socket would linger — the leak `bounded` exists to
         // avoid on the body, one phase earlier.
-        unawaited(sent.then(
-          (late) => late.stream.listen(null).cancel(),
-          onError: (Object _) {},
-        ));
+        // `catchError` on the chain, not `onError` on the `then`: the latter
+        // answers for `sent` alone, so a `cancel()` that fails — most likely
+        // on exactly the connection that stalled long enough to reach this
+        // deadline and then broke — landed on the result future with nothing
+        // handling it, as an unhandled async error in the caller's zone.
+        unawaited(sent
+            .then((late) => late.stream.listen(null).cancel())
+            .catchError((Object _) {}));
         throw http.ClientException(
           'Z.AI did not answer the search request in time.',
         );
@@ -329,8 +352,16 @@ class ZaiSearch implements SearchProvider {
       // 403 is the same failure from anything else in front of the endpoint,
       // and "HTTP 401" leaves the user with nothing to act on. Still no body:
       // an error page here can echo the request, Authorization header and all.
+      // Split, because only one of the two points at the key. A 403 from this
+      // gateway is as often a valid key without Web Search Prime — the
+      // entitlement this class documents a few hundred lines up — and sending
+      // that user to re-check or rotate a working key is the one piece of
+      // advice that cannot help them.
       throw http.ClientException(
-        'Z.AI rejected the search API key. Check the key in Settings.',
+        response.statusCode == 401
+            ? 'Z.AI rejected the search API key. Check the key in Settings.'
+            : 'Z.AI refused the search request. The key may be valid but lack '
+                'Web Search Prime access, which needs a GLM Coding Plan.',
       );
     }
     if (response.statusCode >= 400) {
@@ -422,16 +453,21 @@ class ZaiSearch implements SearchProvider {
   }
 
   Future<String> _readBounded(Stream<List<int>> bytes) async {
-    final buffer = <int>[];
+    // A `BytesBuilder`, not a growable `List<int>`: the list gives every
+    // byte a full tagged slot and copies the lot on each regrowth, so a reply
+    // near `maxResponseBytes` costs several times its own size to receive.
+    // `dart:typed_data` rather than `dart:io`, which also exports it — this
+    // package stays platform-neutral.
+    final buffer = BytesBuilder(copy: false);
     await for (final chunk in bounded(
       bytes,
       maxResponseBytes,
       timeout,
       total: timeout,
     )) {
-      buffer.addAll(chunk);
+      buffer.add(chunk);
     }
-    return utf8.decode(buffer, allowMalformed: true);
+    return utf8.decode(buffer.takeBytes(), allowMalformed: true);
   }
 
   /// [bytes] capped at [maxBytes] and cut off after [idle] without an event.
@@ -539,15 +575,39 @@ class ZaiSearch implements SearchProvider {
         return null;
       }
       if (decoded is! Map<String, dynamic>) return null;
+      // The gateway's own rejection is not a JSON-RPC message and carries no
+      // id — which is why `readRpcResult` checks `success` before it checks
+      // anything else. Filtered out here as an unrelated event, it would
+      // leave the read waiting for a reply that is never coming: the caller
+      // burns the idle deadline and gets "Z.AI sent no reply", where the same
+      // rejection over the plain-JSON transport says which of key, plan and
+      // quota to look at. The two transports must fail the same way.
+      if (decoded['success'] == false) return decoded;
       // A server may interleave other messages (a notification, a ping)
       // before the answer; only the matching id ends the read.
       if (decoded['id'] != id) return null;
+      // And a *request* of the server's own — sampling, elicitation, a roots
+      // listing. JSON-RPC ids are scoped per direction, so the server's
+      // counter can hand out the number this request is using, and such a
+      // message would otherwise be returned as the reply and rejected as
+      // invalid while the real one was still inbound. `method` is what tells
+      // the two apart: a response never carries one. Not "has neither
+      // `result` nor `error`" — that reading would also swallow a malformed
+      // reply, turning a fast "invalid reply" into a wait for the stream to
+      // end.
+      if (decoded.containsKey('method')) return null;
       return decoded;
     }
 
     await for (final line in lines) {
       if (line.startsWith('data:')) {
-        data.add(line.substring(5).trimLeft());
+        // One leading space, which is what SSE says to remove — not every
+        // leading blank. It makes no difference to `jsonDecode`, and every
+        // payload this reader consumes is JSON; it matters the day the field
+        // carries something whose indentation means anything, which is a
+        // cheaper thing to get right now than to find out later.
+        final body = line.substring(5);
+        data.add(body.startsWith(' ') ? body.substring(1) : body);
       } else if (line.isEmpty) {
         final message = finish();
         if (message != null) return message;
@@ -581,16 +641,53 @@ class ZaiSearch implements SearchProvider {
       // Quota first: "insufficient token quota" and "token limit reached"
       // both carry "token", and telling someone with a working key to rotate
       // it is the exact confusion this branch exists to prevent.
+      // "tokens exhausted" and "token budget depleted" carry neither of the
+      // first four words and every bit of the same meaning, so without them
+      // the "token" test below sends someone with a working key to rotate it.
       final quota = text.contains('quota') ||
           text.contains('limit') ||
           text.contains('balance') ||
-          text.contains('insufficient');
+          text.contains('insufficient') ||
+          text.contains('exhausted') ||
+          text.contains('depleted') ||
+          text.contains('exceeded');
+      // gRPC-shaped stacks say "deadline exceeded" and "timeout exceeded" for
+      // a transient failure a retry fixes, and both `exceeded` above and
+      // `token` below claim those words. Neither claim is useful: the
+      // remediation for a timeout is to try again, not to rotate a key or
+      // top up a plan.
+      //
+      // It vetoes the *key* message rather than the quota reading, which is
+      // where an earlier attempt at this put it. There is no quota message —
+      // `quota` only holds the key message back, and everything else falls
+      // through to the generic one — so vetoing the reading changed nothing
+      // for "deadline exceeded" and made "auth deadline exceeded" worse: it
+      // reopened the very key message it was written to prevent.
+      final transient = text.contains('deadline') || text.contains('timeout');
+      // Both spellings: gateways write "invalid api key" and "invalid apikey"
+      // about equally, and the one-word form used to fall through to the
+      // generic message that lists three things to check instead of naming
+      // the one that is wrong. ("unauthorized" needs no clause of its own —
+      // it contains "auth".)
       if (!quota &&
+          !transient &&
           (text.contains('auth') ||
               text.contains('api key') ||
+              text.contains('apikey') ||
               text.contains('token'))) {
         throw http.ClientException(
           'Z.AI rejected the search API key. Check the key in Settings.',
+        );
+      }
+      // Before the generic message, not after it: that one lists the key
+      // first, and "deadline exceeded" sets `quota` through `exceeded`, so no
+      // ordering of the other two throws can reach a timeout. Vetoing the key
+      // message was only half of it — the advice a transient failure needs is
+      // to try again, and neither of the other two says so.
+      if (transient) {
+        throw http.ClientException(
+          'Z.AI timed out answering $method. That is usually temporary — try '
+          'the search again.',
         );
       }
       throw http.ClientException(
@@ -637,6 +734,14 @@ class ZaiSearch implements SearchProvider {
         _asList(schema['required']).whereType<String>();
 
     String? pick(List<String> candidates) {
+      // Required first, not merely present. A schema advertising both `query`
+      // and `q` with only `q` required would otherwise take the query on the
+      // optional twin, and the loop below would fill the required one from its
+      // default — two conflicting parameters, with the server almost certainly
+      // reading the one the user's query is not in.
+      for (final name in candidates) {
+        if (required.contains(name)) return name;
+      }
       for (final name in candidates) {
         if (properties.containsKey(name)) return name;
       }
@@ -650,8 +755,20 @@ class ZaiSearch implements SearchProvider {
       );
     }
     final arguments = <String, dynamic>{queryKey: query};
-    final countKey = pick(const ['count', 'limit', 'num_results']);
-    if (countKey != null) arguments[countKey] = limit;
+    final countKey = pick(const [
+      'count',
+      'limit',
+      'num_results',
+      'max_results',
+      'numResults',
+      'maxResults',
+    ]);
+    // Omitted rather than sent when it is not a count: `parseToolResult`
+    // already clamps a non-positive limit on the way back, and forwarding one
+    // spends a round trip to be told `-32602` by a gateway that cannot mean
+    // anything by "give me zero results". Omitting lets the schema's own
+    // default stand, and the clamp still returns nothing.
+    if (countKey != null && limit > 0) arguments[countKey] = limit;
 
     for (final name in required) {
       if (arguments.containsKey(name)) continue;
@@ -769,22 +886,17 @@ class ZaiSearch implements SearchProvider {
   /// Parsed rather than prefix-matched, so `https:evil` and a bare
   /// `https://` do not pass for want of a host.
   static bool _isWebUrl(String value) {
-    // Length first: a URL is the one field of a result that cannot be
-    // clipped — a truncated one is a link that lies — so an implausible one
-    // is refused rather than carried into the tool result, where it would
-    // spend the token budget the snippet and title caps protect.
-    if (value.length > maxUrlChars) return false;
+    // Shape only. Length is `clipSearchSnippets`' business, and deliberately
+    // not this one: it caps every backend's URL at the same number with a
+    // visible ellipsis, so refusing here dropped a Z.AI result — title and
+    // snippet with it — where the identical URL from SearXNG or Brave was
+    // kept and truncated. Two policies for one field, and the losing one took
+    // the whole result.
     final uri = Uri.tryParse(value);
     return uri != null &&
         (uri.scheme == 'http' || uri.scheme == 'https') &&
         uri.host.isNotEmpty;
   }
-
-  /// Beyond this a URL is not a page anyone will open. Browsers stop well
-  /// below it; this is a ceiling on what a gateway can spend, not a limit
-  /// anything real runs into.
-  @visibleForTesting
-  static const int maxUrlChars = 2048;
 
   /// Walk a tool reply of any shape, collecting every result-looking map.
   ///
@@ -860,27 +972,28 @@ class ZaiSearch implements SearchProvider {
       };
       // Empty falls through here too: an explicitly empty `content` beside
       // a usable `snippet` was rendering as no snippet at all.
-      final content = value['content'];
-      // Empty in every shape the switch below reads, not only as a string:
-      // `??` answers for null alone, so an explicitly empty list or map hid
-      // a usable `snippet` beside it — the same fall-through the string case
-      // already had.
-      final hasContent = switch (content) {
-        null => false,
+      //
+      // One question for both fields, and it is the renderer's own: will this
+      // put text in front of a person? `??` answers for null alone, so an
+      // explicitly empty value — in any shape, not only as a string — hid a
+      // usable field beside it. Asking it in the switch's own terms is what
+      // keeps the two from disagreeing: a list of numbers or a map with no
+      // text renders to nothing, so treating either as present drops a good
+      // `description` for a field that shows the reader an empty line.
+      bool rendersText(Object? value) => switch (value) {
         final String text => text.isNotEmpty,
-        final List<Object?> parts => parts.isNotEmpty,
-        final Map<Object?, Object?> fields => fields.isNotEmpty,
-        _ => true,
+        final List<Object?> parts =>
+          parts.whereType<String>().join(' ').isNotEmpty,
+        final Map<Object?, Object?> fields => _snippetText(fields).isNotEmpty,
+        _ => false,
       };
-      // The last hop takes the same fall-through as the three above it: an
-      // explicitly empty `snippet` must not hide a `description` beside it,
-      // while a map or list one still reaches the switch that reads it.
+      final content = value['content'];
       final rawSnippet = value['snippet'];
-      final snippet = hasContent
+      final snippet = rendersText(content)
           ? content
-          : rawSnippet is String && rawSnippet.isEmpty
-              ? value['description']
-              : rawSnippet ?? value['description'];
+          : rendersText(rawSnippet)
+              ? rawSnippet
+              : value['description'];
       out.add(SearchResult(
         title: title is String && title.isNotEmpty ? title : url,
         url: url,

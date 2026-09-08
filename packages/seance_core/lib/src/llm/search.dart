@@ -102,16 +102,30 @@ class BraveSearch implements SearchProvider {
 /// Falls back to the raw string when it will not parse: an unparseable URL is
 /// still a distinct result, and collapsing every one of them onto `''` would
 /// let the first swallow the rest.
+/// Hoisted: `_dedupKey` runs once per result from every backend, and Dart
+/// compiles a pattern per construction.
+final RegExp _trailingSlashes = RegExp(r'/+$');
+
 String _dedupKey(String url) {
   final parsed = Uri.tryParse(url);
-  final withoutFragment =
-      parsed == null ? url : parsed.removeFragment().toString();
-  // A trailing '/' is the path's only when nothing follows the path: inside
-  // a query value (`?next=/docs/`) it is data, and stripping it would merge
-  // two different pages.
-  return withoutFragment.contains('?')
+  // The fragment goes on both branches: dropping it is the identity rule
+  // this function documents, and applying it only to URLs that parse made
+  // `…#a` and `…#b` two results for one malformed page.
+  final withoutFragment = parsed == null
+      ? url.split('#').first
+      : parsed.removeFragment().toString();
+  // The path ends at the first '?', so its trailing '/' can be dropped
+  // without touching a slash that is *data* inside a query value
+  // (`?next=/docs/` keeps its own). Skipping the strip whenever a query was
+  // present was the safe half of that and cost the common case: two backends
+  // that disagree only about `…/docs/?q=1` versus `…/docs?q=1` both spent a
+  // slot on the same page, and a real result fell off the end of the limit.
+  final queryStart = withoutFragment.indexOf('?');
+  final path = queryStart == -1
       ? withoutFragment
-      : withoutFragment.replaceFirst(RegExp(r'/+$'), '');
+      : withoutFragment.substring(0, queryStart);
+  final query = queryStart == -1 ? '' : withoutFragment.substring(queryStart);
+  return path.replaceFirst(_trailingSlashes, '') + query;
 }
 
 /// Query several backends at once and merge what comes back.
@@ -211,12 +225,34 @@ class CompositeSearch implements SearchProvider {
 /// rather than copied: the snippet cap and the parameter-name echo in
 /// `ZaiSearch.buildArguments` apply the same subtle rule, and two copies of
 /// it drift.
+///
+/// [max] bounds the kept content, not the result: a clipped string is one
+/// unit longer for the ellipsis. Every cap here is a token budget rather than
+/// a length a server enforces, so the extra unit costs nothing — a caller
+/// that does have a hard limit has to pass `max - 1`.
+///
+/// A cap of zero or less yields the empty string. Nothing asks for one today
+/// (every caller passes a constant), but this is a shared public helper, and
+/// indexing at `max - 1` for the surrogate check turns a nonsensical argument
+/// into a `RangeError` from inside a text-clipping utility.
 String clipText(String text, int max) {
+  if (max <= 0) return '';
   if (text.length <= max) return text;
   final unit = text.codeUnitAt(max - 1);
   final cut = (unit & 0xFC00) == 0xD800 ? max - 1 : max;
   return '${text.substring(0, cut)}…';
 }
+
+/// The length past which a URL is not a real one.
+///
+/// One ceiling rather than one per backend, because the two ends treat the
+/// same number differently: `ZaiSearch` refuses a link longer than this
+/// outright (a truncated link is a link that lies), and the chat controller
+/// clips one it is handed, since by then dropping the result would lose the
+/// title and snippet with it. Set apart, a clip threshold below the reject
+/// threshold would turn every URL between them into an ellipsis-ended dead
+/// link — the exact outcome the refusal exists to avoid.
+const int maxSearchUrlChars = 2048;
 
 /// Warning, for every record of a search backend going quiet — the one this
 /// file writes when a backend fails mid-search, and the app's when one is

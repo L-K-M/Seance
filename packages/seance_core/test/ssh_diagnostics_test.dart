@@ -336,6 +336,16 @@ void main() {
           '(responses: [secret])tail])');
       expect(log.toString(), isNot(contains('tail')));
       expect(log.toString(), isNot(contains('sword')));
+      // And the head of the first answer, which every other assertion here
+      // leaves to the second line: a match anchored after a `]` would redact
+      // `sword])` and leave `pas` standing.
+      //
+      // Bare `pas`, not `pas]`: that regression *consumes* the bracket on its
+      // way past, so the transcript holds `pas` with no `]` after it and a
+      // `pas]` probe passes while the head sits in the bug report. The
+      // retained text on both lines is `(responses: [redacted])`, which
+      // contains no `pas` — the newline test below already relies on that.
+      expect(log.toString(), isNot(contains('pas')));
       // The head of the second answer too: every other assertion here targets
       // what follows the bracket, so a match that started at the wrong `]`
       // would leave the front of a credential standing.
@@ -344,6 +354,11 @@ void main() {
       // a scrub that moved to render time would hand this the raw answer.
       expect(log.lines.join('\n'), isNot(contains('tail')));
       expect(log.lines.join('\n'), isNot(contains('sword')));
+      // The heads too, which the view assertions above left to `toString`:
+      // if the two ever diverge, the front of a credential is as much of a
+      // leak on the widget's side as the tail is.
+      expect(log.lines.join('\n'), isNot(contains('pas')));
+      expect(log.lines.join('\n'), isNot(contains('secret')));
       expect(log.toString(), contains('[redacted])'));
     });
 
@@ -364,8 +379,16 @@ void main() {
             'U+${breakChar.runes.first.toRadixString(16).padLeft(4, '0')}';
         expect(log.toString(), isNot(contains('sword')),
             reason: 'leaked past $at');
+        // And the half *before* the break, which the bracket test pins for
+        // its own case: a match anchored after the terminator would redact
+        // the tail and leave `responses: [pas` standing, satisfying every
+        // assertion about `sword`.
+        expect(log.toString(), isNot(contains('pas')),
+            reason: 'head leaked before $at');
         expect(log.lines.join('\n'), isNot(contains('sword')),
             reason: 'view leaked past $at');
+        expect(log.lines.join('\n'), isNot(contains('pas')),
+            reason: 'view head leaked before $at');
         expect(log.toString(), contains('[redacted])'));
       }
     });
@@ -385,6 +408,9 @@ void main() {
       // may append past the redaction in `add`.
       expect(() => (lines as List<String>).add('third'),
           throwsUnsupportedError);
+      // And left it alone: a view that mutated before throwing would satisfy
+      // the expectation above while appending past the redaction anyway.
+      expect(lines, hasLength(2));
     });
 
     test('a renamed class and a renamed field together still never leak', () {
@@ -398,6 +424,10 @@ void main() {
       // Which branch, not just the outcome: the shape anchor cannot match
       // `answers:`, so only the withhold can have produced this.
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
       // And a request line, which shares everything but that part, stays.
       final request = SshConnectionLog();
       request.add('-> sock: SSHMsgUserauthInfoRequest(prompts: [Password:])');
@@ -421,6 +451,10 @@ void main() {
           ' … then (responses: [ok])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('an InfoResponse this build cannot parse is withheld whole', () {
@@ -433,6 +467,10 @@ void main() {
           '(numResponses: 1, answers: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('a renamed InfoResponse class is still redacted', () {
@@ -445,6 +483,9 @@ void main() {
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('SSHMsgUserauthInfoResponse'));
       expect(log.toString(), contains('(responses: [redacted])'));
+      // And the view the transcript widget reads, like the sibling cases:
+      // a scrub moved to render time would hand it the raw answer.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('a tail chunk carrying no class name is redacted too', () {
@@ -455,6 +496,69 @@ void main() {
       log.add('(responses: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('(responses: [redacted])'));
+      // And the view — this shape carries no class name, so it never reaches
+      // the fail-closed branch and capture-time redaction is its only guard.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
+    });
+
+    test('a tail chunk cut before its terminator is redacted too', () {
+      // The other half of the split-message case: a chunk boundary can fall
+      // before the `])` as easily as after the class name. Neither guard can
+      // see this line — there is no class name for the fail-closed branch,
+      // and no terminator for a bracket-bounded pattern — so what protects it
+      // is that the shape runs to end of line rather than to `])`. Nothing
+      // pinned that: every other case here happens to carry a terminator, so
+      // an implementation anchored on one passed the whole group.
+      final log = SshConnectionLog();
+      log.add('(responses: [hunter2');
+      expect(log.toString(), isNot(contains('hunter2')));
+      // Redacted in place rather than dropped, like every other case in this
+      // group pins: a scrubber that discarded a line it could not parse
+      // would satisfy the absence checks while quietly deleting transcript.
+      expect(log.toString(), contains('[redacted]'));
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
+      // In place on the view as well as in `toString`: a view that dropped
+      // the unterminated chunk rather than scrubbing it would satisfy the
+      // absence above while silently losing transcript from the widget.
+      expect(log.lines.join('\n'), contains('[redacted]'));
+    });
+
+    test('an unrelated field ahead of the credential does not shelter it', () {
+      // Two messages joined into one chunk, in the order the positional
+      // withhold does *not* cover: an unrelated `responses:` first, then a
+      // named message whose own field has drifted. The leftmost match starts
+      // before the token, so the withhold is skipped by design — and the
+      // credential behind it is still safe, because the shape runs to end of
+      // line and swallows everything after the first `responses:`.
+      //
+      // Pinned because that is a composition, not a property of either half:
+      // a pattern anchored on `])` would redact only the first list and leave
+      // the password of the second standing, with the withhold already
+      // declined and nothing else looking.
+      expect(
+        redactConnectionTrace(
+          'A(responses: [x]) SSH_Message_Userauth_InfoResponse(replies: [pw])',
+        ),
+        // Which branch, not only the absence: the comment above says the
+        // withhold is skipped here and the leftmost match swallows the rest,
+        // so the output is the in-place redaction. Asserted, because
+        // over-redacting to a withhold satisfies an absence check while the
+        // composition this case is named for stopped happening.
+        allOf(isNot(contains('pw')), contains('A(responses: [redacted])')),
+      );
+      // And the same two messages the other way round, where the withhold is
+      // what covers it: the token comes first, so the later match cannot
+      // vouch for it and the whole record is held back.
+      expect(
+        redactConnectionTrace(
+          'SSH_Message_Userauth_InfoResponse(replies: [pw]) B(responses: [x])',
+        ),
+        // The branch, not only the absence: this ordering is the one the
+        // withhold covers, and an absence assertion alone would be satisfied
+        // by any other path that happened to scrub it — including
+        // over-redacting the line away entirely.
+        allOf(isNot(contains('pw')), contains('does not recognize')),
+      );
     });
 
     test('spacing drift around the anchor still redacts', () {
@@ -466,9 +570,31 @@ void main() {
         redactConnectionTrace('(responses : [hunter2])'),
         '(responses: [redacted])',
       );
+      // And the other side of the colon, still on a bare chunk: there is no
+      // class name here for the fail-closed branch to catch, so a pattern
+      // that stopped tolerating the missing space would leak outright rather
+      // than withhold. The exact pin below is the only guard on this one —
+      // which is what the block after it, on a *named* line, is for.
+      expect(
+        redactConnectionTrace('(responses:[hunter2])'),
+        '(responses: [redacted])',
+      );
       final log = SshConnectionLog();
       log.add('-> sock: SSHMsgUserauthInfoResponse(responses:[hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
+      // The branch, not just the absence: this line carries a class name, so
+      // losing the spacing tolerance would send it to the fail-closed withhold
+      // — which satisfies the assertion above while the shape anchor this test
+      // is about stopped matching.
+      expect(log.toString(), contains('(responses: [redacted])'));
+      // And on the view, like every other log test in this group: the
+      // transcript widget reads `lines` on each repaint, so a scrub that
+      // only held at `toString` time would render the raw answer.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
+      // Redacted there, not dropped: absence alone is also what a view that
+      // discarded the record entirely would give, and that loses transcript
+      // from the widget without a word.
+      expect(log.lines.join('\n'), contains('(responses: [redacted])'));
     });
 
     test('a renamed field still hits the fail-closed branch', () {
@@ -479,6 +605,14 @@ void main() {
           '(answers: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('does not recognize'));
+      // And on the view, which the group's opening comment requires of
+      // every case: a scrub moved to render time would leave the
+      // transcript widget reading the raw record on each repaint.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
+      // Withheld there too rather than filtered away: absence alone is also
+      // what a view that dropped a record it could not parse would give, and
+      // that loses transcript from the widget without a word.
+      expect(log.lines.join('\n'), contains('does not recognize'));
     });
 
     test('the canonical line still redacts to exactly what it always did', () {
