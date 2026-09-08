@@ -472,6 +472,9 @@ void main() {
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('SSHMsgUserauthInfoResponse'));
       expect(log.toString(), contains('(responses: [redacted])'));
+      // And the view the transcript widget reads, like the sibling cases:
+      // a scrub moved to render time would hand it the raw answer.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('a tail chunk carrying no class name is redacted too', () {
@@ -482,6 +485,9 @@ void main() {
       log.add('(responses: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('(responses: [redacted])'));
+      // And the view — this shape carries no class name, so it never reaches
+      // the fail-closed branch and capture-time redaction is its only guard.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('a tail chunk cut before its terminator is redacted too', () {

@@ -96,6 +96,13 @@ Secret? plannedCredential({
     // before would otherwise have that password stored as its PEM — read back
     // as one the next time the key is typed rather than referenced.
     value: stored?.kind == SecretKind.privateKey ? stored!.value : '',
+    // The typed passphrase belongs to the key *file*, and it lands beside the
+    // PEM carried above — which was stored with a passphrase of its own. One
+    // entry holds one passphrase, so the pair can end up mismatched, and
+    // switching back to a pasted key without re-pasting finds a PEM that no
+    // longer decrypts. Carrying the old passphrase instead would break the
+    // referenced key, which is the one the server is set to use. STATUS
+    // follow-up 17 has both halves of the single-slot problem.
     keyPassphrase: keyPassphrase,
   );
 }

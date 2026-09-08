@@ -46,18 +46,22 @@ void main() {
       // into bug reports. Built from the real message for the same reason the
       // InfoResponse one is: a hand-written line would pin my reading of
       // dartssh2 rather than dartssh2.
+      final raw = '${SSH_Message_Userauth_Request.password(
+        user: 'deploy',
+        password: 'hunter2',
+      )}';
+      // The mechanism, asserted on the message itself rather than through the
+      // log: the password is absent because dartssh2 omits it, and an upgrade
+      // that started printing it fails here. Asserting it as "the log did not
+      // scrub" instead — which is how this read until now — pinned the same
+      // fact by forbidding a scrub, so adding one later would have failed a
+      // test whose subject is the library, not us.
+      expect(raw, isNot(contains('hunter2')));
+
       final log = SshConnectionLog();
-      log.add('-> sock: '
-          '${SSH_Message_Userauth_Request.password(
-            user: 'deploy',
-            password: 'hunter2',
-          )}');
+      log.add('-> sock: $raw');
       expect(log.toString(), isNot(contains('hunter2')));
       expect(log.toString(), contains('deploy'));
-      // The mechanism, pinned like the InfoResponse test pins its own: the
-      // password is absent because dartssh2 omits it, not because the log
-      // scrubbed it — a scrub here would mean the assumption above moved.
-      expect(log.toString(), isNot(contains('[redacted]')));
     });
   });
 }

@@ -50,6 +50,32 @@ void main() {
       );
       expect(secret!.value, 'PEM');
       expect(secret.keyPassphrase, 'hunter2');
+      // And the pair that leaves behind: the carried PEM was stored with its
+      // own passphrase, and this write replaces it with the referenced key's.
+      // Pinned as the documented behaviour rather than as a desirable one —
+      // one entry holds one passphrase, and the referenced key is the one the
+      // server is set to use. STATUS follow-up 17.
+    });
+
+    test('a typed PEM does not inherit the stored passphrase', () {
+      // The mirror of the case above, and the other half of the single-slot
+      // problem: a newly pasted key brings its own passphrase, so a blank box
+      // beside it means "none", not "keep". Dropping it is deliberate —
+      // carrying one key's passphrase onto another is what makes an entry
+      // undecryptable — but nothing pinned it, and the fuzz's fixture has no
+      // stored passphrase to notice with.
+      final secret = plan(
+        referenceKeyFile: false,
+        keyPem: 'NEW PEM',
+        stored: const Secret(
+          id: 'sec-1',
+          kind: SecretKind.privateKey,
+          value: 'OLD PEM',
+          keyPassphrase: 'belongs to the old key',
+        ),
+      );
+      expect(secret!.value, 'NEW PEM');
+      expect(secret.keyPassphrase, isNull);
     });
 
     test('a blank box keeps whatever is stored, in every mode', () {

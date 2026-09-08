@@ -102,6 +102,13 @@ void main() {
         'Password rejected by prod.example.com. Check the credential.',
       );
       expect(result.log, contains('auth failed'));
+      // And no trace under it. This is the readable kind of failure the
+      // policy at the top of this group names — a rejected credential, the
+      // most common one a user sees — and every other branch of that policy
+      // asserts the trace's presence or absence while this one asserted
+      // neither. A regression that started appending our frames here would
+      // put them in a transcript with a Copy button on it.
+      expect(result.log, isNot(contains('runConnectionTest')));
       // The caller's own instance, not just `result.log`: a runConnectionTest
       // that ignored `log:` and wrote to one of its own would render the same
       // string into the result and pass every assertion above.
@@ -246,6 +253,9 @@ void main() {
 
       expect(result.ok, isFalse);
       expect(result.notes.single, contains('jump host'));
+      // Unmodifiable on this path too: `notes` is built at two
+      // construction sites and only the success one was pinned.
+      expect(() => result.notes.add('late'), throwsUnsupportedError);
     });
 
     // One test per branch of the Error-vs-Exception trace policy: as a single
@@ -576,7 +586,8 @@ void main() {
       // the behaviour the `if (reoffered)` disjunction below leaves open, and
       // pinning it here would settle by the back door a question this PR
       // does not answer. What is asserted holds under either reading.
-      final trial = UnpinnedHostKeyStore(InMemoryHostKeyStore());
+      final inner = InMemoryHostKeyStore();
+      final trial = UnpinnedHostKeyStore(inner);
       final manager = SshSessionManager(
         tofu: TofuVerifier(trial),
         // Approve a first sight, refuse anything replacing it.
@@ -607,6 +618,10 @@ void main() {
         sha256Fingerprint('first'),
         reason: 'and must not overwrite the key that was approved',
       );
+      // The same sweep the declined-first-sight test does: a refused key
+      // written under a mangled locator answers neither `get` above.
+      expect(await trial.all(), hasLength(1));
+      expect(await inner.all(), isEmpty);
     });
 
     test('an approval during a trial never reaches the real store', () async {
