@@ -95,11 +95,19 @@ void main() {
     // sends the coordinator back for the third — which is the first one this
     // server refuses.
     var gets = 0;
+    // Recorded here and asserted after the round, rather than expected inside
+    // the handler: this test expects `syncNow` to throw, and an assertion
+    // that fails inside the client is one more exception on a path that is
+    // already carrying one. It survives that today — dropping the header
+    // fails this test, measured — but only because nothing between here and
+    // the expectation reshapes it, which is not a property this file should
+    // depend on.
+    final sentAuth = <String?>[];
     final transport = MockClient((request) async {
       // These records carry the assistant's API keys, and every mock in this
       // file answers whatever it is asked — so without this, a round that
       // stopped sending the session token would pass the whole suite.
-      expect(request.headers['authorization'], 'Bearer session-token');
+      sentAuth.add(request.headers['authorization']);
       if (request.method == 'GET') {
         gets++;
         if (gets >= 3) {
@@ -138,6 +146,8 @@ void main() {
     // request — otherwise the assertions below would fail for the wrong
     // reason.
     expect(gets, greaterThanOrEqualTo(3));
+    expect(sentAuth, isNotEmpty);
+    expect(sentAuth, everyElement('Bearer session-token'));
     // Adopted, as the round's first half managed.
     expect(services.settings.llmModel, 'gpt-5');
     // The whole configuration, not just the model: the failure this guards

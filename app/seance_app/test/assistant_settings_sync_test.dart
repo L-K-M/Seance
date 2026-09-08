@@ -200,6 +200,12 @@ void main() {
       // record is exactly as careful as the device that wrote it: one naming
       // it as a ref would publish this device's token, or overwrite it.
       await keys.putApiKey('sync.token', 'tok');
+      // Configured rather than left at the defaults the assertions below
+      // happen to equal, like every other prior in this file: a default
+      // changed in `AppSettings` would otherwise fail this test pointing at
+      // the defaults rather than at the refusal it is about.
+      settings.llmKind = LlmProviderKind.anthropic;
+      settings.llmBaseUrl = 'https://api.anthropic.com';
       settings.assistantUpdatedAt = 99;
       settings.llmApiKeyRef = 'sync.token';
       // Withheld rather than published without the key: a record naming the
@@ -342,6 +348,37 @@ void main() {
       );
       keystore.entries.removeWhere((key, _) => written.contains(key));
       expect(await afterRestart.getAssistantSettings(), isNull);
+    });
+
+    test('a flush that fails does not leave a name half-remembered', () async {
+      // `_held.add` answers false from the second call on, so a save that
+      // throws leaves the name in memory, off disk, and with nothing left to
+      // raise the flush again. The next launch reads it as never held and the
+      // wipe guard goes silent for exactly the key it exists to protect.
+      var failing = true;
+      var flushes = 0;
+      final flaky = AssistantSettingsSync(
+        settings: settings,
+        masterKeys: keys,
+        saveSettings: () async {
+          if (failing) throw StateError('the settings file is unwritable');
+          flushes++;
+        },
+      );
+      settings.assistantUpdatedAt = 99;
+      settings.llmApiKeyRef = 'anthropic';
+      await keys.putApiKey('anthropic', 'sk-llm');
+
+      // The round still publishes — the key was read, and a settings file
+      // that will not open is not a reason to withhold the record.
+      expect(await flaky.getAssistantSettings(), isNotNull);
+      expect(settings.heldAssistantKeyRefs, isEmpty,
+          reason: 'a name that never reached disk must not read as held');
+
+      failing = false;
+      expect(await flaky.getAssistantSettings(), isNotNull);
+      expect(settings.heldAssistantKeyRefs, contains('anthropic'));
+      expect(flushes, 1, reason: 'the retry is what persists it');
     });
 
     test('a key read before an abort still reaches the disk', () async {
@@ -492,6 +529,12 @@ void main() {
       expect(settings.redactionEnabled, isFalse);
       expect(settings.assistantUpdatedAt, 500);
       expect(await keys.getApiKey('openai'), 'sk-remote');
+      // And nothing invented for the refs the record names without carrying a
+      // key: the mirror of the publish side's no-sweep canary. An apply path
+      // that copied the LLM key to every named ref would plant wrong material
+      // in the keystore with this suite still green.
+      expect(await keys.getApiKey('brave'), isNull);
+      expect(await keys.getApiKey('zai'), isNull);
       expect(saves, 1);
       // The chat provider is built once per configuration version and would
       // otherwise keep using the old model and key.
@@ -686,8 +729,14 @@ void main() {
       expect(sync.applied, isTrue);
 
       final savesAfterAdopt = saves;
+      // Strictly newer than the record just adopted. At the shared default
+      // stamp a build that refused equal stamps — which this one does not,
+      // deliberately, so two devices can converge — would produce the same
+      // `applied` false and the same absent save, and this test would pass
+      // for a policy it is not about.
       await sync.putAssistantSettings(
-        arriving(providerKind: 'some-future-provider'),
+        arriving(providerKind: 'some-future-provider')
+            .copyWith(updatedAt: 600),
       );
       expect(sync.applied, isFalse);
       // And nothing of it reached disk, like the refusal test asserts: the

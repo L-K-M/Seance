@@ -55,7 +55,7 @@ class SyncCoordinator {
   /// until someone edits one copy. The reasoning behind each clause is at the
   /// two call sites, which is where it is load-bearing.
   static bool _isViableAssistantRecord(AssistantSettings s) =>
-      s.providerKind.isNotEmpty && s.updatedAt != 0;
+      s.providerKind.isNotEmpty && s.updatedAt > 0;
 
   /// Opt-in secret syncing. When true, [secretVault] and [secretIds] must be
   /// provided so secrets can be sealed into records.

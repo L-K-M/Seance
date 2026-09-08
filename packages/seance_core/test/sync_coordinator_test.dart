@@ -1644,6 +1644,7 @@ void main() {
                   assistant(model: 'older', updatedAt: 20)))
           .run(older);
       final mirror = InMemoryLocalRecordStore();
+      final pushesBefore = older.pushedRecords;
       await coordinator('A', mirror, store: withheld).run(older);
       expect(withheld.settings.model, 'claude-haiku-4-5-20251001');
       // And nothing of this device's was staged behind that refusal, which
@@ -1667,6 +1668,11 @@ void main() {
           equals(['B']),
           reason: 'a withheld keyring stages no copy of its own, either');
       expect(older.stored(AssistantSettings.recordId)!.deviceId, 'B');
+      // The direct signal, which the assertion above cannot give: a round
+      // that re-offered the record it just pulled would push B's copy back
+      // under B's device id, so the author never changes and only the write
+      // itself says it happened.
+      expect(older.pushedRecords, pushesBefore);
     });
 
     test('a store that throws costs the assistant its round, not the round',
@@ -1746,6 +1752,14 @@ void main() {
 
       expect(await snippets.getSnippet('s1'), isNotNull,
           reason: 'the record behind the throwing one still applied');
+      // And the record it skipped is still staged. Pulls are sequenced, so
+      // the account will not hand this one over again: a refactor that
+      // consumed a record whose store write threw would lose the edit
+      // outright rather than retry it on the next round.
+      expect(
+        (await local.allRecords()).map((r) => r.id),
+        contains(AssistantSettings.recordId),
+      );
     });
 
     test('a device that never edited its assistant publishes nothing',
@@ -1759,6 +1773,31 @@ void main() {
       await coordinator('A', InMemoryLocalRecordStore(), store: never)
           .run(remote);
       expect(remote.stored(AssistantSettings.recordId), isNull);
+    });
+
+    test('a stamp below zero is refused on both sides too', () async {
+      // The viability predicate asked `!= 0`, so a corrupt or clock-wrapped
+      // negative stamp passed the publish check — while the apply side's
+      // `updatedAt < localStamp` refuses it against any compliant local
+      // stamp. Published and permanently unadoptable is exactly the parked
+      // junk record the predicate exists to keep off the account.
+      final remote = FakeServer();
+      final negative = InMemoryAssistantSettingsStore(assistant(updatedAt: -1));
+      await coordinator('A', InMemoryLocalRecordStore(), store: negative)
+          .run(remote);
+      expect(remote.stored(AssistantSettings.recordId), isNull);
+
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await _sharedCodec.encrypt(DecryptedRecord(
+        id: AssistantSettings.recordId,
+        kind: RecordKind.assistantSettings,
+        updatedAt: 1,
+        deviceId: 'B',
+        data: assistant(updatedAt: -1).toJson(),
+      )));
+      final store = InMemoryAssistantSettingsStore(assistant(updatedAt: 0));
+      await coordinator('A', local, store: store).applyToStores();
+      expect(store.settings!.updatedAt, 0);
     });
 
     test('a stamp-zero record is refused on apply as well', () async {

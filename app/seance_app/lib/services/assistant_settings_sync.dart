@@ -171,9 +171,10 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     final redactSecrets = settings.redactionEnabled;
     final updatedAt = settings.assistantUpdatedAt;
     final keys = <String, String>{};
-    // Set when a name is recorded as held for the first time, so the round
-    // can flush it below rather than trusting a later save to happen by.
-    var heldAdded = false;
+    // The names this round recorded as held for the first time, so the round
+    // can flush them below rather than trusting a later save to happen by —
+    // and can take them back out if that flush fails.
+    final addedThisRound = <String>[];
     // The three guards below abort the round, and every one of them can fire
     // *after* an earlier name in this same loop was recorded as held. They
     // break rather than return so the flush still runs: a name left in memory
@@ -223,7 +224,7 @@ class AssistantSettingsSync implements AssistantSettingsStore {
         // launch, and the wipe it exists to catch would read as "never held"
         // and publish keyless. Once per name: `add` answers false after the
         // first round.
-        if (_held.add(name)) heldAdded = true;
+        if (_held.add(name)) addedThisRound.add(name);
       } else if (_held.contains(name)) {
         // Held before, unreadable now, keystore available: a wipe, not a
         // reference that never had a key. Publishing keyless here would put a
@@ -239,7 +240,25 @@ class AssistantSettingsSync implements AssistantSettingsStore {
     }
 
     // Before the abort, not after it: see `aborted`.
-    if (heldAdded) await saveSettings();
+    if (addedThisRound.isNotEmpty) {
+      try {
+        await saveSettings();
+      } catch (_) {
+        // A save that throws leaves the names in memory and off disk — and
+        // `add` answers false from the next round on, so nothing would raise
+        // this list again. The set would stay unpersisted until some
+        // unrelated save happened by, and a launch before that reads the
+        // names as never held: the wipe guard silent for exactly the keys it
+        // exists to protect. Taken back out so a later round records them
+        // again and retries the save.
+        //
+        // The apply path needs no equivalent. A throw there reaches the
+        // coordinator's per-record catch and the record is re-delivered every
+        // round, which re-runs the whole of `putAssistantSettings`; nothing
+        // re-runs a collection that already answered.
+        _held.removeAll(addedThisRound);
+      }
+    }
     if (aborted) return null;
 
     return AssistantSettings(

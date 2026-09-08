@@ -132,7 +132,25 @@ class AssistantSettings {
     // applying the *same* filter, and calling it twice on one line puts two
     // copies of that decision a comma apart — where editing one is the
     // obvious mistake and nothing catches it.
-    final keys = _stringMap(apiKeys);
+    // The names this record's own references name, which is the whole of
+    // what `apiKeys` is allowed to carry.
+    final referenced = <String>{
+      if (_isSet(llmApiKeyRef)) llmApiKeyRef.trim(),
+      if (_isSet(braveApiKeyRef)) braveApiKeyRef!.trim(),
+      if (_isSet(zaiApiKeyRef)) zaiApiKeyRef!.trim(),
+    };
+    // Bounded here as well as at the two ends. The doc on [apiKeys] says the
+    // map is built from this object's own references and never by sweeping
+    // the keystore — the sync token and the vault key live in that same
+    // keystore — and the collect path and the apply path each hold to it.
+    // Neither of them is the wire format, though, and one refactor of a
+    // builder is all it would take to put an unreferenced entry on the
+    // account under a name no reader will ever look up. A no-op for every
+    // caller that follows the rule.
+    final keys = {
+      for (final entry in _stringMap(apiKeys).entries)
+        if (referenced.contains(entry.key)) entry.key: entry.value,
+    };
     return {
         // Trimmed on the way out for the same reason [_blankToNull] trims on
         // the way in, and [_stringMap] trims in both directions: the reader

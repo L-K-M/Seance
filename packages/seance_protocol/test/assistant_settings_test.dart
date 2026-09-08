@@ -33,6 +33,24 @@ void main() {
     expect(decoded.braveApiKeyRef, isNull);
     expect(decoded.zaiApiKeyRef, isNull);
     expect(decoded.redactSecrets, isTrue);
+    // Present-but-null and present-but-wrong-typed, which is what a peer that
+    // serializes its unset optionals explicitly sends — a shape the
+    // absent-key case above never reaches. A decode that threw on one would
+    // have the apply loop skip the whole record, which is the failure every
+    // other test in this file is written against.
+    final nulled = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['llmApiKeyRef'] = 42
+        ..['searxngUrl'] = null
+        ..['braveApiKeyRef'] = null
+        ..['zaiApiKeyRef'] = null
+        ..['apiKeys'] = null,
+    );
+    expect(nulled.llmApiKeyRef, '');
+    expect(nulled.searxngUrl, isNull);
+    expect(nulled.braveApiKeyRef, isNull);
+    expect(nulled.zaiApiKeyRef, isNull);
+    expect(nulled.apiKeys, isEmpty);
     expect(decoded.apiKeys, isEmpty);
     expect(decoded.updatedAt, 0);
   });
@@ -148,6 +166,27 @@ void main() {
         },
     );
     expect(decoded.apiKeys, {'zai': 'z'});
+  });
+
+  test('a key the references do not name is not written', () {
+    // The map is documented as built from this record's own references and
+    // never by sweeping the keystore, where the sync token and the vault key
+    // live beside the assistant's. That rule is kept by the collect path and
+    // the apply path; neither of them is the wire format, so it is bounded
+    // here too — one refactor of a builder would otherwise put a swept entry
+    // on the account under a name no reader looks up.
+    final json = settings(
+      apiKeys: const {'anthropic': 'sk-1', 'sync.token': 'tok'},
+    ).toJson();
+    expect(json['apiKeys'], {'anthropic': 'sk-1'});
+    // Every ref this record does name still carries its key: the filter
+    // compares what `toJson` writes, so it must not turn into a way to lose
+    // one. `zai` is set by the fixture; the LLM ref is `anthropic`.
+    expect(
+      settings(apiKeys: const {'anthropic': 'sk-1', 'zai': 'sk-z'})
+          .toJson()['apiKeys'],
+      {'anthropic': 'sk-1', 'zai': 'sk-z'},
+    );
   });
 
   test('a degenerate key entry is not written either', () {

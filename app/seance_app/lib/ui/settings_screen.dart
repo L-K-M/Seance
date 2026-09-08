@@ -898,6 +898,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await _saveInner(state, versionAtEntry, enteredLlmKey, enteredZaiKey,
           keyEntered);
+    } catch (e) {
+      // The keystore writes and the publish are caught where they happen, but
+      // `saveSettings` and `reloadLlmProvider` are not — and this method is
+      // called from `onPressed` without an awaiter, so one escaping is an
+      // unhandled async error and the user sees a Save that reports nothing
+      // at all. The settings may well not be on disk, which is the one
+      // outcome silence must not cover.
+      if (mounted) {
+        showTopToastIn(context, message: 'Settings not saved — $e');
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }

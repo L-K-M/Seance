@@ -1184,9 +1184,15 @@ class AppState extends ChangeNotifier {
   /// what makes it safe to read straight after awaiting [_runSyncAndRefresh]
   /// where `services.assistantSettingsChanged` is not: that flag is reset at
   /// the *start* of the next round, which can already be running by then,
-  /// while this is only written at the *end* of one — and a queued round
-  /// cannot reach its end, past its own network I/O, before the caller that
-  /// awaited the previous round resumes.
+  /// while this is only written at the *end* of one.
+  ///
+  /// That holds for a round that adopted nothing. One that *did* adopt awaits
+  /// `reloadLlmProvider` in [_runSyncAndRefresh]'s outer `finally`, after
+  /// `_mutate` has released the queue — so a queued round can run to
+  /// completion inside that await and overwrite this before the caller
+  /// resumes. Read it beside the stamp (`assistantUpdatedAt != 0`), which is
+  /// what [assistantSyncSwitchedOn] does: adoption always leaves a nonzero
+  /// stamp, so the pair answers correctly whichever round wrote the flag.
   bool _lastRoundAdoptedAssistant = false;
 
   /// The assistant's configuration was just edited here: stamp it so the
