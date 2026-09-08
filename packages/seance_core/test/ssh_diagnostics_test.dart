@@ -414,10 +414,23 @@ void main() {
     });
 
     test('a renamed class and a renamed field together still never leak', () {
-      // The one cell of the rename matrix the tests above left open: neither
-      // the shape anchor nor the exact class name matches this line, so the
-      // fail-closed branch has to trigger on the part of the name a rename is
-      // least likely to touch.
+      // A cell the tests above leave open: neither the shape anchor nor the
+      // exact class name matches this line, so the fail-closed branch has to
+      // trigger on the part of the name a rename is least likely to touch.
+      //
+      // Not the *last* cell, which this comment used to claim. A rename that
+      // takes `InfoResponse` out of the name entirely *and* drifts the field
+      // — `SSHMsgUserauthKeyboardReply(answers: […])` — matches no anchor
+      // and no token, and would print the credential. Nothing in this file
+      // can catch that: every fixture here is a string this repo wrote, so a
+      // test for it would only assert against my own guess at the new name.
+      // What catches it is `ssh_diagnostics_dartssh2_shape_test.dart`, which
+      // imports `SSH_Message_Userauth_InfoResponse` from dartssh2 by name —
+      // a rename stops that file compiling, which is a build failure rather
+      // than a silent leak. Widening the withhold to every `Userauth` record
+      // would close the cell here at the cost of over-redacting the Request
+      // line pinned above and the InfoRequest line pinned at the end of this
+      // test, both of which are asserted legible on purpose.
       final log = SshConnectionLog();
       log.add('-> sock: SSHMsgUserauthInfoResponse(answers: [hunter2])');
       expect(log.toString(), isNot(contains('hunter2')));

@@ -159,6 +159,11 @@ class ConnectionTestResult {
 /// its own way out, and has to ignore a result that arrives after the user
 /// has moved on. The editor supersedes by attempt number and drops a late
 /// verdict rather than showing it against a form it no longer describes.
+/// [log], when supplied, is written to as well as read: the summary on
+/// success, or the failure's message and the SSH layer's transcript, are
+/// appended to it. The editor passes a fresh one per attempt, which is what
+/// makes the last-line dedupe below compare against *this* attempt's tail —
+/// a reused log would blend attempts and defeat it.
 Future<ConnectionTestResult> runConnectionTest({
   required ServerConfig config,
   required Future<SshCredentials> Function() credentials,
@@ -190,8 +195,15 @@ Future<ConnectionTestResult> runConnectionTest({
     // the one line this file's comments call the one people quote back. A
     // hostname cannot contain a colon, so a leading `[` beside one is always
     // the bracketed form already.
-    final host = config.host.contains(':') && !config.host.startsWith('[')
-        ? '[${config.host}]'
+    // Normalize, then wrap. The guard used to be "does it already start with
+    // `[`", which is true of a truncated paste like `[::1` — rendered
+    // `user@[::1:22`, where the port boundary is anyone's guess — and false
+    // of a stray `::1]`, wrapped into `[::1]]`. The host box is free text, so
+    // both arrive. Stripping brackets first cannot corrupt a well-formed
+    // address: an IPv6 literal is hex digits, colons and an optional zone id,
+    // none of which is a bracket. This is the line people quote back.
+    final host = config.host.contains(':')
+        ? '[${config.host.replaceAll('[', '').replaceAll(']', '')}]'
         : config.host;
     final summary = 'Authenticated as ${config.username}@$host:${config.port} '
         '(${authKindLabel(kind)}).';
