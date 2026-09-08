@@ -162,7 +162,11 @@ class CompositeSearch implements SearchProvider {
           // outside — an expired key alongside a working backend just looks
           // like worse results — so this is the only record it happened.
           developer.log(
-            'Web search backend failed: $error',
+            // Named: with several backends configured, an operator reading
+            // this cannot tell which key to rotate or endpoint to check, and
+            // a bare FormatException or HttpException rarely says. `p` is
+            // right here, and this line is the only record it happened.
+            'Web search backend (${p.runtimeType}) failed: $error',
             name: searchLoggerName,
             level: searchWarningLogLevel,
             error: error,

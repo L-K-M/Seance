@@ -616,6 +616,42 @@ void main() {
       }
     });
 
+    test('throttling is blamed on neither the key nor the plan', () async {
+      // Three spellings of one self-clearing failure. "rate limit exceeded"
+      // sets the quota veto twice over and landed on the generic "check the
+      // key, Coding Plan access, and quota"; the other two carry `token` or
+      // `api key` and landed on the key message. All three sent a user to
+      // fix something that is working and will clear itself.
+      for (final msg in [
+        'Rate limit exceeded for this account',
+        'Too many requests for this api key',
+        'Request throttled: token bucket empty',
+      ]) {
+        final server = FakeMcpServer();
+        server.overrides['initialize'] = {
+          'success': false,
+          'code': 1002,
+          'msg': msg,
+        };
+
+        await expectLater(
+          ZaiSearch(apiKey: 'good', client: server.client).search('dart'),
+          throwsA(
+            isA<http.ClientException>().having(
+              (e) => e.message,
+              'message',
+              allOf(
+                isNot(contains('rejected the search API key')),
+                isNot(contains('Coding Plan')),
+                contains('try the search again'),
+              ),
+            ),
+          ),
+          reason: '"$msg" is throttling, not a bad key or an exhausted plan',
+        );
+      }
+    });
+
     test('a transient failure is blamed on neither the key nor the plan',
         () async {
       // gRPC-shaped gateways say "deadline exceeded" and "timeout" for a
@@ -1228,6 +1264,34 @@ void main() {
       };
       expect(ZaiSearch.parseToolResult(prose, 0), isEmpty);
       expect(ZaiSearch.parseToolResult(prose, 1), hasLength(1));
+    });
+
+    test('a JSON container with no usable links answers nothing, not itself',
+        () {
+      // `_collect` decodes a text block that is JSON and walks it, so a
+      // container holding no link-shaped entry leaves nothing found. The
+      // prose fallback then used to join the *same* text back as an answer:
+      // a synthetic "Z.AI web search" result whose snippet is raw JSON,
+      // handed to the model and rendered in the UI. "Nothing found" is an
+      // empty list.
+      expect(
+        ZaiSearch.parseToolResult({
+          'content': [
+            {'type': 'text', 'text': '{"results": []}'},
+          ],
+        }, 5),
+        isEmpty,
+      );
+      // And the container is dropped rather than the whole fallback: real
+      // prose beside it still answers, without the JSON glued onto it.
+      final mixed = ZaiSearch.parseToolResult({
+        'content': [
+          {'type': 'text', 'text': '{"results": []}'},
+          {'type': 'text', 'text': 'No matches for that query.'},
+        ],
+      }, 5);
+      expect(mixed, hasLength(1));
+      expect(mixed.single.snippet, 'No matches for that query.');
     });
 
     test('an empty snippet of any shape does not hide the description', () {
@@ -1958,6 +2022,38 @@ void main() {
   group('readSseRpcMessage', () {
     Stream<List<int>> sse(List<String> events) =>
         Stream.fromIterable(events.map(utf8.encode));
+
+    test('a comment frame inside an event neither ends it nor joins it',
+        () async {
+      // `: ping` is the standard SSE keep-alive, and this endpoint sits
+      // behind gateways that send them while holding a connection open.
+      // Placed *between* two data lines of one event, because that is the
+      // only position that discriminates: a reader that ends the event on
+      // any non-`data:` line decodes half a payload and then strands the
+      // rest, and one that appends the comment to the payload feeds
+      // `: ping` to `jsonDecode`. Both return null instead of the reply.
+      // Outside an event the same two bugs are invisible — `finish()` on an
+      // empty buffer answers null and the read simply continues. Measured:
+      // each of those two regressions fails this test and nothing else.
+      //
+      // No multi-line-payload test beside it. One was written and deleted:
+      // clearing the buffer per data line already fails three tests in this
+      // file, so accumulation is pinned — and the join *character* cannot be
+      // pinned at all, since every split of a valid JSON payload decodes the
+      // same joined with a newline or with nothing.
+      final message = await ZaiSearch.readSseRpcMessage(
+        sse([
+          'data: {"jsonrpc":"2.0",\n',
+          ': ping\n',
+          'data: "id":7,"result":{"content":[]}}\n',
+          '\n',
+        ]),
+        7,
+      ).timeout(const Duration(seconds: 5));
+
+      expect(message, isNotNull);
+      expect(message!['id'], 7);
+    });
 
     test('a server request carrying our id is walked past, not answered',
         () async {

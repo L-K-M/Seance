@@ -664,6 +664,16 @@ class ZaiSearch implements SearchProvider {
       // for "deadline exceeded" and made "auth deadline exceeded" worse: it
       // reopened the very key message it was written to prevent.
       final transient = text.contains('deadline') || text.contains('timeout');
+      // Throttling, which is transient too but needs different words. "rate
+      // limit exceeded" sets `quota` twice over, and "too many requests" and
+      // "request throttled" carry `token` or `api key` — so one landed on
+      // the generic "check the key, Coding Plan access, and quota" and the
+      // others on the key message, and all three told a user to go fix
+      // something that is working. Not `rate` alone: it is a substring of
+      // "generate".
+      final throttled = text.contains('throttl') ||
+          text.contains('too many') ||
+          text.contains('rate limit');
       // Both spellings: gateways write "invalid api key" and "invalid apikey"
       // about equally, and the one-word form used to fall through to the
       // generic message that lists three things to check instead of naming
@@ -671,6 +681,7 @@ class ZaiSearch implements SearchProvider {
       // it contains "auth".)
       if (!quota &&
           !transient &&
+          !throttled &&
           (text.contains('auth') ||
               text.contains('api key') ||
               text.contains('apikey') ||
@@ -688,6 +699,16 @@ class ZaiSearch implements SearchProvider {
         throw http.ClientException(
           'Z.AI timed out answering $method. That is usually temporary — try '
           'the search again.',
+        );
+      }
+      // Same shape as the timeout branch and for the same reason, with its
+      // own sentence: "timed out" is not what happened, and a user told the
+      // wrong thing about a self-clearing failure goes looking for a fault
+      // that is not there.
+      if (throttled) {
+        throw http.ClientException(
+          'Z.AI is rate-limiting this account. That is usually temporary — '
+          'try the search again.',
         );
       }
       throw http.ClientException(
@@ -816,11 +837,31 @@ class ZaiSearch implements SearchProvider {
     // `Error` sails past the `on Exception` handling every caller relies on.
     if (found.isNotEmpty) return found.take(limit < 0 ? 0 : limit).toList();
 
-    final prose = _textBlocks(result['content']).join('\n').trim();
+    // JSON containers excluded: `_collect` above already walked them and
+    // found nothing link-shaped, so joining them here re-emits the same
+    // bytes as an *answer* — a synthetic result whose snippet is raw JSON,
+    // handed to the model and shown in the UI. A tool that reported
+    // `{"results": []}`, or results whose links were all unusable, means
+    // "nothing found"; that is an empty list, not noise. Map-or-List is the
+    // same test `_collect` uses, so the two paths agree on what is data: a
+    // bare JSON string or number still reads as prose, because it is.
+    final prose = _textBlocks(result['content'])
+        .where((block) => !_isJsonContainer(block))
+        .join('\n')
+        .trim();
     // The limit binds here too: the link path takes none when asked for none,
     // and prose answering anyway would be a different count for the same ask.
     if (prose.isEmpty || limit < 1) return const [];
     return [SearchResult(title: 'Z.AI web search', url: '', snippet: prose)];
+  }
+
+  static bool _isJsonContainer(String text) {
+    try {
+      final decoded = jsonDecode(text);
+      return decoded is Map || decoded is List;
+    } on FormatException {
+      return false;
+    }
   }
 
   static Iterable<String> _textBlocks(Object? content) sync* {
