@@ -285,6 +285,12 @@ void main() {
       );
 
       expect(result.ok, isTrue);
+      // The summary names the credential that worked, as the `AuthKind.key`
+      // case is pinned to at the top of this file. Only that one was: a
+      // summary that dropped the label for every other kind — "Connected to
+      // deploy@…" with nothing about how — passed the whole suite, so the
+      // two kinds were pinned at very different strengths. Measured.
+      expect(result.summary, contains('stored password'));
       expect(result.notes, hasLength(1));
       expect(result.notes.single, contains('jump host'));
     });
@@ -599,11 +605,11 @@ void main() {
       // unknown host would produce, and that manager would make a first
       // connection impossible. Consent is the boundary this test names, so
       // the prompt having been asked is part of what it has to assert.
-      var prompted = false;
+      var prompts = 0;
       final manager = SshSessionManager(
         tofu: TofuVerifier(trial),
         onHostKey: (_) async {
-          prompted = true;
+          prompts++;
           return false;
         },
       );
@@ -617,8 +623,24 @@ void main() {
         ),
         isFalse,
       );
-      expect(prompted, isTrue,
+      expect(prompts, 1,
           reason: 'the refusal has to be an answered prompt, not a silent no');
+      // And the decline answers *that offer*, not the host. Nothing was
+      // pinned, so the next attempt has the same question to ask — a manager
+      // that remembered the "no" would answer from it and make a first
+      // connection permanently impossible after one mis-click, which is the
+      // flow this store exists to support. Measured: caching declines passes
+      // every other test in this package.
+      expect(
+        await manager.verifyHostKey(
+          host: 'declined.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('declined'),
+        ),
+        isFalse,
+      );
+      expect(prompts, 2, reason: 'a decline is not a cached verdict');
       expect(await trial.get('declined.example.com', 22), isNull);
       expect(await inner.get('declined.example.com', 22), isNull);
       // Nowhere at all, not just under the locator asked for: a pin written
