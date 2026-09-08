@@ -1067,15 +1067,25 @@ class ZaiSearch implements SearchProvider {
         uri.host.isNotEmpty;
   }
 
+  /// How deep either walk over a server-controlled payload may recurse.
+  ///
+  /// The payload is the gateway's, and a `StackOverflowError` is an `Error`,
+  /// so it would sail past the `on Exception` handling every caller of this
+  /// class relies on. Thirty-two is far past any real result shape.
+  ///
+  /// Named once because there are two recursions over that payload, not one:
+  /// [_collect] walking the structure, and `textOf` walking a leaf's fields.
+  /// Capping only the first is what left the second open — a nested list
+  /// under `title` overflowed the stack at ten thousand levels, in about
+  /// twenty kilobytes, well under [maxResponseBytes].
+  static const int _maxWalkDepth = 32;
+
   /// Walk a tool reply of any shape, collecting every result-looking map.
   ///
-  /// [depth] caps the walk: the payload is server-controlled, and a
-  /// `StackOverflowError` is an `Error`, so it would sail past the
-  /// `on Exception` handling every caller of this class relies on. Thirty-two
-  /// is far past any real result shape.
+  /// [depth] caps the walk at [_maxWalkDepth].
   static void _collect(Object? value, List<SearchResult> out, Set<String> seen,
       [int depth = 0]) {
-    if (depth > 32) return;
+    if (depth > _maxWalkDepth) return;
     if (value is List) {
       for (final item in value) {
         _collect(item, out, seen, depth + 1);
@@ -1141,17 +1151,32 @@ class ZaiSearch implements SearchProvider {
       // Null means "puts no text in front of a person", which is what lets
       // `??` express the precedence directly: empty, absent, a number, a list
       // of numbers and a map with no text all fall through alike.
-      String? textOf(Object? candidate) {
+      String? textOf(Object? candidate, [int depth = 0]) {
+        // Capped like [_collect], and this is the cap that was missing.
+        // `_collect`'s protects the walk down to a result-shaped map; that
+        // map is a leaf, so from here its fields were walked with no bound
+        // at all. A `title` of ten thousand nested lists — twenty kilobytes,
+        // nowhere near [maxResponseBytes] — recursed once per level and threw
+        // `StackOverflowError`, an `Error`, past the `on Exception` contract
+        // this class is built on. Measured before and after.
+        //
+        // The comment here used to say the recursion "terminates because
+        // `jsonDecode` output is acyclic". That is true and it is about
+        // termination, which was never the exposure; depth is.
+        if (depth > _maxWalkDepth) return null;
         final String? text = switch (candidate) {
           final String value => value,
+          // Reads string fields one level down and does not recurse, so it
+          // needs no depth of its own.
           final Map<Object?, Object?> fields => _snippetText(fields),
           // Each part by this same rule, not `whereType<String>()`: a list of
           // localized objects — the shape the arm above exists for, one level
           // down — was filtered away whole, and the field fell through to the
-          // URL or to nothing. Recursion terminates because `jsonDecode`
-          // output is acyclic.
-          final List<Object?> parts =>
-            parts.map(textOf).whereType<String>().join(' '),
+          // URL or to nothing.
+          final List<Object?> parts => parts
+              .map((part) => textOf(part, depth + 1))
+              .whereType<String>()
+              .join(' '),
           _ => null,
         };
         return text != null && text.isNotEmpty ? text : null;

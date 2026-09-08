@@ -1315,6 +1315,32 @@ void main() {
       expect(results.map((r) => r.url), ['https://example.com/x']);
     });
 
+    test('a leaf field nested past the cap degrades instead of overflowing',
+        () {
+      // `_collect`'s depth cap protects the walk *down to* a result-shaped
+      // map. That map is a leaf, so its own fields were then walked with no
+      // bound at all — and a `title` of ten thousand nested lists is about
+      // twenty kilobytes, nowhere near the 2 MiB this class will read. It
+      // recursed once per level and threw `StackOverflowError`, an `Error`,
+      // straight past the `on Exception` contract every caller of this class
+      // relies on. Measured at 10,000: overflow before, one result after.
+      const depth = 10000;
+      final title = '${'[' * depth}"deep"${']' * depth}';
+      final results = ZaiSearch.parseToolResult({
+        'content': [
+          {
+            'type': 'text',
+            'text': '{"search_result":[{"url":"https://example.com/a",'
+                '"title":$title}]}',
+          },
+        ],
+      }, 5);
+      // The result survives; only the unreadable field is given up, which is
+      // what any other untextual field does here.
+      expect(results.map((r) => r.url), ['https://example.com/a']);
+      expect(results.single.title, 'https://example.com/a');
+    });
+
     test('a double-encoded payload is decoded again, not dropped', () {
       // A tool that JSON-encodes its payload and then puts *that* string in
       // the text block — `json.dumps` applied twice, a common enough MCP
