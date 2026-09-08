@@ -114,7 +114,10 @@ void main() {
     // chmod-incapable mount stays readable and its mode untouched.
     expect(entries, isEmpty);
     expect((await file.stat()).mode, modeBefore);
-  }, skip: !Platform.isLinux ? 'needs Linux procfs' : false);
+  },
+      skip: !Platform.isLinux || !File(_procSelfIoPath).existsSync()
+          ? 'needs Linux procfs'
+          : false);
 
   test('a permissive chmod-incapable file fails the read closed', () async {
     final file = File(_procSelfStatusPath);
@@ -125,13 +128,20 @@ void main() {
     expect(await file.readAsString(), isNotEmpty);
 
     // The repair chmod fails EPERM on procfs; failing the read beats
-    // returning a world-readable trail. The throw itself is the proof:
-    // the status text is not JSON, so empty entries would also result
-    // from a read that was never rejected.
+    // returning a world-readable trail. Pinning EPERM — not just the
+    // exception type — proves the throw is the repair chmod itself, and
+    // the throw (not empty entries; the status text is not JSON) proves
+    // the rejection ran.
     final read = IdentityAuditLog(file).readAll();
-    await expectLater(read, throwsA(isA<posix.PosixException>()));
+    await expectLater(
+        read,
+        throwsA(isA<posix.PosixException>()
+            .having((e) => e.code, 'errno', equals(posix.EPERM))));
     expect((await file.stat()).mode, modeBefore);
-  }, skip: !Platform.isLinux ? 'needs Linux procfs' : false);
+  },
+      skip: !Platform.isLinux || !File(_procSelfStatusPath).existsSync()
+          ? 'needs Linux procfs'
+          : false);
 
   test('audit storage stays owner-only on desktop POSIX', () async {
     await file.create();

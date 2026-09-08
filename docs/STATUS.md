@@ -110,16 +110,17 @@ this process's `/proc/self/io` (owner-only 0400, readable, chmod EPERM)
 pins that an already-private chmod-incapable file reads back empty with
 its mode untouched, while `/proc/self/status` (world-readable 0444, chmod
 EPERM) pins that a permissive chmod-incapable file fails `readAll` closed
-with the `PosixException` itself asserted — its text is not JSON, so
-empty entries would not prove the rejection ran. Both tests assert their
-fixture's mode/readability, use only this process's non-sensitive
-counters/metadata (never environ or memory), never modify permissions
-(mode re-checked after), and skip off Linux with an explicit procfs
-reason; they run in the Ubuntu CI flutter job. Runtime evidence: the
-skip-gate regression failed against pre-gate `70db26c` (EPERM from
-`readAll`) and passes on main; the fail-closed regression failed against
-pre-privacy `41d5261` (no throw; empty entries returned) and passes on
-main. All 457 app tests pass with clean analysis.
+with the repair chmod's `EPERM` asserted via the `PosixException` errno
+— the throw is the proof, since the status text is not JSON and empty
+entries would also result from a read that was never rejected. Both tests
+assert their fixture's mode/readability, use only this process's
+non-sensitive counters/metadata (never environ or memory), never modify
+permissions (mode re-checked after), and skip off Linux or without the
+procfs fixture with an explicit reason; they run in the Ubuntu CI flutter
+job. Runtime evidence: the skip-gate regression failed against pre-gate
+`70db26c` (EPERM from `readAll`) and passes on main; the fail-closed
+regression failed against pre-privacy `41d5261` (no throw; empty entries
+returned) and passes on main. All 457 app tests pass with clean analysis.
 
 ## Test inventory (what proves what)
 
