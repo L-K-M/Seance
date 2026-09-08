@@ -90,13 +90,20 @@ HostAuthenticator liveHostAuthenticator({
       log.add('Closing the trial connection timed out after '
           '${closeTimeout.inSeconds}s. It was abandoned rather than waited '
           'out, and may stay open until it fails on its own.');
-    } catch (error) {
+    } catch (error, stackTrace) {
       // Authentication has already succeeded by here, and that is the only
       // thing this reports: a socket that misbehaves on the way down must not
       // come back as "could not connect" for a server that just did. It still
       // earns a transcript line — "authenticated, but the connection feels
       // flaky" is undiagnosable if the one clue is dropped here.
       log.add('Closing the trial connection failed: $error');
+      // And the trace under an `Error`, by the same rule `runConnectionTest`
+      // applies to what escapes this closure: an `Error` is a bug rather than
+      // a fact about the host, and its message alone rarely says where it
+      // came from. This runs *inside* `authenticate`, so nothing thrown here
+      // ever reaches that branch — one class of failure was arriving in the
+      // transcript with frames and the same class on the close path without.
+      if (error is Error) log.add('$stackTrace');
     }
     return kind;
   };

@@ -78,10 +78,19 @@ void main() {
     // field, or trimming too hard — would break the only path that needs it
     // while every other test here stayed green. The file does not exist, so
     // reading it fails; what matters is that it got that far.
+    //
+    // Under this test's own temp directory rather than `stray.path`: that one
+    // is absent because no machine happens to have `/keys/id`, which is an
+    // assumption about the host rather than something this test controls —
+    // and on Windows it resolves against the current drive's root. The two
+    // tests either side are unaffected, since the guard fires before any file
+    // is opened.
+    final absent = '${directory.path}/absent-id';
     await expectLater(
       services.resolveCredentials(
-        config(AuthMethod.privateKey).copyWith(identityFilePath: stray.path),
-        draftIdentityBookmark: stray,
+        config(AuthMethod.privateKey).copyWith(identityFilePath: absent),
+        draftIdentityBookmark:
+            IdentityFileBookmark(path: absent, bookmark: 'grant'),
       ),
       // The concrete failure, not merely "not the guard": a regression that
       // failed earlier for an unrelated reason would satisfy a negative
