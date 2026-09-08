@@ -67,8 +67,11 @@ The device-local identity audit log carries private-key paths, so its
 storage is now owner-only (mode 0600) on desktop POSIX: `record` creates
 and restricts the file before appending, rotation restricts its temporary
 before the rename, and `readAll` repairs a log an older build left
-permissive (a chmod failure surfaces instead of silently reading a
-world-readable log). Windows and mobile keep their storage ACLs. A JSON
+permissive — an already-private log is read without a chmod attempt, so
+chmod-incapable mounts keep a private trail readable, while a permissive
+log that cannot be restricted fails the read instead of silently
+returning a world-readable one. Windows and mobile keep their storage
+ACLs. A JSON
 line whose optional fields (`serverLabel`, `viaBookmark`, `ok`, `error`)
 have the wrong type is now skipped as malformed like any other bad line —
 previously a valid line such as `"ok": "yes"` threw a type-cast error
