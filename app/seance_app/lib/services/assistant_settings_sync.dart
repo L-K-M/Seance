@@ -122,6 +122,16 @@ class AssistantSettingsSync implements AssistantSettingsStore {
       reservedKeyNames.contains(braveApiKeyRef) ||
       reservedKeyNames.contains(zaiApiKeyRef);
 
+  /// What this device would publish this round, or null for "no opinion".
+  ///
+  /// Null has three causes — nothing was ever published here, the
+  /// configuration names a reserved entry, and a key it references could not
+  /// be vouched for this round — and deliberately does not distinguish them,
+  /// because the caller's answer is the same for all three: publish nothing
+  /// and ask again next round. What null never means is "the account has no
+  /// assistant configuration", so it must not clear, prune or tombstone the
+  /// synced record: a keyring that is locked for one round would otherwise
+  /// become account-wide data loss.
   @override
   Future<AssistantSettings?> getAssistantSettings() async {
     // Nothing has ever been published from this device, so there is nothing to

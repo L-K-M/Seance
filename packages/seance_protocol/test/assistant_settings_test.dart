@@ -25,6 +25,13 @@ void main() {
     final decoded = AssistantSettings.fromJson(const {});
     expect(decoded.providerKind, '');
     expect(decoded.baseUrl, '');
+    expect(decoded.model, '');
+    expect(decoded.llmApiKeyRef, '');
+    // The optionals' absent-key path, which nothing else in this file walks:
+    // the blank-to-null tests all feed a *present* key holding whitespace.
+    expect(decoded.searxngUrl, isNull);
+    expect(decoded.braveApiKeyRef, isNull);
+    expect(decoded.zaiApiKeyRef, isNull);
     expect(decoded.redactSecrets, isTrue);
     expect(decoded.apiKeys, isEmpty);
     expect(decoded.updatedAt, 0);
@@ -240,10 +247,17 @@ void main() {
     final decoded = AssistantSettings.fromJson(
       settings().toJson()
         ..['llmApiKeyRef'] = '  anthropic  '
-        ..['searxngUrl'] = ' https://searx.example.com ',
+        ..['searxngUrl'] = ' https://searx.example.com '
+        // Trimmed on the way out, but the way *in* was covered for neither:
+        // a padded ref adopted verbatim names no keystore entry, which is
+        // the failure this whole test is about.
+        ..['braveApiKeyRef'] = ' brave '
+        ..['zaiApiKeyRef'] = ' zai ',
     );
     expect(decoded.llmApiKeyRef, 'anthropic');
     expect(decoded.searxngUrl, 'https://searx.example.com');
+    expect(decoded.braveApiKeyRef, 'brave');
+    expect(decoded.zaiApiKeyRef, 'zai');
     // And a second decode of the same record changes nothing further.
     expect(AssistantSettings.fromJson(decoded.toJson()).toJson(),
         decoded.toJson());

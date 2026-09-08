@@ -96,6 +96,10 @@ void main() {
     // server refuses.
     var gets = 0;
     final transport = MockClient((request) async {
+      // These records carry the assistant's API keys, and every mock in this
+      // file answers whatever it is asked — so without this, a round that
+      // stopped sending the session token would pass the whole suite.
+      expect(request.headers['authorization'], 'Bearer session-token');
       if (request.method == 'GET') {
         gets++;
         if (gets >= 3) {

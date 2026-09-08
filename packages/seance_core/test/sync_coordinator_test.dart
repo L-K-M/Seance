@@ -1693,6 +1693,15 @@ void main() {
 
       expect(remote.stored('snippet:s1'), isNotNull);
       expect(remote.stored(AssistantSettings.recordId), isNull);
+      // Staging and pushing are separate steps, so the server assertion above
+      // only speaks for this round. A keyless copy staged now would carry the
+      // real stamp, ride the next round's push, and evict the keyed record
+      // account-wide — which a single-round test can never see from the
+      // server side, exactly as the withheld-keyring test two above says.
+      expect(
+        (await local.allRecords()).map((r) => r.id),
+        isNot(contains(AssistantSettings.recordId)),
+      );
     });
 
     test('a store that throws on apply costs the assistant its record, '
@@ -1867,6 +1876,11 @@ void main() {
       // the account gains no write from a device that never asked to share.
       final local = InMemoryLocalRecordStore();
       final seqBefore = remote.latestSeq;
+      // The direct signal beside the indirect one: `latestSeq` only moves
+      // when the fake mints a sequence number, so a B that pushed its
+      // mirrored copy back would still leave it where it was if the server
+      // recognised the record as unchanged.
+      final pushesBefore = remote.pushedRecords;
       await coordinator('B', local).run(remote);
       expect(
         (await local.allRecords()).map((r) => r.id),
@@ -1876,6 +1890,7 @@ void main() {
         (await local.dirtyRecords()).map((r) => r.id),
         isNot(contains(AssistantSettings.recordId)),
       );
+      expect(remote.pushedRecords, pushesBefore);
       expect(remote.latestSeq, seqBefore);
     });
 

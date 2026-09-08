@@ -149,6 +149,17 @@ void main() {
       final encoded = published.toJson().toString();
       expect(encoded, isNot(contains('leak-canary-sync-token')));
       expect(encoded, isNot(contains(masterKey)));
+      // And the same claim without naming an encoding: whatever
+      // `setKeystoreKey` writes, and whatever any later entry writes, none of
+      // it may appear in the record except the three keys the configuration
+      // actually references. Pinned to the base64 form alone, this canary
+      // would go green and disarmed the day the master key is stored as hex
+      // or sealed at rest.
+      const referencedByTheConfiguration = {'sk-llm', 'sk-brave', 'sk-zai'};
+      for (final stored in keystore.entries.values) {
+        if (referencedByTheConfiguration.contains(stored)) continue;
+        expect(encoded, isNot(contains(stored)));
+      }
     });
 
     test('an edit landing mid-collection cannot tear the published record',
@@ -419,6 +430,10 @@ void main() {
 
       final published = (await sync.getAssistantSettings())!;
       expect(published.apiKeys, {'anthropic': 'sk-llm'});
+      // Both of the never-stored refs, not only the last one the loop sees: a
+      // decision taken per configuration rather than per name would keep this
+      // green while dropping every reference but one.
+      expect(published.braveApiKeyRef, 'brave');
       expect(published.zaiApiKeyRef, 'zai');
     });
 
@@ -568,12 +583,27 @@ void main() {
 
       // A second adapter over the same persisted settings is what a restart
       // looks like from here: same keystore, same settings.json, new object.
+      var restartSaves = 0;
+      final restarted = AppSettings.fromJson(settings.toJson());
       final afterRestart = AssistantSettingsSync(
-        settings: AppSettings.fromJson(settings.toJson()),
+        settings: restarted,
         masterKeys: keys,
-        saveSettings: () async {},
+        saveSettings: () async => restartSaves++,
       );
       expect(await afterRestart.getAssistantSettings(), isNull);
+      // Counted, not ignored: every name this round consults is already on
+      // disk, so a save here would be one per withheld round — the churn the
+      // rest of this group is written against — and the no-op closure this
+      // instance used to take accepted any number of them.
+      expect(restartSaves, 0);
+
+      // Surviving the restart is half of it. The other half is clearing on
+      // the restarted object: the set is read back from disk, and a retry
+      // that never removed from it would leave this device permanently
+      // unpublished one restart after a single locked round.
+      await afterRestart.putAssistantSettings(arriving());
+      expect(restarted.unwrittenAssistantKeyRefs, isEmpty);
+      expect(await afterRestart.getAssistantSettings(), isNotNull);
     });
 
     test('a key the record only confirms is recorded as held', () async {

@@ -1308,7 +1308,15 @@ class AppState extends ChangeNotifier {
     // and persisted anyway — leaving the inflated stamp, while opted out or
     // detached, that can outrank a record another device publishes before the
     // switch is thrown again.
-    if (services.settings.assistantUpdatedAt != 0 ||
+    // The flag too, for the reason the entry guard takes it. The stamp check
+    // catches an adoption here only through an invariant that lives in
+    // another file — adoption always leaves a nonzero stamp, which
+    // `AssistantSettingsSync` is what enforces. The two conditions agree
+    // today; not depending on that costs one `||`, and the flag can only be
+    // true here if a round adopted inside the keystore read above, which is
+    // exactly when this device must not stamp.
+    if (_lastRoundAdoptedAssistant ||
+        services.settings.assistantUpdatedAt != 0 ||
         !services.settings.syncAssistant ||
         !services.isSyncConfigured) {
       return;
