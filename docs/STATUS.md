@@ -103,6 +103,24 @@ All five behavior regressions failed against the previous code before the
 repair. Ported back from Poltergeist (its PR #38 review findings, plan
 04 §6 priority 1). `flutter analyze` is clean and all 455 app tests pass.
 
+Follow-up (2026-09-08): the review-added read-side gate (skip the repair
+chmod when no group/other bits are set) now has durable regressions.
+Linux procfs supplies rootless, mountless fixtures chmod cannot touch:
+this process's `/proc/self/io` (owner-only 0400, readable, chmod EPERM)
+pins that an already-private chmod-incapable file reads back empty with
+its mode untouched, while `/proc/self/status` (world-readable 0444, chmod
+EPERM) pins that a permissive chmod-incapable file fails `readAll` closed
+with the `PosixException` itself asserted — its text is not JSON, so
+empty entries would not prove the rejection ran. Both tests assert their
+fixture's mode/readability, use only this process's non-sensitive
+counters/metadata (never environ or memory), never modify permissions
+(mode re-checked after), and skip off Linux with an explicit procfs
+reason; they run in the Ubuntu CI flutter job. Runtime evidence: the
+skip-gate regression failed against pre-gate `70db26c` (EPERM from
+`readAll`) and passes on main; the fail-closed regression failed against
+pre-privacy `41d5261` (no throw; empty entries returned) and passes on
+main. All 457 app tests pass with clean analysis.
+
 ## Test inventory (what proves what)
 
 - `packages/seance_protocol/test/crypto_test.dart` — KDF determinism + domain separation,

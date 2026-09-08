@@ -93,6 +93,46 @@ void main() {
   },
       skip: !Platform.isLinux && !Platform.isMacOS ? 'POSIX only' : false);
 
+  // Linux procfs provides read-side fixtures no fake can: files owned by
+  // this process that chmod cannot touch (EPERM) without any host change.
+  // Both are this process's non-sensitive metadata — I/O counters and
+  // kernel/scheduler status — never environ or memory. Rootless and
+  // mountless; they run in the Ubuntu CI flutter job and skip elsewhere
+  // because no other desktop platform has /proc.
+  test('an already-private chmod-incapable file reads without repair',
+      () async {
+    final file = File(_procSelfIoPath);
+    final modeBefore = (await file.stat()).mode;
+    // Fixture prerequisites, asserted loudly: readable and owner-only.
+    expect(modeBefore & _groupOtherBits, 0);
+    expect(await file.readAsString(), isNotEmpty);
+
+    final entries = await IdentityAuditLog(file).readAll();
+
+    // The counters are not JSON records; the point is that no repair
+    // chmod fires (it would fail EPERM here), so a private trail on a
+    // chmod-incapable mount stays readable and its mode untouched.
+    expect(entries, isEmpty);
+    expect((await file.stat()).mode, modeBefore);
+  }, skip: !Platform.isLinux ? 'needs Linux procfs' : false);
+
+  test('a permissive chmod-incapable file fails the read closed', () async {
+    final file = File(_procSelfStatusPath);
+    final modeBefore = (await file.stat()).mode;
+    // Fixture prerequisites, asserted loudly: readable with group/other
+    // bits set, so the read-side repair must fire.
+    expect(modeBefore & _groupOtherBits, isNot(0));
+    expect(await file.readAsString(), isNotEmpty);
+
+    // The repair chmod fails EPERM on procfs; failing the read beats
+    // returning a world-readable trail. The throw itself is the proof:
+    // the status text is not JSON, so empty entries would also result
+    // from a read that was never rejected.
+    final read = IdentityAuditLog(file).readAll();
+    await expectLater(read, throwsA(isA<posix.PosixException>()));
+    expect((await file.stat()).mode, modeBefore);
+  }, skip: !Platform.isLinux ? 'needs Linux procfs' : false);
+
   test('audit storage stays owner-only on desktop POSIX', () async {
     await file.create();
     posix.chmod(dir.path, _permissiveDirectoryPermissions);
@@ -166,3 +206,11 @@ const _ownerOnlyFileMode = 0x180;
 const _permissiveDirectoryMode = 0x1ed;
 const _permissiveDirectoryPermissions = '755';
 const _permissiveFilePermissions = '644';
+const _groupOtherBits = 0x3f; // 0o077: group + other rwx bits.
+
+// This process's own non-sensitive procfs metadata. /proc/self/io is
+// owner-only (0400); /proc/self/status is world-readable (0444). procfs
+// denies chmod on both with EPERM, so together they pin both read-side
+// privacy branches without root, mounts, or touching the host.
+const _procSelfIoPath = '/proc/self/io';
+const _procSelfStatusPath = '/proc/self/status';
