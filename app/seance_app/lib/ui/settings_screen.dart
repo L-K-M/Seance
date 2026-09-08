@@ -859,7 +859,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final enteredModel = _model.text.trim();
     final enteredSearxng = _searxng.text.trim();
     final enteredRedaction = _redaction;
-    if (_zai && enteredZaiKey.trim().isNotEmpty) {
+    // The switch too, and this is the last live read in the method. It is
+    // safe today only because the `SwitchListTile` six hundred lines up is
+    // gated on `_saving` — which is exactly the external dependency the
+    // provider snapshot beside it was added to remove. Make that switch
+    // responsive during a save, a natural thing to want, and the split-brain
+    // returns: one save writing the key while writing `zaiApiKeyRef: null`,
+    // or setting the ref with nothing stored behind it.
+    final zaiEnabled = _zai;
+    if (zaiEnabled && enteredZaiKey.trim().isNotEmpty) {
       try {
         await state.services.masterKeys.putApiKey(
           _zaiKeyRef,
@@ -914,7 +922,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // sound — but only because of that, and it is the one await that had to
     // stay sound for a reason outside this file.
     final zaiWithoutKey =
-        _zai && (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
+        zaiEnabled &&
+            (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
 
     s.llmKind = kind;
     s.llmBaseUrl = enteredBaseUrl;
@@ -924,7 +933,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     s.searxngUrl = enteredSearxng.isEmpty ? null : enteredSearxng;
     // The reference is what switches the backend on; turning it off leaves the
     // key in the keystore rather than deleting it, like every other key here.
-    s.zaiApiKeyRef = _zai ? _zaiKeyRef : null;
+    s.zaiApiKeyRef = zaiEnabled ? _zaiKeyRef : null;
     // Turning the switch on with the field left blank and nothing stored is
     // the one way to end up with a backend that reads as on and is silently
     // skipped on every search. Reported rather than blocked: the rest of this
@@ -951,7 +960,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // promises not to do. The LLM key needs no equivalent; its write is
       // gated only on the text being non-blank, and blank is nothing to
       // lose.
-      if (_zai && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
+      if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
       setState(() => _saving = false);
       showTopToastIn(
         context,

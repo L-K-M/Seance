@@ -390,6 +390,17 @@ class ZaiSearch implements SearchProvider {
                 'Web Search Prime access, which needs a GLM Coding Plan.',
       );
     }
+    // Named like the gateway's own throttling reply, which `readRpcResult`
+    // sends to the `throttled` branch: this is the transport-level twin, and
+    // "Z.AI search error HTTP 429" tells a user nothing about a failure that
+    // clears itself. No retry here — the caller decides when to ask again.
+    if (response.statusCode == 429) {
+      await _drainQuietly(response.stream);
+      throw http.ClientException(
+        'Z.AI is rate-limiting the search. That is usually temporary — try '
+        'the search again.',
+      );
+    }
     if (response.statusCode >= 400) {
       await _drainQuietly(response.stream);
       // Deliberately without the body, unlike the LLM providers': this is a
@@ -1045,60 +1056,38 @@ class ZaiSearch implements SearchProvider {
       // Empty falls through, like `link` two lines up: `??` only handles
       // null, so an explicitly empty title would keep the empty string and
       // render the raw URL with a perfectly good `media` name beside it.
-      final rawTitle = value['title'];
-      final title = switch (rawTitle) {
-        final String text when text.isNotEmpty => text,
-        // The localized-object shape the snippet case below reads: a title
-        // deserves the same tolerance, one field over, or a result with a
-        // perfectly good title renders as its URL.
-        final Map<Object?, Object?> fields
-            when _snippetText(fields).isNotEmpty =>
-          _snippetText(fields),
-        // A list, like the snippet case below: several localized titles, or
-        // a title split into parts. Dropping it to the URL was the same
-        // asymmetry the map case was.
-        final List<Object?> parts
-            when parts.whereType<String>().join(' ').isNotEmpty =>
-          parts.whereType<String>().join(' '),
-        _ => value['media'],
-      };
-      // Empty falls through here too: an explicitly empty `content` beside
-      // a usable `snippet` was rendering as no snippet at all.
+      // One walk, four callers. The rule — a String as it stands, a
+      // localized object's text, parts joined on spaces, nothing otherwise —
+      // was written out four times: twice in the title switch (guard and
+      // body, so `_snippetText` ran twice per field), once in a `rendersText`
+      // predicate, and once more in the snippet switch below. The comments
+      // above record two bugs that came from those copies drifting apart, and
+      // a third was still here: `media` was returned *raw* from the title
+      // switch, so a localized-object or list `media` failed the
+      // `title is String` test at the bottom and rendered the URL — the exact
+      // symptom the map and list cases one line up exist to prevent.
       //
-      // One question for both fields, and it is the renderer's own: will this
-      // put text in front of a person? `??` answers for null alone, so an
-      // explicitly empty value — in any shape, not only as a string — hid a
-      // usable field beside it. Asking it in the switch's own terms is what
-      // keeps the two from disagreeing: a list of numbers or a map with no
-      // text renders to nothing, so treating either as present drops a good
-      // `description` for a field that shows the reader an empty line.
-      bool rendersText(Object? value) => switch (value) {
-        final String text => text.isNotEmpty,
-        final List<Object?> parts =>
-          parts.whereType<String>().join(' ').isNotEmpty,
-        final Map<Object?, Object?> fields => _snippetText(fields).isNotEmpty,
-        _ => false,
-      };
-      final content = value['content'];
-      final rawSnippet = value['snippet'];
-      final snippet = rendersText(content)
-          ? content
-          : rendersText(rawSnippet)
-              ? rawSnippet
-              : value['description'];
-      out.add(SearchResult(
-        title: title is String && title.isNotEmpty ? title : url,
-        url: url,
-        snippet: switch (snippet) {
-          final String text => text,
-          final List<Object?> parts => parts.whereType<String>().join(' '),
-          // The localized-object shape the comment above names — `{lang: en,
-          // text: …}`. The list case is already joined, so dropping the map
-          // case to '' was an asymmetry rather than a policy: it vanished the
-          // whole snippet for exactly the payload this walk is built for.
+      // Null means "puts no text in front of a person", which is what lets
+      // `??` express the precedence directly: empty, absent, a number, a list
+      // of numbers and a map with no text all fall through alike.
+      String? textOf(Object? candidate) {
+        final String? text = switch (candidate) {
+          final String value => value,
           final Map<Object?, Object?> fields => _snippetText(fields),
-          _ => '',
-        },
+          final List<Object?> parts => parts.whereType<String>().join(' '),
+          _ => null,
+        };
+        return text != null && text.isNotEmpty ? text : null;
+      }
+
+      final title = textOf(value['title']) ?? textOf(value['media']);
+      final snippet = textOf(value['content']) ??
+          textOf(value['snippet']) ??
+          textOf(value['description']);
+      out.add(SearchResult(
+        title: title ?? url,
+        url: url,
+        snippet: snippet ?? '',
       ));
       return;
     }

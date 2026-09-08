@@ -529,6 +529,12 @@ void main() {
       expect(results[2].map((r) => r.url), everyElement(contains('q=c')));
       // One for the original session, one for the shared replacement.
       expect(server.methods.where((m) => m == 'initialize').length, 2);
+      // And the call count the comment above leans on, which was never
+      // actually asserted: three that met the retired session, three retries
+      // after the shared re-handshake. A caller that inherited another's
+      // retried call, or sent its own twice, leaves the initialize count and
+      // the per-query echoes intact.
+      expect(server.methods.where((m) => m == 'tools/call').length, 6);
     });
 
     test('a listing that never stops paginating says so', () async {
@@ -614,6 +620,30 @@ void main() {
           reason: '"$msg" is a quota failure, not a key failure',
         );
       }
+    });
+
+    test('a transport 429 says it is temporary, not a bare status', () async {
+      // The gateway's own throttling reply is classified by `readRpcResult`;
+      // this is the transport-level twin, from the gateway or anything in
+      // front of it. It used to fall into the catch-all and read "Z.AI
+      // search error HTTP 429", which says nothing about a failure that
+      // clears itself.
+      final client = MockClient.streaming((request, body) async =>
+          http.StreamedResponse(Stream.value(utf8.encode('slow down')), 429));
+
+      await expectLater(
+        ZaiSearch(apiKey: 'k', client: client).search('dart'),
+        throwsA(isA<http.ClientException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('try the search again'),
+            isNot(contains('HTTP 429')),
+            // And not the body, like every other status branch here.
+            isNot(contains('slow down')),
+          ),
+        )),
+      );
     });
 
     test('throttling is blamed on neither the key nor the plan', () async {
@@ -1292,6 +1322,36 @@ void main() {
       }, 5);
       expect(mixed, hasLength(1));
       expect(mixed.single.snippet, 'No matches for that query.');
+    });
+
+    test('a media name in any shape titles the result, not the URL', () {
+      // `media` was the one field the shape walk did not go through: the
+      // title switch returned it raw, so a localized object or a list failed
+      // the `title is String` test at the bottom and the row rendered its
+      // own URL — the exact symptom the map and list cases beside it exist
+      // to prevent.
+      for (final media in [
+        {'en': 'A title'},
+        ['A title'],
+      ]) {
+        final r = ZaiSearch.parseToolResult({
+          'content': [
+            {
+              'type': 'text',
+              'text': jsonEncode({
+                'results': [
+                  {
+                    'url': 'https://example.com/a',
+                    'media': media,
+                    'snippet': 's',
+                  },
+                ],
+              }),
+            },
+          ],
+        }, 5);
+        expect(r.single.title, 'A title', reason: 'media $media');
+      }
     });
 
     test('an answer wrapped in an envelope is not thrown away with it', () {
