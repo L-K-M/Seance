@@ -104,7 +104,7 @@ Independent ergonomic work can proceed alongside them.
 
 ### Authenticate routing and conflict metadata — SOL-011
 
-**Evidence:** `seance_protocol/lib/src/records/{record,record_codec}.dart` and
+**Evidence:** `packages/seance_protocol/lib/src/records/{record,record_codec}.dart` and
 `crypto/vault.dart` authenticate `{kind,data}`, not ID, timestamp, device or
 deleted flag. Empty tombstone blobs have no authentication. A breached server can
 transplant ciphertext, forge deletions or replay old keys with winning metadata.
@@ -306,7 +306,7 @@ local SFTP plaintext retention separately from encrypted vault guarantees.
 
 ### Complete connection ownership and deadlines — SOL-020, SOL-032, SOL-033
 
-**Start:** `seance_core/lib/src/ssh/ssh_session.dart`, `AppState._connect`.
+**Start:** `packages/seance_core/lib/src/ssh/ssh_session.dart`, `AppState._connect`.
 Pre-network key parsing, stale completion checks, idempotent engine disposal,
 remote output drain and teardown were implemented. Audit remaining handshake/auth/
 shell deadlines and immediate-closure callback races instead of rebuilding those
