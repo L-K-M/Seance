@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
@@ -12,6 +13,7 @@ import 'services/chat_session.dart';
 import 'services/default_snippets.dart';
 import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
+import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
 import 'ui/session_label.dart';
 import 'ui/terminal_appearance.dart';
@@ -234,6 +236,51 @@ class TerminalSession {
   }
 }
 
+/// Whether the server a duplicate was planned from still is what it was.
+///
+/// Only the credential reference matters: the copy carries its own id, label
+/// and timestamps, and a rename or a colour change on the source between the
+/// plan and the save costs nothing. A missing server or a different ref does,
+/// because the credential the plan holds was read against the old one.
+///
+/// A top-level function so the rule can be asserted directly — no test in this
+/// app can construct an [AppState].
+bool duplicationSourceUnchanged(ServerConfig? latest, ServerConfig source) =>
+    latest != null && latest.secretRef == source.secretRef;
+
+/// The source of a duplicate stopped matching what the copy was planned from.
+///
+/// Its [toString] is a sentence because the list pane shows it verbatim, the
+/// way it shows a locked keyring: a user who is told only "could not
+/// duplicate" has nothing to do next.
+class SourceServerChanged implements Exception {
+  final String label;
+  const SourceServerChanged(this.label);
+
+  @override
+  String toString() => '"$label" changed while it was being copied — it was '
+      'deleted, or it now holds a different credential. Nothing was created.';
+}
+
+/// Whether any server other than [excludingId] still points at [secretRef].
+///
+/// Deleting a server drops its vault entry, and nothing stops two configs
+/// sharing one — a synced credential record is keyed by the credential rather
+/// than by the server holding it, and the editor can be pointed at an existing
+/// ref by hand. Dropping it out from under a server that still names it is
+/// silent credential loss the survivor only discovers at connect time.
+///
+/// The sync coordinator no longer honours a `secret:` tombstone at all (an
+/// unsealed one is the sync server's to forge), so this is the only place the
+/// rule lives. A top-level function so it can be asserted on its own, apart
+/// from the delete that applies it.
+bool secretStillReferenced(
+  String secretRef,
+  Iterable<ServerConfig> servers, {
+  required String excludingId,
+}) =>
+    servers.any((s) => s.id != excludingId && s.secretRef == secretRef);
+
 /// Top-level app state: the server list, live reachability, and the open
 /// terminal sessions. A server may have several sessions (tabs); the UI is a
 /// thin `ListenableBuilder` over this.
@@ -442,6 +489,18 @@ class AppState extends ChangeNotifier {
     ServerConfig config, {
     Secret? secret,
     IdentityFileBookmark? identityFileBookmark,
+  }) =>
+      _mutate(() => _saveServerNow(
+            config,
+            secret: secret,
+            identityFileBookmark: identityFileBookmark,
+          ));
+
+  /// [saveServer] without the queue, for callers already holding it.
+  Future<void> _saveServerNow(
+    ServerConfig config, {
+    Secret? secret,
+    IdentityFileBookmark? identityFileBookmark,
   }) async {
     if (secret != null) await services.vault.putSecret(secret);
     await services.configStore.putServer(config);
@@ -460,20 +519,247 @@ class AppState extends ChangeNotifier {
     _scheduleAutoSync();
   }
 
+  /// Duplicate [source] as a new server and return the copy.
+  ///
+  /// The credential is copied into a vault entry of the copy's own (see
+  /// [duplicateServerConfig] for why it is never shared), and so is the
+  /// device-local security-scoped grant for a Browse…-picked identity file:
+  /// that grant is keyed by server id, so without copying it the duplicate
+  /// would silently fall back to the raw path and fail to open a key outside
+  /// `~/.ssh`.
+  ///
+  /// Vault failures propagate, as they do from [saveServer]. A duplicate that
+  /// quietly lost its password would look identical in the list and only admit
+  /// it at connect time.
+  Future<ServerConfig> duplicateServer(ServerConfig source) async {
+    return _mutate(() async {
+      // Deletes, saves and sync rounds are all serialized behind this one, so
+      // nothing can move under the plan once it starts. What the queue cannot
+      // make fresh is [source]: the caller captured it before the queue was
+      // entered, so it may describe a server since deleted or re-pointed at
+      // another credential. Planning from a stale snapshot would create the
+      // copy the user asked for without the password they expect it to have —
+      // and resurrect a config another device deleted.
+      final latest = await services.configStore.getServer(source.id);
+      if (!duplicationSourceUnchanged(latest, source)) {
+        // Named as it appears in the list now, not as the caller's snapshot
+        // had it: a rename is one of the edits that can land in between.
+        throw SourceServerChanged(latest?.label ?? source.label);
+      }
+      final plan = await planServerDuplication(
+        // The store's copy, not the caller's: `source` was captured before
+        // the queue was entered, so every field on it can be stale, not only
+        // the label. Copying what the server *is* beats copying what the row
+        // said when it was tapped, and the credential check above is what
+        // makes the two safe to swap.
+        latest!,
+        vault: services.vault,
+        takenLabels: servers.map((s) => s.label),
+        id: uuidV4(),
+        secretId: uuidV4(),
+        now: DateTime.now().millisecondsSinceEpoch,
+        // Keyed by the *source's* id — the planner asks for the grant of the
+        // server being copied; the copy has none yet.
+        bookmarkFor: (sourceId) =>
+            services.settings.identityFileBookmarks[sourceId],
+      );
+      // The non-queuing core: this is already inside the queue, and calling
+      // the public one would wait on itself.
+      await _saveServerNow(
+        plan.config,
+        secret: plan.secret,
+        identityFileBookmark: plan.identityFileBookmark,
+      );
+      return plan.config;
+    });
+  }
+
+  /// The store mutation currently in flight, so the next one waits for it.
+  Future<void> _mutating = Future<void>.value();
+
+  /// Run [action] after every mutation queued before it has finished.
+  ///
+  /// Duplicating reads the vault, and that read can sit behind an OS keychain
+  /// prompt for as long as the user takes to answer it — long enough for a
+  /// second Duplicate to pick a name from a list that does not yet contain the
+  /// first copy, so both land on the same one, which is the outcome the naming
+  /// rule exists to prevent. Deleting shares the queue because it reads the
+  /// server list to decide whether a credential is still referenced: two
+  /// deletes of servers sharing one vault entry, each running that read before
+  /// the other's config removal lands, would each see the other as a live
+  /// referent and both leave the entry behind with nothing able to name it.
+  ///
+  /// Saving and applying a sync round share it for the same reason from the
+  /// other side: both write the config store and the vault, so either landing
+  /// between a delete's reference count and its vault delete, or between a
+  /// duplicate's plan and its save, is the same read-then-write hazard. With
+  /// them on the queue, a credential rewritten in place under an unchanged
+  /// ref — which is what editing a server's password does — can no longer
+  /// happen while a duplicate is reading it.
+  ///
+  /// No timeout, deliberately. A mutation waiting on an OS keychain prompt
+  /// holds everything queued behind it, deletes included, until the prompt is
+  /// answered; the answer to that is to surface the pending prompt, not to
+  /// time out a queue whose whole job is keeping a check and its write
+  /// together.
+  Future<T> _mutate<T>(Future<T> Function() action) async {
+    // A queued action that calls a queued method waits on its own completion,
+    // and since the queue has no timeout the app's mutations simply stop with
+    // no error to find. Detected by zone: an unrelated second caller arriving
+    // while the first action is suspended at an await is the normal case this
+    // queue exists to serialize, and a plain "busy" flag would read as
+    // re-entry for it too. Zone *identity* rather than a marker value: a
+    // marker attaches to every callback registered inside the action —
+    // a listener's microtask, a timer — and outlives the mutation, so such a
+    // callback calling `saveServer` after the queue had gone idle was
+    // refused for a deadlock that could not happen. Walked up the parents so
+    // a nested zone inside the action (a `runZonedGuarded` in a library) is
+    // still seen as inside it.
+    if (_insideRunningMutation) {
+      // A throw, not an assert. What an assert buys is a debug-only warning
+      // for a failure whose release-build symptom is every store mutation in
+      // the app stopping forever with nothing in the logs — which is the one
+      // shape of bug worth crashing on instead.
+      throw StateError(
+        'Re-entrant mutation: an action inside the queue must call the '
+        'non-queuing core (_saveServerNow), not saveServer, deleteServer, '
+        'duplicateServer or a sync round.',
+      );
+    }
+    final queued = _mutating;
+    final finished = Completer<void>();
+    _mutating = finished.future;
+    try {
+      // Inside the try, so `finished` is completed even if awaiting the
+      // predecessor throws. Nothing can make it throw today — `_mutating`
+      // only ever holds a future completed with `complete()` — but this token
+      // is the whole chain's link, and a predecessor that rejected before the
+      // try would have left every later mutation waiting on it forever, which
+      // is the silent wedge the guard above crashes to avoid. Not
+      // `catchError`, which would be a no-op now and swallow a real error
+      // later; the failing caller's own error still propagates from the
+      // action below.
+      await queued;
+      // `runZoned` for the fresh zone alone; nothing is read from it. Set
+      // and cleared around the action, never around the wait above: while
+      // this call is queued behind another, it is that one's zone that is
+      // running.
+      return await runZoned(() async {
+        _activeMutationZone = Zone.current;
+        try {
+          return await action();
+        } finally {
+          _activeMutationZone = null;
+        }
+      });
+    } finally {
+      finished.complete();
+    }
+  }
+
+  /// The zone of the action currently between its start and its end, or
+  /// null while the queue is idle or between actions.
+  Zone? _activeMutationZone;
+
+  bool get _insideRunningMutation {
+    final active = _activeMutationZone;
+    if (active == null) return false;
+    for (Zone? zone = Zone.current; zone != null; zone = zone.parent) {
+      if (identical(zone, active)) return true;
+    }
+    return false;
+  }
+
   Future<void> deleteServer(String id) async {
+    // Outside the queue: tearing sessions down touches no store, and holding
+    // the queue across a session teardown would stall every other mutation
+    // behind however long the far end takes to hang up.
     await closeAllTabsForServer(id);
-    final server = await services.configStore.getServer(id);
-    if (server?.secretRef != null) {
-      await services.vault.deleteSecret(server!.secretRef!);
-    }
-    if (services.settings.identityFileBookmarks.remove(id) != null) {
-      await services.saveSettings();
-    }
-    await services.configStore.deleteServer(id);
-    servers = await services.configStore.listServers();
+    await _mutate(() async {
+      final server = await services.configStore.getServer(id);
+      // The config goes first, and the credential after it — the order
+      // `SyncCoordinator` states for the same pair. Dropping the vault entry
+      // first meant a throw from either write below left the server row on
+      // disk naming a credential that was already gone: a dangling reference
+      // the user only meets at connect time. Reversed, the worst a failure
+      // leaves is a vault entry nothing names — invisible rather than broken.
+      await services.configStore.deleteServer(id);
+      // After the config for the same reason the vault delete is: revoked
+      // first, a throw from `deleteServer` left a live server whose
+      // Browse…-picked key had already lost its security-scoped grant — the
+      // failure the reorder was written to prevent, just moved from the vault
+      // to the bookmark. Reversed, the worst it leaves is a grant filed under
+      // an id nothing names.
+      if (services.settings.identityFileBookmarks.remove(id) != null) {
+        // Fail-soft like the vault delete below, and for the same reason: a
+        // throw here skips the list refresh and leaves the UI showing a
+        // server the store no longer has. The grant is already gone from
+        // memory; what a failed write leaves is a stale entry in a file that
+        // the next successful save rewrites.
+        try {
+          await services.saveSettings();
+        } catch (error, stackTrace) {
+          developer.log(
+            'Could not persist the identity file grant removal for the '
+            'deleted server $id',
+            name: 'seance.app',
+            level: 900,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+      }
+      // Fail-soft like the two writes above it, and for the same reason: the
+      // delete has landed, and a read that throws here would skip the
+      // reference check, the probe and the notify, leaving the UI showing a
+      // server the store no longer has. The fallback is the list this
+      // method started from minus the row it just removed — equivalent for
+      // the reference check, since nothing else can write while the queue is
+      // held.
+      try {
+        servers = await services.configStore.listServers();
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not refresh the server list after deleting $id',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+        servers = servers.where((s) => s.id != id).toList();
+      }
+
+      // Against the refreshed list, which no longer holds this server —
+      // `excludingId` is redundant now and kept because the predicate
+      // requires it, and because it stays correct if the read ever moves.
+      final secretRef = server?.secretRef;
+      if (secretRef != null &&
+          !secretStillReferenced(secretRef, servers, excludingId: id)) {
+        // Fail-soft, like the coordinator's own secret deletes: the vault
+        // throws when the OS keyring is locked, and letting that escape now
+        // would skip the list refresh and leave the UI showing a server that
+        // no longer exists.
+        try {
+          await services.vault.deleteSecret(secretRef);
+        } catch (error, stackTrace) {
+          developer.log(
+            'Could not remove the credential for the deleted server $id',
+            name: 'seance.app',
+            level: 900,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+      }
+    });
     services.probe.updateServers(servers);
     notifyListeners();
     _scheduleAutoSync();
+    // A tab opened on this server while the delete waited — behind the
+    // teardown above, or behind an earlier mutation — would outlive it.
+    // Swept again here, outside the queue like the first sweep and for the
+    // same reason.
+    await closeAllTabsForServer(id);
   }
 
   /// Server-list group sections currently folded away, keyed by
@@ -775,9 +1061,29 @@ class AppState extends ChangeNotifier {
   /// One sync round + refresh of the domain lists from the (possibly updated)
   /// stores. Shared by manual and automatic sync.
   Future<SyncOutcome> _runSyncAndRefresh() async {
-    final outcome = await services.runSync();
-    servers = await services.configStore.listServers();
-    snippets = await services.snippetStore.listSnippets();
+    // On the mutation queue: a round writes the config store and the vault
+    // (tombstones delete both), so it is a mutation like any other and must
+    // not interleave with a delete's reference count or a duplicate's plan.
+    // The re-reads are inside it too — outside, a mutation could land while
+    // `listServers` was still resolving and then have its own assignment
+    // overwritten by this older snapshot.
+    //
+    // That does hold the queue across network I/O, so what bounds it is worth
+    // writing down here rather than leaving to be rediscovered: every request
+    // carries `HttpSyncClient.timeout` (30 s by default), a timeout throws
+    // rather than retrying so the round ends at the first dead request, and
+    // `_mutate` releases in a `finally`. A black-holed network therefore
+    // costs one timeout, not a wedged app. A slow-but-alive one costs more —
+    // `SyncEngine.sync` runs up to five rounds and `SyncCoordinator.run` up
+    // to two passes — and the fix for that is splitting the coordinator's
+    // fetch from its apply so only the apply serializes, which is a change to
+    // `seance_core`, not to this line.
+    final outcome = await _mutate(() async {
+      final result = await services.runSync();
+      servers = await services.configStore.listServers();
+      snippets = await services.snippetStore.listSnippets();
+      return result;
+    });
     services.probe.updateServers(servers);
     _recomputeSuggestions();
     return outcome;
@@ -789,7 +1095,8 @@ class AppState extends ChangeNotifier {
     _autoSyncTimer?.cancel();
     _autoSyncTimer = null;
     if (services.settings.autoSync && services.isSyncConfigured) {
-      _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => _autoSync());
+      _autoSyncTimer =
+          Timer.periodic(_autoSyncInterval, (_) => _autoSync());
     }
   }
 
@@ -798,6 +1105,13 @@ class AppState extends ChangeNotifier {
   void _scheduleAutoSync() {
     if (!services.settings.autoSync || !services.isSyncConfigured) return;
     _syncDebounce?.cancel();
+    // Reached from inside `_mutate` (every save schedules one), and a timer's
+    // callback runs in the zone it was created in — which is fine: the guard
+    // in [_mutate] asks whether the *running* action's zone is an ancestor,
+    // and the action that scheduled this is over before it can fire. That is
+    // ordering, not timing: this call is the last statement of every
+    // mutation that makes it, so nothing of that action — a keychain prompt
+    // included — remains to be waited on after the timer exists.
     _syncDebounce = Timer(_syncDebounceDelay, _autoSync);
   }
 

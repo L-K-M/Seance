@@ -3,6 +3,47 @@ import 'package:seance_protocol/seance_protocol.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('Secret.copyWith carries every field but the one replaced', () {
+    // The app's duplication test compares the same way, but the guard belongs
+    // here too: a field added to Secret and forgotten in copyWith still
+    // compiles, and this package cannot rely on a test in another one that
+    // may be renamed, moved, or absent for a different client.
+    const original = Secret(
+      id: 'source',
+      kind: SecretKind.privateKey,
+      value: 'PEM',
+      keyPassphrase: 'phrase',
+    );
+    final rekeyed = original.copyWith(id: 'copy');
+    expect(rekeyed.id, 'copy');
+    // The comparison below only guards copyWith while toJson writes every
+    // field the fixture sets. Pin that for the nullable one, which is the
+    // field a serializer is most likely to omit.
+    expect(original.toJson(), containsPair('keyPassphrase', 'phrase'));
+    expect({...rekeyed.toJson(), 'id': original.id}, original.toJson());
+    // Directly too, which survives a serializer omission: a field dropped from
+    // both `toJson` and `copyWith` would be absent from each side of the map
+    // comparison and pass it. A field added to Secret goes on `original` above
+    // and gets a line here.
+    expect(rekeyed.kind, original.kind);
+    expect(rekeyed.value, original.value);
+    expect(rekeyed.keyPassphrase, original.keyPassphrase);
+    // And the other half of the contract: a parameter that is passed has to
+    // *replace*. Every assertion above is about what `copyWith` carries, so a
+    // body that ignored its argument (`value: this.value`) would pass them
+    // all — and the one caller that matters replaces a field.
+    expect(original.copyWith(value: 'other').value, 'other');
+    expect(original.copyWith(value: 'other').id, original.id);
+    // Every replaceable parameter, not just one: `kind: this.kind` would pass
+    // a test that only exercises `value`, and duplication is not the last
+    // caller this method will get.
+    final otherKind =
+        SecretKind.values.firstWhere((k) => k != original.kind);
+    expect(original.copyWith(kind: otherKind).kind, otherKind);
+    expect(original.copyWith(keyPassphrase: 'rekeyed').keyPassphrase,
+        'rekeyed');
+  });
+
   group('model JSON round-trips', () {
     test('ServerConfig', () {
       final c = ServerConfig(
