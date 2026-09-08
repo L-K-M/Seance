@@ -279,6 +279,18 @@ Future<ConnectionTestResult> runConnectionTest({
     // authenticator may write its sentence into the log before throwing
     // something that is not an `SshConnectException`, and the transcript
     // already ends with it.
+    //
+    // On the paths that write a trace it cannot fire, and deliberately so: the
+    // frames are appended between that sentence and this check, so the last
+    // line is a frame and the summary goes on again. The transcript then reads
+    // summary, frames, summary — which is the trade this file makes
+    // everywhere else too. Suppressing the trace instead would buy a cosmetic
+    // duplicate with the only thing that locates an unexpected `Error`, and
+    // dropping the second summary would end a failure transcript on a stack
+    // frame, which is the one thing [ConnectionTestResult.log] promises it
+    // does not do. So the guard is real on the quiet paths
+    // (`AgentAuthUnsupportedError`, a plain `Exception` from `credentials()`)
+    // and a no-op on the loud ones.
     if (transcript.lines.lastOrNull != summary) {
       transcript.add(summary);
     }

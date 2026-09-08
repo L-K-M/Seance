@@ -266,6 +266,19 @@ no .rpm/Flatpak — the AppImage covers non-Debian distros; it uses the system G
     server is actually set to use, so this needs the same fix as the paragraph
     17: two slots, or an editor that says which key a passphrase belongs to.
 
+19. **Test connection validates the whole form, not the connection.**
+    `_testConnection` opens with `_form.currentState!.validate()`, which runs
+    every validator on the page. Only three fields carry one — Label, Host and
+    Username — so the Label is the single validator that can fail while
+    everything the connection needs is filled in, and a user who has typed a
+    host, a username and a password but not yet named the server is told to
+    name it before the button will try. That reads against the point of a
+    probe you run *before* committing to a save. `Form.validate()` is
+    all-or-nothing, so routing around it wants a `GlobalKey<FormFieldState>`
+    per connection field or the three validators hoisted out of the widget
+    tree — a restructure rather than a guard, which is why it is written down
+    here instead.
+
 ### Deliberately deferred (per proposal)
 Port-forwarding UI, ProxyJump execution (import only), Mosh,
 terminal **splits** (multiple panes visible at once), OIDC on the sync server,

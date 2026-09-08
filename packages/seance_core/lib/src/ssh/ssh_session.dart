@@ -202,7 +202,13 @@ class SshConnectionLog {
 /// cell shut instead is that every producer hands [SshConnectionLog.add] a
 /// whole record, so a chunk without the name does not exist today; that
 /// invariant is the one to keep, not the pattern to widen.
-const String _userauthMessage = 'Userauth_InfoResponse';
+// Derived from the token rather than spelled beside it. The mechanism is
+// only coherent while the name the pattern accepts contains the name the
+// withhold branch keys on, and an edit that renamed one after a dartssh2
+// rename and not the other would leave the fail-closed branch keying off a
+// name the pattern no longer matches — this file's own drift, of the kind it
+// exists to survive from the dependency. The value is byte-identical.
+const String _userauthMessage = 'Userauth_$_infoResponseToken';
 
 /// What the fail-closed branch keys on: the part of the name a rename is
 /// least likely to touch. Keying on the whole name left one combination of

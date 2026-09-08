@@ -511,6 +511,10 @@ void main() {
       // would satisfy the absence checks while quietly deleting transcript.
       expect(log.toString(), contains('[redacted]'));
       expect(log.lines.join('\n'), isNot(contains('hunter2')));
+      // In place on the view as well as in `toString`: a view that dropped
+      // the unterminated chunk rather than scrubbing it would satisfy the
+      // absence above while silently losing transcript from the widget.
+      expect(log.lines.join('\n'), contains('[redacted]'));
     });
 
     test('an unrelated field ahead of the credential does not shelter it', () {
@@ -577,6 +581,10 @@ void main() {
       // — which satisfies the assertion above while the shape anchor this test
       // is about stopped matching.
       expect(log.toString(), contains('(responses: [redacted])'));
+      // And on the view, like every other log test in this group: the
+      // transcript widget reads `lines` on each repaint, so a scrub that
+      // only held at `toString` time would render the raw answer.
+      expect(log.lines.join('\n'), isNot(contains('hunter2')));
     });
 
     test('a renamed field still hits the fail-closed branch', () {

@@ -58,6 +58,10 @@ void main() {
       expect(result.summary, contains('deploy@prod.example.com:2222'));
       expect(result.summary, contains('public key'));
       expect(result.log, contains('handshake'));
+      // The result's own transcript, not only the caller's live instance:
+      // that is the string a Copy button hands over, and the failure paths
+      // pin this tail while the success path did not.
+      expect(result.log.trimRight().split('\n').last, result.summary);
       expect(callerLog.lines.join('\n'), contains('handshake'));
       // And the summary closes it, the same way a failure transcript does, so
       // a copied successful test does not end on whatever the close happened
@@ -755,11 +759,17 @@ void main() {
         type: 'ssh-ed25519',
         fingerprintBytes: fingerprint('attacker'),
       );
-      // Written as an implication rather than a compound boolean: the
-      // compound form also passes when the key was refused *and* the prompt
-      // count drifted, and fails with an opaque "Expected: false" that cannot
-      // say which of the two happened.
-      if (reoffered) {
+      // Measured rather than left open. `_verifyHostKey` returns early only
+      // for `decision.isTrusted` (ssh_session.dart:78) and prompts for
+      // everything else, so a changed key is re-asked and this is the arm
+      // that runs — which meant the refusal arm below it never did, and half
+      // this test's assertions were dead on every pass. Pinned as the
+      // behaviour rather than as a decided policy: changing it is a change
+      // worth failing a test for, on the one dialog where the user is the
+      // whole security boundary.
+      expect(reoffered, isTrue,
+          reason: 'a changed key must be re-asked, never assumed');
+      {
         // Exactly two — the first pin and the one re-ask — not merely "more
         // than one": a manager that re-prompted on every reconnect would also
         // satisfy a lower bound.
@@ -814,18 +824,6 @@ void main() {
           (await trial.get('new.example.com', 22))?.fingerprintSha256,
           sha256Fingerprint('new'),
           reason: 'a re-approved key must become the pin again',
-        );
-      } else {
-        // The prompt above always answers yes, so a refusal can only mean
-        // the manager never asked — a prompt that was answered and then
-        // ignored would be a bug wearing the safe outcome's clothes. And a
-        // refused key must not have replaced the approved pin.
-        expect(prompts, 1,
-            reason: 'a silent refusal must not consume a yes-answered prompt');
-        expect(
-          (await trial.get('new.example.com', 22))?.fingerprintSha256,
-          sha256Fingerprint('new'),
-          reason: 'a refused key must not overwrite the approved pin',
         );
       }
     });
@@ -934,6 +932,22 @@ void main() {
       expect(otherPort?.pinnedAt, 1,
           reason: 'the original pin, not an identical-looking rewrite');
       expect(otherPort?.fingerprintSha256, sha256Fingerprint('portful-2222'));
+      // And the pin this test just wrote does what a pin is for: offered
+      // again on the port it was approved on, it answers without asking. The
+      // read-back is only exercised above for the fixture-seeded 2222 pin, so
+      // a manager that writes correctly and then fails to consult its own
+      // new pin would pass everything before this line.
+      expect(
+        await manager.verifyHostKey(
+          host: 'portful.example.com',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintBytes: fingerprint('portful-2222'),
+        ),
+        isTrue,
+      );
+      expect(prompts, 1,
+          reason: 'the pin approved on this port must answer the next offer');
     });
   });
 }
