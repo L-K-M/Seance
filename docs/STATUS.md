@@ -3,15 +3,39 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-08. Periodic probe lifecycle repair prevents
-overlapping sweeps and stale queued work; the identity audit log now
-skips wrong-typed optional fields instead of poisoning a full read and
+_Last updated: 2026-09-09. The TOFU and keyboard-interactive dialogs now
+guard every action on being the current route, so a rapid double activation
+cannot pop the page below and an obscured dialog cannot pop or answer a
+newer route (ported back from Poltergeist); periodic probe lifecycle repair
+prevents overlapping sweeps and stale queued work; the identity audit log
+now skips wrong-typed optional fields instead of poisoning a full read and
 is stored owner-only on desktop POSIX; before that, upload CAS coverage
 with hashing off pins the SFTP adapter's preflight/compare-and-swap
 guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Prompt dialog route guards (2026-09-09)
+
+`showHostKeyDialog` and `showKeyboardInteractiveDialog` route every button
+through a current-route check (`ModalRoute.of(context)?.isCurrent`): an
+action only pops when the dialog's own route is still the top one. Two
+classes of stray pop are closed. A rapid second activation during the exit
+animation — double-tapped Trust, Submit, or Cancel while the dialog is
+already dismissing — previously popped the page below the half-dismissed
+dialog. A callback from a dialog obscured by a newer route previously
+popped and answered that newer route instead of the prompt. Result
+contracts, barrier behavior, warning/fingerprint semantics, answer order,
+cancellation, reveal/echo behavior, and the controller-dispose-after-exit-
+animation lifecycle are unchanged.
+
+Six widget regressions (three per dialog) failed against the unmodified
+dialogs before the guard — the double-activation cases by the pushed page
+below being popped, the obscured cases by the newer route disappearing —
+and pass after; all 463 Flutter tests and `flutter analyze` are green. The
+guard was developed in Poltergeist's ported prompt dialogs (its M2 prompt
+UI) and ported back; its local ledger entry records the provenance.
 
 ## Done (implemented + verified)
 
@@ -177,7 +201,12 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
 - `packages/seance_sync_server/test/integration_test.dart` — real client vs live server,
   two devices converge over HTTP; bad-login rejection.
 - `app/seance_app/test/host_key_dialog_test.dart` — TOFU dialog first-use +
-  hard changed-key block.
+  hard changed-key block; rapid double trust/cancel and callbacks from an
+  obscured dialog cannot pop any route but the dialog's own.
+- `app/seance_app/test/keyboard_interactive_dialog_test.dart` — keyboard-
+  interactive prompts are obscured, reveal per field, fit above a phone
+  keyboard, dispose controllers after the exit animation, and cannot pop any
+  route but the dialog's own (double activation or obscured callback).
 - `app/seance_app/test/bootstrap_test.dart` — startup phases stay in one
   MaterialApp; pushed routes resolve `AppScope`.
 - `app/seance_app/test/keystore_resilience_test.dart` — a locked/missing OS

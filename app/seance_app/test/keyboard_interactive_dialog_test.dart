@@ -32,6 +32,120 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// Opens the dialog above a pushed page, as a real prompt does, so the
+  /// page below is a concrete route a stray pop could take with it.
+  Future<List<List<String>>> openAbovePushedPage(
+    WidgetTester tester, {
+    required GlobalKey<NavigatorState> navigatorKey,
+  }) async {
+    final recorded = <List<String>>[];
+    await tester.pumpWidget(MaterialApp(
+      navigatorKey: navigatorKey,
+      home: const Scaffold(body: Center(child: Text('home-page'))),
+    ));
+    navigatorKey.currentState!.push(MaterialPageRoute<void>(
+      builder: (_) => Scaffold(
+        body: Center(
+          child: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => recorded.add(
+                  await showKeyboardInteractiveDialog(
+                      context,
+                      const ['Password', 'One-time code'],
+                      'Authentication',
+                      'Answer the server challenge.')),
+              child: const Text('open-dialog'),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('open-dialog'));
+    await tester.pumpAndSettle();
+    return recorded;
+  }
+
+  testWidgets('a rapid double submit cannot pop the page below the dialog',
+      (tester) async {
+    final navigatorKey = GlobalKey<NavigatorState>();
+    final recorded =
+        await openAbovePushedPage(tester, navigatorKey: navigatorKey);
+    await tester.enterText(find.byType(TextField).at(0), 'a password');
+    await tester.enterText(find.byType(TextField).at(1), '012345');
+
+    // Two activations in one turn: the first starts the exit animation, and
+    // the second must not pop whatever sits below the half-dismissed dialog.
+    final submit =
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Submit'));
+    submit.onPressed!();
+    submit.onPressed!();
+    await tester.pumpAndSettle();
+
+    expect(recorded, [
+      ['a password', '012345']
+    ]); // the first answer survives, unchanged
+    expect(find.text('home-page'), findsNothing); // the pushed page was not popped
+    expect(find.text('open-dialog'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a rapid double cancel keeps the empty-list answer',
+      (tester) async {
+    final navigatorKey = GlobalKey<NavigatorState>();
+    final recorded =
+        await openAbovePushedPage(tester, navigatorKey: navigatorKey);
+
+    final cancel =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'));
+    cancel.onPressed!();
+    cancel.onPressed!();
+    await tester.pumpAndSettle();
+
+    expect(recorded, [
+      <String>[]
+    ]); // one cancel; the second activation is a no-op
+    expect(find.text('home-page'), findsNothing);
+    expect(find.text('open-dialog'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'a callback from an obscured dialog cannot answer the newer route',
+      (tester) async {
+    final navigatorKey = GlobalKey<NavigatorState>();
+    final recorded =
+        await openAbovePushedPage(tester, navigatorKey: navigatorKey);
+    await tester.enterText(find.byType(TextField).at(0), 'a password');
+    await tester.enterText(find.byType(TextField).at(1), '012345');
+    final submit =
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Submit'));
+
+    navigatorKey.currentState!.push(MaterialPageRoute<void>(
+      builder: (_) => const Scaffold(body: Center(child: Text('newer-page'))),
+    ));
+    await tester.pumpAndSettle();
+
+    // The dialog is no longer the current route, so its submit must be a
+    // no-op — an unguarded pop would dismiss and answer the *newer* page.
+    submit.onPressed!();
+    await tester.pumpAndSettle();
+
+    expect(find.text('newer-page'), findsOneWidget);
+    expect(recorded, isEmpty); // the dialog was never answered
+    expect(tester.takeException(), isNull);
+
+    // Unwind: the dialog itself is intact and still answerable underneath.
+    navigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).at(0), 'other');
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(recorded, [
+      <String>[]
+    ]);
+  });
+
   testWidgets('answers are hidden and excluded from keyboard learning', (
     tester,
   ) async {
