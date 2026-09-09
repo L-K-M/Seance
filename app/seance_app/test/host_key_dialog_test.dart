@@ -83,14 +83,25 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// Whether any part of [finder]'s render box is on the test surface — a
-  /// widget laid out below the fold is unreachable, whatever the tree holds.
+  /// Whether any part of [finder]'s render box is visible — clipped to the
+  /// dialog's scroll viewport when the widget scrolls (its layout space
+  /// extends below the viewport's bottom even where nothing is painted), or
+  /// to the test surface for pinned widgets like the action buttons.
   bool onScreen(WidgetTester tester, Finder finder) {
     final box = tester.renderObject<RenderBox>(finder);
     final top = box.localToGlobal(Offset.zero).dy;
-    final surfaceHeight =
-        tester.view.physicalSize.height / tester.view.devicePixelRatio;
-    return top < surfaceHeight && top + box.size.height > 0;
+    final bottom = top + box.size.height;
+    final scrollFinder = find.ancestor(
+        of: finder, matching: find.byType(SingleChildScrollView));
+    if (scrollFinder.evaluate().isEmpty) {
+      final surfaceHeight =
+          tester.view.physicalSize.height / tester.view.devicePixelRatio;
+      return top < surfaceHeight && bottom > 0;
+    }
+    final viewport = tester.renderObject<RenderBox>(scrollFinder);
+    final viewportTop = viewport.localToGlobal(Offset.zero).dy;
+    final viewportBottom = viewportTop + viewport.size.height;
+    return top < viewportBottom && bottom > viewportTop;
   }
 
   /// Drags the dialog's scroll view until [done] holds (or the drag cap
