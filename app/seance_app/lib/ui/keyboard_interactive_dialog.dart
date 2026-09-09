@@ -52,6 +52,17 @@ class _KeyboardInteractiveDialogState
 
   final Set<int> _revealed = {};
 
+  // Only the dialog's own route may be popped: a rapid second activation
+  // during the exit animation — or a callback from a dialog obscured by a
+  // newer route — would otherwise pop whatever sits below instead.
+  void _close(List<String> answers) {
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    Navigator.pop(context, answers);
+  }
+
+  void _submit() =>
+      _close([for (final controller in _controllers) controller.text]);
+
   @override
   void dispose() {
     for (final c in _controllers) {
@@ -104,12 +115,11 @@ class _KeyboardInteractiveDialogState
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, <String>[]),
+          onPressed: () => _close(const <String>[]),
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () =>
-              Navigator.pop(context, [for (final c in _controllers) c.text]),
+          onPressed: _submit,
           child: const Text('Submit'),
         ),
       ],
