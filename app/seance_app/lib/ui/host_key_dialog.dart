@@ -21,6 +21,10 @@ Future<bool> showHostKeyDialog(
       }
 
       return AlertDialog(
+        // The changed-key review (warning + two fingerprints) must stay
+        // reachable when height is scarce — small windows, split screens, or
+        // accessibility text scaling — instead of overflowing the dialog.
+        scrollable: true,
         icon: Icon(changed ? Icons.gpp_bad : Icons.verified_user_outlined,
             color: changed ? scheme.error : null),
         title: Text(changed ? 'HOST KEY CHANGED' : 'Unknown host key'),
