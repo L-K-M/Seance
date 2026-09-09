@@ -262,6 +262,10 @@ void main() {
     expect(onScreen(tester, oldPrint), isFalse);
     await scrollUntil(tester, done: () => onScreen(tester, oldPrint));
 
+    // The pinned actions must stay reachable even at the deepest scroll.
+    expect(onScreen(tester, find.text('Cancel')), isTrue);
+    expect(onScreen(tester, find.text('Trust the new key')), isTrue);
+
     // And the scroll travels back: the warning and the new fingerprint
     // return into view from below.
     final warning = find.textContaining('man-in-the-middle');
@@ -291,10 +295,12 @@ void main() {
 
     expect(tester.takeException(), isNull);
 
-    // The single fingerprint is already on screen at this size — its
-    // reachability is what matters here, not a scroll round trip.
+    // At this size even the single first-use fingerprint starts below the
+    // scroll viewport's fold — asserted, so this test keeps exercising the
+    // scroll path; scrolling must bring it into view.
     final print = find.textContaining('SHA256:nThbg');
     expect(print, findsOneWidget);
+    expect(onScreen(tester, print), isFalse);
     await scrollUntil(tester, done: () => onScreen(tester, print));
 
     expect(onScreen(tester, find.text('Cancel')), isTrue);
