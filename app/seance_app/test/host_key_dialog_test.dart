@@ -62,47 +62,52 @@ void main() {
     return recorded;
   }
 
-  /// Opens the dialog inside a phone-shaped, height-constrained surface with
-/// accessibility-large text — the layout where the review content must stay
-/// reachable by scrolling instead of overflowing past the dialog's bounds.
-Future<void> openConstrained(
-    WidgetTester tester, HostKeyDecision decision) async {
-  tester.view.physicalSize = const Size(390, 644);
-  tester.view.devicePixelRatio = 1.0;
-  tester.platformDispatcher.textScaleFactorTestValue = 2.0;
-  addTearDown(tester.view.reset);
-  addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    /// Opens the dialog inside a phone-shaped, height-constrained surface with
+  /// accessibility-large text — the layout where the review content must stay
+  /// reachable by scrolling instead of overflowing past the dialog's bounds.
+  Future<void> openConstrained(
+      WidgetTester tester, HostKeyDecision decision) async {
+    tester.view.physicalSize = const Size(390, 644);
+    tester.view.devicePixelRatio = 1.0;
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.view.reset);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
 
-  await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-          body: Builder(
-              builder: (context) => ElevatedButton(
-                  onPressed: () => showHostKeyDialog(context, decision),
-                  child: const Text('open'))))));
-  await tester.tap(find.text('open'));
-  await tester.pumpAndSettle();
-}
-
-/// Whether any part of [finder]'s render box is on the test surface — a
-/// widget laid out below the fold is unreachable, whatever the tree holds.
-bool onScreen(WidgetTester tester, Finder finder) {
-  final box = tester.renderObject<RenderBox>(finder);
-  final top = box.localToGlobal(Offset.zero).dy;
-  final surfaceHeight =
-      tester.view.physicalSize.height / tester.view.devicePixelRatio;
-  return top < surfaceHeight && top + box.size.height > 0;
-}
-
-Future<void> scrollUntilOnScreen(WidgetTester tester, Finder finder) async {
-  for (var i = 0; i < 40 && !onScreen(tester, finder); i++) {
-    await tester.drag(find.byType(AlertDialog), const Offset(0, -80));
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: Builder(
+                builder: (context) => ElevatedButton(
+                    onPressed: () => showHostKeyDialog(context, decision),
+                    child: const Text('open'))))));
+    await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
   }
-  expect(onScreen(tester, finder), isTrue,
-      reason: '$finder never scrolled into view');
-}
 
-testWidgets('a rapid double trust cannot pop the page below the dialog',
+  /// Whether any part of [finder]'s render box is on the test surface — a
+  /// widget laid out below the fold is unreachable, whatever the tree holds.
+  bool onScreen(WidgetTester tester, Finder finder) {
+    final box = tester.renderObject<RenderBox>(finder);
+    final top = box.localToGlobal(Offset.zero).dy;
+    final surfaceHeight =
+        tester.view.physicalSize.height / tester.view.devicePixelRatio;
+    return top < surfaceHeight && top + box.size.height > 0;
+  }
+
+  /// Drags the dialog's scroll view until [done] holds (or the drag cap
+  /// runs out, which fails the test) — the dialog's own scroll view is the
+  /// drag anchor, so the gesture can never be claimed by the pinned action
+  /// bar instead of the scrolling content.
+  Future<void> scrollUntil(WidgetTester tester,
+      {required bool Function() done,
+      Offset delta = const Offset(0, -80)}) async {
+    for (var i = 0; i < 40 && !done(); i++) {
+      await tester.drag(find.byType(SingleChildScrollView), delta);
+      await tester.pumpAndSettle();
+    }
+    expect(done(), isTrue, reason: 'scroll target never came into view');
+  }
+
+  testWidgets('a rapid double trust cannot pop the page below the dialog',
       (tester) async {
     final navigatorKey = GlobalKey<NavigatorState>();
     final decision = HostKeyDecision(
@@ -236,23 +241,24 @@ testWidgets('a rapid double trust cannot pop the page below the dialog',
     // pixels at this size.
     expect(tester.takeException(), isNull);
 
-    // The previously trusted fingerprint starts below the fold; scrolling
-    // must bring it on screen so the comparison the decision rests on can
-    // actually be made.
+    // The previously trusted fingerprint starts below the fold — asserted,
+    // so this test cannot silently stop exercising the scroll path if a
+    // future layout change ever makes the review fit without scrolling.
+    // Scrolling must bring it on screen so the comparison the decision
+    // rests on can actually be made.
     final oldPrint = find.textContaining('SHA256:br9jFZ');
     expect(oldPrint, findsOneWidget);
-    await scrollUntilOnScreen(tester, oldPrint);
+    expect(onScreen(tester, oldPrint), isFalse);
+    await scrollUntil(tester, done: () => onScreen(tester, oldPrint));
 
     // And the scroll travels back: the warning and the new fingerprint
     // return into view from below.
     final warning = find.textContaining('man-in-the-middle');
     final newPrint = find.textContaining('SHA256:nThbg');
-    for (var i = 0; i < 40 && !(onScreen(tester, warning) && onScreen(tester, newPrint)); i++) {
-      await tester.drag(find.byType(AlertDialog), const Offset(0, 80));
-      await tester.pumpAndSettle();
-    }
-    expect(onScreen(tester, warning), isTrue);
-    expect(onScreen(tester, newPrint), isTrue);
+    await scrollUntil(
+        tester,
+        delta: const Offset(0, 80),
+        done: () => onScreen(tester, warning) && onScreen(tester, newPrint));
 
     // The buttons never leave the screen: trust stays one tap away at every
     // scroll position, and the explicit answer still comes back.
@@ -274,9 +280,11 @@ testWidgets('a rapid double trust cannot pop the page below the dialog',
 
     expect(tester.takeException(), isNull);
 
+    // The single fingerprint is already on screen at this size — its
+    // reachability is what matters here, not a scroll round trip.
     final print = find.textContaining('SHA256:nThbg');
     expect(print, findsOneWidget);
-    await scrollUntilOnScreen(tester, print);
+    await scrollUntil(tester, done: () => onScreen(tester, print));
 
     expect(onScreen(tester, find.text('Cancel')), isTrue);
     expect(onScreen(tester, find.text('Trust and connect')), isTrue);
