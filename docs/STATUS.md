@@ -3,7 +3,10 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-09. The TOFU and keyboard-interactive dialogs now
+_Last updated: 2026-09-09. The TOFU host-key dialog's review content is
+now scrollable, so the changed-key warning and both fingerprints stay
+reachable and the buttons stay pinned in constrained layouts (ported back
+from Poltergeist); the TOFU and keyboard-interactive dialogs now
 guard every action on being the current route, so a rapid double activation
 cannot pop the page below and an obscured dialog cannot pop or answer a
 newer route (ported back from Poltergeist); periodic probe lifecycle repair
@@ -15,6 +18,28 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Host-key review reachability (2026-09-09)
+
+`showHostKeyDialog`'s `AlertDialog` is now `scrollable`, matching the
+keyboard-interactive dialog: the changed-key review (warning + two
+fingerprints) scrolls inside the dialog when height is scarce — small
+windows, split screens, accessibility text scaling — instead of the content
+column overflowing past the dialog bounds, and Cancel/Trust stay pinned
+below the scroll area so they never leave the screen. Result contracts,
+the current-route guards from the port-back below, barrier behavior,
+warning style/copy, and fingerprint semantics are unchanged.
+
+Two widget regressions (changed-key and first-use) render the public
+dialog through a real route at 390×644 logical px with text scale 2.0 and
+realistic 43-character fingerprints; before the fix they failed on actual
+rendering overflow (`A RenderFlex overflowed by 1616 pixels` changed-key,
+`280 pixels` first-use), and after it they additionally scroll the
+previously-trusted fingerprint and the warning into view and back. Widget
+render captures before/after are recorded in Poltergeist's ledger. All 465
+Flutter tests (463 prior + these 2) and `flutter analyze` pass. The fix was
+developed in Poltergeist's ported prompt dialog (its M2 prompt UI) and
+ported back; its local ledger entry records the provenance.
 
 ## Prompt dialog route guards (2026-09-09)
 
@@ -202,7 +227,9 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   two devices converge over HTTP; bad-login rejection.
 - `app/seance_app/test/host_key_dialog_test.dart` — TOFU dialog first-use +
   hard changed-key block; rapid double trust/cancel and callbacks from an
-  obscured dialog cannot pop any route but the dialog's own.
+  obscured dialog cannot pop any route but the dialog's own; the review
+  stays scrollable and reachable in constrained layouts (warning and both
+  fingerprints scroll into view, buttons stay on screen).
 - `app/seance_app/test/keyboard_interactive_dialog_test.dart` — keyboard-
   interactive prompts are obscured, reveal per field, fit above a phone
   keyboard, dispose controllers after the exit animation, and cannot pop any

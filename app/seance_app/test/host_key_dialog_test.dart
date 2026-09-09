@@ -62,7 +62,47 @@ void main() {
     return recorded;
   }
 
-  testWidgets('a rapid double trust cannot pop the page below the dialog',
+  /// Opens the dialog inside a phone-shaped, height-constrained surface with
+/// accessibility-large text — the layout where the review content must stay
+/// reachable by scrolling instead of overflowing past the dialog's bounds.
+Future<void> openConstrained(
+    WidgetTester tester, HostKeyDecision decision) async {
+  tester.view.physicalSize = const Size(390, 644);
+  tester.view.devicePixelRatio = 1.0;
+  tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+  addTearDown(tester.view.reset);
+  addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+  await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: Builder(
+              builder: (context) => ElevatedButton(
+                  onPressed: () => showHostKeyDialog(context, decision),
+                  child: const Text('open'))))));
+  await tester.tap(find.text('open'));
+  await tester.pumpAndSettle();
+}
+
+/// Whether any part of [finder]'s render box is on the test surface — a
+/// widget laid out below the fold is unreachable, whatever the tree holds.
+bool onScreen(WidgetTester tester, Finder finder) {
+  final box = tester.renderObject<RenderBox>(finder);
+  final top = box.localToGlobal(Offset.zero).dy;
+  final surfaceHeight =
+      tester.view.physicalSize.height / tester.view.devicePixelRatio;
+  return top < surfaceHeight && top + box.size.height > 0;
+}
+
+Future<void> scrollUntilOnScreen(WidgetTester tester, Finder finder) async {
+  for (var i = 0; i < 40 && !onScreen(tester, finder); i++) {
+    await tester.drag(find.byType(AlertDialog), const Offset(0, -80));
+    await tester.pumpAndSettle();
+  }
+  expect(onScreen(tester, finder), isTrue,
+      reason: '$finder never scrolled into view');
+}
+
+testWidgets('a rapid double trust cannot pop the page below the dialog',
       (tester) async {
     final navigatorKey = GlobalKey<NavigatorState>();
     final decision = HostKeyDecision(
@@ -169,5 +209,79 @@ void main() {
     expect(find.text('Trust the new key'), findsOneWidget);
     // A changed-key prompt must not be dismissable by tapping outside.
     expect(find.text('Cancel'), findsOneWidget);
+  });
+
+  // Realistic lengths matter here: a 43-character base64 fingerprint and a
+  // multi-label hostname are what make the review tall enough to overflow.
+  HostKey realisticKey(String fingerprint) => HostKey(
+      host: 'build-server.internal.example.com',
+      port: 22,
+      type: 'ssh-ed25519',
+      fingerprintSha256: 'SHA256:$fingerprint',
+      pinnedAt: 0);
+
+  testWidgets(
+      'changed-key review stays reachable in a constrained layout',
+      (tester) async {
+    final decision = HostKeyDecision(
+      verdict: HostKeyVerdict.changed,
+      presented:
+          realisticKey('nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8'),
+      pinned: realisticKey('br9jFZiF8YHDvV7cGqJ2Wk9mPq3xLz5tNo4vXaQwR2s'),
+    );
+    await openConstrained(tester, decision);
+
+    // The review must render inside the dialog, not overflow its bounds —
+    // the unscrollable content column previously overflowed by hundreds of
+    // pixels at this size.
+    expect(tester.takeException(), isNull);
+
+    // The previously trusted fingerprint starts below the fold; scrolling
+    // must bring it on screen so the comparison the decision rests on can
+    // actually be made.
+    final oldPrint = find.textContaining('SHA256:br9jFZ');
+    expect(oldPrint, findsOneWidget);
+    await scrollUntilOnScreen(tester, oldPrint);
+
+    // And the scroll travels back: the warning and the new fingerprint
+    // return into view from below.
+    final warning = find.textContaining('man-in-the-middle');
+    final newPrint = find.textContaining('SHA256:nThbg');
+    for (var i = 0; i < 40 && !(onScreen(tester, warning) && onScreen(tester, newPrint)); i++) {
+      await tester.drag(find.byType(AlertDialog), const Offset(0, 80));
+      await tester.pumpAndSettle();
+    }
+    expect(onScreen(tester, warning), isTrue);
+    expect(onScreen(tester, newPrint), isTrue);
+
+    // The buttons never leave the screen: trust stays one tap away at every
+    // scroll position, and the explicit answer still comes back.
+    expect(onScreen(tester, find.text('Cancel')), isTrue);
+    expect(onScreen(tester, find.text('Trust the new key')), isTrue);
+    await tester.tap(find.text('Trust the new key'));
+    await tester.pumpAndSettle();
+    expect(find.text('HOST KEY CHANGED'), findsNothing); // dismissed
+  });
+
+  testWidgets('first-use fingerprint stays reachable in a constrained layout',
+      (tester) async {
+    final decision = HostKeyDecision(
+      verdict: HostKeyVerdict.firstUse,
+      presented:
+          realisticKey('nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8'),
+    );
+    await openConstrained(tester, decision);
+
+    expect(tester.takeException(), isNull);
+
+    final print = find.textContaining('SHA256:nThbg');
+    expect(print, findsOneWidget);
+    await scrollUntilOnScreen(tester, print);
+
+    expect(onScreen(tester, find.text('Cancel')), isTrue);
+    expect(onScreen(tester, find.text('Trust and connect')), isTrue);
+    await tester.tap(find.text('Trust and connect'));
+    await tester.pumpAndSettle();
+    expect(find.text('Unknown host key'), findsNothing); // dismissed
   });
 }
