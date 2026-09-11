@@ -181,9 +181,13 @@ class PullResponse {
             .map((e) => EncryptedRecord.fromJson((e as Map).cast()))
             .toList(),
         latestSeq: (json['latestSeq'] as num).toInt(),
-        limits: json['limits'] == null
-            ? null
-            : PushLimits.fromJson((json['limits'] as Map).cast()),
+        // Anything that is not an object counts as "not advertised": the
+        // field is advisory and has a documented fallback, so a mangled value
+        // must not take the records and watermark down with it. The required
+        // fields above stay strict on purpose.
+        limits: json['limits'] is Map
+            ? PushLimits.fromJson((json['limits'] as Map).cast())
+            : null,
       );
 }
 

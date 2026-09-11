@@ -102,6 +102,12 @@ class SyncEngine {
     var accepted = 0;
     var rejected = 0;
     for (final batch in batchForPush(dirty, _limits)) {
+      // A batch the server refuses whole (413, oversized body or blob) throws,
+      // and that is deliberate: it is not the benign per-record rejection
+      // below, which the next pull resolves. Nothing local can fix it, so
+      // swallowing it would report a sync that succeeded while a record never
+      // leaves the device — [SyncOutcome] carries no rejected count to say
+      // otherwise. The batches already accepted stay marked synced.
       final resp = await api.push(batch);
       for (final result in resp.results) {
         if (result.accepted) {

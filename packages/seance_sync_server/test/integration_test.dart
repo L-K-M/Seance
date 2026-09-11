@@ -109,7 +109,8 @@ void main() {
   });
 
   test('a dirty set larger than one request body converges', () async {
-    // Five times the server's body limit: unbatched, this push is rejected
+    // Five times the server's body limit once the 12 KiB blobs are
+    // base64-encoded (~16 KiB of JSON each): unbatched, this push is rejected
     // whole and every later round repeats it identically, so the sync never
     // converges rather than merely running slowly.
     final baseUrl = await startServer(maxBodyBytes: 64 * 1024);

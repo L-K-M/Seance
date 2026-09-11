@@ -418,6 +418,29 @@ void main() {
         expect((await server.pull(since: 0)).records, hasLength(2));
       });
 
+      test('a record no single body can carry surfaces the server error',
+          () async {
+        const limits = PushLimits(maxBodyBytes: 2048);
+        final server = FakeServer(advertisedLimits: limits);
+        final store = InMemoryLocalRecordStore();
+        // Put the unbatchable record first, so its move to the back of the
+        // queue is what lets the record behind it through.
+        await store.putLocal(bulky('huge', 8192));
+        await store.putLocal(bulky('small', 100));
+
+        await expectLater(
+            SyncEngine(store).sync(server), throwsA(isA<ApiError>()));
+
+        // The refusal is reported rather than counted as a benign rejection:
+        // nothing local can make this record fit, so a sync that returned
+        // normally would claim success while the record never leaves. What
+        // did fit is already pushed and clean, so the error costs only itself.
+        expect((await server.pull(since: 0)).records.map((r) => r.id),
+            ['small']);
+        expect((await store.dirtyRecords()).map((r) => r.id), ['huge']);
+        expect(server.pushedBatchSizes, [1, 1]);
+      });
+
       test('a server that rejects every batch still terminates', () async {
         final api = RejectEverythingApi();
         final store = InMemoryLocalRecordStore();
