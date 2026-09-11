@@ -1,0 +1,246 @@
+import 'package:characters/characters.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:seance_protocol/seance_protocol.dart';
+import 'package:test/test.dart';
+
+/// A server's mark: a built-in glyph, an emoji, or an imported image. The
+/// values sync between versions in both directions, so what matters most here
+/// is what a build does with a mark it does not fully understand.
+void main() {
+  /// The smallest thing that passes for a PNG: the signature and padding. The
+  /// protocol checks the signature and the size, never the pixels — it is not
+  /// an image decoder, and the app re-encodes every import anyway.
+  final png = Uint8List.fromList([
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+    ...List.filled(64, 0),
+  ]);
+
+  ServerConfig config({
+    ServerIcon? icon,
+    String? iconEmoji,
+    String? iconImage,
+  }) => ServerConfig(
+        id: 'a',
+        label: 'box',
+        host: 'h.example.com',
+        username: 'deploy',
+        icon: icon,
+        iconEmoji: iconEmoji,
+        iconImage: iconImage,
+        createdAt: 1,
+        updatedAt: 1,
+      );
+
+  group('precedence', () {
+    test('an image wins over an emoji, which wins over a glyph', () {
+      final all = config(
+        icon: ServerIcon.rocket,
+        iconEmoji: '\u{1F680}',
+        iconImage: base64Encode(png),
+      );
+      expect(all.mark, isA<ServerImageMark>());
+      expect(all.mark.fallback, ServerIcon.rocket);
+
+      expect(
+        config(icon: ServerIcon.rocket, iconEmoji: '\u{1F680}').mark,
+        ServerEmojiMark('\u{1F680}', fallback: ServerIcon.rocket),
+      );
+      expect(
+        config(icon: ServerIcon.rocket).mark,
+        const ServerGlyphMark(ServerIcon.rocket),
+      );
+      expect(config().mark, const ServerGlyphMark(null));
+    });
+
+    test('a richer mark keeps a glyph beside it as its fallback', () {
+      // The reason the three are separate fields: a build that has never heard
+      // of iconEmoji ignores the key and draws the glyph, which approximates
+      // the choice rather than losing it.
+      final json = config(icon: ServerIcon.cluster, iconEmoji: '\u{1F433}').toJson();
+      expect(json['icon'], 'cluster');
+      expect(json['iconEmoji'], '\u{1F433}');
+    });
+
+    test('an unusable image falls through to the emoji', () {
+      // Not "shows nothing": a device that cannot carry the bytes still knows
+      // what the server was marked with.
+      final broken = config(iconEmoji: '\u{1F525}', iconImage: 'not base64 at all');
+      expect(broken.mark, ServerEmojiMark('\u{1F525}'));
+    });
+  });
+
+  group('emoji validation', () {
+    test('accepts one grapheme cluster, however many code points', () {
+      // The astronaut is four code points and one choice, which is what the
+      // badge has room for.
+      for (final emoji in [
+        '\u{1F680}',
+        '\u{1F469}\u{1F3FD}\u{200D}\u{1F680}',
+        '\u{1F1E8}\u{1F1ED}',
+        '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}',
+        '☕',
+        'A',
+      ]) {
+        expect(normalizeServerEmoji(emoji), emoji, reason: emoji);
+      }
+    });
+
+    test('refuses more than one cluster', () {
+      expect(normalizeServerEmoji('\u{1F680}\u{1F680}'), isNull);
+      expect(normalizeServerEmoji('ab'), isNull);
+    });
+
+    test('trims, and treats blank as none', () {
+      expect(normalizeServerEmoji(' \u{1F680} '), '\u{1F680}');
+      expect(normalizeServerEmoji('   '), isNull);
+      expect(normalizeServerEmoji(''), isNull);
+      expect(normalizeServerEmoji(null), isNull);
+    });
+
+    test('refuses control characters and unbounded joiner chains', () {
+      expect(normalizeServerEmoji('\u0000'), isNull);
+      expect(normalizeServerEmoji('\u0007'), isNull);
+      // One cluster can be extended with joiners indefinitely; a record from
+      // elsewhere must not be able to park a kilobyte of them in a config.
+      final chain = List.filled(40, '\u{1F469}').join('‍');
+      expect(chain.characters.length, 1);
+      expect(chain.length, greaterThan(64));
+      expect(normalizeServerEmoji(chain), isNull);
+    });
+  });
+
+  group('image validation', () {
+    test('round-trips through the stored form', () {
+      final stored = encodeServerIconImage(png);
+      expect(stored, isNotNull);
+      expect(decodeServerIconImage(stored!), png);
+    });
+
+    test('the same stored value decodes to the same list', () {
+      // Load-bearing, not an optimization: a badge reads `mark` on every build,
+      // and Flutter's MemoryImage keys its cache on the identity of the bytes
+      // it is handed — a fresh list per build would re-decode the PNG every
+      // frame. The list is also shared, so it must not be writable.
+      final stored = encodeServerIconImage(png)!;
+      final first = decodeServerIconImage(stored);
+      expect(identical(decodeServerIconImage(stored), first), isTrue);
+      expect(() => first![0] = 0, throwsUnsupportedError);
+    });
+
+    test('refuses bytes that are not a PNG', () {
+      // Imports are re-encoded to PNG, so anything else did not come from
+      // this app, and the alternative to checking is handing arbitrary bytes
+      // to an image decoder.
+      expect(encodeServerIconImage(Uint8List.fromList([1, 2, 3, 4])), isNull);
+      expect(decodeServerIconImage(base64Encode(List.filled(64, 0x41))), isNull);
+      expect(decodeServerIconImage('%%not base64%%'), isNull);
+      expect(decodeServerIconImage(''), isNull);
+    });
+
+    test('refuses anything past the record ceiling', () {
+      final huge = Uint8List.fromList([
+        ...png.sublist(0, 8),
+        ...List.filled(kMaxServerIconImageBytes, 0),
+      ]);
+      expect(encodeServerIconImage(huge), isNull);
+      // And the base64 is refused on its length, before it is expanded — a
+      // megabyte of text should not become a megabyte of bytes first.
+      expect(decodeServerIconImage(base64Encode(huge)), isNull);
+    });
+  });
+
+  group('records', () {
+    test('a mark survives a round trip through JSON', () {
+      for (final mark in <ServerMark>[
+        const ServerGlyphMark(null),
+        const ServerGlyphMark(ServerIcon.dataCenter),
+        ServerEmojiMark('\u{1F427}', fallback: ServerIcon.server),
+        ServerImageMark(png, fallback: ServerIcon.cloud),
+      ]) {
+        final fields = mark.stored;
+        final restored = ServerConfig.fromJson(
+          config(
+            icon: fields.icon,
+            iconEmoji: fields.emoji,
+            iconImage: fields.image,
+          ).toJson(),
+        );
+        expect(restored.mark, mark, reason: '$mark');
+      }
+    });
+
+    test('a value this build refuses is not re-published', () {
+      // Otherwise a device would pass on a mark it could not draw as though it
+      // had accepted it, and the refusal on read would be pointless.
+      final json = config(icon: ServerIcon.lab).toJson()
+        ..['iconEmoji'] = 'far too many characters for one badge'
+        ..['iconImage'] = 'not base64';
+      final read = ServerConfig.fromJson(json);
+      expect(read.iconEmoji, isNull);
+      expect(read.iconImage, isNull);
+      expect(read.toJson().containsKey('iconEmoji'), isFalse);
+      expect(read.toJson().containsKey('iconImage'), isFalse);
+      expect(read.mark, const ServerGlyphMark(ServerIcon.lab));
+    });
+
+    test('a glyph this build has never heard of decodes to the default', () {
+      final json = config(icon: ServerIcon.rocket).toJson()
+        ..['icon'] = 'holodeck';
+      expect(ServerConfig.fromJson(json).mark, const ServerGlyphMark(null));
+    });
+
+    test('copyWith clears each mark field independently', () {
+      final marked = config(
+        icon: ServerIcon.rocket,
+        iconEmoji: '\u{1F680}',
+        iconImage: base64Encode(png),
+      );
+      expect(
+        marked.copyWith(clearIconImage: true).mark,
+        ServerEmojiMark('\u{1F680}', fallback: ServerIcon.rocket),
+      );
+      expect(
+        marked.copyWith(clearIconImage: true, clearIconEmoji: true).mark,
+        const ServerGlyphMark(ServerIcon.rocket),
+      );
+      // And carries them when nothing says otherwise, which is what
+      // duplicating a server relies on.
+      expect(marked.copyWith(label: 'copy').mark, marked.mark);
+    });
+  });
+
+  group('the glyph vocabulary', () {
+    test('the sixteen original names keep their spelling', () {
+      // The names are the wire format: renaming one would silently drop the
+      // icon from every record that used it.
+      expect(ServerIcon.values.take(16).map((i) => i.name), [
+        'server',
+        'cloud',
+        'database',
+        'web',
+        'terminal',
+        'shield',
+        'home',
+        'work',
+        'lab',
+        'device',
+        'router',
+        'mail',
+        'container',
+        'rocket',
+        'star',
+        'bug',
+      ]);
+    });
+
+    test('every name decodes back to itself', () {
+      for (final icon in ServerIcon.values) {
+        expect(serverIconFromName(icon.name), icon, reason: icon.name);
+      }
+      expect(serverIconFromName('nonesuch'), isNull);
+      expect(serverIconFromName(null), isNull);
+    });
+  });
+}

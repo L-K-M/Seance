@@ -8,6 +8,7 @@ import '../services/app_settings.dart';
 import 'connection_test_report.dart';
 import 'server_appearance.dart';
 import 'server_grouping.dart';
+import 'server_mark_picker.dart';
 import 'top_toast.dart';
 
 /// Whether turning "exclude from sync" on needs confirming before it takes.
@@ -224,7 +225,11 @@ class _ServerEditorState extends State<_ServerEditor> {
 
   late AuthMethod _auth;
   late ServerColor? _color;
-  late ServerIcon? _icon;
+
+  /// What the badge shows: a glyph, an emoji, or an imported image. Held as
+  /// the resolved mark rather than as the three fields it is stored in, so
+  /// the precedence between them lives in one place (see [ServerMark]).
+  late ServerMark _mark;
   bool _referenceKeyFile = true;
   late bool _syncSecret;
   late bool _excludeFromSync;
@@ -269,7 +274,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     _user = TextEditingController(text: e?.username ?? '');
     _group = TextEditingController(text: e?.group ?? '');
     _color = e?.color;
-    _icon = e?.icon;
+    _mark = e?.mark ?? const ServerGlyphMark(null);
     // Default new servers to password: ssh-agent is offered but not yet
     // supported by the backend, so defaulting to it would dead-end the very
     // first "add a server and connect".
@@ -626,9 +631,9 @@ class _ServerEditorState extends State<_ServerEditor> {
       const SizedBox(height: 8),
       Row(
         children: [
-          // Colour and icon combine, so they are previewed together rather
+          // Colour and mark combine, so they are previewed together rather
           // than left to be imagined from two separate pickers.
-          ServerBadge(color: _color, icon: _icon),
+          ServerBadge(color: _color, mark: _mark),
           const SizedBox(width: 12),
           Text('Appearance', style: Theme.of(context).textTheme.titleSmall),
         ],
@@ -675,22 +680,42 @@ class _ServerEditorState extends State<_ServerEditor> {
         ],
       ),
       const SizedBox(height: 16),
-      Text('Icon', style: Theme.of(context).textTheme.labelMedium),
+      Text('Mark', style: Theme.of(context).textTheme.labelMedium),
       const SizedBox(height: 6),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
+      // A button rather than the grid this used to be: the glyphs alone no
+      // longer fit a form field, and emoji and imported images need room of
+      // their own. The preview beside "Appearance" above shows the result.
+      Row(
         children: [
-          for (final icon in <ServerIcon?>[null, ...ServerIcon.values])
-            _IconChoice(
-              icon: icon,
-              accent: _color,
-              selected: _icon == icon,
-              onTap: () => setState(() => _icon = icon),
+          ServerBadge(color: _color, mark: _mark, size: 44),
+          const SizedBox(width: 12),
+          OutlinedButton.icon(
+            onPressed: _pickMark,
+            icon: const Icon(Icons.palette_outlined),
+            label: const Text('Choose…'),
+          ),
+          if (_mark != const ServerGlyphMark(null)) ...[
+            const SizedBox(width: 4),
+            IconButton(
+              tooltip: 'Use the default mark',
+              icon: const Icon(Icons.backspace_outlined),
+              onPressed: () =>
+                  setState(() => _mark = const ServerGlyphMark(null)),
             ),
+          ],
         ],
       ),
     ];
+  }
+
+  Future<void> _pickMark() async {
+    final chosen = await showServerMarkPicker(
+      context,
+      current: _mark,
+      accent: _color,
+    );
+    if (chosen == null || !mounted) return;
+    setState(() => _mark = chosen);
   }
 
   /// Per-server opt-in for including this credential in sync. Gated globally by
@@ -781,6 +806,7 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// never run against a different server than the one about to be saved.
   ServerConfig _formConfig({required String? secretRef, required int now}) {
     final existing = widget.existing;
+    final mark = _mark.stored;
     return ServerConfig(
       id: existing?.id ?? _draftId,
       label: _label.text.trim(),
@@ -803,7 +829,12 @@ class _ServerEditorState extends State<_ServerEditor> {
       // looks identical to the one the user meant to join.
       group: normalizeServerGroup(_group.text),
       color: _color,
-      icon: _icon,
+      // Read once rather than three times: encoding an image mark for storage
+      // is not free, and the three have to come from one reading anyway so
+      // they cannot disagree about which is in force.
+      icon: mark.icon,
+      iconEmoji: mark.emoji,
+      iconImage: mark.image,
       loginScript: normalizeLoginScript(_loginScript.text),
       excludeFromSync: _excludeFromSync,
       createdAt: existing?.createdAt ?? now,
@@ -1041,54 +1072,6 @@ class _ColorSwatch extends StatelessWidget {
           child: selected
               ? Icon(Icons.check, size: 16, color: foreground)
               : null,
-        ),
-      ),
-    );
-  }
-}
-
-/// One choice in the icon row, previewed on the colour currently selected so
-/// the pair can be judged together.
-class _IconChoice extends StatelessWidget {
-  final ServerIcon? icon;
-  final ServerColor? accent;
-  final bool selected;
-  final VoidCallback onTap;
-
-  static const double _size = 34;
-
-  const _IconChoice({
-    required this.icon,
-    required this.accent,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final resolved = serverAccent(context, accent);
-    return Tooltip(
-      message: serverIconLabel(icon),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          width: _size,
-          height: _size,
-          decoration: BoxDecoration(
-            color: resolved?.container ?? scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: selected ? scheme.primary : scheme.outlineVariant,
-              width: selected ? 2.5 : 1,
-            ),
-          ),
-          child: Icon(
-            serverIconData(icon),
-            size: 18,
-            color: resolved?.onContainer ?? scheme.onSurfaceVariant,
-          ),
         ),
       ),
     );

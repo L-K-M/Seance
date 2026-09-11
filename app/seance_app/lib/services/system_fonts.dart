@@ -78,7 +78,8 @@ class SfntSystemFonts implements SystemFonts {
   final List<Directory> _roots;
   Future<List<SystemFontFamily>>? _cached;
 
-  SfntSystemFonts({List<Directory>? roots}) : _roots = roots ?? _platformRoots();
+  SfntSystemFonts({List<Directory>? roots})
+      : _roots = roots ?? _platformRoots();
 
   @override
   bool get isSupported => _roots.isNotEmpty;

@@ -11,6 +11,9 @@ environment:
   sdk: ^3.12.0
 
 dependencies:
+  # Grapheme-cluster counting, so "one emoji" means one cluster rather than
+  # one code unit (see ServerMark's emoji validation).
+  characters: ^1.4.0
   cryptography: ^2.7.0
   crypto: ^3.0.0
   logging: ^1.3.0

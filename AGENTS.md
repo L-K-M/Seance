@@ -111,7 +111,7 @@ the latest code and rebuilds + recreates the stack in one step.
 Everything security- or correctness-critical is covered by tests that run in CI
 (`.github/workflows/ci.yml`):
 
-- **181 Dart tests** across the three packages — crypto round-trips and
+- **620 Dart tests** across the three packages — crypto round-trips and
   wrong-key/tamper rejection, verifier independence, recovery-code corruption
   detection, TOFU decisions, the danger linter, paste sanitization, secret
   redaction, LLM request/response handling and the chat tool loop, **two-device
@@ -294,7 +294,8 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 181 Dart tests + 107 Flutter tests, all analyze clean.
+- 620 Dart tests + 552 Flutter tests + 166 in the vendored xterm fork, all
+  analyze clean.
 - Sync correctness is proven two ways: `packages/seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and
   `packages/seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +
@@ -330,6 +331,17 @@ compiles the app for android/linux/macos/ios/windows on their native runners
   `resolution: workspace` (verified).
 - Pure-Dart **Argon2id is slow** (19 MiB). Tests use `Argon2Params.fast()`;
   never use that in production.
+- **Anything that reaches the real event loop hangs a widget test.** A widget
+  test runs in a fake-async zone, so work that completes on the *real* loop
+  never does: `AppServices.initialize()` (file I/O), `ui.instantiateImageCodec`
+  and every `Image.memory`/`Image.file` resolution. Symptom is a hang, not a
+  failure — `pumpAndSettle` spins forever and the test times out with no
+  message. Do the work inside `tester.runAsync(...)` (including the `tap` that
+  starts it — starting it outside and delaying inside does not help), then
+  `pump()` fixed frames rather than settling. An `Image` *widget* is in the
+  tree from the first frame, so assertions about the widget itself need none
+  of this; only its decoded result does. See `server_list_add_button_test.dart`
+  and `server_mark_picker_test.dart`.
 - **file_picker ≥11 breaks the APK build** ("cannot find symbol:
   FilePickerPlugin" in GeneratedPluginRegistrant.java): on AGP 9+ the plugin
   stops applying the Kotlin plugin and expects AGP's built-in Kotlin, which the
@@ -363,6 +375,23 @@ Do not "simplify" these away — they are load-bearing:
 - **xterm 4.0**: `Terminal(maxLines:)`, settable `onOutput`/`onResize`,
   `write(String)`, `buffer.getText()`, `TerminalView(terminal, ...)`. SSH is
   bytes; the engine decodes UTF-8 leniently (`allowMalformed: true`).
+- **`dart:ui` is the whole image pipeline.** Badge images are decoded, cropped,
+  scaled and re-encoded with `ui.instantiateImageCodec` → `PictureRecorder` +
+  `Canvas.drawImageRect` → `Picture.toImage` → `Image.toByteData(format:
+  ImageByteFormat.png)`, with no image package. All of it works under
+  `flutter_test` (see `badge_image_test.dart`), which is why there is no
+  platform channel here. `instantiateImageCodec`'s `targetWidth`/`targetHeight`
+  are deliberately *not* used: they scale but cannot crop, and a badge has to
+  be square.
+- **Font families are resolved by name by the platform, not by Flutter.**
+  `TextStyle.fontFamily` is handed to the OS font manager, which is why
+  `SeanceTheme.monoFallback` can name Menlo and Consolas without the app
+  bundling either, and why the font picker
+  (`services/system_fonts.dart`) can offer any family it finds on disk. There
+  is no Flutter API to *enumerate* installed fonts — the picker reads the
+  `name` table out of the sfnt files in each desktop's font directories
+  itself, which is also where `post.isFixedPitch` and the PANOSE proportion
+  come from for the monospace filter.
 - **window_manager hidden-at-launch (macOS)**: `MainFlutterWindow.order(_:relativeTo:)`
   calls `hiddenWindowAtLaunch()`, so the window stays invisible until Dart calls
   `windowManager.show()` — which `WindowStateService.restoreAndTrack()` (run in
@@ -388,6 +417,15 @@ Do not "simplify" these away — they are load-bearing:
 - `SyncApi` (pull/push) — `HttpSyncClient` in prod, `FakeServer` in tests.
 - `LlmProvider` — `AnthropicProvider` and `OpenAiCompatibleProvider` (the latter
   covers Ollama/LM Studio/etc. via `base_url`).
+- `SystemFonts` — `SfntSystemFonts` reads the host's font directories,
+  `NoSystemFonts` reports nothing (mobile, and tests that must not depend on
+  what is installed on the machine running them).
+- `ServerMark` — what a server's badge shows, resolved from `ServerConfig`'s
+  `icon`/`iconEmoji`/`iconImage` (image, then emoji, then built-in glyph). The
+  three are separate fields so an older build ignores the keys it does not know
+  and still draws the glyph every mark keeps beside it; `ServerMark.stored` is
+  the inverse, so an editor holds one mark and writes the three. The app maps
+  glyph names to `IconData` in `ui/server_appearance.dart`, and only there.
 - Record model: `EncryptedRecord` is what the server sees (`kind` is *inside* the
   ciphertext); `DecryptedRecord` is app-side. Conflicts resolve by
   `Lww.resolve` = `(updatedAt, deviceId, seq)`; the server assigns `seq`.
