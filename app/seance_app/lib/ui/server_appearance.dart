@@ -544,7 +544,7 @@ class ServerBadge extends StatelessWidget {
           // of thirty servers that is the difference between thirty
           // thumbnails and thirty full bitmaps in the image cache. Three times
           // the logical size covers the densest display anyone runs this on,
-          // and is still below the 128 px the image is stored at.
+          // and stays at or below the side the image is stored at.
           cacheWidth: (size * 3).round(),
           filterQuality: FilterQuality.medium,
           // Bytes that will not decode fall back to the glyph stored beside

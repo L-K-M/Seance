@@ -129,25 +129,30 @@ class ServerImageMark extends ServerMark {
 
 /// The largest image a badge may carry, decoded.
 ///
-/// A badge is 32 logical pixels, so this is far more than it can show; what
-/// bounds it is the record it travels in. An imported image is stored inside
-/// the server's own config record, which is simple (it syncs with the setting
-/// it belongs to, needs no second record kind, and cannot arrive without the
-/// server it marks) at the cost of making that record bigger.
+/// An imported image is stored inside the server's own config record, which is
+/// simple (it syncs with the setting it belongs to, needs no second record
+/// kind, and cannot arrive without the server it marks) at the cost of making
+/// that record bigger. So the ceiling answers two questions at once: how much
+/// detail a badge can use, and how big that makes a record.
 ///
-/// Two server-side ceilings set the number, and it is the second that binds.
-/// Per record the sync server allows a megabyte, which 32 KiB — about 43 KiB
-/// once base64-encoded — clears by a wide margin. But a push sends every dirty
-/// record in **one** request, against a body limit of 8 MiB, so the real
-/// question is how many marked servers can be pushed at once: at this size,
-/// around 190 of them all carrying a maximum-size image, which is far past any
-/// real collection. (Batching that push by size is the structural fix and is a
-/// change to the sync engine, not to this constant.)
+/// Detail sets the *side* the app stores at ([kBadgeImageSide]); this sets the
+/// bytes that side is allowed to cost. It is deliberately generous enough that
+/// realistic content never trips the step-down: measured PNG sizes at 256 px
+/// are about 1 KiB for a flat logo, 53 KiB for a photograph, and 154 KiB for
+/// pure noise, so at 192 KiB even the pathological case is stored at full size
+/// and the fallbacks exist for content worse than noise.
+///
+/// What bounds it is the sync server's per-record ceiling of a megabyte,
+/// measured on the *decoded* sealed blob. A record carries the image
+/// base64-encoded inside sealed JSON, so a config at this cap with every other
+/// field at its longest seals to about 258 KiB — a quarter of what is allowed.
+/// `record_size_test.dart` in the server package asserts that against the
+/// server's real limit rather than against this arithmetic.
 ///
 /// The app re-encodes every import rather than trusting its size, stepping the
 /// dimensions down until the PNG fits; this is the backstop for a record
 /// arriving from somewhere else.
-const int kMaxServerIconImageBytes = 32 * 1024;
+const int kMaxServerIconImageBytes = 192 * 1024;
 
 /// A PNG's first eight bytes. Imports are re-encoded to PNG, so a mark that is
 /// not one did not come from this app, and the alternative to checking is

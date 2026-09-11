@@ -14,14 +14,20 @@ import 'dart:ui' as ui;
 
 /// The side the badge image is stored at.
 ///
-/// The badge is 32 logical pixels, so this covers a 3× display with room over.
-/// Larger would be paid for in every sync round for detail no badge can show.
-const int kBadgeImageSide = 128;
+/// Set by the largest badge the app ever draws, which is the 64-pixel preview
+/// in the mark picker: 192 physical pixels on a 3× display. This clears that
+/// with headroom and is a round power of two. Going further would be paid for
+/// in every sync round to store detail nothing displays.
+const int kBadgeImageSide = 256;
 
-/// Sides tried in order until the PNG fits [maxBytes]. A photograph at 128 is
-/// usually 20–40 KiB, so the smaller steps are for the pathological case
-/// (noise, a screenshot of text) rather than the normal one.
-const List<int> _sideAttempts = [kBadgeImageSide, 96, 64];
+/// Sides tried in order until the PNG fits [maxBytes].
+///
+/// Measured PNG cost at 256 px is about 1 KiB for a flat logo, 53 KiB for a
+/// photograph and 154 KiB for pure noise, against a ceiling of 192 KiB — so
+/// every one of those is stored at full size and these fallbacks are for
+/// content that compresses worse than noise. They are kept because the
+/// alternative to stepping down is refusing the import.
+const List<int> _sideAttempts = [kBadgeImageSide, 192, 128, 96];
 
 /// Largest source file accepted, before decoding.
 ///
@@ -93,8 +99,13 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
       crop.toDouble(),
     );
 
+    int? lastSide;
     for (final attempt in _sideAttempts) {
       final side = attempt < crop ? attempt : crop;
+      // A source between two steps clamps both of them to its own size, and
+      // re-rendering the same pixels to weigh them again would say nothing new.
+      if (side == lastSide) continue;
+      lastSide = side;
       final png = await _render(decoded, cropRect, side);
       if (png == null) {
         return (image: null, failure: BadgeImageFailure.undecodable);

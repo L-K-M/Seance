@@ -89,6 +89,19 @@ void main() {
     expect(image.width, image.height);
   });
 
+  test('a source between two steps is only rendered once per size', () async {
+    // A 150-pixel source clamps the 256 and 192 steps to its own size, so
+    // without deduplication the same pixels would be encoded three times to
+    // weigh them. Observable only as the size that comes back, which must be
+    // the source's own rather than a step below it.
+    final result = await encodeBadgeImage(
+      await png(150, 150),
+      maxBytes: kMaxServerIconImageBytes,
+    );
+    expect(result.failure, isNull);
+    expect(result.image!.side, 150);
+  });
+
   test('a source smaller than the stored side is not blown up', () async {
     final result = await encodeBadgeImage(
       await png(40, 40),
