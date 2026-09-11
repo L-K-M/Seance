@@ -13,6 +13,7 @@
 @interface FlutterEngine (Fixture)
 @property(nonatomic) BOOL semanticsEnabled;
 @property(nonatomic, readonly) NSTextView *textInputPlugin;
+- (void)onAccessibilityStatusChanged:(NSNotification *)notification;
 @end
 @interface FlutterViewController (Fixture)
 - (void)updateSemantics:(const FlutterSemanticsUpdate2 *)update;
@@ -24,6 +25,7 @@
 @property(nonatomic, weak) NSTextField *client;
 - (void)handleMethodCall:(FlutterMethodCall *)call result:(FlutterResult)result;
 - (void)setEditingState:(NSDictionary *)state;
+- (NSDictionary *)editingState;
 @end
 
 @interface FixtureViewController : FixtureBaseController
@@ -37,6 +39,7 @@ static NSHashTable<NSTextField *> *invalidatedFields;
 static IMP originalRemoveFromSuperview;
 static IMP originalSetPlatformNode;
 static NSUInteger detachmentsWithLivePeer;
+static NSUInteger observedRemovals;
 
 // Observe Flutter's own invalidation selector. Never inspect object memory,
 // read through platform pointers, or dispatch editing during teardown.
@@ -47,6 +50,7 @@ static void observePlatformNode(id field, SEL selector, void *node) {
 }
 
 static void observeRemoval(id field, SEL selector) {
+  if ([observedFields containsObject:field]) observedRemovals++;
   for (NSTextField *peer in observedFields) {
     if (peer == field || peer.superview == nil) continue;
     if (![invalidatedFields containsObject:peer]) {
@@ -115,7 +119,7 @@ static void checkDetached(NSArray<NSTextField *> *fields) {
   }
 }
 
-static void exerciseEditing(FlutterEngine *engine, NSWindow *window, NSTextField *field) {
+static void initializeInputClient(FlutterEngine *engine) {
   NSTextView *plugin = engine.textInputPlugin;
   FlutterMethodCall *setClient = [FlutterMethodCall methodCallWithMethodName:@"TextInput.setClient"
       arguments:@[@1, @{@"inputType": @{@"name": @"TextInputType.text"},
@@ -123,6 +127,10 @@ static void exerciseEditing(FlutterEngine *engine, NSWindow *window, NSTextField
   [plugin handleMethodCall:setClient result:^(id result) {
     require(result == nil, @"Native input client initializes");
   }];
+}
+
+static void exerciseEditing(FlutterEngine *engine, NSTextField *field) {
+  NSTextView *plugin = engine.textInputPlugin;
   [field startEditing];
   require(plugin.client == field, @"Native field becomes input plugin client");
   require([field.stringValue isEqualToString:@"alpha"], @"Native editor restores semantics text");
@@ -132,6 +140,10 @@ static void exerciseEditing(FlutterEngine *engine, NSWindow *window, NSTextField
                            @"composingExtent": @-1}];
   require([field.stringValue isEqualToString:@"alpha updated"], @"Editing state updates native field text");
   require(NSEqualRanges(plugin.selectedRange, NSMakeRange(2, 3)), @"Editing state updates native selection");
+}
+
+static void finishEditing(FlutterEngine *engine, NSWindow *window) {
+  NSTextView *plugin = engine.textInputPlugin;
   [window endEditingFor:nil];
   plugin.client = nil;
   [plugin handleMethodCall:[FlutterMethodCall methodCallWithMethodName:@"TextInput.clearClient"
@@ -195,12 +207,29 @@ int main(void) {
       const char *encoding = method_getTypeEncoding(class_getInstanceMethod(fieldClass, removeSelector));
       require(class_addMethod(fieldClass, removeSelector, (IMP)observeRemoval, encoding),
               @"Install benign native field detachment observer");
-      exerciseEditing(engine, window, fields.firstObject);
+      initializeInputClient(engine);
+      exerciseEditing(engine, fields.firstObject);
       NSLog(@"PASS: native editing restores and updates text and selection");
       observedFields = [fields copy];
 
-      engine.semanticsEnabled = NO;
+      NSTextView *activePlugin = engine.textInputPlugin;
+      require(window.firstResponder == activePlugin, @"Native editor is first responder before disabling semantics");
+      require(activePlugin.superview != view, @"Native editor starts under accessibility field");
+      [engine onAccessibilityStatusChanged:[NSNotification notificationWithName:@"FixtureAccessibility"
+          object:nil userInfo:@{@"AXEnhancedUserInterface": @NO}]];
+      require(observedRemovals == fields.count, @"Semantics teardown observes both native field removals");
+      observedRemovals = 0;
       observedFields = nil;
+      require(!engine.semanticsEnabled, @"Accessibility notification disables semantics");
+      require(activePlugin.superview == view, @"Disabling accessibility reparents native editor to Flutter view");
+      require(window.firstResponder == activePlugin, @"Native editor remains first responder after reparenting");
+      [activePlugin setEditingState:@{@"text": @"editing after accessibility disabled", @"selectionBase": @3,
+                                     @"selectionExtent": @7, @"composingBase": @-1,
+                                     @"composingExtent": @-1}];
+      require([[activePlugin editingState][@"text"] isEqualToString:@"editing after accessibility disabled"],
+              @"Native input text updates after semantics disable");
+      require(NSEqualRanges(activePlugin.selectedRange, NSMakeRange(3, 4)),
+              @"Native input selection updates after semantics disable");
       checkDetached(fields);
       NSLog(@"PASS: both fields invalidate and ignore editing after semantics teardown");
 
@@ -210,14 +239,16 @@ int main(void) {
       for (NSTextField *field in replacementFields) {
         require(![fields containsObject:field], @"Reenabled semantics creates fresh native fields");
       }
-      exerciseEditing(engine, window, replacementFields.firstObject);
+      exerciseEditing(engine, replacementFields.firstObject);
       NSLog(@"PASS: reenabled semantics creates fresh fields with working text and selection");
+      finishEditing(engine, window);
       observedFields = replacementFields;
       weakController = controller;
       window.contentViewController = nil;
       controller = nil;
     }
     require(weakController == nil, @"Controller deallocates while semantics remains enabled");
+    require(observedRemovals == replacementFields.count, @"Controller destruction observes both native field removals");
     observedFields = nil;
     checkDetached(replacementFields);
     NSLog(@"PASS: controller destruction invalidates and detaches both fields");

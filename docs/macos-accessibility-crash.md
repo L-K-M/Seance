@@ -53,8 +53,11 @@ timing-dependent segmentation fault.
 
 `scripts/test-macos-accessibility.sh --stock-engine` runs the same assertions
 without the guard and is expected to fail on Flutter 3.47.3. The guarded test
-also checks native text and selection updates, fresh functional fields after
-re-enabling semantics, and invalidation during controller destruction.
+also keeps a text-input connection active through the accessibility-disable
+notification, verifies editor reparenting and subsequent text and selection
+updates, and reuses the connection with fresh fields after re-enabling
+semantics. Both semantics teardown and controller destruction must reach the
+removal observer for every field, so ordering cannot pass without observation.
 
 This demonstrates the teardown lifetime defect and the guard's ordering. It
 does **not** reproduce the original user's complete interaction or establish
