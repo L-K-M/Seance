@@ -219,15 +219,18 @@ class _ServerListPaneState extends State<ServerListPane> {
       // being broken rather than as the list being tidy.
       collapsedKeys: _query.isEmpty ? state.collapsedServerGroups : const {},
     );
+    // A null padding lets the ListView consume the ambient main-axis insets
+    // (gesture-nav bar on Android) and leave the cross axis to the children.
+    // Rebuild exactly that base, extended by the clearance for the floating
+    // Add-server button, so an explicit EdgeInsets neither drops the bottom
+    // inset nor adds side insets the default never had.
+    final viewInsets = MediaQuery.paddingOf(context);
     return ListView.separated(
       itemCount: rows.length,
-      // The floating Add-server button hovers over the trailing menus; the
-      // clearance keeps the last row reachable at the deepest scroll. The
-      // MediaQuery base preserves the insets a null padding would have
-      // applied (gesture-nav bar on Android), which an explicit EdgeInsets
-      // would silently drop.
-      padding: MediaQuery.paddingOf(context).copyWith(
-        bottom: MediaQuery.paddingOf(context).bottom + _fabScrollClearance,
+      padding: viewInsets.copyWith(
+        left: 0,
+        right: 0,
+        bottom: viewInsets.bottom + _fabScrollClearance,
       ),
       // Rules belong between servers, not under a section header — the
       // header's own fill already separates it from what follows.
