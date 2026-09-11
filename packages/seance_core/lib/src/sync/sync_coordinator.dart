@@ -11,6 +11,7 @@ import 'sync_engine.dart';
 const int _warningLogLevel = 900;
 const String _recordKindDelimiter = ':';
 const String _secretIdPrefix = 'secret$_recordKindDelimiter';
+const String _snippetIdPrefix = 'snippet$_recordKindDelimiter';
 const String _syncLoggerName = 'seance.sync';
 
 /// Bridges the app's domain objects (server configs, pinned host keys, and —
@@ -143,6 +144,16 @@ class SyncCoordinator {
     // deletion converges even for a kind a peer cannot yet decode.
     for (final tombstone
         in await tombstoneStore?.all() ?? const <EncryptedRecord>[]) {
+      // Skip a tombstone whose id is a live record this round already
+      // published above: an id re-created (import or migration) while its
+      // delete was still pending, or a delete whose row-drop was interrupted.
+      // Publishing the tombstone would overwrite that live record in the
+      // mirror and push a delete for something that exists. The app also clears
+      // a pending tombstone when its id is re-saved; this guards the window
+      // before that lands, and is why a re-created id is never deleted from
+      // under the user.
+      final live = await local.getRecord(tombstone.id);
+      if (live != null && !live.deleted) continue;
       await local.putLocal(tombstone);
     }
     for (final hk in await hostKeyStore.all()) {
@@ -383,13 +394,15 @@ class SyncCoordinator {
 
         // Tombstones have no encrypted kind, so the id prefix is what routes
         // them. Bare ids are the legacy server-deletion form and still delete.
-        // Every prefixed kind — `secret:`, `hostkey:` — is deliberately a
-        // no-op: `RecordCodec.decrypt` returns a deleted record straight from
-        // the envelope's flag without opening anything, so a tombstone is the
-        // one signal a sync server can assert entirely on its own. Honouring
-        // those would hand it a primitive for emptying the vault (tombstone
-        // the configs first, then the credentials no config still names) and
-        // for stripping this device's TOFU pins. Configs already carried that
+        // A `snippet:` tombstone is applied like a config below (a snippet is
+        // non-secret settings, the same risk class as a config). The other
+        // prefixed kinds — `secret:`, `hostkey:` — are deliberately a no-op:
+        // `RecordCodec.decrypt` returns a deleted record straight from the
+        // envelope's flag without opening anything, so a tombstone is the one
+        // signal a sync server can assert entirely on its own. Honouring those
+        // would hand it a primitive for emptying the vault (tombstone the
+        // configs first, then the credentials no config still names) and for
+        // stripping this device's TOFU pins. Configs already carried that
         // exposure before any of this; a credential vault and a set of host
         // key pins are not where to widen it. The fix is sealing tombstones —
         // an authenticator over id, kind and date, keyed like the payload —
@@ -426,6 +439,18 @@ class SyncCoordinator {
               continue;
             }
             await configStore.deleteServer(dec.id);
+            continue;
+          }
+          // A `snippet:` tombstone IS applied, unlike `secret:`/`hostkey:`: a
+          // snippet is non-secret settings, the same risk class as a config an
+          // unsealed tombstone can already delete on a sync server's say-so, so
+          // honouring it costs at most a lost snippet, never vault or trust
+          // material. The refused kinds stay staged for a sealed-tombstone
+          // build (they simply fall through this branch to the `continue`).
+          final snippets = snippetStore;
+          if (snippets != null && dec.id.startsWith(_snippetIdPrefix)) {
+            await snippets
+                .deleteSnippet(dec.id.substring(_snippetIdPrefix.length));
           }
           continue;
         }

@@ -1721,6 +1721,64 @@ void main() {
       expect(api.stored('s1')!.deleted, isFalse,
           reason: 'the peer edit outranks the delete (LWW), as it should');
     });
+
+    test('a pending tombstone never shadows a re-created live record', () async {
+      // An id deleted while offline (tombstone still pending) then re-created
+      // with the same id: collectLocal must publish the live record and skip
+      // the tombstone, so the delete is not pushed for a row that exists.
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 30));
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      expect(api.stored('s1'), isNotNull);
+      expect(api.stored('s1')!.deleted, isFalse,
+          reason: 'the live re-created record wins, not the shadowed tombstone');
+      expect(await cfg.getServer('s1'), isNotNull);
+    });
+
+    test('a snippet deletion converges to a second device', () async {
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+
+      SyncCoordinator coordS(
+        String deviceId,
+        SnippetStore snippets,
+        TombstoneStore tombstones,
+      ) => SyncCoordinator(
+            configStore: InMemoryConfigStore(),
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: InMemoryLocalRecordStore(),
+            deviceId: deviceId,
+            snippetStore: snippets,
+            tombstoneStore: tombstones,
+          );
+
+      final snipA = InMemorySnippetStore();
+      final tsA = InMemoryTombstoneStore();
+      final snipB = InMemorySnippetStore();
+      final tsB = InMemoryTombstoneStore();
+
+      await snipA.putSnippet(const Snippet(
+          id: 'x', title: 't', body: 'ls', createdAt: 1, updatedAt: 10));
+      await coordS('A', snipA, tsA).run(api);
+      await coordS('B', snipB, tsB).run(api);
+      expect(await snipB.getSnippet('x'), isNotNull);
+
+      await snipA.deleteSnippet('x');
+      await tsA.add(tombstoneFor('snippet:x', 'A', 20));
+      await coordS('A', snipA, tsA).run(api);
+      await coordS('B', snipB, tsB).run(api);
+
+      expect(await snipB.getSnippet('x'), isNull,
+          reason: 'a snippet tombstone is honoured on the peer, unlike '
+              'secret:/hostkey:');
+    });
   });
 
   group('assistant settings', () {

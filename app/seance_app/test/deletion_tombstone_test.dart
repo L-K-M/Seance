@@ -64,10 +64,40 @@ void main() {
     // A fresh services on the same directory still owes the deletion, so an
     // app restart before the next sync round does not lose it.
     final reopened = await AppServices.initialize();
+    addTearDown(() => reopened.probe.dispose());
     final stillPending = await reopened.tombstoneStore.all();
     expect(stillPending, hasLength(1));
     expect(stillPending.single.id, 'a');
     expect(stillPending.single.deleted, isTrue);
+  });
+
+  test('a delete stamps its tombstone past a future-dated record', () async {
+    // Clock skew or a same-ms tie must not let the live copy on the sync server
+    // win last-write-wins and resurrect the row. The tombstone is stamped
+    // max(now, prior.updatedAt + 1), so it outranks every version this device
+    // has seen while still losing to a peer's genuinely newer edit.
+    final services = await AppServices.initialize();
+    final state = AppState(services);
+    addTearDown(() async {
+      state.dispose();
+      await services.probe.dispose();
+    });
+
+    final future = DateTime.now().millisecondsSinceEpoch + 1000000;
+    await state.saveServer(ServerConfig(
+      id: 'a',
+      label: 'a',
+      host: 'a.example.com',
+      username: 'u',
+      createdAt: 1,
+      updatedAt: future,
+    ));
+    await state.deleteServer('a');
+
+    final tombstone = (await services.tombstoneStore.all()).single;
+    expect(tombstone.id, 'a');
+    expect(tombstone.updatedAt, future + 1,
+        reason: 'the tombstone must outrank the record it deletes');
   });
 
   test('deleting a snippet records a snippet-scoped tombstone', () async {
