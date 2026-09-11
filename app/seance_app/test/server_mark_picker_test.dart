@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -177,14 +178,14 @@ void main() {
       // The tap itself goes inside runAsync: encoding an image runs through
       // the engine's codec, which only completes on the real event loop — the
       // work started in a widget test's fake-async zone would simply hang.
-      await tester.runAsync(() async {
-        await tester.tap(find.widgetWithText(FilledButton, 'Choose image…'));
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-      });
+      // Polled to an outcome rather than slept for a fixed budget, so a loaded
+      // machine makes the test slower instead of making it fail.
+      await tester.runAsync(
+        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
+      );
       // Frames rather than pumpAndSettle: the preview the encode produced is
       // an Image whose own resolution never settles here.
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntil(tester, () => picked.isNotEmpty);
 
       final mark = picked.single;
       expect(mark, isA<ServerImageMark>());
@@ -203,14 +204,45 @@ void main() {
       );
       await tester.tap(find.text('Image'));
       await tester.pumpAndSettle();
-      await tester.runAsync(() async {
-        await tester.tap(find.widgetWithText(FilledButton, 'Choose image…'));
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-      });
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.textContaining('could not be read as an image'),
-          findsOneWidget);
+      await tester.runAsync(
+        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
+      );
+      await pumpUntil(
+        tester,
+        () => tester.any(find.textContaining('could not be read as an image')),
+      );
       expect(picked, isEmpty, reason: 'the dialog stays open to try again');
+    });
+
+    testWidgets('a file picker that throws is reported, not swallowed', (
+      tester,
+    ) async {
+      // The platform picker throws for a vanished document provider and a
+      // revoked permission, among others. Before this was caught the spinner
+      // simply cleared and the dialog sat there.
+      await open(
+        tester,
+        readImage: () async => throw const FileSystemException('gone'),
+      );
+      await tester.tap(find.text('Image'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(
+        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
+      );
+      await pumpUntil(
+        tester,
+        () => tester.any(find.textContaining('could not be opened')),
+      );
+      expect(picked, isEmpty);
+      // …and the button is usable again rather than stuck spinning.
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Choose image…'),
+            )
+            .onPressed,
+        isNotNull,
+      );
     });
 
     testWidgets('cancelling the file picker leaves the dialog alone', (
@@ -268,4 +300,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(picked, [null]);
   });
+}
+
+/// Advances until [done] holds, alternating real time with frames.
+///
+/// Importing an image needs both: the decode only progresses on the real event
+/// loop (reached through [WidgetTester.runAsync]), and what it produces only
+/// becomes findable once a frame is built. Polling for the outcome rather than
+/// sleeping a fixed budget means a loaded machine makes this slower instead of
+/// making it fail for reasons unrelated to the code under test.
+Future<void> pumpUntil(
+  WidgetTester tester,
+  bool Function() done, {
+  Duration timeout = const Duration(seconds: 10),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!done() && DateTime.now().isBefore(deadline)) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+  }
+  expect(done(), isTrue, reason: 'timed out waiting for the import to finish');
 }

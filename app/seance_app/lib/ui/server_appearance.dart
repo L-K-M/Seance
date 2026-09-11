@@ -140,7 +140,7 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.inventory_2_outlined, 'Container', keywords: 'docker podman image',
   ),
   ServerIcon.database => const _Glyph(
-    Icons.storage_outlined, 'Database', keywords: 'db sql postgres mysql redis',
+    Icons.storage_outlined, 'Database', keywords: 'db sql psql postgres mysql redis',
   ),
   ServerIcon.files => const _Glyph(
     Icons.folder_outlined, 'File store', keywords: 'nas smb share folder',
@@ -346,12 +346,19 @@ String serverIconLabel(ServerIcon? icon) =>
 /// the glyph's extra terms, so "k8s" finds the cluster glyph and "psql" the
 /// database one.
 bool serverIconMatches(ServerIcon? icon, String query) {
-  final needle = query.trim().toLowerCase();
-  if (needle.isEmpty) return true;
-  if (icon == null) return 'default'.contains(needle);
+  // Every whitespace-separated term has to match somewhere, rather than the
+  // query matching as one contiguous run: "docker container" is how people
+  // search an icon grid, and as a single substring it matches nothing, since
+  // no label or keyword list contains that phrase in that order.
+  final terms = query.toLowerCase().split(RegExp(r'\s+'))
+    ..removeWhere((term) => term.isEmpty);
+  if (terms.isEmpty) return true;
+  if (icon == null) return terms.every('default'.contains);
   final glyph = _glyph(icon);
-  return glyph.label.toLowerCase().contains(needle) ||
-      glyph.keywords.contains(needle);
+  // Lower-cased here rather than relying on the table being written that way,
+  // so one capitalised keyword cannot silently drop out of search.
+  final haystack = '${glyph.label} ${glyph.keywords}'.toLowerCase();
+  return terms.every(haystack.contains);
 }
 
 /// The glyphs, under the headings the picker files them beneath.
@@ -552,19 +559,21 @@ class ServerBadge extends StatelessWidget {
           errorBuilder: (_, _, _) => _glyphIcon(fallback, accent, scheme),
         );
       case ServerEmojiMark(:final emoji):
-        return Text(
-          emoji,
-          // Sized against the glyph it replaces rather than the badge, so an
-          // emoji and an icon sit at the same visual weight. No colour: an
-          // emoji carries its own, and tinting it would either do nothing or
-          // ruin it.
-          style: TextStyle(fontSize: size * 0.56, height: 1.1),
-          textAlign: TextAlign.center,
-          // A cluster the host has no font for would otherwise be free to
-          // wrap or ellipsise inside a 32-pixel box.
-          maxLines: 1,
-          softWrap: false,
-          overflow: TextOverflow.visible,
+        // Scaled down rather than clipped: a wide cluster (a family emoji, a
+        // flag) is wider than the badge, and the ClipRRect above would slice
+        // it through the middle. Shrinking keeps the whole glyph. A single
+        // emoji is narrower than the box and is left at its natural size.
+        return FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            emoji,
+            // Sized against the glyph it replaces rather than the badge, so an
+            // emoji and an icon sit at the same visual weight. No colour: an
+            // emoji carries its own, and tinting it would either do nothing or
+            // ruin it.
+            style: TextStyle(fontSize: size * 0.56, height: 1.1),
+            textAlign: TextAlign.center,
+          ),
         );
       case ServerGlyphMark(:final icon):
         return _glyphIcon(icon, accent, scheme);
@@ -579,6 +588,10 @@ class ServerBadge extends StatelessWidget {
     serverIconData(icon),
     size: size * 0.56,
     color: accent?.onContainer ?? scheme.onSurfaceVariant,
+    // The badge identifies the server at a glance; without this it is an
+    // unlabelled image to a screen reader, in the one widget whose entire job
+    // is telling servers apart.
+    semanticLabel: serverIconLabel(icon),
   );
 }
 

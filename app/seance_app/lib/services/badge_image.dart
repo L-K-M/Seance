@@ -29,16 +29,29 @@ const int kBadgeImageSide = 256;
 /// alternative to stepping down is refusing the import.
 const List<int> _sideAttempts = [kBadgeImageSide, 192, 128, 96];
 
-/// Largest source file accepted, before decoding.
+/// Largest source file accepted, before it is read.
 ///
-/// A decoded image costs width × height × 4 bytes whatever its file size, so
-/// the guard has to be on the way in: a 100 MP photograph is a 400 MB
-/// allocation, and the picker will hand over whatever the user chose.
+/// A first, cheap gate. It does *not* bound what decoding will allocate —
+/// that is [kMaxBadgeSourcePixels]'s job — because a file's compressed size
+/// says almost nothing about its pixel count.
 const int kMaxBadgeSourceBytes = 24 * 1024 * 1024;
+
+/// Largest decoded image accepted, in pixels: 4096² is 16.7 MP, about 67 MB
+/// of RGBA.
+///
+/// This is the guard that matters. A decoded image costs width × height × 4
+/// whatever the file weighed: a 48 MP phone photo is a 5–10 MB JPEG and a
+/// ~190 MB allocation, and a flat-colour PNG can declare enormous dimensions
+/// in a few hundred bytes. Since the picker hands over whatever the user
+/// chose, the dimensions have to be read and refused *before* the decode, or
+/// the most ordinary action in this flow — picking a recent photo — can be an
+/// out-of-memory kill on a phone.
+const int kMaxBadgeSourcePixels = 4096 * 4096;
 
 /// Why an import could not be used, for a message the user can act on.
 enum BadgeImageFailure {
-  /// Bigger than [kMaxBadgeSourceBytes].
+  /// Bigger than [kMaxBadgeSourceBytes] on disk, or more pixels than
+  /// [kMaxBadgeSourcePixels] once its header is read.
   tooLarge,
 
   /// Not an image this platform can decode.
@@ -71,13 +84,26 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
   if (source.lengthInBytes > kMaxBadgeSourceBytes) {
     return (image: null, failure: BadgeImageFailure.tooLarge);
   }
-  ui.Image decoded;
+  final ui.Image decoded;
   try {
-    final codec = await ui.instantiateImageCodec(source);
+    // Through an ImageDescriptor rather than `instantiateImageCodec` so the
+    // dimensions can be read from the header and refused before the pixel
+    // buffer is ever allocated. The codec API offers no way back from a decode
+    // that is already too big.
+    final buffer = await ui.ImmutableBuffer.fromUint8List(source);
+    final descriptor = await ui.ImageDescriptor.encoded(buffer);
     try {
-      decoded = (await codec.getNextFrame()).image;
+      if (descriptor.width * descriptor.height > kMaxBadgeSourcePixels) {
+        return (image: null, failure: BadgeImageFailure.tooLarge);
+      }
+      final codec = await descriptor.instantiateCodec();
+      try {
+        decoded = (await codec.getNextFrame()).image;
+      } finally {
+        codec.dispose();
+      }
     } finally {
-      codec.dispose();
+      descriptor.dispose();
     }
   } on Exception {
     // The engine's codecs throw a plain Exception for anything they cannot
@@ -142,7 +168,11 @@ Future<Uint8List?> _render(
     final scaled = await picture.toImage(side, side);
     try {
       final data = await scaled.toByteData(format: ui.ImageByteFormat.png);
-      return data?.buffer.asUint8List();
+      if (data == null) return null;
+      // The view's own offset and length, not the whole backing buffer: a
+      // ByteData is not contractually a view over the entire buffer from zero,
+      // and taking it as one would store a wrong-length or shifted PNG.
+      return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     } finally {
       scaled.dispose();
     }

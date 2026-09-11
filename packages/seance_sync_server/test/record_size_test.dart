@@ -12,12 +12,18 @@ import 'package:test/test.dart';
 /// sealed blob the server measures.
 void main() {
   test('a maximum-size badge image fits the per-record limit', () async {
-    // A PNG-shaped payload of exactly the size the protocol allows. Incompressible
-    // content is the honest case: a real 256-pixel photograph measures around
-    // 53 KiB, so this is the ceiling rather than the expectation.
+    // A PNG-shaped payload of exactly the size the protocol allows: the
+    // signature, an IHDR declaring the 256 px square the app stores at, then
+    // incompressible filler. Incompressible is the honest case for a ceiling —
+    // a real 256 px photograph measures around 53 KiB.
     final image = Uint8List(kMaxServerIconImageBytes)
-      ..setAll(0, const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-    for (var i = 8; i < image.length; i++) {
+      ..setAll(0, const [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+        0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, // chunk length 13, "IHDR"
+        0, 0, 1, 0, // width 256
+        0, 0, 1, 0, // height 256
+      ]);
+    for (var i = 24; i < image.length; i++) {
       image[i] = (i * 2654435761) & 0xFF;
     }
     final stored = encodeServerIconImage(image);

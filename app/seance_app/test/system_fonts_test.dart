@@ -217,6 +217,35 @@ void main() {
   });
 
   group('malformed input', () {
+    test('one bad face does not discard the rest of a collection', () async {
+      // A .ttc holds dozens of faces; letting one throw reach the caller
+      // would discard the ones already read.
+      final good = sfnt(family: 'Menlo', fixedPitchFlag: true);
+      final collection = Uint8List.fromList(ttc([good, sfnt(family: 'Gone')]));
+      // Truncate the second face's table directory by pointing it past EOF.
+      final view = ByteData.sublistView(collection);
+      view.setUint32(16, collection.length + 4096);
+      expect(
+        (await read('a.ttc', collection)).map((f) => f.name),
+        ['Menlo'],
+      );
+    });
+
+    test('an absurd name table length is refused, not allocated', () async {
+      // The length is an untrusted uint32; reading one as declared would try
+      // to allocate gigabytes before any field was inspected.
+      final bytes = sfnt(family: 'Iosevka');
+      final view = ByteData.sublistView(bytes);
+      // The table directory starts at 12; entries are 16 bytes, and 'name' is
+      // the second of the three this builder writes.
+      for (var i = 0; i < 3; i++) {
+        final record = 12 + i * 16;
+        final tag = String.fromCharCodes(bytes.sublist(record, record + 4));
+        if (tag == 'name') view.setUint32(record + 12, 0xFFFFFFF0);
+      }
+      expect(await read('a.ttf', bytes), isEmpty);
+    });
+
     test('a truncated font yields nothing rather than throwing', () async {
       final full = sfnt(family: 'Iosevka');
       expect(await read('a.ttf', full.sublist(0, full.length ~/ 2)), isEmpty);
@@ -252,14 +281,87 @@ void main() {
       await File('${nested.path}/other.otf').writeAsBytes(
         sfnt(family: 'Cantarell'),
       );
-      // Not a font extension: never opened.
-      await File('${directory.path}/notes.txt').writeAsString('hello');
+      // Deliberately a *readable font* under a non-font extension, so this
+      // proves the file is skipped for its name rather than for failing to
+      // parse — with plain text inside, both behaviours look identical.
+      await File('${directory.path}/notes.txt').writeAsBytes(
+        sfnt(family: 'Invisible'),
+      );
 
       final fonts = SfntSystemFonts(roots: [directory]);
       expect(fonts.isSupported, isTrue);
       final families = await fonts.families();
       expect(families.map((f) => f.name), ['Cantarell', 'Hack']);
       expect(families.last.monospaced, isTrue);
+    });
+
+    test('a font installed as a symlink is found', () async {
+      // Not exotic: a manual `ln -s` into ~/.fonts, a distro linking into a
+      // package store, and on Nix essentially every font. Unfollowed they
+      // arrive as Link rather than File and vanish from the picker.
+      final store = await Directory('${directory.path}/store').create();
+      await File('${store.path}/real.ttf').writeAsBytes(sfnt(family: 'Hack'));
+      final visible = await Directory('${directory.path}/fonts').create();
+      await Link('${visible.path}/link.ttf').create('${store.path}/real.ttf');
+
+      final fonts = SfntSystemFonts(roots: [visible]);
+      expect((await fonts.families()).map((f) => f.name), ['Hack']);
+    });
+
+    test('a link that points at an ancestor does not rescan the tree',
+        () async {
+      // Following links means a cycle is reachable; each real file must still
+      // be parsed once, or one loop would spend the whole file budget on
+      // fonts already seen.
+      await File('${directory.path}/a.ttf').writeAsBytes(sfnt(family: 'Hack'));
+      await File('${directory.path}/b.ttf').writeAsBytes(
+        sfnt(family: 'Cantarell'),
+      );
+      await Link('${directory.path}/loop').create(directory.path);
+
+      final fonts = SfntSystemFonts(roots: [directory]);
+      final families = await fonts.families();
+      expect(families.map((f) => f.name), ['Cantarell', 'Hack']);
+    });
+
+    test('the same root twice is walked once', () async {
+      // XDG_DATA_HOME set to its own default makes this the normal case.
+      await File('${directory.path}/a.ttf').writeAsBytes(sfnt(family: 'Hack'));
+      final fonts = SfntSystemFonts(roots: [directory, directory]);
+      expect((await fonts.families()).length, 1);
+    });
+
+    test('one family spelled two ways collapses to one entry', () async {
+      // The list sorts case-insensitively, so keying by exact spelling would
+      // leave two rows that look identical sitting next to each other.
+      await File('${directory.path}/a.ttf').writeAsBytes(
+        sfnt(family: 'JetBrains Mono'),
+      );
+      await File('${directory.path}/b.ttf').writeAsBytes(
+        sfnt(family: 'JETBRAINS MONO', fixedPitchFlag: true),
+      );
+      final families = await SfntSystemFonts(roots: [directory]).families();
+      expect(families.length, 1);
+      expect(
+        families.single.monospaced,
+        isTrue,
+        reason: 'any face declaring fixed pitch marks the family',
+      );
+    });
+
+    test('one unreadable file does not cost the rest of the scan', () async {
+      // The result is cached for the life of the process, so an error escaping
+      // here would leave the picker empty until the app restarted.
+      await File('${directory.path}/good.ttf').writeAsBytes(
+        sfnt(family: 'Hack'),
+      );
+      await File('${directory.path}/bad.ttf').writeAsBytes(
+        List.filled(400, 0x41),
+      );
+      final fonts = SfntSystemFonts(roots: [directory]);
+      expect((await fonts.families()).map((f) => f.name), ['Hack']);
+      // And the cached future is a value, not a stored error.
+      expect((await fonts.families()).map((f) => f.name), ['Hack']);
     });
 
     test('no roots means unsupported and an empty list', () async {

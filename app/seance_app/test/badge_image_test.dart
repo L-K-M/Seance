@@ -12,8 +12,8 @@ import 'package:seance_core/seance_core.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  /// A [width]×[height] PNG, painted as two diagonal halves so a centre crop
-  /// is visible in the result's dimensions rather than only in its bytes.
+  /// A [width]×[height] PNG: a solid field with a centred circle, so a
+  /// centre-cropped result stays recognisable beyond its bare dimensions.
   Future<Uint8List> png(int width, int height) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
@@ -134,6 +134,9 @@ void main() {
     // deriving the ceiling from the real encode keeps the test independent of
     // how well any particular PNG encoder does.
     final full = await encodeBadgeImage(source, maxBytes: 1024 * 1024);
+    // Named before it is unwrapped: a regression here should report which
+    // BadgeImageFailure it hit, not a null-check error.
+    expect(full.failure, isNull);
     expect(full.image!.side, kBadgeImageSide);
     final ceiling = full.image!.png.lengthInBytes ~/ 2;
 
@@ -156,6 +159,30 @@ void main() {
     );
     expect(result.image, isNull);
     expect(result.failure, BadgeImageFailure.undecodable);
+  });
+
+  test('an image claiming too many pixels is refused before decoding', () async {
+    // The file-size gate cannot catch this: PNG stores a flat colour in almost
+    // nothing, so a handful of bytes can ask for a multi-gigabyte buffer. A
+    // phone photo is the same shape of problem at realistic sizes — a few
+    // megabytes of JPEG, a couple of hundred megabytes of RGBA.
+    final claimed = declaringSize(await png(8, 8), 20000, 20000);
+    final result = await encodeBadgeImage(
+      claimed,
+      maxBytes: kMaxServerIconImageBytes,
+    );
+    expect(result.image, isNull);
+    expect(
+      result.failure,
+      BadgeImageFailure.tooLarge,
+      reason: 'refused for its dimensions, not merely undecodable',
+    );
+
+    // …and a large-but-allowed image still gets through the same gate, so the
+    // test is not passing because everything is refused.
+    final fine = declaringSize(await png(8, 8), 8, 8);
+    expect((await encodeBadgeImage(fine, maxBytes: kMaxServerIconImageBytes))
+        .failure, isNull);
   });
 
   test('an oversized file is refused before it is decoded', () async {
@@ -181,4 +208,32 @@ Future<ui.Image> _imageFromPixels(Uint8List pixels, int width, int height) {
     completer.complete,
   );
   return completer.future;
+}
+
+/// Rewrites [source]'s IHDR to declare [width] x [height], fixing the chunk's
+/// CRC so the header still parses.
+///
+/// The pixel data is left alone and no longer matches, which is the point:
+/// what a PNG *claims* is what a decoder allocates from, and that claim has to
+/// be refused before any of it is read.
+Uint8List declaringSize(Uint8List source, int width, int height) {
+  final bytes = Uint8List.fromList(source);
+  final view = ByteData.sublistView(bytes);
+  // signature(8) + chunk length(4) + type(4), then two big-endian uint32s.
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  // The CRC covers the chunk's type and data: offsets 12 through 12+4+13.
+  view.setUint32(29, _crc32(bytes.sublist(12, 29)));
+  return bytes;
+}
+
+int _crc32(List<int> data) {
+  var crc = 0xFFFFFFFF;
+  for (final byte in data) {
+    crc ^= byte;
+    for (var i = 0; i < 8; i++) {
+      crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+    }
+  }
+  return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
 }

@@ -75,6 +75,9 @@ class SfntSystemFonts implements SystemFonts {
 
   static const _extensions = {'.ttf', '.otf', '.ttc', '.otc'};
 
+  /// Upper bound on a declared `name` table length. See [_readFace].
+  static const int _maxNameTableBytes = 1 << 20;
+
   final List<Directory> _roots;
   Future<List<SystemFontFamily>>? _cached;
 
@@ -139,14 +142,27 @@ class SfntSystemFonts implements SystemFonts {
   }
 
   Future<List<SystemFontFamily>> _scan() async {
-    // Name -> monospaced, so several faces of one family collapse to one entry
-    // and any fixed-pitch face marks the family.
-    final found = <String, bool>{};
+    // Keyed by the lowercased family name, because the list is *sorted*
+    // case-insensitively: keying by the exact spelling would let a system copy
+    // and a user copy of one family sit next to each other as two entries that
+    // look identical. The first spelling seen wins, and the roots are ordered
+    // system-first for exactly that reason.
+    final found = <String, SystemFontFamily>{};
+    // Resolved paths already parsed. Symlinks are followed (below), so without
+    // this a linked font would be read twice — and a link that points at an
+    // ancestor would walk the whole tree again, spending the file budget on
+    // files already seen.
+    final seen = <String>{};
     var files = 0;
     for (final root in _roots) {
       await for (final entity in root.list(
+        // Followed, because a font installed as a symlink is not exotic: a
+        // manual `ln -s` into ~/.fonts, a distro linking into a package store,
+        // and on Nix essentially every font. Left unfollowed they arrive as
+        // Link rather than File and are dropped by the guard below, which is
+        // most of the collection on those systems.
         recursive: true,
-        followLinks: false,
+        followLinks: true,
       ).handleError((_) {}, test: (e) => e is FileSystemException)) {
         if (files >= maxFiles) break;
         if (entity is! File) continue;
@@ -155,16 +171,37 @@ class SfntSystemFonts implements SystemFonts {
         if (!_extensions.contains(entity.path.substring(dot).toLowerCase())) {
           continue;
         }
+        String resolved;
+        try {
+          resolved = await entity.resolveSymbolicLinks();
+        } on FileSystemException {
+          // Deleted between listing and resolving, or a broken link.
+          continue;
+        }
+        if (!seen.add(resolved)) continue;
         files++;
-        for (final face in await readSfntFamilies(entity)) {
-          found[face.name] = (found[face.name] ?? false) || face.monospaced;
+        // One unreadable file loses only itself. `readSfntFamilies` is written
+        // to be total, but it is opening up to [maxFiles] arbitrary files that
+        // can be deleted mid-scan, and the result of this scan is cached for
+        // the life of the process — so a single escaped error would leave the
+        // picker empty until the app restarted.
+        List<SystemFontFamily> faces;
+        try {
+          faces = await readSfntFamilies(entity);
+        } on Exception {
+          continue;
+        }
+        for (final face in faces) {
+          final key = face.name.toLowerCase();
+          final previous = found[key];
+          found[key] = SystemFontFamily(
+            name: previous?.name ?? face.name,
+            monospaced: (previous?.monospaced ?? false) || face.monospaced,
+          );
         }
       }
     }
-    final families = [
-      for (final entry in found.entries)
-        SystemFontFamily(name: entry.key, monospaced: entry.value),
-    ]..sort();
+    final families = found.values.toList()..sort();
     return List.unmodifiable(families);
   }
 }
@@ -204,8 +241,16 @@ Future<List<SystemFontFamily>> _readCollection(RandomAccessFile handle) async {
     final offsets = await _readAt(handle, 12, numFonts * 4);
     final families = <SystemFontFamily>[];
     for (var i = 0; i < numFonts; i++) {
-      final face = await _readFace(handle, offsets.getUint32(i * 4));
-      if (face != null) families.add(face);
+      try {
+        final face = await _readFace(handle, offsets.getUint32(i * 4));
+        if (face != null) families.add(face);
+      } on _MalformedFont {
+        // One unreadable face must not cost the rest of the collection: a
+        // `.ttc` holds dozens, and letting this reach the caller would discard
+        // the ones already read. A FileSystemException is deliberately not
+        // caught — that is the whole file going away, not one face.
+        continue;
+      }
     }
     return families;
   }
@@ -239,7 +284,16 @@ Future<SystemFontFamily?> _readFace(
         os2Offset = offset;
     }
   }
-  if (nameOffset == null || nameLength == null || nameLength < 6) return null;
+  // The length is an untrusted uint32. Every string offset and length inside a
+  // name table is a uint16, so a structurally valid one cannot approach a
+  // megabyte; anything larger is garbage, and reading it as declared would
+  // allocate gigabytes before a single field was inspected.
+  if (nameOffset == null ||
+      nameLength == null ||
+      nameLength < 6 ||
+      nameLength > SfntSystemFonts._maxNameTableBytes) {
+    return null;
+  }
 
   final name = _familyName(await _readAt(handle, nameOffset, nameLength));
   if (name == null) return null;
@@ -351,5 +405,8 @@ Future<ByteData> _readAt(
   await handle.setPosition(offset);
   final bytes = await handle.read(length);
   if (bytes.length < length) throw const _MalformedFont();
-  return ByteData.sublistView(Uint8List.fromList(bytes));
+  // `read` already returns a Uint8List, and `sublistView` is a zero-copy view
+  // over it — copying first would allocate a second buffer per table read, on
+  // every file of every scan.
+  return ByteData.sublistView(bytes);
 }

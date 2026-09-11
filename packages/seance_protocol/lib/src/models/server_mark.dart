@@ -161,6 +161,21 @@ const List<int> _pngSignature = [
   0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
 ];
 
+/// Byte offsets of IHDR's dimensions: the 8-byte signature, then the chunk's
+/// 4-byte length and 4-byte type, then width and height as big-endian uint32.
+const int _ihdrWidth = 16;
+const int _ihdrHeight = 20;
+const int _ihdrEnd = 24;
+
+/// The largest side an image mark may declare.
+///
+/// Not a quality limit — the app re-encodes every import to badge size, far
+/// below this. It is the bound on what a decoder can be
+/// asked to allocate by a record that did not come from this app's import
+/// path: a corrupt or hostile one, or a future code path that sets the field
+/// directly. Generous enough that no plausible legitimate value trips it.
+const int _maxIconImageSide = 1024;
+
 /// The stored form of an emoji mark: trimmed, and null when it is not one.
 ///
 /// Exactly one grapheme cluster, because the badge has room for one character
@@ -229,10 +244,20 @@ Uint8List? decodeServerIconImage(String base64Png) {
     return null;
   }
   if (bytes.length > kMaxServerIconImageBytes) return null;
-  if (bytes.length < _pngSignature.length) return null;
+  if (bytes.length < _ihdrEnd) return null;
   for (var i = 0; i < _pngSignature.length; i++) {
     if (bytes[i] != _pngSignature[i]) return null;
   }
+  // The byte ceiling above does not bound what a decoder will *allocate*: PNG
+  // compresses a flat colour so well that a few hundred bytes can declare
+  // 65535x65535, which is a multi-gigabyte RGBA buffer at the moment a badge
+  // paints. IHDR is required to be the first chunk, so the dimensions sit at
+  // fixed offsets and can be refused before anything decodes them.
+  final header = ByteData.sublistView(bytes);
+  final width = header.getUint32(_ihdrWidth);
+  final height = header.getUint32(_ihdrHeight);
+  if (width == 0 || height == 0) return null;
+  if (width > _maxIconImageSide || height > _maxIconImageSide) return null;
   if (_decodedIconImages.length >= _decodedIconImageLimit) {
     _decodedIconImages.clear();
   }

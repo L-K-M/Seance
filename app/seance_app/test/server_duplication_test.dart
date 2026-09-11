@@ -126,7 +126,10 @@ void main() {
       // fixture sets one (see its own comment).
       icon: ServerIcon.rocket,
       iconEmoji: '\u{1F433}',
-      iconImage: 'iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA',
+      // A PNG signature plus an IHDR declaring 8x8: the protocol refuses a
+      // header without usable dimensions, and a refused value would make
+      // this comparison pass by dropping the image on both sides.
+      iconImage: 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAI',
       loginScript: 'tmux attach',
       excludeFromSync: excludeFromSync,
       createdAt: 100,

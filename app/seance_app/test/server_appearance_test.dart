@@ -168,9 +168,9 @@ void main() {
   });
 
   group('richer marks', () {
-    /// A one-pixel PNG, so the image path can be driven without a fixture.
-    /// Produced by `encodeBadgeImage`, which is what a real import goes
-    /// through; asserting on the bytes is `badge_image_test.dart`'s job.
+    /// An 8x8 solid PNG, built here rather than encoded through the real
+    /// import path: this group is about what the badge *draws*, and asserting
+    /// on the encoded bytes is `badge_image_test.dart`'s job.
     Future<Uint8List> pngBytes() async {
       final recorder = ui.PictureRecorder();
       ui.Canvas(recorder).drawRect(
@@ -201,6 +201,42 @@ void main() {
       // No colour applied: an emoji carries its own, and tinting it would
       // either do nothing or ruin it.
       expect(tester.widget<Text>(find.text('\u{1F680}')).style?.color, isNull);
+    });
+
+    testWidgets('a wide emoji cluster is scaled down, not sliced', (
+      tester,
+    ) async {
+      // A family emoji is wider than the badge, and the badge clips its
+      // content — without scaling it would be cut through the middle.
+      await tester.pumpWidget(
+        _wrap(
+          const ServerBadge(
+            color: null,
+            mark: ServerEmojiMark(
+              '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}',
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(FittedBox), findsOneWidget);
+      expect(
+        tester.widget<FittedBox>(find.byType(FittedBox)).fit,
+        BoxFit.scaleDown,
+      );
+    });
+
+    testWidgets('a glyph badge tells a screen reader what it is', (
+      tester,
+    ) async {
+      // The badge's whole job is telling servers apart; unlabelled it says
+      // nothing at all to assistive technology.
+      await tester.pumpWidget(
+        _wrap(ServerBadge.glyph(color: null, icon: ServerIcon.database)),
+      );
+      expect(
+        tester.widget<Icon>(find.byType(Icon)).semanticLabel,
+        'Database',
+      );
     });
 
     testWidgets('an image mark is drawn from its bytes', (tester) async {
@@ -296,7 +332,8 @@ void main() {
 
     test('search matches labels and the extra terms', () {
       expect(serverIconMatches(ServerIcon.cluster, 'k8s'), isTrue);
-      expect(serverIconMatches(ServerIcon.database, 'psql'), isFalse);
+      // Both of the examples the doc comments give have to actually work.
+      expect(serverIconMatches(ServerIcon.database, 'psql'), isTrue);
       expect(serverIconMatches(ServerIcon.database, 'postgres'), isTrue);
       expect(serverIconMatches(ServerIcon.database, 'DATA'), isTrue);
       expect(serverIconMatches(ServerIcon.rocket, 'prod'), isTrue);
@@ -305,6 +342,17 @@ void main() {
       // An empty query matches everything, so the unfiltered list is the whole
       // set rather than nothing.
       expect(serverIconMatches(ServerIcon.pets, '  '), isTrue);
+    });
+
+    test('search matches every term, in any order and any case', () {
+      // Two words is how people search an icon grid; as one contiguous
+      // substring neither label nor keywords ever contains the phrase.
+      expect(serverIconMatches(ServerIcon.container, 'docker container'), isTrue);
+      expect(serverIconMatches(ServerIcon.container, 'container docker'), isTrue);
+      expect(serverIconMatches(ServerIcon.device, 'pi raspberry'), isTrue);
+      expect(serverIconMatches(ServerIcon.cluster, 'K8S'), isTrue);
+      // Every term still has to land somewhere.
+      expect(serverIconMatches(ServerIcon.container, 'docker mail'), isFalse);
     });
   });
 }

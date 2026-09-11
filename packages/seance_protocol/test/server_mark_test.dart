@@ -9,13 +9,21 @@ import 'package:test/test.dart';
 /// values sync between versions in both directions, so what matters most here
 /// is what a build does with a mark it does not fully understand.
 void main() {
-  /// The smallest thing that passes for a PNG: the signature and padding. The
-  /// protocol checks the signature and the size, never the pixels — it is not
-  /// an image decoder, and the app re-encodes every import anyway.
-  final png = Uint8List.fromList([
-    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-    ...List.filled(64, 0),
-  ]);
+  /// The smallest thing that passes for a PNG: the signature, an IHDR chunk
+  /// declaring 8x8, and padding. The protocol checks the signature, the size
+  /// and the declared dimensions, never the pixels — it is not an image
+  /// decoder, and the app re-encodes every import anyway.
+  Uint8List pngHeader({int width = 8, int height = 8, int tail = 64}) =>
+      Uint8List.fromList([
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+        0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, // chunk length 13, "IHDR"
+        (width >> 24) & 0xFF, (width >> 16) & 0xFF,
+        (width >> 8) & 0xFF, width & 0xFF,
+        (height >> 24) & 0xFF, (height >> 16) & 0xFF,
+        (height >> 8) & 0xFF, height & 0xFF,
+        ...List.filled(tail, 0),
+      ]);
+  final png = pngHeader();
 
   ServerConfig config({
     ServerIcon? icon,
@@ -139,11 +147,32 @@ void main() {
       expect(decodeServerIconImage(''), isNull);
     });
 
+    test('refuses dimensions no badge could need', () {
+      // The byte ceiling does not bound what a decoder allocates: PNG
+      // compresses a flat colour so well that this header is 24 bytes and
+      // asks for a 65535x65535 RGBA buffer at paint time.
+      expect(decodeServerIconImage(base64Encode(pngHeader(
+        width: 65535,
+        height: 65535,
+        tail: 0,
+      ))), isNull);
+      // Zero is not a picture either.
+      expect(decodeServerIconImage(base64Encode(pngHeader(width: 0))), isNull);
+      expect(decodeServerIconImage(base64Encode(pngHeader(height: 0))), isNull);
+      // Truncated before IHDR's dimensions are even readable.
+      expect(
+        decodeServerIconImage(base64Encode(png.sublist(0, 20))),
+        isNull,
+      );
+      // A plausible size still passes, so the bound is not simply refusing.
+      expect(
+        decodeServerIconImage(base64Encode(pngHeader(width: 256, height: 256))),
+        isNotNull,
+      );
+    });
+
     test('refuses anything past the record ceiling', () {
-      final huge = Uint8List.fromList([
-        ...png.sublist(0, 8),
-        ...List.filled(kMaxServerIconImageBytes, 0),
-      ]);
+      final huge = pngHeader(tail: kMaxServerIconImageBytes);
       expect(encodeServerIconImage(huge), isNull);
       // And the base64 is refused on its length, before it is expanded — a
       // megabyte of text should not become a megabyte of bytes first.

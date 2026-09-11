@@ -431,6 +431,14 @@ class _ImageTabState extends State<_ImageTab> {
       Navigator.of(context).pop(
         ServerImageMark(image.png, fallback: widget.current.fallback),
       );
+    } on Exception {
+      // The platform picker throws for a document provider that went away, a
+      // permission the user revoked, and several other cases. Without this the
+      // spinner would clear and nothing else would happen, while the error
+      // surfaced only in the console.
+      if (mounted) {
+        setState(() => _error = 'That file could not be opened. Try another.');
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }

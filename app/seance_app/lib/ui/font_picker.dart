@@ -1,14 +1,25 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../services/system_fonts.dart';
 import '../theme.dart';
 
 /// The host's installed families, or [NoSystemFonts] where there is no
-/// user-managed font collection to read (mobile, and a web build that has no
-/// filesystem at all). Matched to the guard style in `window_state.dart`.
-SystemFonts hostSystemFonts() =>
-    kIsWeb ? const NoSystemFonts() : SfntSystemFonts();
+/// user-managed font collection to read.
+///
+/// Mobile and web are named explicitly rather than left to
+/// [SfntSystemFonts] reporting no roots: the comment and the guard should say
+/// the same thing, and an app on Android or iOS sees the faces the system
+/// gives it rather than a directory it may walk. Matched to the guard style in
+/// `window_state.dart`.
+SystemFonts hostSystemFonts() {
+  if (kIsWeb) return const NoSystemFonts();
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.android || TargetPlatform.iOS => const NoSystemFonts(),
+    _ => SfntSystemFonts(),
+  };
+}
 
 /// What [showFontPicker] returns for "no family — use the app's own monospace
 /// stack", which is what an empty `AppSettings.terminalFontFamily` means.

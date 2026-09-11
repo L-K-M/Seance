@@ -104,6 +104,15 @@ the platform knows, so no image package was added. A value that fails validation
 on read is not re-published either, so a device never passes on a mark it could
 not draw as though it had accepted it.
 
+Two ceilings guard memory, because a file's compressed size says nothing about
+what decoding it costs. On import the dimensions are read from the header
+through an `ImageDescriptor` and refused before any pixel buffer is allocated:
+a 48 MP phone photo is a few megabytes of JPEG and ~190 MB of RGBA, and picking
+a recent photo is the most ordinary thing a user does here. On read, an image
+mark's declared IHDR dimensions are bounded too — PNG compresses a flat colour
+so well that a few hundred bytes can ask for a 65535x65535 buffer at paint
+time, and a record can arrive from a device this one does not control.
+
 Emoji are validated as exactly one grapheme cluster (👩🏽‍🚀 is four code points and
 one choice) with a code-unit ceiling, since a cluster can be extended with
 joiners indefinitely and a record from elsewhere should not be able to park a
