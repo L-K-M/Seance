@@ -64,7 +64,10 @@ class ServerSettings {
     /// this file's settings is a separate change.
     int positiveLimit(String key, int fallback) {
       final raw = env[key];
-      if (raw == null) return fallback;
+      // `KEY=` in an env file, an empty Compose interpolation and an empty
+      // ConfigMap entry all arrive as the empty string and all mean "unset";
+      // refusing to boot over one would be the artifact case again, not a typo.
+      if (raw == null || raw.trim().isEmpty) return fallback;
       final value = int.tryParse(raw);
       if (value == null || value <= 0) {
         throw ArgumentError.value(raw, key, 'must be a positive integer');

@@ -143,12 +143,16 @@ class PushLimits {
   /// Whether an advertised field is a cap a push could actually satisfy.
   /// Type alone is not enough: the JSON number `1e999` decodes to infinity,
   /// whose `toInt()` throws, and a cap of zero or less accepts nothing — the
-  /// same value the server refuses to start on.
+  /// same value the server refuses to start on. The last clause is that same
+  /// rule applied to the value that will actually be used: [fromJson]
+  /// truncates, so a fraction below 1 would arrive as a zero cap. Order
+  /// matters — the earlier clauses are what make `toInt()` safe to call.
   static bool _isUsableLimit(Object? field) =>
       field is num &&
       field.isFinite &&
       field > 0 &&
-      field <= _maxAdvertisableLimit;
+      field <= _maxAdvertisableLimit &&
+      field.toInt() > 0;
 
   /// Decode an advertisement that may be anything at all, or null when it is
   /// not a usable one. Absent fields fall back to the shipped defaults; a

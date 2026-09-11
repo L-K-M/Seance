@@ -418,6 +418,30 @@ void main() {
         expect((await server.pull(since: 0)).records, hasLength(2));
       });
 
+      test('an advertisement does not outlive the server that made it',
+          () async {
+        final tight = FakeServer(
+            advertisedLimits: const PushLimits(maxRecordsPerPush: 2));
+        final store = InMemoryLocalRecordStore();
+        for (var i = 0; i < 5; i++) {
+          await store.putLocal(rec('r$i', 10, 'A'));
+        }
+        final engine = SyncEngine(store);
+        await engine.sync(tight);
+        expect(tight.pushedBatchSizes, [2, 2, 1]);
+
+        // The same engine, now pointed at a server that advertises nothing:
+        // it enforces the shipped defaults, so sizing to what the previous
+        // deployment allowed would batch for the wrong server.
+        final silent = FakeServer();
+        for (var i = 0; i < 5; i++) {
+          await store.putLocal(rec('s$i', 20, 'A'));
+        }
+        await engine.sync(silent);
+
+        expect(silent.pushedBatchSizes, [5]);
+      });
+
       test('a record no single body can carry surfaces the server error',
           () async {
         const limits = PushLimits(maxBodyBytes: 2048);

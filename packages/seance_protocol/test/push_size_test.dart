@@ -186,6 +186,10 @@ void main() {
         // Caps no push could satisfy, which the server refuses to start on.
         {'maxRecordsPerPush': 0},
         {'maxBodyBytes': -1},
+        // Fractions below 1 are positive and finite, and still truncate to a
+        // zero cap on the way to an int.
+        {'maxRecordsPerPush': 0.5},
+        {'maxBodyBytes': 0.9},
       ]) {
         final decoded = PullResponse.fromJson({
           'records': <Object>[],

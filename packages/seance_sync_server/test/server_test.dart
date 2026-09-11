@@ -82,9 +82,12 @@ void main() {
       ]) {
         for (final value in const ['0', '-1']) {
           // Silently advertising a cap no push can satisfy would surface as
-          // every sync failing with an opaque 413.
-          expect(() => ServerSettings.fromEnvironment({key: value}),
-              throwsA(isA<ArgumentError>()),
+          // every sync failing with an opaque 413. The error names the
+          // variable, which is the whole point of failing at startup.
+          expect(
+              () => ServerSettings.fromEnvironment({key: value}),
+              throwsA(isA<ArgumentError>()
+                  .having((e) => e.name, 'name', key)),
               reason: '$key=$value');
         }
       }
@@ -98,9 +101,11 @@ void main() {
         'SEANCE_MAX_RECORDS_PER_PUSH',
         'SEANCE_MAX_BLOB_BYTES',
       ]) {
-        for (final value in const ['lots', '4096b', '1_000_000', '']) {
-          expect(() => ServerSettings.fromEnvironment({key: value}),
-              throwsA(isA<ArgumentError>()),
+        for (final value in const ['lots', '4096b', '1_000_000']) {
+          expect(
+              () => ServerSettings.fromEnvironment({key: value}),
+              throwsA(isA<ArgumentError>()
+                  .having((e) => e.name, 'name', key)),
               reason: '$key=$value');
         }
       }
@@ -110,6 +115,17 @@ void main() {
       final settings = ServerSettings.fromEnvironment(const {});
       expect(settings.pushLimits, const PushLimits());
       expect(settings.maxBlobBytes, 1024 * 1024);
+    });
+
+    test('an empty value means unset and keeps the default', () {
+      // `KEY=` in an env file, an empty Compose interpolation and an empty
+      // ConfigMap entry all arrive this way, and all mean "unset".
+      for (final value in const ['', '  ']) {
+        final settings = ServerSettings.fromEnvironment(
+            {'SEANCE_MAX_BODY_BYTES': value, 'SEANCE_MAX_BLOB_BYTES': value});
+        expect(settings.maxBodyBytes, kDefaultMaxPushBodyBytes);
+        expect(settings.maxBlobBytes, 1024 * 1024);
+      }
     });
 
     test('surrounding whitespace is not a typo', () {

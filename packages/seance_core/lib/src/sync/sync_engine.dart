@@ -27,10 +27,12 @@ class SyncEngine {
   final LocalRecordStore store;
   final int maxRounds;
 
-  /// How the next push may be sized. Refreshed from every pull that carries an
-  /// advertisement, which — since a round always pulls first — means a push is
-  /// sized to the deployment it is about to hit. The defaults stand in for a
-  /// server too old to advertise; see [PushLimits].
+  /// How the next push may be sized. Re-derived from every pull, which — since
+  /// a round always pulls first — means a push is sized to the deployment it is
+  /// about to hit, and only that one: [sync] takes the endpoint per call, so an
+  /// advertisement must not outlive the server that made it. A pull carrying
+  /// none restores the shipped defaults, which is what such a server enforces
+  /// by definition. See [PushLimits].
   PushLimits _limits = const PushLimits();
 
   SyncEngine(this.store, {this.maxRounds = 5});
@@ -57,8 +59,7 @@ class SyncEngine {
   Future<int> _pullOnce(SyncApi api) async {
     final since = await store.highWaterSeq();
     final resp = await api.pull(since: since);
-    final advertised = resp.limits;
-    if (advertised != null) _limits = advertised;
+    _limits = resp.limits ?? const PushLimits();
     var applied = 0;
     var snapshotHighWater = since;
     // Pulled records should carry server-assigned seqs; trust only observed seqs.
