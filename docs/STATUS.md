@@ -80,7 +80,8 @@ Image bytes live inside the server's own config record. That keeps them
 impossible to orphan (an image cannot outlive, or arrive without, the server it
 marks), needs no new `RecordKind` and no collection step, and means a device
 has either the whole appearance of a server or none of it. The cost is a bigger
-config record, bounded at 192 KiB decoded and stored at 256 px square.
+config record, bounded at 192 KiB of image payload (the re-encoded PNG,
+measured before sealing) and stored at 256 px square.
 
 Both numbers are measured rather than guessed. The side is set by the largest
 badge the app draws, the 64-pixel preview in the mark picker, which is 192
@@ -92,15 +93,25 @@ at the cap with every other field at its longest seals to 258 KiB, a quarter of
 what is allowed, which `record_size_test.dart` asserts against the server's real
 setting rather than against arithmetic.
 
-The other server-side limit, 8 MiB per *request*, does not bind here once
-`SyncEngine._pushOnce` batches by size instead of sending every dirty record in
-one push; that change is tracked separately.
+The other server-side limit, 8 MiB per *request*, is the one an image can
+reach today: `SyncEngine._pushOnce` still sends every dirty record in one push,
+and the blob is base64 on the wire, so a cap-sized config costs about 344 KiB
+of request body. Two dozen such servers dirty at once overflow the request, and
+the server rejects the whole push with 413 rather than refusing any one record.
+Those records stay dirty, so every later sync re-sends the same oversized body
+and that device stops converging. The fix is to batch by size in `_pushOnce`;
+it is tracked separately.
 
 Every import is re-encoded rather than trusted: cropped square (the badge draws
 edge to edge, and letterboxing reads as a broken image), scaled to at most 256
 px, never scaled up, and stepped down through 192, 128 and 96 if the PNG will
-not fit. That is `dart:ui` throughout — the engine already decodes every format
-the platform knows, so no image package was added. A value that fails validation
+not fit. The crop is measured on the *decoded* image, which is what makes a
+phone photo come out upright: the engine applies EXIF orientation, so a
+rotation flag is already spent by the time the pixels are cropped (measured —
+a JPEG whose SOF says 6000x4000 with Orientation=6 reports 4000x6000 from both
+the descriptor and the decoded frame). That is `dart:ui` throughout — the
+engine already decodes every format the platform knows, so no image package was
+added. A value that fails validation
 on read is not re-published either, so a device never passes on a mark it could
 not draw as though it had accepted it.
 

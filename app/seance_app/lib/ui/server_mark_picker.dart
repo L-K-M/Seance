@@ -338,7 +338,13 @@ class _EmojiTabState extends State<_EmojiTab> {
                 child: TextField(
                   controller: _typed,
                   onChanged: (_) => setState(() {}),
-                  onSubmitted: (value) => _commit(value),
+                  // Normalized first, exactly as the Use button's own gate
+                  // does: otherwise "rocket then a space" works by button and
+                  // silently does nothing by Enter.
+                  onSubmitted: (value) {
+                    final normalized = normalizeServerEmoji(value);
+                    if (normalized != null) _commit(normalized);
+                  },
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 24),
                   decoration: InputDecoration(
@@ -515,9 +521,15 @@ class _ImageTabState extends State<_ImageTab> {
           ),
           if (_error != null) ...[
             const SizedBox(height: 12),
-            Text(
-              _error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            // A live region, or an import failure is visible only to someone
+            // watching the dialog: the spinner clears and a screen reader says
+            // nothing at all.
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           ],
           const Divider(height: 24),

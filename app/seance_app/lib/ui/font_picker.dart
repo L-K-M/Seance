@@ -17,9 +17,14 @@ SystemFonts hostSystemFonts() {
   if (kIsWeb) return const NoSystemFonts();
   return switch (defaultTargetPlatform) {
     TargetPlatform.android || TargetPlatform.iOS => const NoSystemFonts(),
-    _ => SfntSystemFonts(),
+    // Memoized: [SfntSystemFonts] caches its scan per *instance*, so handing
+    // back a new one each call would re-walk every font directory on each
+    // Settings open — the cost the cache exists to pay once.
+    _ => _hostFonts ??= SfntSystemFonts(),
   };
 }
+
+SystemFonts? _hostFonts;
 
 /// What [showFontPicker] returns for "no family — use the app's own monospace
 /// stack", which is what an empty `AppSettings.terminalFontFamily` means.
@@ -195,7 +200,9 @@ class _FontList extends StatelessWidget {
       itemCount: families.length,
       itemBuilder: (context, i) {
         final family = families[i];
-        final selected = family.name == current;
+        // Case-insensitively, like the scan's dedupe key and the sort: a user
+        // who typed "menlo" into the field should still see Menlo ticked.
+        final selected = family.name.toLowerCase() == current.toLowerCase();
         return ListTile(
           dense: true,
           selected: selected,

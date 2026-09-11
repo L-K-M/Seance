@@ -19,10 +19,15 @@ void main() {
     bool panoseMono = false,
     int platformId = 3,
     int sfntVersion = 0x00010000,
+    /// Extra (nameID, languageID, value) records appended after the ones
+    /// above, in table order — which is how a real font carries its localized
+    /// spellings: English first, then the rest by ascending language id.
+    List<(int, int, String)> extraNames = const [],
   }) {
-    final names = <(int nameId, String value)>[
-      if (family != null) (1, family),
-      if (typographicFamily != null) (16, typographicFamily),
+    final names = <(int nameId, int languageId, String value)>[
+      if (family != null) (1, 0x0409, family),
+      if (typographicFamily != null) (16, 0x0409, typographicFamily),
+      ...extraNames,
     ];
 
     List<int> encode(String value) => platformId == 1
@@ -36,11 +41,11 @@ void main() {
     final strings = <int>[];
     final records = <int>[];
     void u16(List<int> out, int v) => out.addAll([v >> 8, v & 0xFF]);
-    for (final (nameId, value) in names) {
+    for (final (nameId, languageId, value) in names) {
       final bytes = encode(value);
       u16(records, platformId);
       u16(records, platformId == 1 ? 0 : 1);
-      u16(records, platformId == 1 ? 0 : 0x0409);
+      u16(records, platformId == 1 ? 0 : languageId);
       u16(records, nameId);
       u16(records, bytes.length);
       u16(records, strings.length);
@@ -55,8 +60,12 @@ void main() {
 
     // post: version, italicAngle, underlinePosition, underlineThickness, then
     // isFixedPitch at offset 12.
+    // Version 3.0: the 32 bytes built here are exactly the common header, and
+    // that is the whole table for 3.0. Declaring 2.0 would make the fixture
+    // structurally short, since v2 carries a glyph-name index after the
+    // header — and 3.0 is what real monospaced fonts commonly ship.
     final post = List<int>.filled(32, 0);
-    post[1] = 0x02; // version 2.0
+    post[1] = 0x03;
     if (fixedPitchFlag) post[15] = 1;
 
     // OS/2: PANOSE is 10 bytes at offset 32 — family type at 0, proportion
@@ -181,6 +190,51 @@ void main() {
         sfnt(family: 'Fira Code', sfntVersion: 0x4F54544F),
       );
       expect(families.single.name, 'Fira Code');
+    });
+
+    test('keeps the English name when a localized one follows it', () async {
+      // The rule this pins, measured on a stock Debian install: the Japanese
+      // fonts there carry `0x409 IPAGothic` and then `0x411 IPAゴシック`, and
+      // letting any Windows record overwrite meant the last — most localized —
+      // won, so the picker listed the Japanese spelling while the English name
+      // sat right there in the same table.
+      final families = await read(
+        'a.ttf',
+        sfnt(
+          family: 'IPAGothic',
+          extraNames: const [(1, 0x0411, 'IPA\u30B4\u30B7\u30C3\u30AF')],
+        ),
+      );
+      expect(families.single.name, 'IPAGothic');
+    });
+
+    test('falls back to a localized name when there is no English one',
+        () async {
+      // A font with no en-US record must still produce something rather than
+      // being dropped from the list.
+      final families = await read(
+        'a.ttf',
+        sfnt(extraNames: const [(1, 0x0411, '\u30B4\u30B7\u30C3\u30AF')]),
+      );
+      expect(families.single.name, '\u30B4\u30B7\u30C3\u30AF');
+    });
+
+    test('ignores a Windows symbol-encoded record', () async {
+      // Platform 3 / encoding 0 is not UTF-16BE text; decoded as such it is
+      // mojibake. The builder writes encoding 1, so this drives the guard by
+      // rewriting that field in place.
+      final bytes = sfnt(family: 'Iosevka');
+      final view = ByteData.sublistView(bytes);
+      // The name table is the second of the three tables the builder writes;
+      // its records start 6 bytes in, and encodingId is at record + 2.
+      for (var i = 0; i < 3; i++) {
+        final record = 12 + i * 16;
+        final tag = String.fromCharCodes(bytes.sublist(record, record + 4));
+        if (tag != 'name') continue;
+        final nameOffset = view.getUint32(record + 8);
+        view.setUint16(nameOffset + 6 + 2, 0); // encodingId := symbol
+      }
+      expect(await read('a.ttf', bytes), isEmpty);
     });
 
     test('decodes a non-ASCII family name from UTF-16BE', () async {
@@ -313,7 +367,7 @@ void main() {
       expect(families.last.monospaced, isTrue);
     });
 
-    test('a font installed as a symlink is found', () async {
+    test('a font installed as a symlink is found', skip: _noSymlinks, () async {
       // Not exotic: a manual `ln -s` into ~/.fonts, a distro linking into a
       // package store, and on Nix essentially every font. Unfollowed they
       // arrive as Link rather than File and vanish from the picker.
@@ -327,7 +381,7 @@ void main() {
     });
 
     test('a link that points at an ancestor does not rescan the tree',
-        () async {
+        skip: _noSymlinks, () async {
       // Following links means a cycle is reachable; each real file must still
       // be parsed once, or one loop would spend the whole file budget on
       // fonts already seen.
@@ -408,3 +462,9 @@ void main() {
     });
   });
 }
+
+/// Why the symlink tests are skipped, or null when they can run. Creating a
+/// link on Windows needs elevation or Developer Mode, and an environment
+/// limitation should not read as a failure of the code under test.
+final Object? _noSymlinks =
+    Platform.isWindows ? 'creating a symlink needs privileges on Windows' : null;

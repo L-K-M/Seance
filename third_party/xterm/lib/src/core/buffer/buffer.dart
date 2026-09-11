@@ -566,7 +566,6 @@ class Buffer {
   /// other buffer's height, and even in range it points at unrelated text.
   bool ownsAnchor(CellAnchor anchor) => anchor.line?.attachedTo(lines) ?? false;
 
-  /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
   /// [seance fork] One cell past the last cell in the buffer that holds
   /// anything, or null when the whole buffer is blank.
   ///
@@ -599,6 +598,7 @@ class Buffer {
     return null;
   }
 
+  /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
   CellAnchor createAnchor(int x, int y) {
     return lines[y].createAnchor(x);
   }

@@ -188,9 +188,17 @@ String? normalizeServerEmoji(String? emoji) {
   final trimmed = emoji.trim();
   if (trimmed.isEmpty || trimmed.length > 64) return null;
   if (trimmed.characters.length != 1) return null;
-  // Control characters are not marks, and a record could carry one.
+  // Control and invisible formatting characters are not marks, and a record
+  // could carry one: the bidi overrides in particular would reorder the text
+  // around wherever the badge's label is rendered.
   for (final unit in trimmed.codeUnits) {
-    if (unit < 0x20 || (unit >= 0x7F && unit <= 0x9F)) return null;
+    if (unit < 0x20 ||
+        (unit >= 0x7F && unit <= 0x9F) ||
+        (unit >= 0x202A && unit <= 0x202E) ||
+        (unit >= 0x2066 && unit <= 0x2069) ||
+        unit == 0xFEFF) {
+      return null;
+    }
   }
   return trimmed;
 }
@@ -222,6 +230,12 @@ String? normalizeServerIconImage(String? base64Png) {
 /// trips, and a cache that never trips does not need a policy.
 final Map<String, Uint8List> _decodedIconImages = {};
 const int _decodedIconImageLimit = 256;
+
+/// Total bytes the cache may retain. The entry count alone is not a bound:
+/// 256 entries at [kMaxServerIconImageBytes] would be 48 MB held statically
+/// for the life of the process, which on a phone is not a cache but a leak.
+const int _decodedIconImageByteLimit = 8 * 1024 * 1024;
+int _decodedIconImageBytes = 0;
 
 /// The bytes behind an image mark, or null when the value is not a PNG this
 /// build will carry.
@@ -258,9 +272,12 @@ Uint8List? decodeServerIconImage(String base64Png) {
   final height = header.getUint32(_ihdrHeight);
   if (width == 0 || height == 0) return null;
   if (width > _maxIconImageSide || height > _maxIconImageSide) return null;
-  if (_decodedIconImages.length >= _decodedIconImageLimit) {
+  if (_decodedIconImages.length >= _decodedIconImageLimit ||
+      _decodedIconImageBytes + bytes.length > _decodedIconImageByteLimit) {
     _decodedIconImages.clear();
+    _decodedIconImageBytes = 0;
   }
+  _decodedIconImageBytes += bytes.length;
   return _decodedIconImages[base64Png] = bytes.asUnmodifiableView();
 }
 
@@ -378,10 +395,10 @@ enum ServerIcon {
 /// glyph is worse than showing the default. Round-tripping is lossy for that
 /// record, which is the record layer's existing behaviour for any added field
 /// and costs a picture rather than a credential.
-ServerIcon? serverIconFromName(String? name) {
-  if (name == null) return null;
-  for (final i in ServerIcon.values) {
-    if (i.name == name) return i;
-  }
-  return null;
-}
+ServerIcon? serverIconFromName(String? name) =>
+    name == null ? null : _iconsByName[name];
+
+/// Built once. This decodes per record and again on every rebuild of a list
+/// that draws badges, and the enum is long enough that walking it to compare
+/// `.name` each time is measurable.
+final Map<String, ServerIcon> _iconsByName = ServerIcon.values.asNameMap();

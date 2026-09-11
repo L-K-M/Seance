@@ -439,6 +439,10 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// [seance fork] Selects the full logical line at pixel [from], following
   /// soft-wrap continuations in both directions — the triple-click gesture.
   void selectLine(Offset from) {
+    // Nothing written yet: [_clampToContent] collapses every gesture to the
+    // origin, and expanding that into a full-width row band is exactly the
+    // band over the void this clamping exists to remove.
+    if (_terminal.buffer.contentEnd == null) return;
     final (first, last) = _logicalLineRows(_selectionCellOffset(from).y);
     _controller.setSelection(
       _terminal.buffer.createAnchor(0, first),
@@ -457,6 +461,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         !_terminal.buffer.ownsAnchor(lineEnd)) {
       return;
     }
+    // Same reason as [selectLine].
+    if (_terminal.buffer.contentEnd == null) return;
     final (first, last) = _logicalLineRows(_selectionCellOffset(to).y);
     final toRange = BufferRangeLine(
       CellOffset(0, first),
@@ -492,9 +498,12 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   /// [seance fork] Creates owned anchors pinning the logical line at pixel
-  /// [offset] (soft-wrap continuations included). The caller must dispose
-  /// them.
-  (CellAnchor, CellAnchor) createLineAnchorsAt(Offset offset) {
+  /// [offset] (soft-wrap continuations included), or null when the buffer
+  /// holds nothing to pin — the same shape as [createWordAnchorsAt], so the
+  /// caller falls back to a character drag rather than anchoring a band over
+  /// the void. The caller must dispose them.
+  (CellAnchor, CellAnchor)? createLineAnchorsAt(Offset offset) {
+    if (_terminal.buffer.contentEnd == null) return null;
     final (first, last) = _logicalLineRows(_selectionCellOffset(offset).y);
     return (
       _terminal.buffer.createAnchor(0, first),

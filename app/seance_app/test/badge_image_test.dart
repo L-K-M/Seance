@@ -91,9 +91,29 @@ void main() {
     final image = await decode(result.image!.png);
     addTearDown(image.dispose);
     expect(image.width, image.height);
+
+    // Squareness alone cannot tell a centre crop from a squash — both end up
+    // square. The fixture's circle has radius width/4 = 150, so the centred
+    // 200x200 crop lies entirely inside it: a crop is solid circle colour to
+    // the corners, while a squash maps the circle to a narrow ellipse and
+    // leaves the surrounding field visible there.
+    final pixels = (await image.toByteData())!.buffer.asUint8List();
+    bool circleAt(int x, int y) {
+      final offset = (y * image.width + x) * 4;
+      return pixels[offset] > 0x80 &&
+          pixels[offset + 1] > 0x80 &&
+          pixels[offset + 2] < 0x80;
+    }
+
+    expect(circleAt(2, 2), isTrue, reason: 'cropped, not squashed');
+    expect(
+      circleAt(image.width - 3, image.height - 3),
+      isTrue,
+      reason: 'cropped, not squashed',
+    );
   });
 
-  test('a source between two steps is only rendered once per size', () async {
+  test('a source between steps is stored at its own size', () async {
     // A 150-pixel source clamps the 256 and 192 steps to its own size, so
     // without deduplication the same pixels would be encoded three times to
     // weigh them. Observable only as the size that comes back, which must be
@@ -126,6 +146,7 @@ void main() {
     // The whole point of the ceiling: whatever this produces has to survive
     // the validation a record goes through, or an import would be accepted
     // here and dropped on the next read.
+    expect(result.failure, isNull);
     final stored = encodeServerIconImage(result.image!.png);
     expect(stored, isNotNull);
     expect(decodeServerIconImage(stored!), result.image!.png);

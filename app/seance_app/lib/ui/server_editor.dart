@@ -226,6 +226,12 @@ class _ServerEditorState extends State<_ServerEditor> {
   late AuthMethod _auth;
   late ServerColor? _color;
 
+  /// What a server shows before anything is chosen. Named once: the reset
+  /// button's visibility and its action both compare against it, and a second
+  /// literal that drifted would leave the button offering to reset a mark that
+  /// is already default.
+  static const ServerMark _defaultMark = ServerGlyphMark(null);
+
   /// What the badge shows: a glyph, an emoji, or an imported image. Held as
   /// the resolved mark rather than as the three fields it is stored in, so
   /// the precedence between them lives in one place (see [ServerMark]).
@@ -274,7 +280,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     _user = TextEditingController(text: e?.username ?? '');
     _group = TextEditingController(text: e?.group ?? '');
     _color = e?.color;
-    _mark = e?.mark ?? const ServerGlyphMark(null);
+    _mark = e?.mark ?? _defaultMark;
     // Default new servers to password: ssh-agent is offered but not yet
     // supported by the backend, so defaulting to it would dead-end the very
     // first "add a server and connect".
@@ -694,13 +700,13 @@ class _ServerEditorState extends State<_ServerEditor> {
             icon: const Icon(Icons.palette_outlined),
             label: const Text('Choose…'),
           ),
-          if (_mark != const ServerGlyphMark(null)) ...[
+          if (_mark != _defaultMark) ...[
             const SizedBox(width: 4),
             IconButton(
               tooltip: 'Use the default mark',
               icon: const Icon(Icons.backspace_outlined),
               onPressed: () =>
-                  setState(() => _mark = const ServerGlyphMark(null)),
+                  setState(() => _mark = _defaultMark),
             ),
           ],
         ],

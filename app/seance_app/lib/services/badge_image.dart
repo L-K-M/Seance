@@ -90,20 +90,30 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
     // dimensions can be read from the header and refused before the pixel
     // buffer is ever allocated. The codec API offers no way back from a decode
     // that is already too big.
+    // The buffer holds a native copy of the source bytes — up to
+    // [kMaxBadgeSourceBytes] of them — and the descriptor retains the data
+    // itself, so this can be released as soon as the decode is done. Disposed
+    // in an outer finally so every path frees it deterministically rather than
+    // waiting on a finalizer: the success path, the tooLarge early return, and
+    // an `encoded` that throws before there is a descriptor at all.
     final buffer = await ui.ImmutableBuffer.fromUint8List(source);
-    final descriptor = await ui.ImageDescriptor.encoded(buffer);
     try {
-      if (descriptor.width * descriptor.height > kMaxBadgeSourcePixels) {
-        return (image: null, failure: BadgeImageFailure.tooLarge);
-      }
-      final codec = await descriptor.instantiateCodec();
+      final descriptor = await ui.ImageDescriptor.encoded(buffer);
       try {
-        decoded = (await codec.getNextFrame()).image;
+        if (descriptor.width * descriptor.height > kMaxBadgeSourcePixels) {
+          return (image: null, failure: BadgeImageFailure.tooLarge);
+        }
+        final codec = await descriptor.instantiateCodec();
+        try {
+          decoded = (await codec.getNextFrame()).image;
+        } finally {
+          codec.dispose();
+        }
       } finally {
-        codec.dispose();
+        descriptor.dispose();
       }
     } finally {
-      descriptor.dispose();
+      buffer.dispose();
     }
   } on Exception {
     // The engine's codecs throw a plain Exception for anything they cannot
@@ -116,6 +126,15 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
       return (image: null, failure: BadgeImageFailure.undecodable);
     }
     // The largest square the source can fill, centred.
+    //
+    // Read off the decoded image rather than the file header, which is what
+    // makes a phone photo come out upright: the engine applies EXIF
+    // orientation, so a portrait shot stored as landscape-plus-a-rotation-flag
+    // decodes already rotated. Measured on this engine — a JPEG whose SOF
+    // says 6000x4000 with Orientation=6 reports 4000x6000 from *both*
+    // `ImageDescriptor.encoded` and the decoded frame. So no rotation belongs
+    // here, and the pixel guard above is unaffected either way because it
+    // compares the product.
     final crop =
         decoded.width < decoded.height ? decoded.width : decoded.height;
     final cropRect = ui.Rect.fromLTWH(

@@ -110,7 +110,8 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
   ),
   ServerIcon.device => const _Glyph(
     Icons.developer_board, 'Board',
-    keywords: 'raspberry pi arduino embedded iot',
+    // 'device' was this glyph's label before the rename.
+    keywords: 'device raspberry pi arduino embedded iot',
   ),
   ServerIcon.router => const _Glyph(
     Icons.router_outlined, 'Router', keywords: 'gateway firewall modem',
@@ -122,7 +123,9 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.vpn_lock_outlined, 'VPN', keywords: 'wireguard tunnel tailscale',
   ),
   ServerIcon.dataCenter => const _Glyph(
-    Icons.warehouse_outlined, 'Data centre', keywords: 'rack colo dc',
+    Icons.warehouse_outlined,
+    'Data centre',
+    keywords: 'rack colo dc data center',
   ),
   ServerIcon.satellite => const _Glyph(
     Icons.satellite_alt_outlined, 'Satellite', keywords: 'uplink relay',
@@ -140,7 +143,9 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.inventory_2_outlined, 'Container', keywords: 'docker podman image',
   ),
   ServerIcon.database => const _Glyph(
-    Icons.storage_outlined, 'Database', keywords: 'db sql psql postgres mysql redis',
+    Icons.storage_outlined,
+    'Database',
+    keywords: 'db sql psql postgres mysql redis',
   ),
   ServerIcon.files => const _Glyph(
     Icons.folder_outlined, 'File store', keywords: 'nas smb share folder',
@@ -224,7 +229,11 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.smart_toy_outlined, 'Bot', keywords: 'automation agent worker',
   ),
   ServerIcon.terminal => const _Glyph(
-    Icons.terminal, 'Shell', keywords: 'console command',
+    Icons.terminal,
+    'Shell',
+    // 'terminal' was this glyph's label before the rename; without it the
+    // obvious search term matches nothing at all.
+    keywords: 'terminal console command',
   ),
   ServerIcon.code => const _Glyph(
     Icons.code, 'Code', keywords: 'dev ide source',
@@ -243,7 +252,9 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.science_outlined, 'Lab', keywords: 'staging experiment sandbox',
   ),
   ServerIcon.bug => const _Glyph(
-    Icons.bug_report_outlined, 'Testing', keywords: 'qa test debug',
+    Icons.bug_report_outlined,
+    'Testing',
+    keywords: 'bug qa test debug',
   ),
   ServerIcon.construction => const _Glyph(
     Icons.construction_outlined, 'Work in progress', keywords: 'wip unfinished',
@@ -253,7 +264,9 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     keywords: 'prod live deploy release',
   ),
   ServerIcon.speed => const _Glyph(
-    Icons.speed, 'Performance', keywords: 'benchmark load fast',
+    Icons.speed,
+    'Performance',
+    keywords: 'speed benchmark load fast',
   ),
   ServerIcon.widgets => const _Glyph(
     Icons.widgets_outlined, 'Components', keywords: 'services parts',
@@ -293,7 +306,9 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.public_outlined, 'Public', keywords: 'internet global world',
   ),
   ServerIcon.star => const _Glyph(
-    Icons.star_outline, 'Favourite', keywords: 'starred important',
+    Icons.star_outline,
+    'Favourite',
+    keywords: 'star starred favorite important',
   ),
   ServerIcon.favourite => const _Glyph(
     Icons.favorite_outline, 'Loved', keywords: 'heart',
@@ -554,6 +569,11 @@ class ServerBadge extends StatelessWidget {
           // and stays at or below the side the image is stored at.
           cacheWidth: (size * 3).round(),
           filterQuality: FilterQuality.medium,
+          // Labelled from the glyph it keeps as a fallback: an Image only gets
+          // a Semantics node when given one, so without this the badge
+          // announces nothing — in the widget whose whole job is telling
+          // servers apart, which is why the glyph path carries a label.
+          semanticLabel: serverIconLabel(fallback),
           // Bytes that will not decode fall back to the glyph stored beside
           // them, which is what an older build would have drawn anyway.
           errorBuilder: (_, _, _) => _glyphIcon(fallback, accent, scheme),

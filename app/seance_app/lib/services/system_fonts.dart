@@ -78,6 +78,7 @@ class SfntSystemFonts implements SystemFonts {
   /// Upper bound on a declared `name` table length. See [_readFace].
   static const int _maxNameTableBytes = 1 << 20;
 
+
   final List<Directory> _roots;
   Future<List<SystemFontFamily>>? _cached;
 
@@ -317,6 +318,9 @@ String _tag(ByteData data, int offset) => String.fromCharCodes([
 /// "Roboto Light" and "Roboto" would otherwise list as unrelated families,
 /// while nameID 16 says "Roboto" for both. Within a nameID, a Windows/Unicode
 /// record (UTF-16BE) wins over a Macintosh one, which is read as ASCII.
+/// The Windows language id for en-US. See [_familyName].
+const int _langEnglishUs = 0x409;
+
 String? _familyName(ByteData name) {
   final count = name.getUint16(2);
   final storage = name.getUint16(4);
@@ -329,17 +333,31 @@ String? _familyName(ByteData name) {
     final nameId = name.getUint16(record + 6);
     if (nameId != 1 && nameId != 16) continue;
     final platformId = name.getUint16(record);
+    final encodingId = name.getUint16(record + 2);
+    final languageId = name.getUint16(record + 4);
+    // A Windows "symbol" record is not UTF-16BE text; decoding it as such
+    // yields mojibake.
+    if (platformId == 3 && encodingId == 0) continue;
     final length = name.getUint16(record + 8);
     final offset = storage + name.getUint16(record + 10);
     if (length == 0 || offset + length > name.lengthInBytes) continue;
     final value = _decodeName(name, platformId, offset, length);
     if (value == null || value.isEmpty) continue;
+    // A Windows record only wins when it is the English one. Name records are
+    // ordered by ascending language id, so letting any platform-3 record
+    // overwrite meant the *last* — the most localized — won: the Japanese
+    // fonts on a stock Debian install carry `0x409 IPAGothic` followed by
+    // `0x411 IPAゴシック`, and the picker listed the latter while the English
+    // name sat right there in the table. The `??=` fallback still covers a
+    // font that carries no English record at all.
+    final preferred =
+        platformId == 0 || (platformId == 3 && languageId == _langEnglishUs);
     if (nameId == 16) {
       typographic ??= value;
-      if (platformId == 3 || platformId == 0) typographic = value;
+      if (preferred) typographic = value;
     } else {
       family ??= value;
-      if (platformId == 3 || platformId == 0) family = value;
+      if (preferred) family = value;
     }
   }
   return typographic ?? family;

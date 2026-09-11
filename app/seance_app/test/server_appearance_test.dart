@@ -246,10 +246,18 @@ void main() {
       );
       // Not pumpAndSettle: an image codec resolves on the real event loop,
       // which a widget test's fake-async zone never reaches, so settling here
-      // would spin forever. The widget itself is in the tree from the first
-      // frame, which is what these assertions are about.
+      // would spin forever.
       await tester.pump();
       expect(find.byType(Image), findsOneWidget);
+      // Then let the codec actually finish. Asserting on the first frame only
+      // would pass even if the bytes never decoded and the fallback glyph took
+      // over a frame later, which is the regression worth catching.
+      await _untilDecoded(tester);
+      expect(
+        tester.widget<RawImage>(find.byType(RawImage)).image,
+        isNotNull,
+        reason: 'the 8x8 fixture should have decoded',
+      );
       expect(find.byType(Icon), findsNothing);
       // Cropped to the badge rather than letterboxed: bars down the sides read
       // as a broken image.
@@ -276,14 +284,20 @@ void main() {
         ),
       );
       // The decode has to actually run and fail, which needs the real event
-      // loop (see above).
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 100)),
-      );
-      await tester.pump();
+      // loop (see above). Polled rather than slept for: the codec's failure
+      // path is a platform round trip with no bound a fixed delay could rely
+      // on, and this is the kind of flake that looks unrelated to whatever
+      // change triggered the rerun.
+      await _untilFallback(tester, Icons.hub_outlined);
       expect(find.byIcon(Icons.hub_outlined), findsOneWidget);
-      // The failure is the point of the test, not an escaped error.
-      tester.takeException();
+      // Absorbed by the errorBuilder, not escaped: asserting null rather than
+      // discarding means an unrelated exception during these pumps still
+      // fails the test.
+      expect(
+        tester.takeException(),
+        isNull,
+        reason: 'the fallback should absorb the decode failure',
+      );
     });
 
     testWidgets('a config draws the mark its fields resolve to', (
@@ -355,4 +369,35 @@ void main() {
       expect(serverIconMatches(ServerIcon.container, 'docker mail'), isFalse);
     });
   });
+}
+
+/// Advances real time and frames until the badge's image has decoded.
+Future<void> _untilDecoded(WidgetTester tester) =>
+    _until(tester, () {
+      final images = find.byType(RawImage).evaluate();
+      return images.isNotEmpty &&
+          (images.first.widget as RawImage).image != null;
+    });
+
+/// Advances real time and frames until [icon] appears — the fallback glyph a
+/// failed decode swaps in.
+Future<void> _untilFallback(WidgetTester tester, IconData icon) =>
+    _until(tester, () => find.byIcon(icon).evaluate().isNotEmpty);
+
+/// Alternates [WidgetTester.runAsync] with a pump until [done] holds.
+///
+/// An image codec only progresses on the real event loop, and what it produces
+/// is only findable once a frame is built, so neither alone is enough.
+Future<void> _until(
+  WidgetTester tester,
+  bool Function() done, {
+  int attempts = 50,
+}) async {
+  for (var i = 0; i < attempts && !done(); i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+  }
+  expect(done(), isTrue, reason: 'timed out waiting for the codec');
 }

@@ -280,9 +280,15 @@ class ServerConfig {
       iconEmoji: clearIconEmoji
           ? null
           : normalizeServerEmoji(iconEmoji ?? this.iconEmoji),
+      // Only a *new* image is re-validated: what this config already holds
+      // came through `fromJson` or an earlier `copyWith` and is therefore
+      // already normalized, and re-checking it decodes its base64 again on
+      // every unrelated edit (a rename, a colour, a sync toggle).
       iconImage: clearIconImage
           ? null
-          : normalizeServerIconImage(iconImage ?? this.iconImage),
+          : (iconImage != null
+              ? normalizeServerIconImage(iconImage)
+              : this.iconImage),
       loginScript: clearLoginScript
           ? null
           : normalizeLoginScript(loginScript ?? this.loginScript),
@@ -346,9 +352,16 @@ class ServerConfig {
         icon: serverIconFromName(json['icon'] as String?),
         // A mark from a newer build, or from a device whose idea of an emoji
         // this one does not share, degrades to the glyph beside it rather
-        // than poisoning the whole record.
-        iconEmoji: normalizeServerEmoji(json['iconEmoji'] as String?),
-        iconImage: normalizeServerIconImage(json['iconImage'] as String?),
+        // than poisoning the whole record. Tested for type rather than cast:
+        // a record carrying a number or a list here would otherwise throw out
+        // of `fromJson` and take the whole server entry with it, which is
+        // exactly the failure the degradation is meant to rule out.
+        iconEmoji: json['iconEmoji'] is String
+            ? normalizeServerEmoji(json['iconEmoji'] as String)
+            : null,
+        iconImage: json['iconImage'] is String
+            ? normalizeServerIconImage(json['iconImage'] as String)
+            : null,
         loginScript: normalizeLoginScript(json['loginScript'] as String?),
         excludeFromSync: json['excludeFromSync'] as bool? ?? false,
         createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,

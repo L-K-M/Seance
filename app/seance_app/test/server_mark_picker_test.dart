@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:seance_app/ui/server_appearance.dart';
 import 'package:seance_app/ui/server_mark_picker.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -60,6 +61,12 @@ void main() {
     image.dispose();
     return data!.buffer.asUint8List();
   }
+
+  /// [samplePng] run on the real event loop, non-null. The image codec never
+  /// completes inside a widget test's fake-async zone, and `runAsync` only
+  /// returns null when nested inside another one, which no caller here does.
+  Future<Uint8List> samplePngBytes(WidgetTester tester) async =>
+      (await tester.runAsync(samplePng))!;
 
   group('icons', () {
     testWidgets('opens on the glyphs and files them under headings', (
@@ -143,6 +150,26 @@ void main() {
       expect(picked, [ServerEmojiMark('\u{1F433}', fallback: ServerIcon.cloud)]);
     });
 
+    testWidgets('a joined emoji counts as the one character it looks like', (
+      tester,
+    ) async {
+      // 👩🏽‍🚀 is four code points and seven code units. The rule is one
+      // grapheme cluster, not one code point, so this is accepted whole —
+      // the case that breaks first if that is ever rewritten.
+      const astronaut = '\u{1F469}\u{1F3FD}\u200D\u{1F680}';
+      await open(tester);
+      await tester.tap(find.text('Emoji'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Any emoji'),
+        astronaut,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Use'));
+      await tester.pumpAndSettle();
+      expect(picked, [ServerEmojiMark(astronaut)]);
+    });
+
     testWidgets('more than one character is refused, not stored', (
       tester,
     ) async {
@@ -167,7 +194,7 @@ void main() {
     testWidgets('an imported file becomes a mark the protocol will carry', (
       tester,
     ) async {
-      final bytes = await tester.runAsync(samplePng);
+      final bytes = await samplePngBytes(tester);
       await open(
         tester,
         current: const ServerGlyphMark(ServerIcon.web),
@@ -260,7 +287,7 @@ void main() {
     testWidgets('removing an image falls back to the glyph beside it', (
       tester,
     ) async {
-      final bytes = await tester.runAsync(samplePng);
+      final bytes = await samplePngBytes(tester);
       // Opens on the image tab, because that is what is in force. The badge
       // preview holds a live Image, so this cannot settle (see above).
       await tester.pumpWidget(
@@ -272,7 +299,7 @@ void main() {
                   await showServerMarkPicker(
                     context,
                     current: ServerImageMark(
-                      bytes!,
+                      bytes,
                       fallback: ServerIcon.cluster,
                     ),
                     accent: null,
@@ -292,6 +319,17 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(picked, [const ServerGlyphMark(ServerIcon.cluster)]);
     });
+  });
+
+  testWidgets('the previews carry the colour the server actually uses', (
+    tester,
+  ) async {
+    // Not cosmetic: a mark chosen against the wrong accent was judged on a
+    // badge the server will never draw.
+    await open(tester, accent: ServerColor.amber);
+    final badges = tester.widgetList<ServerBadge>(find.byType(ServerBadge));
+    expect(badges, isNotEmpty);
+    expect(badges.map((badge) => badge.color).toSet(), {ServerColor.amber});
   });
 
   testWidgets('cancelling changes nothing', (tester) async {
