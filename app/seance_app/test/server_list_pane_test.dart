@@ -94,6 +94,16 @@ void main() {
     );
     expect(tester.any(lastMenu), isTrue, reason: 'last row is scrolled in');
 
+    // Assert the guard itself, not just a lucky center-tap: the floating
+    // button must be in the tree and must sit strictly below the last row's
+    // menu, otherwise this test passes even when the clearance is wrong.
+    final addButton = find.byType(FloatingActionButton);
+    expect(addButton, findsOneWidget,
+        reason: 'without the Add-server button in the tree, no widget can '
+            'intercept the tap and this test cannot fail');
+    expect(tester.getTopLeft(addButton).dy,
+        greaterThan(tester.getBottomLeft(lastMenu).dy));
+
     await tester.tap(lastMenu);
     await tester.pumpAndSettle();
 
