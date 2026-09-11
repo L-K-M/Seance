@@ -78,7 +78,12 @@ void main() {
     expect(scrollPosition.maxScrollExtent, greaterThan(0),
         reason: 'the list must overflow the viewport for this test to '
             'be meaningful');
+    var dragsLeft = 50;
     while (scrollPosition.pixels < scrollPosition.maxScrollExtent) {
+      if (dragsLeft-- == 0) {
+        fail('List never settled at maxScrollExtent '
+            '(${scrollPosition.pixels}/${scrollPosition.maxScrollExtent}).');
+      }
       await tester.drag(find.byType(ListView), const Offset(0, -200));
       await tester.pumpAndSettle();
     }
