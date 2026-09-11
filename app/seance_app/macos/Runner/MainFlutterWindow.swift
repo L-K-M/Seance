@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import UniformTypeIdentifiers
 import window_manager
 
 class MainFlutterWindow: NSWindow {
@@ -55,7 +56,13 @@ class MainFlutterWindow: NSWindow {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.resolvesAliases = true
-        panel.allowedFileTypes = ["app"]
+        // allowedContentTypes needs macOS 11; the legacy property (silenced
+        // by this availability constraint) covers the 10.15 floor.
+        if #available(macOS 11.0, *) {
+          panel.allowedContentTypes = [.application]
+        } else {
+          panel.allowedFileTypes = ["app"]
+        }
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.begin { response in
           guard response == .OK, let url = panel.url else {
