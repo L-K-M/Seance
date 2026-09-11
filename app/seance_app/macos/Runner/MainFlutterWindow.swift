@@ -58,8 +58,10 @@ class MainFlutterWindow: NSWindow {
         panel.resolvesAliases = true
         // allowedContentTypes needs macOS 11; the legacy property (silenced
         // by this availability constraint) covers the 10.15 floor.
+        // .applicationBundle (com.apple.application-bundle) is the exact
+        // equivalent of the legacy "app" extension filter.
         if #available(macOS 11.0, *) {
-          panel.allowedContentTypes = [.application]
+          panel.allowedContentTypes = [.applicationBundle]
         } else {
           panel.allowedFileTypes = ["app"]
         }
