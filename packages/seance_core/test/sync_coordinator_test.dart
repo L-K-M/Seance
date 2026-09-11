@@ -1689,11 +1689,12 @@ void main() {
       expect(api.stored('s2')!.deleted, isFalse);
     });
 
-    test('a tombstone the server outranks is kept for a later round', () async {
-      // Prune must not drop a tombstone the server did not take. A peer's newer
-      // live edit wins last-write-wins, so the delete has not propagated; the
-      // entry stays and is retried, rather than being lost while the record
-      // resurrects.
+    test('a tombstone a newer peer edit supersedes is pruned', () async {
+      // A peer's later edit wins last-write-wins, so the delete lost and the
+      // record converges back locally. The tombstone can never beat that newer
+      // record, and collectLocal skips it while the row exists, so it is pruned
+      // rather than left to leak — distinct from an unconfirmed (offline) entry,
+      // which is retained and retried.
       final api = FakeServer();
       final codec = RecordCodec(secureRandomBytes(32));
       final cfg = InMemoryConfigStore();
@@ -1716,12 +1717,13 @@ void main() {
       await tombstones.add(tombstoneFor('s1', 'A', 20));
       await coord('A', cfg, tombstones, codec).run(api);
 
-      expect(await tombstones.all(), hasLength(1),
-          reason: 'the losing tombstone is retained, not silently dropped');
       expect(await cfg.getServer('s1'), isNotNull,
           reason: 'the newer peer edit converges back onto this device');
       expect(api.stored('s1')!.deleted, isFalse,
           reason: 'the peer edit outranks the delete (LWW), as it should');
+      expect(await tombstones.all(), isEmpty,
+          reason: 'a tombstone a strictly-newer live record superseded can '
+              'never win, so it is pruned rather than retried forever');
     });
 
     test('a pending tombstone never shadows a re-created live record', () async {
@@ -1741,9 +1743,9 @@ void main() {
       expect(api.stored('s1')!.deleted, isFalse,
           reason: 'the live re-created record wins, not the shadowed tombstone');
       expect(await cfg.getServer('s1'), isNotNull);
-      expect(await tombstones.all(), hasLength(1),
-          reason: 'the shadowed tombstone is retained (pruned only once the '
-              'server confirms a delete); the app clears it on re-save');
+      expect(await tombstones.all(), isEmpty,
+          reason: 'the shadowed tombstone is superseded by the newer live '
+              'record and pruned (the app also clears it on re-save)');
     });
 
     test('a snippet deletion converges to a second device', () async {

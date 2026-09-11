@@ -322,24 +322,30 @@ class SyncCoordinator {
     )));
   }
 
-  /// Drop pending tombstones the sync server has taken.
+  /// Drop pending tombstones that are done, so [tombstoneStore] stays bounded.
   ///
-  /// [collectLocal] republishes every [tombstoneStore] entry each round; this
-  /// bounds that list so it does not grow without limit. An entry is done once
-  /// the mirror holds the record as a sequenced tombstone — either this round's
-  /// push was accepted, or a pull carried the server's own copy back — which is
-  /// the proof the server (and so, in time, every device) has the delete.
+  /// [collectLocal] republishes every entry each round (unless its id is a
+  /// live record again — see [presentIds]). An entry is done in two cases, both
+  /// judged from the sequenced record the mirror holds after the round:
   ///
-  /// Unconfirmed entries stay: a round that pushed nothing (offline, or a push
-  /// the server outranked with a newer live edit) has not propagated the
-  /// delete, and dropping it would strand the deletion while the live record
-  /// resurrects. Keeping it costs one idempotent re-push next round.
+  ///  * a sequenced tombstone — this round's push was accepted, or a pull
+  ///    carried the server's own copy back: the delete has propagated.
+  ///  * a sequenced live record strictly newer than the tombstone — a peer's
+  ///    later edit won last-write-wins (or the id was re-created), so the
+  ///    tombstone can never win and [collectLocal] already skips it; retrying
+  ///    it forever would only leak store entries.
+  ///
+  /// Everything else stays: an unconfirmed entry (a round that pushed nothing —
+  /// offline), or a live record the tombstone still outranks (an interrupted
+  /// row-drop, where the delete may yet win). Dropping either would strand a
+  /// deletion while the record resurrects.
   Future<void> _pruneConfirmedTombstones() async {
     final store = tombstoneStore;
     if (store == null) return;
     for (final pending in await store.all()) {
       final mirrored = await local.getRecord(pending.id);
-      if (mirrored != null && mirrored.deleted && mirrored.seq != null) {
+      if (mirrored == null || mirrored.seq == null) continue;
+      if (mirrored.deleted || mirrored.updatedAt > pending.updatedAt) {
         await store.remove(pending.id);
       }
     }

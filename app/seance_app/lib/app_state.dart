@@ -1146,50 +1146,59 @@ class AppState extends ChangeNotifier {
 
   /// Save (create or update) a snippet, then refresh the list.
   Future<void> saveSnippet(Snippet snippet) async {
-    await services.snippetStore.putSnippet(snippet);
-    // See _saveServerNow: re-saving an id cancels its pending deletion so a
-    // stale tombstone cannot shadow the live record.
-    try {
-      await services.tombstoneStore.remove('$_snippetRecordPrefix${snippet.id}');
-    } catch (error, stackTrace) {
-      developer.log(
-        'Could not clear a pending deletion tombstone for saved snippet '
-        '${snippet.id}',
-        name: 'seance.app',
-        level: 900,
-        error: error,
-        stackTrace: stackTrace,
-      );
-    }
-    snippets = await services.snippetStore.listSnippets();
+    await _mutate(() async {
+      await services.snippetStore.putSnippet(snippet);
+      // See _saveServerNow: re-saving an id cancels its pending deletion so a
+      // stale tombstone cannot shadow the live record. Serialized through the
+      // same queue as deleteSnippet so a save and a delete of one id cannot
+      // interleave into "row gone, tombstone gone".
+      try {
+        await services.tombstoneStore
+            .remove('$_snippetRecordPrefix${snippet.id}');
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not clear a pending deletion tombstone for saved snippet '
+          '${snippet.id}',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      snippets = await services.snippetStore.listSnippets();
+    });
     notifyListeners();
     _scheduleAutoSync();
   }
 
   Future<void> deleteSnippet(String id) async {
-    // Record the tombstone before dropping the row (see deleteServer), stamped
-    // to beat the record it deletes. A `snippet:` tombstone now propagates
-    // across devices too: applyToStores honours it, because a snippet is
-    // non-secret — unlike the `secret:`/`hostkey:` tombstones it still refuses.
-    final existing = await services.snippetStore.getSnippet(id);
-    final deletedAt = _deletionStamp(existing?.updatedAt);
-    try {
-      await services.tombstoneStore.add(EncryptedRecord.tombstone(
-        id: '$_snippetRecordPrefix$id',
-        updatedAt: deletedAt,
-        deviceId: services.settings.deviceId,
-      ));
-    } catch (error, stackTrace) {
-      developer.log(
-        'Could not record the deletion tombstone for snippet $id',
-        name: 'seance.app',
-        level: 900,
-        error: error,
-        stackTrace: stackTrace,
-      );
-    }
-    await services.snippetStore.deleteSnippet(id);
-    snippets = await services.snippetStore.listSnippets();
+    await _mutate(() async {
+      // Record the tombstone before dropping the row (see deleteServer),
+      // stamped to beat the record it deletes. A `snippet:` tombstone now
+      // propagates across devices too: applyToStores honours it, because a
+      // snippet is non-secret — unlike the `secret:`/`hostkey:` tombstones it
+      // still refuses. Serialized through the same queue as saveSnippet so the
+      // two cannot interleave into "row gone, tombstone gone".
+      final existing = await services.snippetStore.getSnippet(id);
+      final deletedAt = _deletionStamp(existing?.updatedAt);
+      try {
+        await services.tombstoneStore.add(EncryptedRecord.tombstone(
+          id: '$_snippetRecordPrefix$id',
+          updatedAt: deletedAt,
+          deviceId: services.settings.deviceId,
+        ));
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not record the deletion tombstone for snippet $id',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      await services.snippetStore.deleteSnippet(id);
+      snippets = await services.snippetStore.listSnippets();
+    });
     notifyListeners();
     _scheduleAutoSync();
   }
