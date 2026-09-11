@@ -301,7 +301,7 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 622 Dart tests + 564 Flutter tests + 166 in the vendored xterm fork, all
+- 622 Dart tests + 566 Flutter tests + 166 in the vendored xterm fork, all
   analyze clean.
 - Sync correctness is proven two ways: `packages/seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and

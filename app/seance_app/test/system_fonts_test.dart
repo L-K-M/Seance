@@ -183,6 +183,17 @@ void main() {
       expect(families.single.name, 'Fira Code');
     });
 
+    test('decodes a non-ASCII family name from UTF-16BE', () async {
+      // The Windows/Unicode records are UTF-16BE, and every family name
+      // outside ASCII depends on that decode being right. The live scan reads
+      // CJK families from this machine's fonts, but nothing here pinned it.
+      final families = await read(
+        'a.ttf',
+        sfnt(family: 'Bitstr\u00ebam Vera Sans'),
+      );
+      expect(families.single.name, 'Bitstr\u00ebam Vera Sans');
+    });
+
     test('marks fixed pitch from post.isFixedPitch', () async {
       final families = await read(
         'a.ttf',
@@ -253,6 +264,13 @@ void main() {
 
     test('a file that is not a font at all yields nothing', () async {
       expect(await read('a.ttf', List.filled(400, 0x41)), isEmpty);
+    });
+
+    test('a face with no family-name records yields nothing', () async {
+      // Subsetted and stripped fonts really do ship like this. The face is
+      // structurally fine, so nothing throws — it simply has no name to offer,
+      // and an entry with an empty label would be worse than no entry.
+      expect(await read('a.ttf', sfnt()), isEmpty);
     });
 
     test('an empty file yields nothing', () async {

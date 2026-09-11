@@ -349,7 +349,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   /// Selects characters in the terminal that starts from [from] to [to]. At
-  /// least one cell is selected even if [from] and [to] are same.
+  /// least one cell is selected even if [from] and [to] are the same — unless
+  /// both land past the end of the content, where the selection collapses to
+  /// nothing rather than painting over the void (see [_clampToContent]).
   void selectCharacters(Offset from, [Offset? to]) {
     final fromPosition = _selectionCellOffset(from);
     if (to == null) {

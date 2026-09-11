@@ -44,10 +44,14 @@ void main() {
     // must not have a test that fails one run in fifty.
     var seed = 0x2545F491;
     for (var i = 0; i < pixels.length; i += 4) {
-      seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
-      pixels[i] = seed & 0xFF;
-      pixels[i + 1] = (seed >> 8) & 0xFF;
-      pixels[i + 2] = (seed >> 16) & 0xFF;
+      // One draw per channel, taken from the high bits: an LCG's low bits have
+      // a short period (bits 0-7 repeat every 256 draws), so reading three
+      // channels out of one draw would give a red channel identical in every
+      // row — noise that compresses far better than the real thing.
+      for (var channel = 0; channel < 3; channel++) {
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
+        pixels[i + channel] = (seed >> 16) & 0xFF;
+      }
       pixels[i + 3] = 0xFF;
     }
     final image = await _imageFromPixels(pixels, side, side);

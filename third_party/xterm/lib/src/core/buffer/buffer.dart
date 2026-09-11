@@ -579,10 +579,18 @@ class Buffer {
   /// `RenderTerminal` clamp to this; mouse reporting and link hit-testing
   /// deliberately do not.
   ///
-  /// Scanned from the end, so the common case (content, then blank rows) stops
-  /// within a screen height. An all-blank buffer is the worst case and is
-  /// bounded by [viewHeight], since blank rows only ever accumulate from the
-  /// initial fill or from an erase.
+  /// Scanned from the end, so the ordinary case (content, then the blank rows
+  /// under the prompt) stops within a screen height: about 4us on a normal
+  /// buffer, called once per pointer event of a drag.
+  ///
+  /// The scan is *not* bounded by [viewHeight], though: a program that prints
+  /// nothing but newlines pushes blank lines into the scrollback like any
+  /// other, so the worst case is a buffer that is blank all the way down and
+  /// the scan covers every line. Measured at 2.1ms for 9000 such lines, which
+  /// is a visible fraction of a frame while dragging. It stays uncached
+  /// because reaching that state takes a deliberately emptied scrollback and
+  /// the ordinary cost is three orders of magnitude lower; a mutation counter
+  /// on the buffer is the fix if a drag ever shows up in a profile.
   CellOffset? get contentEnd {
     for (var row = lines.length - 1; row >= 0; row--) {
       final length = lines[row].getTrimmedLength(viewWidth);

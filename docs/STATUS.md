@@ -7,7 +7,7 @@ _Last updated: 2026-09-11. The terminal font can be picked from the fonts
 actually installed on the host; a drag through the empty area under the shell
 prompt no longer paints a selection over it; and a server's mark can now be one
 of 77 built-in glyphs, an emoji, or an imported image. The "Add server" button
-also no longer covers the last row's menu. Before that, the TOFU
+also no longer covers the last row's menu. The TOFU
 host-key dialog's review content is
 now scrollable, so the changed-key warning and both fingerprints stay
 reachable and the buttons stay pinned in constrained layouts (ported back

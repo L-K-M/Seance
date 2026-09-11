@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, kIsWeb;
+    show debugPrint, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../services/system_fonts.dart';
@@ -124,7 +124,12 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
                   // Reading a font collection is a directory walk over files
                   // this build may not understand; a failure is "nothing to
                   // offer", not an error worth a dialog of its own, since the
-                  // field behind this one still takes a typed name.
+                  // field behind this one still takes a typed name. Logged
+                  // rather than swallowed whole, or "no fonts found" and "the
+                  // scan threw" would look identical while debugging.
+                  if (snapshot.hasError) {
+                    debugPrint('Font scan failed: ${snapshot.error}');
+                  }
                   final all = snapshot.data ?? const <SystemFontFamily>[];
                   return _FontList(
                     families: _visible(all),

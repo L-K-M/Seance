@@ -287,8 +287,9 @@ what must be preserved.
     inline images or large OSC 52 clipboard traffic ever matter here, and
     unnecessary until then.
 
-### Selection is bounded by the content (regressions: `test/src/ui/selection_gesture_test.dart`
-"void past the content")
+### Selection is bounded by the content
+
+Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
 
 28. **Selection gestures clamp to the end of the content**
     (`core/buffer/buffer.dart#contentEnd`, `ui/render.dart#_clampToContent`/
