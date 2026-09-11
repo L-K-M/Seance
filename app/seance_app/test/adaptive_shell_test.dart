@@ -266,4 +266,72 @@ void main() {
       AdaptiveShell.maximumUtilityWidth,
     );
   });
+
+  testWidgets('initial pane widths from persisted values are rendered', (
+    tester,
+  ) async {
+    addTearDown(tester.view.reset);
+    tester.view.physicalSize = const Size(1800, 800);
+    tester.view.devicePixelRatio = 1;
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: AdaptivePaneLayout(
+          initialListWidth: 420,
+          initialUtilityWidth: 520,
+          listPane: ColoredBox(color: Colors.red),
+          terminalPane: ColoredBox(color: Colors.green),
+          utilityPane: ColoredBox(color: Colors.blue),
+          narrowPane: ColoredBox(color: Colors.orange),
+        ),
+      ),
+    );
+
+    expect(
+      tester.getSize(find.byKey(AdaptivePaneLayout.listPaneKey)).width,
+      420,
+    );
+    expect(
+      tester.getSize(find.byKey(AdaptivePaneLayout.utilityPaneKey)).width,
+      520,
+    );
+  });
+
+  testWidgets('a finished resize drag reports both requested widths', (
+    tester,
+  ) async {
+    addTearDown(tester.view.reset);
+    tester.view.physicalSize = const Size(1800, 800);
+    tester.view.devicePixelRatio = 1;
+    final reported = <(double, double)>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AdaptivePaneLayout(
+          onPaneWidthsChanged: (list, utility) => reported.add((list, utility)),
+          listPane: const ColoredBox(color: Colors.red),
+          terminalPane: const ColoredBox(color: Colors.green),
+          utilityPane: const ColoredBox(color: Colors.blue),
+          narrowPane: const ColoredBox(color: Colors.orange),
+        ),
+      ),
+    );
+
+    await tester.drag(
+      find.byKey(AdaptivePaneLayout.listResizeHandleKey),
+      const Offset(60, 0),
+    );
+    await tester.pump();
+    expect(reported, [
+      (AdaptiveShell.defaultListWidth + 60, AdaptiveShell.defaultUtilityWidth),
+    ]);
+
+    await tester.drag(
+      find.byKey(AdaptivePaneLayout.utilityResizeHandleKey),
+      const Offset(-80, 0),
+    );
+    await tester.pump();
+    expect(reported.last, (
+      AdaptiveShell.defaultListWidth + 60,
+      AdaptiveShell.defaultUtilityWidth + 80,
+    ));
+  });
 }
