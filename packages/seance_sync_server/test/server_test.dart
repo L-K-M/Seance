@@ -90,21 +90,44 @@ void main() {
       }
     });
 
-    test('unset or unparseable limits keep the shipped defaults', () {
-      for (final env in const [<String, String>{}, {'SEANCE_MAX_BODY_BYTES': 'lots'}]) {
-        final settings = ServerSettings.fromEnvironment(env);
-        expect(settings.pushLimits, const PushLimits());
-        expect(settings.maxBlobBytes, 1024 * 1024);
+    test('a limit set to something unparseable refuses to start', () {
+      // A typo is not an intent: silently defaulting would run a cap other
+      // than the one the operator asked for.
+      for (final key in const [
+        'SEANCE_MAX_BODY_BYTES',
+        'SEANCE_MAX_RECORDS_PER_PUSH',
+        'SEANCE_MAX_BLOB_BYTES',
+      ]) {
+        for (final value in const ['lots', '4096b', '1_000_000', '']) {
+          expect(() => ServerSettings.fromEnvironment({key: value}),
+              throwsA(isA<ArgumentError>()),
+              reason: '$key=$value');
+        }
       }
     });
 
-    test('valid overrides are parsed and advertised', () {
+    test('unset limits keep the shipped defaults', () {
+      final settings = ServerSettings.fromEnvironment(const {});
+      expect(settings.pushLimits, const PushLimits());
+      expect(settings.maxBlobBytes, 1024 * 1024);
+    });
+
+    test('surrounding whitespace is not a typo', () {
+      // Env files pick up trailing newlines; that must not stop the server.
+      final settings = ServerSettings.fromEnvironment(
+          const {'SEANCE_MAX_BODY_BYTES': ' 4096\n'});
+      expect(settings.maxBodyBytes, 4096);
+    });
+
+    test('valid overrides are parsed and advertised, leaving others alone', () {
       final settings = ServerSettings.fromEnvironment(const {
         'SEANCE_MAX_BODY_BYTES': '4096',
         'SEANCE_MAX_RECORDS_PER_PUSH': '7',
       });
       expect(settings.pushLimits,
           const PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 7));
+      expect(settings.maxBlobBytes, 1024 * 1024,
+          reason: 'overriding one cap must not disturb another');
     });
   });
 

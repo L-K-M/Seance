@@ -53,15 +53,20 @@ class ServerSettings {
       return v == '1' || v == 'true' || v == 'yes' || v == 'on';
     }
 
-    /// A cap of zero or less accepts no push at all, and clients now size
-    /// their batches against these values, so the symptom would be every sync
-    /// failing with an opaque 413. Refuse to start instead, naming the
-    /// variable. Unparseable text keeps this file's existing behaviour of
-    /// falling back to the default.
+    /// A cap of zero or less accepts no push at all, and one that is not a
+    /// number is a typo rather than an intent; clients now size their batches
+    /// against these values, so either would surface as every sync failing
+    /// with an opaque 413 — or, for the blob cap, as a DoS guard quietly
+    /// weaker than the operator asked for. Refuse to start instead, naming the
+    /// variable. An unset variable still takes the default, and `int.tryParse`
+    /// already tolerates surrounding whitespace, so a stray newline in an env
+    /// file is not a typo. Only these caps are strict; tightening the rest of
+    /// this file's settings is a separate change.
     int positiveLimit(String key, int fallback) {
       final raw = env[key];
-      final value = int.tryParse(raw ?? '') ?? fallback;
-      if (value <= 0) {
+      if (raw == null) return fallback;
+      final value = int.tryParse(raw);
+      if (value == null || value <= 0) {
         throw ArgumentError.value(raw, key, 'must be a positive integer');
       }
       return value;

@@ -135,9 +135,25 @@ class PushLimits {
             kDefaultMaxRecordsPerPush,
       );
 
+  /// The largest integer a JSON number is still exact at. `jsonDecode` returns
+  /// a double for any number too large to hold as an int, and past 2^53 a
+  /// double no longer represents integers exactly.
+  static const int _maxAdvertisableLimit = 9007199254740992;
+
+  /// Whether an advertised field is a cap a push could actually satisfy.
+  /// Type alone is not enough: the JSON number `1e999` decodes to infinity,
+  /// whose `toInt()` throws, and a cap of zero or less accepts nothing — the
+  /// same value the server refuses to start on.
+  static bool _isUsableLimit(Object? field) =>
+      field is num &&
+      field.isFinite &&
+      field > 0 &&
+      field <= _maxAdvertisableLimit;
+
   /// Decode an advertisement that may be anything at all, or null when it is
-  /// not one. Absent fields fall back to the shipped defaults, but a field of
-  /// the wrong type means the whole advertisement cannot be trusted.
+  /// not a usable one. Absent fields fall back to the shipped defaults; a
+  /// field that is present but unusable voids the whole advertisement, since
+  /// a server that got one wrong has not earned trust in the other.
   ///
   /// Lives here, beside the fields, so a caller does not have to restate their
   /// names and types to validate them — and so adding a limit cannot leave a
@@ -146,7 +162,7 @@ class PushLimits {
     if (value is! Map) return null;
     for (final key in const ['maxBodyBytes', 'maxRecordsPerPush']) {
       final field = value[key];
-      if (field != null && field is! num) return null;
+      if (field != null && !_isUsableLimit(field)) return null;
     }
     return PushLimits.fromJson(value.cast<String, dynamic>());
   }

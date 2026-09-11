@@ -177,6 +177,15 @@ void main() {
         {'maxBodyBytes': '8MB'},
         {'maxRecordsPerPush': 'many'},
         {'maxBodyBytes': 4096, 'maxRecordsPerPush': <String>[]},
+        // Numeric shapes that pass a type check and then break: the JSON
+        // number 1e999 decodes to infinity, whose toInt() throws, and 2^53 is
+        // where a double stops representing integers exactly.
+        {'maxBodyBytes': 1e999},
+        {'maxRecordsPerPush': double.nan},
+        {'maxBodyBytes': 1e300},
+        // Caps no push could satisfy, which the server refuses to start on.
+        {'maxRecordsPerPush': 0},
+        {'maxBodyBytes': -1},
       ]) {
         final decoded = PullResponse.fromJson({
           'records': <Object>[],
