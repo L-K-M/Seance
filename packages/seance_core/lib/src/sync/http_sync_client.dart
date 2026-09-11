@@ -11,6 +11,8 @@ import 'sync_engine.dart';
 class HttpSyncClient implements SyncApi {
   final String baseUrl;
   final http.Client _client;
+  final bool _ownsClient;
+  bool _closed = false;
 
   /// Per-request timeout. Without one, a hung connection would leave
   /// `AppState.syncing` stuck true forever (spinner frozen, auto-sync wedged
@@ -26,7 +28,16 @@ class HttpSyncClient implements SyncApi {
     http.Client? client,
     this.timeout = const Duration(seconds: 30),
   })  : baseUrl = _normalizeBaseUrl(baseUrl),
-        _client = client ?? http.Client();
+        _client = client ?? http.Client(),
+        _ownsClient = client == null;
+
+  /// Release owned connections. Injected clients remain caller-owned.
+  /// Repeated calls are harmless; this wrapper cannot be reused afterwards.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    if (_ownsClient) _client.close();
+  }
 
   /// Paths are appended verbatim, so a pasted "https://host/" would produce
   /// "https://host//v1/..." and 404.
@@ -43,8 +54,10 @@ class HttpSyncClient implements SyncApi {
         if (token != null) 'authorization': 'Bearer $token',
       };
 
-  Uri _uri(String path, [Map<String, String>? query]) =>
-      Uri.parse('$baseUrl$path').replace(queryParameters: query);
+  Uri _uri(String path, [Map<String, String>? query]) {
+    if (_closed) throw StateError('Sync client is closed');
+    return Uri.parse('$baseUrl$path').replace(queryParameters: query);
+  }
 
   Never _fail(http.Response res) {
     // The server's own errors are JSON with an `error` code. Anything else —

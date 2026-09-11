@@ -16,9 +16,82 @@ void main() {
     expect(AppSettings.fromJson(on.toJson()).checkForUpdates, isTrue);
   });
 
+  test('zaiApiKeyRef is off by default and round-trips', () {
+    // The reference is what switches the backend on. It is a key *name*; the
+    // key itself never comes near settings.json.
+    expect(AppSettings().zaiApiKeyRef, isNull);
+    expect(AppSettings().toJson().containsKey('zaiApiKeyRef'), isFalse);
+
+    final on = AppSettings(zaiApiKeyRef: 'zai');
+    expect(AppSettings.fromJson(on.toJson()).zaiApiKeyRef, 'zai');
+
+    // A settings file written before Z.AI existed reads as "not configured",
+    // which is what it was.
+    final legacy = on.toJson()..remove('zaiApiKeyRef');
+    expect(AppSettings.fromJson(legacy).zaiApiKeyRef, isNull);
+  });
+
+  test('assistant sync is off by default and round-trips', () {
+    // A new sync surface that carries keys opts in, like syncSecrets.
+    expect(AppSettings().syncAssistant, isFalse);
+    expect(AppSettings().assistantUpdatedAt, 0);
+
+    final on = AppSettings(syncAssistant: true, assistantUpdatedAt: 500);
+    final restored = AppSettings.fromJson(on.toJson());
+    expect(restored.syncAssistant, isTrue);
+    expect(restored.assistantUpdatedAt, 500);
+
+    // "Opted in, never published" — the combination the publish guard reads,
+    // and the only one not covered here. A serializer that stamped `now` when
+    // the toggle was on, or collapsed a zero stamp to absent, would satisfy
+    // every other assertion in this test while removing the guard's premise.
+    final neverPublished =
+        AppSettings(syncAssistant: true, assistantUpdatedAt: 0);
+    final neverPublishedRestored = AppSettings.fromJson(neverPublished.toJson());
+    expect(neverPublishedRestored.syncAssistant, isTrue);
+    expect(neverPublishedRestored.assistantUpdatedAt, 0);
+
+    // The stamp is independent of the toggle: someone who published and then
+    // turned sync off must not read as "never published" when they turn it
+    // back on, which is what the publish guard keys on.
+    final offWithHistory =
+        AppSettings(syncAssistant: false, assistantUpdatedAt: 900);
+    final offRestored = AppSettings.fromJson(offWithHistory.toJson());
+    expect(offRestored.syncAssistant, isFalse);
+    expect(offRestored.assistantUpdatedAt, 900);
+
+    // containsKey guards the removal: a renamed serialization key must fail
+    // here rather than vacuously testing the default.
+    final json = on.toJson();
+    expect(json.containsKey('syncAssistant'), isTrue);
+    expect(json.containsKey('assistantUpdatedAt'), isTrue);
+    json.remove('syncAssistant');
+    json.remove('assistantUpdatedAt');
+    final legacy = AppSettings.fromJson(json);
+    expect(legacy.syncAssistant, isFalse);
+    // Zero means "never published", so an upgrade does not start pushing a
+    // configuration the user never chose to share.
+    expect(legacy.assistantUpdatedAt, 0);
+  });
+
   test('missing checkForUpdates in stored JSON defaults to on', () {
     final json = AppSettings().toJson()..remove('checkForUpdates');
     expect(AppSettings.fromJson(json).checkForUpdates, isTrue);
+  });
+
+  test('keepSessionsAliveInBackground defaults on and round-trips', () {
+    expect(AppSettings().keepSessionsAliveInBackground, isTrue);
+
+    final off = AppSettings(keepSessionsAliveInBackground: false);
+    final restored = AppSettings.fromJson(off.toJson());
+    expect(restored.keepSessionsAliveInBackground, isFalse);
+
+    // containsKey guards the removal: if the serialization key is ever
+    // renamed, this must fail instead of vacuously testing the default.
+    final json = AppSettings().toJson();
+    expect(json.containsKey('keepSessionsAliveInBackground'), isTrue);
+    json.remove('keepSessionsAliveInBackground');
+    expect(AppSettings.fromJson(json).keepSessionsAliveInBackground, isTrue);
   });
 
   test('remote editor and path bookmarks round-trip safely', () {

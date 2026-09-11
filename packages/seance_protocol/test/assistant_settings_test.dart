@@ -1,0 +1,367 @@
+import 'package:seance_protocol/seance_protocol.dart';
+import 'package:test/test.dart';
+
+AssistantSettings settings({
+  Map<String, String> apiKeys = const {},
+  String? searxngUrl = 'https://searx.example.com',
+}) => AssistantSettings(
+      providerKind: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      model: 'claude-haiku-4-5-20251001',
+      llmApiKeyRef: 'anthropic',
+      searxngUrl: searxngUrl,
+      zaiApiKeyRef: 'zai',
+      redactSecrets: false,
+      apiKeys: apiKeys,
+      updatedAt: 42,
+    );
+
+void main() {
+  test('an empty record decodes to the defaults rather than throwing', () {
+    // A peer, or a build that dropped a field, can put a stripped record on
+    // the account. Every default below is established one at a time by the
+    // wrong-typed-field tests; this pins them together, since it is the shape
+    // a record actually arrives in when nothing about it survived.
+    final decoded = AssistantSettings.fromJson(const {});
+    expect(decoded.providerKind, '');
+    expect(decoded.baseUrl, '');
+    expect(decoded.model, '');
+    expect(decoded.llmApiKeyRef, '');
+    // The optionals' absent-key path, which nothing else in this file walks:
+    // the blank-to-null tests all feed a *present* key holding whitespace.
+    expect(decoded.searxngUrl, isNull);
+    expect(decoded.braveApiKeyRef, isNull);
+    expect(decoded.zaiApiKeyRef, isNull);
+    expect(decoded.redactSecrets, isTrue);
+    // Present-but-null and present-but-wrong-typed, which is what a peer that
+    // serializes its unset optionals explicitly sends — a shape the
+    // absent-key case above never reaches. A decode that threw on one would
+    // have the apply loop skip the whole record, which is the failure every
+    // other test in this file is written against.
+    final nulled = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['llmApiKeyRef'] = 42
+        ..['searxngUrl'] = null
+        ..['braveApiKeyRef'] = null
+        ..['zaiApiKeyRef'] = null
+        ..['apiKeys'] = null,
+    );
+    expect(nulled.llmApiKeyRef, '');
+    expect(nulled.searxngUrl, isNull);
+    expect(nulled.braveApiKeyRef, isNull);
+    expect(nulled.zaiApiKeyRef, isNull);
+    expect(nulled.apiKeys, isEmpty);
+    expect(decoded.apiKeys, isEmpty);
+    expect(decoded.updatedAt, 0);
+  });
+
+  test('round-trips, keys included', () {
+    final original = settings(apiKeys: const {'anthropic': 'sk-1', 'zai': 'z'});
+    final back = AssistantSettings.fromJson(original.toJson());
+
+    expect(back.toJson(), equals(original.toJson()));
+    expect(back.providerKind, 'anthropic');
+    expect(back.model, 'claude-haiku-4-5-20251001');
+    expect(back.redactSecrets, isFalse);
+    expect(back.apiKeys, {'anthropic': 'sk-1', 'zai': 'z'});
+    expect(back.updatedAt, 42);
+  });
+
+  test('an empty key map is omitted rather than serialized', () {
+    // A configuration that references no keys — a local gateway that wants
+    // none — must produce the same record as one whose keys were dropped,
+    // rather than one carrying an empty map that reads as a difference.
+    final withKeys = settings(apiKeys: const {'anthropic': 'sk-1'});
+    expect(withKeys.toJson().containsKey('apiKeys'), isTrue);
+    expect(withKeys.copyWith(apiKeys: const {}).toJson(), settings().toJson());
+    expect(settings().toJson().containsKey('apiKeys'), isFalse);
+  });
+
+  test('a cleared field arrives cleared, not as an empty endpoint', () {
+    final json = settings().toJson()..['searxngUrl'] = '';
+    expect(AssistantSettings.fromJson(json).searxngUrl, isNull);
+    expect(settings(searxngUrl: null).toJson().containsKey('searxngUrl'),
+        isFalse);
+  });
+
+  test('a stamp that is not a finite number decodes to zero', () {
+    // `toInt()` throws `UnsupportedError` on a NaN or an infinity, so a
+    // number-typed stamp is not enough to make the decode tolerant — and a
+    // throw here abandons the whole record rather than degrading one field.
+    // Zero is the safe reading: it loses to every real stamp.
+    for (final bad in <num>[double.nan, double.infinity, -double.infinity]) {
+      expect(
+        AssistantSettings.fromJson(settings().toJson()..['updatedAt'] = bad)
+            .updatedAt,
+        0,
+        reason: '$bad',
+      );
+    }
+    // A finite double still decodes, so the guard did not take the ordinary
+    // case with it: JSON has one number type, and a stamp that round-trips
+    // through a codec preserving doubles arrives as one.
+    expect(
+      AssistantSettings.fromJson(settings().toJson()..['updatedAt'] = 42.0)
+          .updatedAt,
+      42,
+    );
+  });
+
+  test('redaction defaults on when a writer had no such field', () {
+    // The safe reading of "an older writer" is the default the app ships with.
+    final legacy = settings().toJson()..remove('redactSecrets');
+    expect(AssistantSettings.fromJson(legacy).redactSecrets, isTrue);
+  });
+
+  test('the record id is a singleton and prefixed', () {
+    // Prefixed because applyToStores reads a bare-id tombstone as a server
+    // deletion; constant because that is what makes two devices converge onto
+    // one row instead of two.
+    expect(AssistantSettings.recordId, contains(':'));
+    expect(AssistantSettings.recordId, 'assistant:settings');
+  });
+
+  test('toString counts the keys rather than printing them', () {
+    final text = settings(apiKeys: const {'anthropic': 'sk-secret'}).toString();
+    expect(text, isNot(contains('sk-secret')));
+    expect(text, contains('1 redacted'));
+  });
+
+  test('a malformed keys map reads as no keys', () {
+    for (final bad in [42, 'string', {'a': 1}]) {
+      expect(
+        AssistantSettings.fromJson(settings().toJson()..['apiKeys'] = bad)
+            .apiKeys,
+        isEmpty,
+        reason: 'apiKeys=$bad should read as no keys',
+      );
+    }
+    // A good entry beside a bad value drops only the bad one, matching how
+    // the degenerate entries are handled below. Pinned because the other
+    // reading — refusing the whole map — would have one corrupt value in a
+    // peer's record discard a working key on every device that adopted it.
+    expect(
+      AssistantSettings.fromJson(
+        settings().toJson()..['apiKeys'] = {'anthropic': 'sk-1', 'zai': 42},
+      ).apiKeys,
+      {'anthropic': 'sk-1'},
+    );
+  });
+
+  test('a degenerate key entry is dropped rather than adopted', () {
+    // The apply path writes exactly the keys a record carries, so a blank
+    // value would overwrite a working key with nothing on every device that
+    // adopted the record — the failure "an absent key means look locally"
+    // exists to prevent, arriving as a present key instead. A blank name
+    // addresses no keystore entry at all — and blank is whitespace too, as
+    // it is for every other field of this record.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['apiKeys'] = {
+          'anthropic': '',
+          '': 'sk-1',
+          ' ': 'sk-2',
+          'brave': '  ',
+          'zai': 'z',
+        },
+    );
+    expect(decoded.apiKeys, {'zai': 'z'});
+  });
+
+  test('a key the references do not name is not written', () {
+    // The map is documented as built from this record's own references and
+    // never by sweeping the keystore, where the sync token and the vault key
+    // live beside the assistant's. That rule is kept by the collect path and
+    // the apply path; neither of them is the wire format, so it is bounded
+    // here too — one refactor of a builder would otherwise put a swept entry
+    // on the account under a name no reader looks up.
+    final json = settings(
+      apiKeys: const {'anthropic': 'sk-1', 'sync.token': 'tok'},
+    ).toJson();
+    expect(json['apiKeys'], {'anthropic': 'sk-1'});
+    // Every ref this record does name still carries its key: the filter
+    // compares what `toJson` writes, so it must not turn into a way to lose
+    // one. `zai` is set by the fixture; the LLM ref is `anthropic`.
+    expect(
+      settings(apiKeys: const {'anthropic': 'sk-1', 'zai': 'sk-z'})
+          .toJson()['apiKeys'],
+      {'anthropic': 'sk-1', 'zai': 'sk-z'},
+    );
+  });
+
+  test('a degenerate key entry is not written either', () {
+    // The reader drops it; a writer that kept it would produce a record its
+    // own reader disagrees with.
+    final json = settings(
+      apiKeys: const {'anthropic': '', '': 'x', ' ': 'y', 'brave': ' ', 'zai': 'z'},
+    ).toJson();
+    expect(json['apiKeys'], {'zai': 'z'});
+    expect(settings(apiKeys: const {'anthropic': ''}).toJson(),
+        isNot(contains('apiKeys')));
+  });
+
+  test('a blank LLM key reference reads and writes as empty', () {
+    // Like its optional siblings: a stray space is not a keystore entry.
+    expect(
+      AssistantSettings.fromJson(settings().toJson()..['llmApiKeyRef'] = ' ')
+          .llmApiKeyRef,
+      '',
+    );
+    final blank = AssistantSettings.fromJson(
+      settings().toJson()..['llmApiKeyRef'] = '   ',
+    );
+    expect(blank.toJson()['llmApiKeyRef'], '');
+    expect(AssistantSettings.fromJson(blank.toJson()).toJson(), blank.toJson());
+  });
+
+  test('a padded record is written canonically, not verbatim', () {
+    // The reader trims every field (`_blankToNull`, and `_stringMap` in both
+    // directions). Writing one back verbatim leaves the device that built the
+    // record holding `' anthropic '` while every device that adopts it holds
+    // `'anthropic'` — a record that does not describe the settings it came
+    // from, and one that does not survive its own round trip.
+    const padded = AssistantSettings(
+      providerKind: '  openaiCompatible  ',
+      baseUrl: '  https://api.openai.com/v1  ',
+      model: '  gpt-5  ',
+      llmApiKeyRef: '  openai  ',
+      searxngUrl: '  https://searx.example.com  ',
+      braveApiKeyRef: '  brave  ',
+      zaiApiKeyRef: '  zai  ',
+      redactSecrets: true,
+      apiKeys: {'  openai  ': ' sk '},
+      updatedAt: 7,
+    );
+    final json = padded.toJson();
+    expect(json['providerKind'], 'openaiCompatible');
+    expect(json['baseUrl'], 'https://api.openai.com/v1');
+    expect(json['model'], 'gpt-5');
+    expect(json['llmApiKeyRef'], 'openai');
+    expect(json['searxngUrl'], 'https://searx.example.com');
+    expect(json['braveApiKeyRef'], 'brave');
+    expect(json['zaiApiKeyRef'], 'zai');
+    // The keys travel through the same normalizer as the scalars, and only a
+    // padded entry proves it: the blank-entry case below shows entries being
+    // dropped, which a build that had stopped trimming would still do.
+    expect(json['apiKeys'], {'openai': 'sk'});
+    // The property that matters, stated as itself: what a peer reads back and
+    // re-publishes is byte-identical to what was written.
+    expect(AssistantSettings.fromJson(json).toJson(), json);
+  });
+
+  test('a blank optional field is written as unset, not as blank', () {
+    // fromJson reads a blank as "not set", so writing one out would be a
+    // field the writer calls set and every reader — this class re-reading its
+    // own record included — calls unset. Whitespace is blank: clearing a text
+    // box down to a stray space is clearing it.
+    for (final blank in ['', '   ']) {
+      final json = settings(searxngUrl: blank).toJson();
+      expect(json.containsKey('searxngUrl'), isFalse,
+          reason: 'searxngUrl=${json['searxngUrl']} should be omitted');
+      expect(AssistantSettings.fromJson(json).searxngUrl, isNull);
+    }
+  });
+
+  test('a wrong-typed field decodes to its default rather than throwing', () {
+    // Every other field here is deliberately tolerant, and the apply loop
+    // skips one record per failure — so a strict cast on these four made a
+    // divergent build's record fail differently from every other malformed
+    // one. An empty provider is refused by the publish and apply sides alike.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['providerKind'] = 42
+        ..['baseUrl'] = true
+        ..['model'] = const {'en': 'gpt-5'}
+        ..['redactSecrets'] = 'yes',
+    );
+    expect(decoded.providerKind, '');
+    expect(decoded.baseUrl, '');
+    expect(decoded.model, '');
+    expect(decoded.redactSecrets, isTrue);
+  });
+
+  test('a padded field is normalized on the way in', () {
+    // It passes the blank check, travels verbatim, and then matches no
+    // keystore entry on the device that adopts it.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['llmApiKeyRef'] = '  anthropic  '
+        ..['searxngUrl'] = ' https://searx.example.com '
+        // Trimmed on the way out, but the way *in* was covered for neither:
+        // a padded ref adopted verbatim names no keystore entry, which is
+        // the failure this whole test is about.
+        ..['braveApiKeyRef'] = ' brave '
+        ..['zaiApiKeyRef'] = ' zai ',
+    );
+    expect(decoded.llmApiKeyRef, 'anthropic');
+    expect(decoded.searxngUrl, 'https://searx.example.com');
+    expect(decoded.braveApiKeyRef, 'brave');
+    expect(decoded.zaiApiKeyRef, 'zai');
+    // And a second decode of the same record changes nothing further.
+    expect(AssistantSettings.fromJson(decoded.toJson()).toJson(),
+        decoded.toJson());
+  });
+
+  test('a padded key name is trimmed to the ref that looks it up', () {
+    // The refs are trimmed on decode, so a padded name in `apiKeys` had the
+    // adopting device write the entry under one name and read it under
+    // another — set everywhere, answering nowhere.
+    final decoded = AssistantSettings.fromJson(
+      settings().toJson()
+        ..['llmApiKeyRef'] = '  anthropic  '
+        ..['apiKeys'] = {'  anthropic  ': ' sk-1 '},
+    );
+    expect(decoded.llmApiKeyRef, 'anthropic');
+    expect(decoded.apiKeys, {'anthropic': 'sk-1'});
+  });
+
+  test('updatedAt degrades the way Lww needs it to', () {
+    // A record decoding to 0 loses to everything, which is what an absent
+    // stamp should do; a double is the shape a JSON round-trip can produce.
+    final json = settings().toJson();
+    expect(AssistantSettings.fromJson({...json}..remove('updatedAt')).updatedAt,
+        0);
+    expect(
+        AssistantSettings.fromJson({...json, 'updatedAt': 42.0}).updatedAt, 42);
+    // And a wrong-typed one degrades rather than throwing, like every other
+    // field here: a record that loses to everything is the safe reading.
+    expect(
+        AssistantSettings.fromJson({...json, 'updatedAt': 'soon'}).updatedAt,
+        0);
+  });
+
+  test('copyWith clears the optional refs and keeps everything else', () {
+    // The clear flags are the one place a nullable copyWith can silently turn
+    // "cleared here" back into "kept", and nothing exercised them.
+    // Brave is set first: the helper leaves it null, and clearing null
+    // proves nothing about the flag.
+    final cleared = settings(apiKeys: const {'zai': 'z'})
+        .copyWith(braveApiKeyRef: 'brave')
+        .copyWith(clearSearxngUrl: true)
+        .copyWith(clearBraveApiKeyRef: true)
+        .copyWith(clearZaiApiKeyRef: true);
+
+    expect(cleared.searxngUrl, isNull);
+    expect(cleared.braveApiKeyRef, isNull);
+    expect(cleared.zaiApiKeyRef, isNull);
+    expect(cleared.toJson().containsKey('searxngUrl'), isFalse);
+    expect(cleared.toJson().containsKey('braveApiKeyRef'), isFalse);
+    expect(cleared.toJson().containsKey('zaiApiKeyRef'), isFalse);
+    // A value and its clear flag in the same call: the flag wins. A settings
+    // screen binding a text controller beside a reset action can pass both,
+    // and the two readings differ by whether the reset happens at all.
+    expect(
+      settings()
+          .copyWith(
+              searxngUrl: 'https://searx.example.com', clearSearxngUrl: true)
+          .searxngUrl,
+      isNull,
+    );
+    // Everything the flags do not name survives them.
+    expect(cleared.providerKind, 'anthropic');
+    expect(cleared.llmApiKeyRef, 'anthropic');
+    expect(cleared.redactSecrets, isFalse);
+    expect(cleared.apiKeys, {'zai': 'z'});
+    expect(cleared.updatedAt, 42);
+  });
+}

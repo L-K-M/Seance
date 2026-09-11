@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
@@ -7,10 +8,12 @@ import 'package:xterm/xterm.dart' show TerminalController;
 
 import 'services/app_services.dart';
 import 'services/app_settings.dart';
+import 'services/background_keep_alive.dart';
 import 'services/chat_session.dart';
 import 'services/default_snippets.dart';
 import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
+import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
 import 'ui/session_label.dart';
 import 'ui/terminal_appearance.dart';
@@ -233,6 +236,51 @@ class TerminalSession {
   }
 }
 
+/// Whether the server a duplicate was planned from still is what it was.
+///
+/// Only the credential reference matters: the copy carries its own id, label
+/// and timestamps, and a rename or a colour change on the source between the
+/// plan and the save costs nothing. A missing server or a different ref does,
+/// because the credential the plan holds was read against the old one.
+///
+/// A top-level function so the rule can be asserted directly — no test in this
+/// app can construct an [AppState].
+bool duplicationSourceUnchanged(ServerConfig? latest, ServerConfig source) =>
+    latest != null && latest.secretRef == source.secretRef;
+
+/// The source of a duplicate stopped matching what the copy was planned from.
+///
+/// Its [toString] is a sentence because the list pane shows it verbatim, the
+/// way it shows a locked keyring: a user who is told only "could not
+/// duplicate" has nothing to do next.
+class SourceServerChanged implements Exception {
+  final String label;
+  const SourceServerChanged(this.label);
+
+  @override
+  String toString() => '"$label" changed while it was being copied — it was '
+      'deleted, or it now holds a different credential. Nothing was created.';
+}
+
+/// Whether any server other than [excludingId] still points at [secretRef].
+///
+/// Deleting a server drops its vault entry, and nothing stops two configs
+/// sharing one — a synced credential record is keyed by the credential rather
+/// than by the server holding it, and the editor can be pointed at an existing
+/// ref by hand. Dropping it out from under a server that still names it is
+/// silent credential loss the survivor only discovers at connect time.
+///
+/// The sync coordinator no longer honours a `secret:` tombstone at all (an
+/// unsealed one is the sync server's to forge), so this is the only place the
+/// rule lives. A top-level function so it can be asserted on its own, apart
+/// from the delete that applies it.
+bool secretStillReferenced(
+  String secretRef,
+  Iterable<ServerConfig> servers, {
+  required String excludingId,
+}) =>
+    servers.any((s) => s.id != excludingId && s.secretRef == secretRef);
+
 /// Top-level app state: the server list, live reachability, and the open
 /// terminal sessions. A server may have several sessions (tabs); the UI is a
 /// thin `ListenableBuilder` over this.
@@ -308,20 +356,81 @@ class AppState extends ChangeNotifier {
   UpdateInfo? updateInfo;
   final UpdateChecker _updateChecker;
 
-  AppState(this.services, {UpdateChecker? updateChecker})
-    : _updateChecker = updateChecker ?? UpdateChecker() {
+  /// Keeps the process anchored to the OS while sessions are connecting or
+  /// connected, so backgrounding the app on Android doesn't let the OS freeze
+  /// it and drop every live SSH connection. No-op on other platforms.
+  final BackgroundKeepAlive _keepAlive;
+
+  AppState(
+    this.services, {
+    UpdateChecker? updateChecker,
+    BackgroundKeepAlive? keepAlive,
+  })  : _updateChecker = updateChecker ?? UpdateChecker(),
+        _keepAlive = keepAlive ?? BackgroundKeepAlive() {
     _sessionManager = SshSessionManager(
       tofu: services.tofu,
-      onHostKey: (decision) async {
-        final prompt = hostKeyPrompter;
-        return prompt == null ? false : prompt(decision);
-      },
-      onKeyboardInteractive: (prompts, name, instruction) async {
-        final responder = keyboardInteractiveResponder;
-        return responder == null
-            ? const <String>[]
-            : responder(prompts, name, instruction);
-      },
+      onHostKey: _promptForHostKey,
+      onKeyboardInteractive: _promptKeyboardInteractive,
+    );
+  }
+
+  /// The host-key prompt as the SSH layer wants it, reading [hostKeyPrompter]
+  /// at call time so the root widget can wire it after this state exists.
+  /// Denies while it is unwired: refusing an unverified key is the safe answer.
+  Future<bool> _promptForHostKey(HostKeyDecision decision) async {
+    final prompt = hostKeyPrompter;
+    return prompt == null ? false : prompt(decision);
+  }
+
+  Future<List<String>> _promptKeyboardInteractive(
+    List<String> prompts,
+    String name,
+    String instruction,
+  ) async {
+    final responder = keyboardInteractiveResponder;
+    return responder == null
+        ? const <String>[]
+        : responder(prompts, name, instruction);
+  }
+
+  /// Try [config] the way a real connection would — the same host-key and
+  /// keyboard-interactive prompts, the same failure wording — without opening
+  /// a shell, running the login script, or creating a tab.
+  ///
+  /// [config] may be a draft the editor has not saved, so the `draft…`
+  /// arguments carry what its fields hold; see
+  /// [AppServices.resolveCredentials] for why reading the vault alone would
+  /// test the wrong credential.
+  ///
+  /// A host key approved during the attempt is pinned only for its duration
+  /// (see [UnpinnedHostKeyStore]). A form the user may still cancel, naming a
+  /// host they may still retype, is not where trust-on-first-use should be
+  /// granted for good — the first real connection asks once more.
+  Future<ConnectionTestResult> testServerConnection(
+    ServerConfig config, {
+    String? draftPassword,
+    String? draftPrivateKey,
+    String? draftKeyPassphrase,
+    IdentityFileBookmark? draftIdentityBookmark,
+    SshConnectionLog? log,
+  }) {
+    return runConnectionTest(
+      config: config,
+      credentials: () => services.resolveCredentials(
+        config,
+        draftPassword: draftPassword,
+        draftPrivateKey: draftPrivateKey,
+        draftKeyPassphrase: draftKeyPassphrase,
+        draftIdentityBookmark: draftIdentityBookmark,
+      ),
+      authenticate: liveHostAuthenticator(
+        // Not a verifier: liveHostAuthenticator wraps this in an
+        // UnpinnedHostKeyStore itself, so a trial cannot be wired to pin.
+        hostKeys: services.hostKeyStore,
+        onHostKey: _promptForHostKey,
+        onKeyboardInteractive: _promptKeyboardInteractive,
+      ),
+      log: log,
     );
   }
 
@@ -364,11 +473,18 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> load() async {
+    // Honor the keep-alive setting from the very first session event on; the
+    // app can be backgrounded mid-handshake right after opening a tab.
+    _keepAlive.setEnabled(services.settings.keepSessionsAliveInBackground);
     servers = await services.configStore.listServers();
     await _restoreManagedEditSessions();
     await _seedDefaultSnippets();
     snippets = await services.snippetStore.listSnippets();
     await refreshLlmConfigured();
+    // Invariant insurance: if any restore path ever leaves a session
+    // connecting or connected, the anchor must reflect it before the app can
+    // be backgrounded. (Today's restores insert disconnected placeholders.)
+    _refreshKeepAlive();
     _recomputeSuggestions();
     // Skip hosts that already hold a live session: they are demonstrably
     // reachable, and probing them only adds an sshd log line every sweep.
@@ -391,7 +507,8 @@ class AppState extends ChangeNotifier {
 
   /// Recompute whether the assistant is usable: a key-based provider needs a
   /// stored API key; a local OpenAI-compatible endpoint (Ollama, LM Studio)
-  /// works keyless as long as a base URL is set.
+  /// works keyless as long as a base URL is set. Keystore errors read as
+  /// "no key" here (the masterKeys layer is tolerant on reads).
   Future<void> refreshLlmConfigured() async {
     final s = services.settings;
     final storedKey = s.llmApiKeyRef.isEmpty
@@ -424,6 +541,18 @@ class AppState extends ChangeNotifier {
     ServerConfig config, {
     Secret? secret,
     IdentityFileBookmark? identityFileBookmark,
+  }) =>
+      _mutate(() => _saveServerNow(
+            config,
+            secret: secret,
+            identityFileBookmark: identityFileBookmark,
+          ));
+
+  /// [saveServer] without the queue, for callers already holding it.
+  Future<void> _saveServerNow(
+    ServerConfig config, {
+    Secret? secret,
+    IdentityFileBookmark? identityFileBookmark,
   }) async {
     if (secret != null) await services.vault.putSecret(secret);
     await services.configStore.putServer(config);
@@ -442,20 +571,247 @@ class AppState extends ChangeNotifier {
     _scheduleAutoSync();
   }
 
+  /// Duplicate [source] as a new server and return the copy.
+  ///
+  /// The credential is copied into a vault entry of the copy's own (see
+  /// [duplicateServerConfig] for why it is never shared), and so is the
+  /// device-local security-scoped grant for a Browse…-picked identity file:
+  /// that grant is keyed by server id, so without copying it the duplicate
+  /// would silently fall back to the raw path and fail to open a key outside
+  /// `~/.ssh`.
+  ///
+  /// Vault failures propagate, as they do from [saveServer]. A duplicate that
+  /// quietly lost its password would look identical in the list and only admit
+  /// it at connect time.
+  Future<ServerConfig> duplicateServer(ServerConfig source) async {
+    return _mutate(() async {
+      // Deletes, saves and sync rounds are all serialized behind this one, so
+      // nothing can move under the plan once it starts. What the queue cannot
+      // make fresh is [source]: the caller captured it before the queue was
+      // entered, so it may describe a server since deleted or re-pointed at
+      // another credential. Planning from a stale snapshot would create the
+      // copy the user asked for without the password they expect it to have —
+      // and resurrect a config another device deleted.
+      final latest = await services.configStore.getServer(source.id);
+      if (!duplicationSourceUnchanged(latest, source)) {
+        // Named as it appears in the list now, not as the caller's snapshot
+        // had it: a rename is one of the edits that can land in between.
+        throw SourceServerChanged(latest?.label ?? source.label);
+      }
+      final plan = await planServerDuplication(
+        // The store's copy, not the caller's: `source` was captured before
+        // the queue was entered, so every field on it can be stale, not only
+        // the label. Copying what the server *is* beats copying what the row
+        // said when it was tapped, and the credential check above is what
+        // makes the two safe to swap.
+        latest!,
+        vault: services.vault,
+        takenLabels: servers.map((s) => s.label),
+        id: uuidV4(),
+        secretId: uuidV4(),
+        now: DateTime.now().millisecondsSinceEpoch,
+        // Keyed by the *source's* id — the planner asks for the grant of the
+        // server being copied; the copy has none yet.
+        bookmarkFor: (sourceId) =>
+            services.settings.identityFileBookmarks[sourceId],
+      );
+      // The non-queuing core: this is already inside the queue, and calling
+      // the public one would wait on itself.
+      await _saveServerNow(
+        plan.config,
+        secret: plan.secret,
+        identityFileBookmark: plan.identityFileBookmark,
+      );
+      return plan.config;
+    });
+  }
+
+  /// The store mutation currently in flight, so the next one waits for it.
+  Future<void> _mutating = Future<void>.value();
+
+  /// Run [action] after every mutation queued before it has finished.
+  ///
+  /// Duplicating reads the vault, and that read can sit behind an OS keychain
+  /// prompt for as long as the user takes to answer it — long enough for a
+  /// second Duplicate to pick a name from a list that does not yet contain the
+  /// first copy, so both land on the same one, which is the outcome the naming
+  /// rule exists to prevent. Deleting shares the queue because it reads the
+  /// server list to decide whether a credential is still referenced: two
+  /// deletes of servers sharing one vault entry, each running that read before
+  /// the other's config removal lands, would each see the other as a live
+  /// referent and both leave the entry behind with nothing able to name it.
+  ///
+  /// Saving and applying a sync round share it for the same reason from the
+  /// other side: both write the config store and the vault, so either landing
+  /// between a delete's reference count and its vault delete, or between a
+  /// duplicate's plan and its save, is the same read-then-write hazard. With
+  /// them on the queue, a credential rewritten in place under an unchanged
+  /// ref — which is what editing a server's password does — can no longer
+  /// happen while a duplicate is reading it.
+  ///
+  /// No timeout, deliberately. A mutation waiting on an OS keychain prompt
+  /// holds everything queued behind it, deletes included, until the prompt is
+  /// answered; the answer to that is to surface the pending prompt, not to
+  /// time out a queue whose whole job is keeping a check and its write
+  /// together.
+  Future<T> _mutate<T>(Future<T> Function() action) async {
+    // A queued action that calls a queued method waits on its own completion,
+    // and since the queue has no timeout the app's mutations simply stop with
+    // no error to find. Detected by zone: an unrelated second caller arriving
+    // while the first action is suspended at an await is the normal case this
+    // queue exists to serialize, and a plain "busy" flag would read as
+    // re-entry for it too. Zone *identity* rather than a marker value: a
+    // marker attaches to every callback registered inside the action —
+    // a listener's microtask, a timer — and outlives the mutation, so such a
+    // callback calling `saveServer` after the queue had gone idle was
+    // refused for a deadlock that could not happen. Walked up the parents so
+    // a nested zone inside the action (a `runZonedGuarded` in a library) is
+    // still seen as inside it.
+    if (_insideRunningMutation) {
+      // A throw, not an assert. What an assert buys is a debug-only warning
+      // for a failure whose release-build symptom is every store mutation in
+      // the app stopping forever with nothing in the logs — which is the one
+      // shape of bug worth crashing on instead.
+      throw StateError(
+        'Re-entrant mutation: an action inside the queue must call the '
+        'non-queuing core (_saveServerNow), not saveServer, deleteServer, '
+        'duplicateServer or a sync round.',
+      );
+    }
+    final queued = _mutating;
+    final finished = Completer<void>();
+    _mutating = finished.future;
+    try {
+      // Inside the try, so `finished` is completed even if awaiting the
+      // predecessor throws. Nothing can make it throw today — `_mutating`
+      // only ever holds a future completed with `complete()` — but this token
+      // is the whole chain's link, and a predecessor that rejected before the
+      // try would have left every later mutation waiting on it forever, which
+      // is the silent wedge the guard above crashes to avoid. Not
+      // `catchError`, which would be a no-op now and swallow a real error
+      // later; the failing caller's own error still propagates from the
+      // action below.
+      await queued;
+      // `runZoned` for the fresh zone alone; nothing is read from it. Set
+      // and cleared around the action, never around the wait above: while
+      // this call is queued behind another, it is that one's zone that is
+      // running.
+      return await runZoned(() async {
+        _activeMutationZone = Zone.current;
+        try {
+          return await action();
+        } finally {
+          _activeMutationZone = null;
+        }
+      });
+    } finally {
+      finished.complete();
+    }
+  }
+
+  /// The zone of the action currently between its start and its end, or
+  /// null while the queue is idle or between actions.
+  Zone? _activeMutationZone;
+
+  bool get _insideRunningMutation {
+    final active = _activeMutationZone;
+    if (active == null) return false;
+    for (Zone? zone = Zone.current; zone != null; zone = zone.parent) {
+      if (identical(zone, active)) return true;
+    }
+    return false;
+  }
+
   Future<void> deleteServer(String id) async {
+    // Outside the queue: tearing sessions down touches no store, and holding
+    // the queue across a session teardown would stall every other mutation
+    // behind however long the far end takes to hang up.
     await closeAllTabsForServer(id);
-    final server = await services.configStore.getServer(id);
-    if (server?.secretRef != null) {
-      await services.vault.deleteSecret(server!.secretRef!);
-    }
-    if (services.settings.identityFileBookmarks.remove(id) != null) {
-      await services.saveSettings();
-    }
-    await services.configStore.deleteServer(id);
-    servers = await services.configStore.listServers();
+    await _mutate(() async {
+      final server = await services.configStore.getServer(id);
+      // The config goes first, and the credential after it — the order
+      // `SyncCoordinator` states for the same pair. Dropping the vault entry
+      // first meant a throw from either write below left the server row on
+      // disk naming a credential that was already gone: a dangling reference
+      // the user only meets at connect time. Reversed, the worst a failure
+      // leaves is a vault entry nothing names — invisible rather than broken.
+      await services.configStore.deleteServer(id);
+      // After the config for the same reason the vault delete is: revoked
+      // first, a throw from `deleteServer` left a live server whose
+      // Browse…-picked key had already lost its security-scoped grant — the
+      // failure the reorder was written to prevent, just moved from the vault
+      // to the bookmark. Reversed, the worst it leaves is a grant filed under
+      // an id nothing names.
+      if (services.settings.identityFileBookmarks.remove(id) != null) {
+        // Fail-soft like the vault delete below, and for the same reason: a
+        // throw here skips the list refresh and leaves the UI showing a
+        // server the store no longer has. The grant is already gone from
+        // memory; what a failed write leaves is a stale entry in a file that
+        // the next successful save rewrites.
+        try {
+          await services.saveSettings();
+        } catch (error, stackTrace) {
+          developer.log(
+            'Could not persist the identity file grant removal for the '
+            'deleted server $id',
+            name: 'seance.app',
+            level: 900,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+      }
+      // Fail-soft like the two writes above it, and for the same reason: the
+      // delete has landed, and a read that throws here would skip the
+      // reference check, the probe and the notify, leaving the UI showing a
+      // server the store no longer has. The fallback is the list this
+      // method started from minus the row it just removed — equivalent for
+      // the reference check, since nothing else can write while the queue is
+      // held.
+      try {
+        servers = await services.configStore.listServers();
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not refresh the server list after deleting $id',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+        servers = servers.where((s) => s.id != id).toList();
+      }
+
+      // Against the refreshed list, which no longer holds this server —
+      // `excludingId` is redundant now and kept because the predicate
+      // requires it, and because it stays correct if the read ever moves.
+      final secretRef = server?.secretRef;
+      if (secretRef != null &&
+          !secretStillReferenced(secretRef, servers, excludingId: id)) {
+        // Fail-soft, like the coordinator's own secret deletes: the vault
+        // throws when the OS keyring is locked, and letting that escape now
+        // would skip the list refresh and leave the UI showing a server that
+        // no longer exists.
+        try {
+          await services.vault.deleteSecret(secretRef);
+        } catch (error, stackTrace) {
+          developer.log(
+            'Could not remove the credential for the deleted server $id',
+            name: 'seance.app',
+            level: 900,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+      }
+    });
     services.probe.updateServers(servers);
     notifyListeners();
     _scheduleAutoSync();
+    // A tab opened on this server while the delete waited — behind the
+    // teardown above, or behind an earlier mutation — would outlive it.
+    // Swept again here, outside the queue like the first sweep and for the
+    // same reason.
+    await closeAllTabsForServer(id);
   }
 
   /// Server-list group sections currently folded away, keyed by
@@ -526,6 +882,9 @@ class AppState extends ChangeNotifier {
     sessions.insert(insertIndexFor(sessions, config.id), tab);
     _setActive(tab.id);
     notifyListeners();
+    // The tab is `connecting` from here on — the anchor must be up before the
+    // handshake starts, not after it finishes.
+    _refreshKeepAlive();
     await _connect(tab);
   }
 
@@ -591,6 +950,7 @@ class AppState extends ChangeNotifier {
           tab.session = null;
           tab.connecting = false;
           notifyListeners();
+          _refreshKeepAlive();
         }
       };
       // The widget drives resize; forward it to the SSH PTY.
@@ -603,6 +963,7 @@ class AppState extends ChangeNotifier {
       tab.error = e is SshConnectException ? e.message : e.toString();
     }
     notifyListeners();
+    _refreshKeepAlive();
   }
 
   /// Retry a session that failed or dropped: replace it in place with a fresh
@@ -739,15 +1100,263 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// The vault just unlocked (the OS keystore came back after being down at
+  /// bootstrap): re-evaluate what depended on it — the assistant key check and
+  /// the sync round that couldn't run.
+  Future<void> onVaultUnlocked() async {
+    await refreshLlmConfigured();
+    if (services.settings.autoSync && services.isSyncConfigured) {
+      unawaited(_autoSync());
+    }
+  }
+
   /// One sync round + refresh of the domain lists from the (possibly updated)
   /// stores. Shared by manual and automatic sync.
   Future<SyncOutcome> _runSyncAndRefresh() async {
-    final outcome = await services.runSync();
-    servers = await services.configStore.listServers();
-    snippets = await services.snippetStore.listSnippets();
-    services.probe.updateServers(servers);
-    _recomputeSuggestions();
-    return outcome;
+    // On the mutation queue: a round writes the config store and the vault
+    // (tombstones delete both), so it is a mutation like any other and must
+    // not interleave with a delete's reference count or a duplicate's plan.
+    // The re-reads are inside it too — outside, a mutation could land while
+    // `listServers` was still resolving and then have its own assignment
+    // overwritten by this older snapshot.
+    //
+    // That does hold the queue across network I/O, so what bounds it is worth
+    // writing down here rather than leaving to be rediscovered: every request
+    // carries `HttpSyncClient.timeout` (30 s by default), a timeout throws
+    // rather than retrying so the round ends at the first dead request, and
+    // `_mutate` releases in a `finally`. A black-holed network therefore
+    // costs one timeout, not a wedged app. A slow-but-alive one costs more —
+    // `SyncEngine.sync` runs up to five rounds and `SyncCoordinator.run` up
+    // to two passes — and the fix for that is splitting the coordinator's
+    // fetch from its apply so only the apply serializes, which is a change to
+    // `seance_core`, not to this line.
+    var adoptedAssistant = false;
+    try {
+      final outcome = await _mutate(() async {
+        try {
+          final result = await services.runSync();
+          servers = await services.configStore.listServers();
+          snippets = await services.snippetStore.listSnippets();
+          return result;
+        } finally {
+          // Sampled while this round still holds the queue, so the answer
+          // cannot depend on what runs between the release and this method's
+          // continuation. `runSync` resets the flag as its first statement,
+          // and a round queued behind this one — a manual sync during an
+          // automatic one, or the reverse — starts as soon as the queue is
+          // released. Today the caller resumes first (an async return reaches
+          // its awaiter a microtask ahead of the completer's release), so a
+          // read in the outer `finally` happens to see this round's answer;
+          // which of the two gets there first is a scheduling detail nothing
+          // here should rest on.
+          adoptedAssistant = services.assistantSettingsChanged;
+          _lastRoundAdoptedAssistant = adoptedAssistant;
+        }
+      });
+      services.probe.updateServers(servers);
+      _recomputeSuggestions();
+      return outcome;
+    } finally {
+      // A pulled assistant configuration changes the provider, the model or
+      // the key, none of which an already-built chat provider notices.
+      //
+      // In a `finally` because `runSync` sets the flag in one too: a round can
+      // adopt the record and *then* fail, the pull running before the push.
+      // Consumed only on success, that adoption would be invisible — the next
+      // successful round finds the settings already adopted, reports nothing
+      // applied, and the chat provider answers with the old model and key
+      // until some unrelated edit rebuilds it. Every caller of this method
+      // swallows or rethrows the failure without looking at the flag, so this
+      // is the one place that can see both halves of the round.
+      //
+      // Caught, because a throw from a `finally` *replaces* the exception
+      // already in flight. This comment used to argue the call was safe
+      // without one, on the grounds that `reloadLlmProvider` bumps a counter
+      // and reads the keystore through the tolerant path
+      // (`refreshLlmConfigured` treats a keystore error as "no key"). That
+      // enumeration was incomplete: it also calls `notifyListeners`, and
+      // `ChangeNotifier` does not catch what a listener throws — a
+      // `setState` on a widget disposed while the round ran is enough. The
+      // round's own failure is the one worth reporting, and a swallowed
+      // rebuild self-corrects, since the next adoption or settings edit
+      // rebuilds the provider anyway.
+      if (adoptedAssistant) {
+        try {
+          await reloadLlmProvider();
+        } catch (_) {
+          // Deliberately swallowed rather than reported: there is no surface
+          // here, and masking the sync round's outcome is the worse of the
+          // two silences.
+        }
+      }
+    }
+  }
+
+  /// Whether the most recent sync round adopted an assistant configuration
+  /// from the account.
+  ///
+  /// Written inside the round, while it holds the mutation queue, which is
+  /// what makes it safe to read straight after awaiting [_runSyncAndRefresh]
+  /// where `services.assistantSettingsChanged` is not: that flag is reset at
+  /// the *start* of the next round, which can already be running by then,
+  /// while this is only written at the *end* of one.
+  ///
+  /// That holds for a round that adopted nothing. One that *did* adopt awaits
+  /// `reloadLlmProvider` in [_runSyncAndRefresh]'s outer `finally`, after
+  /// `_mutate` has released the queue — so a queued round can run to
+  /// completion inside that await and overwrite this before the caller
+  /// resumes. Read it beside the stamp (`assistantUpdatedAt != 0`), which is
+  /// what [assistantSyncSwitchedOn] does: adoption always leaves a nonzero
+  /// stamp, so the pair answers correctly whichever round wrote the flag.
+  bool _lastRoundAdoptedAssistant = false;
+
+  /// The assistant's configuration was just edited here: stamp it so the
+  /// synced record has a timestamp that moved for a real reason, and push it.
+  Future<void> assistantSettingsEdited() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Never below a record this device already holds. The stamp is the whole
+    // of the last-write-wins comparison, so a clock that runs behind the
+    // device this configuration was pulled from would make a fresh edit lose
+    // to the record it had just adopted — and the next round would re-apply
+    // that record over the edit, silently.
+    services.settings.assistantUpdatedAt =
+        now > services.settings.assistantUpdatedAt
+            ? now
+            : services.settings.assistantUpdatedAt + 1;
+    await services.saveSettings();
+    _scheduleAutoSync();
+  }
+
+  /// The four conditions under which [assistantSyncSwitchedOn] must not
+  /// stamp, asked at both points it has to be asked.
+  ///
+  /// One definition rather than two identical blocks. Each site keeps its own
+  /// comment explaining why the question is re-asked *there* — the answer can
+  /// change across either await — but the question itself is the same one,
+  /// and it was previously written out twice, verbatim. A condition added to
+  /// one copy and not the other silently reopens whichever of the clobber and
+  /// stale-stamp races that copy was guarding, which is precisely the edit
+  /// this shape invites.
+  bool _mustNotStampOnSwitchOn() =>
+      _lastRoundAdoptedAssistant ||
+      services.settings.assistantUpdatedAt != 0 ||
+      !services.settings.syncAssistant ||
+      !services.isSyncConfigured;
+  /// Assistant sync was just switched on here: take whatever the account
+  /// already holds, and publish this device's configuration only if it held
+  /// nothing.
+  ///
+  /// Stamping unconditionally would make this device win. `assistantUpdatedAt`
+  /// would be "now", later than any record on the account, so a laptop that
+  /// has never configured the assistant would push its defaults over a phone's
+  /// real provider, model and keys — leaving every device looking configured
+  /// and answering nothing, which is the outcome the zero stamp exists to
+  /// prevent, arriving through the switch instead.
+  ///
+  /// Adopting first cannot cause the mirror of that. A device that never
+  /// edited the assistant still stamps zero and offers nothing; one that did
+  /// offers a real record and wins the round if its edit was genuinely later.
+  /// Only when the round adopts nothing is there an account with no assistant
+  /// configuration, and then publishing this device's is the point of the
+  /// switch.
+  Future<void> assistantSyncSwitchedOn() async {
+    // No account attached: nothing to adopt, and nothing worth publishing
+    // either. Falling through would stamp `now` on this device's
+    // configuration, so it would arrive at the account as the newest write
+    // the moment one is attached — without ever having looked at what the
+    // account already held, which is the single guarantee this method exists
+    // to provide.
+    //
+    // And the toggle itself: with it off, `runSync` builds no assistant store,
+    // so a round can adopt nothing — and falling through would still stamp
+    // `now` on this device's configuration and persist it, an inflated stamp
+    // that outranks whatever the account holds when the switch is genuinely
+    // turned on later. The caller persists the toggle before calling; this is
+    // what holds if one ever does not.
+    if (!services.settings.syncAssistant || !services.isSyncConfigured) return;
+    // Offline, or the server is down: this is the one moment not to publish
+    // on a guess, so the failure ends the method here — and reaches the
+    // caller, which shows it. Swallowed, a toggle that did nothing looked
+    // like one that had adopted. The switch stays on and the next round
+    // settles it: by adopting the account's record, or, once this device is
+    // edited, by publishing that edit.
+    await _runSyncAndRefresh();
+    // The await above spans a network round, and the switch stays live
+    // throughout it. A user who turns it back off in that window has opted
+    // out before anything was adopted — stamping now would leave behind
+    // exactly the inflated stamp the entry guard exists to prevent, and it
+    // would outrank the account's record when the switch is next turned on.
+    // A nonzero stamp after a round that adopted nothing means this device's
+    // record is already the account's — `collectLocal` pushed it in the round
+    // above, or it was already there and nothing outranked it. Stamping again
+    // republishes identical content under a newer date for nothing, and makes
+    // this device the permanent winner of a record it may not have authored.
+    //
+    // It also makes the check above robust rather than merely fast enough:
+    // adoption always leaves the adopted record's stamp behind, which is never
+    // zero, so a round queued behind this one that overwrote
+    // `_lastRoundAdoptedAssistant` during the reload's await cannot turn an
+    // adoption into a republish.
+    // The account half of the entry guard is live across that await too. A
+    // user who signs out inside it — or a detach from anywhere else — leaves a
+    // round that adopted nothing, pushed nothing and kept the toggle on, so
+    // every other condition here reads exactly as it does on a fresh install
+    // with an account attached. Falling through stamps `now` on a
+    // configuration no account was ever consulted about, which is the inflated
+    // stamp the entry guard's own comment describes: it wins the first round
+    // against whatever the next account attached already held.
+    if (_mustNotStampOnSwitchOn()) {
+      return;
+    }
+    // Past here the stamp is zero, which means two different things — and only
+    // one of them is "nothing worth publishing".
+    //
+    // A fresh install has never configured an assistant, and stamping now
+    // would turn its shipped defaults into the account's newest write — the
+    // clobber that beats a phone which configured its assistant while sync
+    // was off and enables the switch afterwards.
+    //
+    // An install that configured its assistant *before this feature existed*
+    // also reads zero: there was nothing to stamp its edits. That one is the
+    // whole upgrade path, and silence here costs it everything — it adopts
+    // nothing from an empty account, publishes nothing, and the switch does
+    // nothing at all until the user happens to edit the settings again.
+    //
+    // What separates them is whether the assistant here is usable at all: a
+    // key stored under the referenced name, or a local endpoint that needs
+    // none. That is `llmConfigured`, re-read rather than trusted, because a
+    // key stored moments ago on the screen this switch lives on is exactly
+    // the case that matters.
+    await refreshLlmConfigured();
+    if (!llmConfigured) return;
+    // The guard above ran before that await, which is a keystore read: a
+    // round queued behind this one can acquire the mutation queue and adopt
+    // the account's record inside it, and adoption always leaves a nonzero
+    // stamp. Stamping now would put this device's pre-feature configuration
+    // over the one it just adopted — the clobber this whole method is a
+    // sequence of guards against.
+    // All of the entry guard, not only the stamp: the toggle and the account
+    // both stay live across that await too. A user who switches assistant
+    // sync back off inside it, or who signs out, would otherwise be stamped
+    // and persisted anyway — leaving the inflated stamp, while opted out or
+    // detached, that can outrank a record another device publishes before the
+    // switch is thrown again.
+    // The flag too, for the reason the entry guard takes it. The stamp check
+    // catches an adoption here only through an invariant that lives in
+    // another file — adoption always leaves a nonzero stamp, which
+    // `AssistantSettingsSync` is what enforces. The two conditions agree
+    // today; not depending on that costs one `||`, and the flag can only be
+    // true here if a round adopted inside the keystore read above, which is
+    // exactly when this device must not stamp.
+    if (_mustNotStampOnSwitchOn()) {
+      return;
+    }
+    await assistantSettingsEdited();
+    // That hands the publish to the auto-sync debounce, which does not run
+    // with auto-sync off — and this switch is an explicit ask to sync, made
+    // by a user who just watched one round run. Published now in that case;
+    // with auto-sync on, the debounce it just scheduled does it.
+    if (!services.settings.autoSync) await _runSyncAndRefresh();
   }
 
   /// Start (or restart) the periodic auto-sync timer. Safe to call repeatedly —
@@ -756,7 +1365,8 @@ class AppState extends ChangeNotifier {
     _autoSyncTimer?.cancel();
     _autoSyncTimer = null;
     if (services.settings.autoSync && services.isSyncConfigured) {
-      _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => _autoSync());
+      _autoSyncTimer =
+          Timer.periodic(_autoSyncInterval, (_) => _autoSync());
     }
   }
 
@@ -765,6 +1375,13 @@ class AppState extends ChangeNotifier {
   void _scheduleAutoSync() {
     if (!services.settings.autoSync || !services.isSyncConfigured) return;
     _syncDebounce?.cancel();
+    // Reached from inside `_mutate` (every save schedules one), and a timer's
+    // callback runs in the zone it was created in — which is fine: the guard
+    // in [_mutate] asks whether the *running* action's zone is an ancestor,
+    // and the action that scheduled this is over before it can fire. That is
+    // ordering, not timing: this call is the last statement of every
+    // mutation that makes it, so nothing of that action — a keychain prompt
+    // included — remains to be waited on after the timer exists.
     _syncDebounce = Timer(_syncDebounceDelay, _autoSync);
   }
 
@@ -910,6 +1527,22 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Apply a change of the "keep sessions alive in the background" setting:
+  /// re-anchor or drop the OS-level keep-alive for the currently live sessions.
+  void setKeepSessionsAliveEnabled(bool enabled) {
+    _keepAlive.setEnabled(enabled);
+    _refreshKeepAlive();
+  }
+
+  /// Recompute how many sessions are connecting or connected and tell the
+  /// keep-alive — that count, not the session identities, is all it needs.
+  /// Called after every mutation of a session's connection state.
+  void _refreshKeepAlive() {
+    _keepAlive.refresh(
+      sessions.where((s) => s.connecting || s.session != null).length,
+    );
+  }
+
   /// React to the app moving in/out of the foreground (wired to the app
   /// lifecycle in `main`). While backgrounded, pause the reachability probe so
   /// it stops opening a TCP connection to every server every ~45s — which would
@@ -1002,6 +1635,7 @@ class AppState extends ChangeNotifier {
     tab.connecting = false;
     tab.error = null;
     notifyListeners();
+    _refreshKeepAlive();
   }
 
   Future<void> discardRetainedLocalCopy(
@@ -1059,6 +1693,7 @@ class AppState extends ChangeNotifier {
       );
     }
     notifyListeners();
+    _refreshKeepAlive();
   }
 
   /// Pick the session to focus after [closed] is removed: the next tab of the
@@ -1135,6 +1770,9 @@ class AppState extends ChangeNotifier {
     _autoSyncTimer?.cancel();
     _syncDebounce?.cancel();
     _statsSaveDebounce?.cancel();
+    // Nothing anchors a dying app: drop the OS keep-alive before the sessions
+    // it was holding open go.
+    _keepAlive.stop();
     chat.dispose();
     // Drop the callback before the service goes: it closes over `sessions`,
     // so a probe service that outlived this state would keep reading a list

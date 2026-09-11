@@ -1,10 +1,189 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../services/app_settings.dart';
+import 'connection_test_report.dart';
 import 'server_appearance.dart';
 import 'server_grouping.dart';
+import 'top_toast.dart';
+
+/// Whether turning "exclude from sync" on needs confirming before it takes.
+///
+/// Only when there is something to retract: a server being added has never
+/// been anywhere, one already excluded has been retracted once already, and
+/// with no sync account configured there is no other device that could lose
+/// it. Turning the switch back off is never destructive.
+///
+/// [syncConfigured] is read as it is *now*, which is not quite the same
+/// question. A server that synced before the account was unlinked still has a
+/// copy out there, and the stored exclusion would retract it on the first
+/// round after re-linking, unprompted. Answering that properly needs a "has
+/// ever synced" bit this device does not keep, and the alternative — always
+/// confirming — puts a dialog in front of someone who has never had a sync
+/// account at all. The narrow gap is recorded here rather than papered over.
+///
+/// A top-level function so the rule can be asserted directly — no widget test
+/// in this app stands up an [AppState], and this is the part of the dialog
+/// worth pinning down.
+bool excludingNeedsConfirmation({
+  required ServerConfig? existing,
+  required bool syncConfigured,
+}) => existing != null && !existing.excludeFromSync && syncConfigured;
+
+/// The credential this Save writes, or null when the form describes none and
+/// the stored one should stay as it is.
+///
+/// Blank means "keep what is stored" when every box of that method is blank:
+/// the fields start empty when an existing server is opened, so writing a
+/// blank through would replace the stored credential with nothing on any save
+/// that only touched some other field.
+///
+/// Not box by box, though, and the passphrase is where that shows: a *typed*
+/// PEM writes `keyPassphrase: null` even when the passphrase box is blank,
+/// because a newly pasted key brings its own — so re-pasting the same
+/// encrypted key and leaving the passphrase alone drops the stored one.
+///
+/// Known gap, pre-existing and not closed here: when the auth *method*
+/// changed and nothing was typed, "what is stored" is a credential of the old
+/// kind. Nothing is written, so the config keeps its `secretRef` — now
+/// pointing at, say, a password under a server set to key auth, until a
+/// credential for the new method is entered. Clearing the ref instead would
+/// throw away a working credential on a method switch the user may undo in
+/// the same sitting, which is the worse of the two. `docs/STATUS.md`
+/// follow-up 17 tracks it.
+///
+/// A *referenced* key is the case this exists for. Its passphrase is the only
+/// credential that mode has, and it used to be dropped — the box was shown,
+/// filled and ignored — so `Test connection`, which authenticates with what
+/// was typed, reported success for a key the saved server could not decrypt.
+/// [stored] is carried through when one is written, because switching to a
+/// referenced file leaves an already-stored PEM unread rather than discarded,
+/// and switching back has to find it again.
+@visibleForTesting
+Secret? plannedCredential({
+  required AuthMethod auth,
+  required bool referenceKeyFile,
+  required String password,
+  required String keyPem,
+  required String keyPassphrase,
+  required String secretId,
+  Secret? stored,
+}) {
+  if (auth == AuthMethod.password) {
+    if (password.isEmpty) return null;
+    return Secret(id: secretId, kind: SecretKind.password, value: password);
+  }
+  if (auth != AuthMethod.privateKey) return null;
+  if (!referenceKeyFile) {
+    if (keyPem.isEmpty) return null;
+    return Secret(
+      id: secretId,
+      kind: SecretKind.privateKey,
+      value: keyPem,
+      keyPassphrase: keyPassphrase.isEmpty ? null : keyPassphrase,
+    );
+  }
+  if (keyPassphrase.isEmpty) return null;
+  return Secret(
+    id: secretId,
+    kind: SecretKind.privateKey,
+    // The key itself stays on disk; only what decrypts it is stored. What is
+    // carried over has to be a key: the entry under this id belongs to
+    // whatever auth method last wrote it, and a server that used a password
+    // before would otherwise have that password stored as its PEM — read back
+    // as one the next time the key is typed rather than referenced.
+    value: stored?.kind == SecretKind.privateKey ? stored!.value : '',
+    // The typed passphrase belongs to the key *file*, and it lands beside the
+    // PEM carried above — which was stored with a passphrase of its own. One
+    // entry holds one passphrase, so the pair can end up mismatched, and
+    // switching back to a pasted key without re-pasting finds a PEM that no
+    // longer decrypts. Carrying the old passphrase instead would break the
+    // referenced key, which is the one the server is set to use. STATUS
+    // follow-up 17 has both halves of the single-slot problem.
+    keyPassphrase: keyPassphrase,
+  );
+}
+
+/// Whether [plannedCredential] will read [stored], so a caller knows when it
+/// has to fetch the existing vault entry first.
+///
+/// The condition lives here rather than being restated at the call site: read
+/// too narrowly, `stored` arrives null on a branch that carries it through and
+/// an existing PEM is overwritten with nothing — the data loss the carry-over
+/// exists to prevent. A test fuzzes the two together: wherever this is false,
+/// [plannedCredential] must return the same thing with and without a [Secret]
+/// in hand.
+@visibleForTesting
+bool plannedCredentialReadsStored({
+  required AuthMethod auth,
+  required bool referenceKeyFile,
+  required String keyPassphrase,
+}) =>
+    auth == AuthMethod.privateKey &&
+    referenceKeyFile &&
+    keyPassphrase.isNotEmpty;
+
+/// The timestamp a save should carry: the wall clock, but never one this
+/// config has already passed.
+///
+/// `updatedAt` is what orders this edit against every other device's, and a
+/// device whose clock trails the record it pulled — the ordinary case once one
+/// device runs even slightly fast — would otherwise stamp an edit that ties
+/// with, or loses to, the copy it means to replace, and quietly not take
+/// anywhere else.
+///
+/// Exclusion is where that costs most: `SyncCoordinator` dates the retraction
+/// tombstone from this timestamp, so a losing stamp leaves the server and its
+/// credential on the sync server and on every other device while this one
+/// shows the switch on. The coordinator does re-date a retraction it sees
+/// outranked, so the difference is retracting on the first push rather than a
+/// round later — but the first push is where it belongs, and a monotonic stamp
+/// costs one comparison.
+///
+/// It outranks the record *this device has pulled*, which is the whole of what
+/// a local clamp can know. An edit racing a remote change this device has not
+/// seen yet can still tie with it or lose, and lose silently — closing that
+/// needs the coordinator, which re-dates a retraction it sees outranked.
+///
+/// A function rather than an inline `max` so it can be tested: `_save` needs
+/// an [AppState], whose services constructor is private, so nothing reaches it
+/// from a test.
+int nextUpdatedAt(int? existingUpdatedAt, {required int now}) =>
+    math.max(now, (existingUpdatedAt ?? 0) + 1);
+
+/// The dialog [excludingNeedsConfirmation] gates, as a function so a test can
+/// tap its buttons without standing up an editor or an [AppState].
+///
+/// Dismissing it — barrier tap, Escape — resolves to null, which has to read
+/// as "no": the caller is about to delete data on other devices, and the one
+/// input that means the user never answered must not be the one that proceeds.
+Future<bool> confirmSyncExclusion(BuildContext context) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Exclude from sync?'),
+      content: const Text(
+        'If this server synced earlier, it is removed from the sync server '
+        'and from your other devices, along with any credential that synced '
+        'with it. This device keeps its copy.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Exclude'),
+        ),
+      ],
+    ),
+  );
+  return confirmed == true;
+}
 
 /// Add or edit a server. Password / private-key material is written to the
 /// encrypted vault; the config stores only a reference.
@@ -41,13 +220,37 @@ class _ServerEditorState extends State<_ServerEditor> {
   final _keyPem = TextEditingController();
   final _keyPath = TextEditingController();
   final _keyPassphrase = TextEditingController();
+  final _loginScript = TextEditingController();
 
   late AuthMethod _auth;
   late ServerColor? _color;
   late ServerIcon? _icon;
   bool _referenceKeyFile = true;
   late bool _syncSecret;
+  late bool _excludeFromSync;
   bool _busy = false;
+
+  /// The id a *new* server will be saved under, minted once rather than per
+  /// save so a test connection and the save that follows describe one server,
+  /// and so a save that failed and is retried does not mint a second identity.
+  final String _draftId = uuidV4();
+
+  /// The vault id a *new* server's credential is saved under, minted once for
+  /// the same reason as [_draftId] and one the credential needs more:
+  /// `_saveServerNow` writes the vault before the config store, so a save that
+  /// stored the secret and then failed on the config write left an entry
+  /// behind — and a retry minting a fresh id orphaned it in the keyring with
+  /// nothing pointing at it and nothing that would ever clean it up.
+  final String _draftSecretId = uuidV4();
+
+  /// The connection test: whether one is running, what the last one found,
+  /// and which attempt is current. The counter is the cancellation flag — the
+  /// SSH layer has no cancel seam, so a superseded or abandoned attempt is
+  /// left to finish and its result dropped, which is what the terminal pane
+  /// does with a tab that closed mid-connect.
+  bool _testing = false;
+  ConnectionTestResult? _testResult;
+  int _testAttempt = 0;
 
   /// The security-scoped bookmark backing [_keyPath]'s current text, and the
   /// path it was minted for. Set by Browse… (or loaded for an existing
@@ -73,6 +276,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     _auth = e?.authMethod ?? AuthMethod.password;
     _keyPath.text = e?.identityFilePath ?? '';
     _referenceKeyFile = e?.identityFilePath != null;
+    _loginScript.text = e?.loginScript ?? '';
     if (e != null) {
       // Load the stored grant with the path it was actually minted for (which
       // a synced edit may have diverged from), so re-saving can't re-bless a
@@ -85,21 +289,74 @@ class _ServerEditorState extends State<_ServerEditor> {
     // New credentials default to syncable (a no-op until the global "sync saved
     // passwords & keys" is on); existing servers keep their stored choice.
     _syncSecret = e?.syncSecret ?? true;
+    _excludeFromSync = e?.excludeFromSync ?? false;
+    for (final field in _connectionFields) {
+      field.addListener(_dropTestResult);
+    }
+  }
+
+  /// Every text field in the form, so [dispose] releases them all.
+  List<TextEditingController> get _fields => [
+        _label,
+        _host,
+        _port,
+        _user,
+        _group,
+        _password,
+        _keyPem,
+        _keyPath,
+        _keyPassphrase,
+        _loginScript,
+      ];
+
+  /// The fields a connection test's outcome actually depends on.
+  ///
+  /// Narrower than [_fields] because [_dropTestResult] does not merely grey
+  /// out a stale result — it bumps `_testAttempt`, which abandons a test
+  /// still in flight. Renaming a server, moving it to another group or
+  /// editing its login script cannot change what a connection does (the
+  /// script is never executed, which the disclaimer beside it says), so
+  /// discarding a result the user waited minutes for over a typo in the name
+  /// is a cost with nothing bought for it.
+  List<TextEditingController> get _connectionFields => [
+        _host,
+        _port,
+        _user,
+        _password,
+        _keyPem,
+        _keyPath,
+        _keyPassphrase,
+      ];
+
+  /// Forget the last test result, and abandon one still running, because the
+  /// form no longer describes what is being tested.
+  ///
+  /// A green "authenticated" sitting beside a host that has since been retyped
+  /// reads as current, and the report's whole claim is that it describes the
+  /// server about to be saved. An attempt *in flight* is the same problem
+  /// arriving late, so the counter moves too and its result lands as
+  /// superseded — which means clearing [_testing] here as well, or the *Test*
+  /// button would stay disabled behind a live spinner, waiting on a result
+  /// that will be dropped. Save is never gated on a running test: it takes
+  /// `_busy` alone, so a test in flight does not block saving.
+  ///
+  /// Guarded so typing does not rebuild the dialog on every keystroke.
+  void _dropTestResult() {
+    _testAttempt++;
+    if (_testResult != null || _testing) {
+      setState(() {
+        _testResult = null;
+        _testing = false;
+      });
+    }
   }
 
   @override
   void dispose() {
-    for (final c in [
-      _label,
-      _host,
-      _port,
-      _user,
-      _group,
-      _password,
-      _keyPem,
-      _keyPath,
-      _keyPassphrase
-    ]) {
+    for (final c in _fields) {
+      // Disposing drops the listeners with it; removing them first is only so
+      // a late notification cannot reach setState on the way down.
+      c.removeListener(_dropTestResult);
       c.dispose();
     }
     super.dispose();
@@ -161,25 +418,89 @@ class _ServerEditorState extends State<_ServerEditor> {
                 DropdownMenuItem(
                     value: AuthMethod.privateKey, child: Text('Private key')),
               ],
-              onChanged: (v) => setState(() => _auth = v ?? AuthMethod.agent),
+              // Through _dropTestResult, not a bare clear: the auth method is
+              // baked into the config a test runs against, so one already in
+              // flight is describing a credential the form no longer holds —
+              // and would otherwise land looking current.
+              onChanged: (v) {
+                setState(() => _auth = v ?? AuthMethod.agent);
+                _dropTestResult();
+              },
             ),
             const SizedBox(height: 8),
             ..._authFields(),
             const SizedBox(height: 20),
+            ..._syncFields(),
+            const SizedBox(height: 20),
+            ..._loginScriptFields(),
+            const SizedBox(height: 20),
             ..._appearanceFields(),
             const SizedBox(height: 20),
             Row(
-              mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                OutlinedButton.icon(
+                  onPressed: _busy || _testing ? null : _testConnection,
+                  icon: _testing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          // Labelled like the outcome icons this PR adds: a
+                          // spinner is the one state with nothing to read, so
+                          // without this a screen-reader user cannot tell a
+                          // running test from a button that did nothing. The
+                          // indicator's own parameter rather than a wrapping
+                          // `Semantics`, which would merge a second node into
+                          // its announcement.
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            semanticsLabel: 'Testing connection',
+                          ),
+                        )
+                      : const Icon(Icons.wifi_tethering, size: 18),
+                  label: Text(_testing ? 'Testing…' : 'Test connection'),
+                ),
+                const Spacer(),
+                // Cancel stays live during a test: the attempt cannot be
+                // stopped, but being unable to leave the dialog for the five
+                // minutes an authentication may take is worse than letting it
+                // finish unwatched.
                 TextButton(
                     onPressed:
                         _busy ? null : () => Navigator.of(context).pop(),
                     child: const Text('Cancel')),
                 const SizedBox(width: 8),
                 FilledButton(
+                    // Not disabled while a test runs: an attempt can take minutes,
+                    // and the only other way out was typing a character into
+                    // any field to drop the test. Saving mid-test is sound —
+                    // any edit that could make the two disagree already
+                    // supersedes the attempt, and the save pops the editor, so
+                    // the late result is discarded by the mounted check.
                     onPressed: _busy ? null : _save,
                     child: const Text('Save')),
               ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Testing authenticates without opening a shell or running the '
+              'login script. A host key you approve here is trusted for the '
+              'test only — the first real connection asks again.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).hintColor,
+                  ),
+            ),
+            if (_testResult != null) const SizedBox(height: 12),
+            // The spinner announces that a test started; without this the one
+            // thing that matters — how it ended — arrives silently, and a
+            // screen-reader user has to go looking for it. Kept mounted while
+            // idle rather than added with the result: several screen readers
+            // announce a live region whose content changes and stay quiet for
+            // one that appears already filled.
+            Semantics(
+              liveRegion: true,
+              child: _testResult == null
+                  ? const SizedBox.shrink()
+                  : ConnectionTestReport(result: _testResult!),
             ),
           ],
         ),
@@ -215,7 +536,13 @@ class _ServerEditorState extends State<_ServerEditor> {
             title: const Text('Reference a key file on disk'),
             subtitle: const Text("Don't store the key — read it at connect"),
             value: _referenceKeyFile,
-            onChanged: (v) => setState(() => _referenceKeyFile = v),
+            // Same as the auth dropdown: this switches the test between the
+            // key on disk and the pasted one, so an attempt already running
+            // is about the other of the two.
+            onChanged: (v) {
+              setState(() => _referenceKeyFile = v);
+              _dropTestResult();
+            },
           ),
           if (_referenceKeyFile)
             Row(
@@ -256,6 +583,36 @@ class _ServerEditorState extends State<_ServerEditor> {
           if (!_referenceKeyFile) _syncSecretToggle(),
         ];
     }
+  }
+
+  /// An optional command to run in this server's shell once it opens. Typed
+  /// into the session rather than executed on a side channel, so `cd`, `tmux
+  /// attach`, and friends do what they would if the user had typed them —
+  /// which is also the honest description to show for it.
+  List<Widget> _loginScriptFields() {
+    return [
+      const Divider(),
+      const SizedBox(height: 8),
+      TextFormField(
+        controller: _loginScript,
+        maxLines: 3,
+        minLines: 1,
+        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+        decoration: const InputDecoration(
+          labelText: 'Login script (optional)',
+          hintText: 'e.g. cd ~/work && tmux attach -t work || tmux new -s work',
+          border: OutlineInputBorder(),
+        ),
+      ),
+      const SizedBox(height: 4),
+      Text(
+        'Runs as if typed at the prompt right after connecting. Its text and '
+        'output land in scrollback — keep secrets out. Blank for none.',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).hintColor,
+            ),
+      ),
+    ];
   }
 
   /// How this server is filed and marked in the list: its group, its accent
@@ -338,15 +695,65 @@ class _ServerEditorState extends State<_ServerEditor> {
 
   /// Per-server opt-in for including this credential in sync. Gated globally by
   /// the "Sync saved passwords & keys" setting, so it's a no-op until that's on.
+  ///
+  /// Excluding the whole server settles the question, so the switch reads off
+  /// and takes no input then. What it *stores* is still the user's own choice
+  /// ([_syncSecret]) rather than the displayed false: clearing the exclusion
+  /// has to give them back the answer they picked, not silently opt their
+  /// credential out on the way through.
   Widget _syncSecretToggle() => SwitchListTile(
         contentPadding: EdgeInsets.zero,
         title: const Text('Allow this credential to sync'),
-        subtitle: const Text(
-            'End-to-end encrypted. Also needs sync set up with '
-            '"Sync saved passwords & keys" enabled.'),
-        value: _syncSecret,
-        onChanged: (v) => setState(() => _syncSecret = v),
+        subtitle: Text(_excludeFromSync
+            ? 'Not used while this server is excluded from sync.'
+            : 'End-to-end encrypted. Also needs sync set up with '
+                '"Sync saved passwords & keys" enabled.'),
+        value: _syncSecret && !_excludeFromSync,
+        onChanged:
+            _excludeFromSync ? null : (v) => setState(() => _syncSecret = v),
       );
+
+  /// Whether this server takes part in sync at all.
+  ///
+  /// Worth saying out loud in the subtitle, because "exclude" understates what
+  /// the switch does to a server that has already synced: the retraction is a
+  /// tombstone, so the other devices lose their copy. Only this device keeps
+  /// one, which is the point — but it is not something to find out afterwards.
+  List<Widget> _syncFields() => [
+        const Divider(),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Exclude from sync'),
+          subtitle: Text(_excludeFromSync
+              ? 'Kept on this device only. A copy that synced earlier is '
+                  'removed from the sync server and from your other devices.'
+              : 'Keep this server on this device only — never upload it.'),
+          value: _excludeFromSync,
+          onChanged: (v) async {
+            if (v && !await _confirmExclusion()) return;
+            if (mounted) setState(() => _excludeFromSync = v);
+          },
+        ),
+      ];
+
+  /// Ask before an exclusion that reaches other devices.
+  ///
+  /// Turning this on for a server that may already have synced is the one
+  /// thing this editor does that deletes data somewhere else, and the switch
+  /// sits a few rows from the login script and the colour picker, which lowers
+  /// the stakes it looks like it carries. Subtitles get skimmed; a dialog does
+  /// not.
+  ///
+  /// Nothing is asked when there is nothing to retract — a server being added
+  /// has never been anywhere, and with no sync account configured there is no
+  /// other device to lose it. Turning the switch back off is not destructive
+  /// either way.
+  Future<bool> _confirmExclusion() => excludingNeedsConfirmation(
+        existing: widget.existing,
+        syncConfigured: widget.state.services.isSyncConfigured,
+      )
+          ? confirmSyncExclusion(context)
+          : Future<bool>.value(true);
 
   /// Pick an identity file. On macOS this also mints the security-scoped
   /// bookmark that keeps a key outside ~/.ssh readable across relaunches.
@@ -369,49 +776,27 @@ class _ServerEditorState extends State<_ServerEditor> {
     return null;
   }
 
-  Future<void> _save() async {
-    if (!_form.currentState!.validate()) return;
-    setState(() => _busy = true);
-    final now = DateTime.now().millisecondsSinceEpoch;
+  /// The server the form currently describes, with [secretRef] as its
+  /// credential reference. Shared by Save and Test connection so a test can
+  /// never run against a different server than the one about to be saved.
+  ServerConfig _formConfig({required String? secretRef, required int now}) {
     final existing = widget.existing;
-    final id = existing?.id ?? uuidV4();
-
-    String? secretRef = existing?.secretRef;
-    Secret? secret;
-
-    if (_auth == AuthMethod.password && _password.text.isNotEmpty) {
-      secretRef ??= uuidV4();
-      secret = Secret(
-          id: secretRef, kind: SecretKind.password, value: _password.text);
-    } else if (_auth == AuthMethod.privateKey &&
-        !_referenceKeyFile &&
-        _keyPem.text.isNotEmpty) {
-      // Guard on isNotEmpty (like the password branch): the PEM field starts
-      // blank when editing an existing server, so without this, editing any
-      // other field and saving would overwrite the stored key with "".
-      secretRef ??= uuidV4();
-      secret = Secret(
-        id: secretRef,
-        kind: SecretKind.privateKey,
-        value: _keyPem.text,
-        keyPassphrase:
-            _keyPassphrase.text.isEmpty ? null : _keyPassphrase.text,
-      );
-    }
-
-    final identityFilePath =
-        (_auth == AuthMethod.privateKey && _referenceKeyFile)
-            ? _keyPath.text.trim()
-            : null;
-    final config = ServerConfig(
-      id: id,
+    return ServerConfig(
+      id: existing?.id ?? _draftId,
       label: _label.text.trim(),
       host: _host.text.trim(),
-      port: int.tryParse(_port.text) ?? 22,
+      port: int.tryParse(_port.text.trim()) ?? 22,
       username: _user.text.trim(),
       authMethod: _auth,
-      secretRef: secret != null ? secretRef : (existing?.secretRef),
-      identityFilePath: identityFilePath,
+      secretRef: secretRef,
+      // Blank reads as "no file referenced", not as a path made of nothing:
+      // the validator blocks an empty path, and a caller that ever reached
+      // here without it would otherwise ask the SSH layer to read `''`.
+      identityFilePath: (_auth == AuthMethod.privateKey &&
+              _referenceKeyFile &&
+              _keyPath.text.trim().isNotEmpty)
+          ? _keyPath.text.trim()
+          : null,
       syncSecret: _syncSecret,
       // Normalized here rather than trusted from the field, so a trailing
       // space typed into the group name can't fork a second section that
@@ -419,23 +804,196 @@ class _ServerEditorState extends State<_ServerEditor> {
       group: normalizeServerGroup(_group.text),
       color: _color,
       icon: _icon,
+      loginScript: normalizeLoginScript(_loginScript.text),
+      excludeFromSync: _excludeFromSync,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     );
+  }
 
-    // Trim-insensitively: the saved path is trimmed, while a Browse…-picked
-    // path is verbatim (macOS filenames may carry edge whitespace — the
-    // bookmark, which opens by file identity, still works there).
-    final bookmarkMatchesPath = identityFilePath != null &&
-        _keyBookmark != null &&
-        identityFilePath == _keyBookmarkPath?.trim();
-    await widget.state.saveServer(
-      config,
-      secret: secret,
-      identityFileBookmark: bookmarkMatchesPath
-          ? IdentityFileBookmark(path: identityFilePath, bookmark: _keyBookmark!)
-          : null,
+  /// The security-scope grant that goes with [identityFilePath], or null when
+  /// there is none to apply.
+  ///
+  /// Matched trim-insensitively: the saved path is trimmed, while a
+  /// Browse…-picked path is verbatim (macOS filenames may carry edge
+  /// whitespace — the bookmark, which opens by file identity, still works
+  /// there). A hand-edit that moves the path off the grant drops it, since a
+  /// bookmark only ever opens the exact file it was created from.
+  IdentityFileBookmark? _bookmarkFor(String? identityFilePath) {
+    final bookmark = _keyBookmark;
+    if (identityFilePath == null || bookmark == null) return null;
+    if (identityFilePath != _keyBookmarkPath?.trim()) return null;
+    return IdentityFileBookmark(path: identityFilePath, bookmark: bookmark);
+  }
+
+  /// Connect and authenticate with what the form holds right now — including
+  /// a password or key typed but not yet saved, which is not in the vault and
+  /// would otherwise be tested as whatever is stored (or as nothing at all,
+  /// for a server being added).
+  Future<void> _testConnection() async {
+    if (!_form.currentState!.validate()) return;
+    final attempt = ++_testAttempt;
+    setState(() {
+      _testing = true;
+      _testResult = null;
+    });
+
+    final log = SshConnectionLog();
+    final config = _formConfig(
+      secretRef: widget.existing?.secretRef,
+      now: DateTime.now().millisecondsSinceEpoch,
     );
+    final ConnectionTestResult result;
+    try {
+      result = await widget.state.testServerConnection(
+        config,
+        // A credential box is hidden (and stale) once the auth method stops
+        // using it, and the PEM box also while the key is referenced from
+        // disk; passing either then would test text the user cannot see.
+        // `resolveCredentials` reads each draft only under its own auth
+        // method, so this changes nothing it does — it makes the call site
+        // say what it means. The passphrase stays with the method, not the
+        // reference toggle: it decrypts the on-disk key too.
+        draftPassword: _auth == AuthMethod.password ? _password.text : null,
+        draftPrivateKey: _auth == AuthMethod.privateKey && !_referenceKeyFile
+            ? _keyPem.text
+            : null,
+        draftKeyPassphrase:
+            _auth == AuthMethod.privateKey ? _keyPassphrase.text : null,
+        draftIdentityBookmark: _bookmarkFor(config.identityFilePath),
+        log: log,
+      );
+    } catch (error) {
+      // runConnectionTest turns every failure it can see into a result, so
+      // reaching here means something outside it went wrong. Belt and braces,
+      // because the alternative is the wedged editor `_save` is careful to
+      // avoid: _testing stuck on, Save disabled, and Cancel — which throws
+      // away everything just typed — as the only way out.
+      log.freeze();
+      if (!mounted || attempt != _testAttempt) return;
+      // The same inline report an expected failure gets, not a toast: what
+      // went wrong is by definition unexpected, so it is the detail worth
+      // keeping — and a toast fades with it.
+      setState(() {
+        _testing = false;
+        _testResult = ConnectionTestResult(
+          ok: false,
+          summary: 'Could not test the connection.',
+          notes: ['$error'],
+          log: log.toString(),
+        );
+      });
+      return;
+    }
+    log.freeze();
+    // Superseded by a newer attempt, or the dialog is gone: drop it.
+    if (!mounted || attempt != _testAttempt) return;
+    setState(() {
+      _testing = false;
+      _testResult = result;
+    });
+  }
+
+  Future<void> _save() async {
+    if (!_form.currentState!.validate()) return;
+    setState(() => _busy = true);
+    final existing = widget.existing;
+    // Against the freshest copy this device holds, not the one captured when
+    // the editor opened: a round that pulled a newer record meanwhile is
+    // exactly the record this stamp has to outrank.
+    final latest = existing == null
+        ? null
+        : widget.state.servers
+            .where((s) => s.id == existing.id)
+            .map((s) => s.updatedAt)
+            .fold<int>(existing.updatedAt, math.max);
+    final now = nextUpdatedAt(
+      latest,
+      now: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    final existingRef = existing?.secretRef;
+    // Everything the form says, read here — before the awaited vault call
+    // below. `_busy` disables the buttons, not the fields, so a keyring that
+    // prompts (macOS) or is slow to answer leaves them editable for as long
+    // as it takes: read afterwards, a keystroke landing in that window is
+    // saved without ever passing the `validate()` this method opened with,
+    // and a host cleared after Save was pressed is written empty.
+    final password = _password.text;
+    final keyPem = _keyPem.text;
+    final keyPassphrase = _keyPassphrase.text;
+    // The auth dropdown and the reference switch too, and for the same
+    // reason: they are as enabled as the text boxes while `_busy`, and the
+    // credential is planned *after* the vault read below. Flipped in that
+    // window, `plannedCredential` would describe a different server than the
+    // config being saved — password material written over a stored PEM while
+    // the config saves as key auth, which is the exact cross-method
+    // corruption the carry-over logic exists to prevent.
+    final auth = _auth;
+    final referenceKeyFile = _referenceKeyFile;
+    // The config too, and not only the credential fields: it reads seven more
+    // controllers. Its `secretRef` is the one thing that cannot be known yet
+    // — whether a credential is written depends on what the vault answers —
+    // so it is built against the existing ref and corrected below, which is
+    // a field this form does not own rather than one the user could edit.
+    final formConfig = _formConfig(secretRef: existingRef, now: now);
+    // And the grant that goes with the path this config captured. Browse…
+    // stays live too, so a bookmark minted during the vault read would be
+    // matched against a path from a different moment and silently dropped,
+    // leaving a saved config whose identity file has no grant to open it.
+    final identityFileBookmark = _bookmarkFor(formConfig.identityFilePath);
+    // Only when a referenced key's passphrase is about to be written over an
+    // entry that may hold a PEM: every other branch replaces the entry whole.
+    Secret? stored;
+    if (existingRef != null &&
+        plannedCredentialReadsStored(
+          auth: auth,
+          referenceKeyFile: referenceKeyFile,
+          keyPassphrase: keyPassphrase,
+        )) {
+      try {
+        stored = await widget.state.services.vault.getSecret(existingRef);
+      } catch (e) {
+        // A locked keyring, reported like the save failure below rather than
+        // silently writing the passphrase over the key it was stored beside.
+        if (!mounted) return;
+        setState(() => _busy = false);
+        showTopToastIn(context, message: 'Could not save: $e');
+        return;
+      }
+    }
+    final secretId = existingRef ?? _draftSecretId;
+    final secret = plannedCredential(
+      auth: auth,
+      referenceKeyFile: referenceKeyFile,
+      password: password,
+      keyPem: keyPem,
+      keyPassphrase: keyPassphrase,
+      secretId: secretId,
+      stored: stored,
+    );
+
+    final config = secret != null && secretId != existingRef
+        // `updatedAt` is not restated here: `_formConfig` already stamped it
+        // with the same `now`, and repeating it reads as though a save that
+        // reuses its secret entry keeps an older one.
+        ? formConfig.copyWith(secretRef: secretId)
+        : formConfig;
+    try {
+      // The vault write inside throws (VaultLockedException) when the OS
+      // keyring is unavailable — tell the user instead of wedging the editor
+      // with _busy stuck on.
+      await widget.state.saveServer(
+        config,
+        secret: secret,
+        identityFileBookmark: identityFileBookmark,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      showTopToastIn(context, message: 'Could not save: $e');
+      return;
+    }
     if (mounted) Navigator.of(context).pop();
   }
 }

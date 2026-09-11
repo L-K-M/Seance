@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar small icon for the session keep-alive service: a terminal
+     prompt (>_) drawn white-on-transparent, as status icons must be — the
+     full-colour launcher mipmap renders as an unreadable blob up there. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M6,5 L13,12 L6,19"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+    <path
+        android:pathData="M15,16.75 h4 a1.25,1.25 0 0 1 1.25,1.25 a1.25,1.25 0 0 1 -1.25,1.25 h-4 a1.25,1.25 0 0 1 -1.25,-1.25 a1.25,1.25 0 0 1 1.25,-1.25 z"
+        android:fillColor="#FFFFFFFF"/>
+</vector>

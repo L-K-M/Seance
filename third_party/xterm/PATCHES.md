@@ -236,10 +236,23 @@ what must be preserved.
     first survivor, detaches the trimmed slots, and advances
     `absoluteStartIndex` — exactly like a ring-buffer eviction.
 
+26. **Clickable web URLs** (`core/buffer/buffer.dart#getLinkAt`,
+    `terminal_view.dart#onLinkTap`; regressions: `link_test.dart`,
+    `link_gesture_test.dart`): HTTP(S) detection follows soft wraps and maps
+    wide characters to display cells. Prose punctuation is trimmed; credentials
+    and non-web schemes are rejected. Logical lines exceeding 16K cells are
+    skipped to bound hover work. Links show a hand cursor and activate on
+    Ctrl-click (Cmd-click on Apple platforms) or touch tap. Plain clicks,
+    shift-clicks, drags, and remote mouse reporting keep their existing behavior.
+    Hover hints clear on output, scrolling, or controller changes and stay
+    hidden where remote mouse reporting owns the tap, including click-only
+    reporting (which leaves releases unconsumed). The app launches links
+    externally and reports browser failures.
+
 ### Robustness (regressions: `app/seance_app/test/terminal_runaway_sequence_test.dart`,
 `test/src/core/escape/parser_test.dart`)
 
-26. **An unfinished escape sequence is no longer unbounded**
+27. **An unfinished escape sequence is no longer unbounded**
     (`core/escape/parser.dart#_process`, `kMaxPendingSequenceLength`):
     upstream parks an incomplete sequence by rolling the whole run back onto
     the `ByteConsumer` and waiting for the rest on a later `write`. That is

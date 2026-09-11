@@ -33,7 +33,19 @@ class SeanceTheme {
 
 /// Colors for the online/offline/unknown indicator dots.
 class StatusColors {
-  static Color online(BuildContext _) => const Color(0xFF3FB950); // green
-  static Color offline(BuildContext _) => const Color(0xFFF85149); // red
-  static Color unknown(BuildContext _) => const Color(0xFF8B949E); // grey
+  // Darken light-theme indicators to stay legible on tinted containers too.
+  static Color online(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.light
+          ? const Color(0xFF1A7F37)
+          : const Color(0xFF3FB950);
+
+  static Color offline(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.light
+          ? const Color(0xFFCF222E)
+          : const Color(0xFFF85149);
+
+  static Color unknown(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.light
+          ? const Color(0xFF57606A)
+          : const Color(0xFF8B949E);
 }

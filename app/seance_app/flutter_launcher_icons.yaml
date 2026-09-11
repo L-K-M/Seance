@@ -5,8 +5,9 @@
 #
 #   cd app/seance_app && dart run flutter_launcher_icons
 #
-# Linux has no generator here: the desktop icon comes from a .desktop file on
-# installed systems, which Séance doesn't ship yet.
+# Linux has no generator here: on installed systems the desktop icon comes
+# from the hicolor sizes that scripts/package-linux.sh generates out of this
+# same master image when it builds the .deb / AppImage.
 flutter_launcher_icons:
   image_path: "../../media-sources/seance-icon.png"
   android: true

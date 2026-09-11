@@ -57,7 +57,8 @@ release (proposal §2, M10).
 Requires the Dart SDK (3.12+) for the pure-Dart packages and the Flutter SDK
 for the app. `scripts/build.sh` builds every target this host can build (the
 native sync-server binary, the Docker image, the Flutter desktop app, and the
-Android APK) and prints one summary; the individual commands:
+Android APK; on Linux it also packages the app into a `.deb` and an AppImage)
+and prints one summary; the individual commands:
 
 ```bash
 # Everything this host can build (missing toolchains are skipped; explicitly
@@ -89,8 +90,10 @@ docker compose -f packages/seance_sync_server/docker-compose.yml up -d --build
 version line at the top of this README in step, commits, and tags `v<version>`
 — pushing that tag triggers `.github/workflows/release.yml`, which tests, then
 publishes the sync-server binaries, the `ghcr.io/l-k-m/seance` Docker image,
-and the app for every client platform — Android APK, Linux/macOS/Windows
-desktop bundles, and an unsigned iOS IPA (re-sign to sideload) — as the
+and the app for every client platform — Android APK, Linux `.deb` + AppImage
+packages for x64 plus plain desktop bundles (via
+`scripts/package-linux.sh`), macOS/Windows desktop bundles, and an unsigned
+iOS IPA (re-sign to sideload) — as the
 GitHub Release. The desktop bundles are unsigned (macOS: ad-hoc), so first
 launch needs the usual unidentified-developer step; `scripts/build.sh` stays
 the local path for a signed-for-this-Mac build.
@@ -161,10 +164,21 @@ sudo apt-get update && sudo apt-get install -y libsqlite3-0
 
 Facts about this environment:
 - Outbound HTTPS goes through a proxy; pub.dev and the Dart archive are reachable.
+- **No root in the dev container** (no sudo, uid 1000): the apt packages above
+  can't be installed. A conda-forge env substitutes for the whole Linux
+  toolchain — `micromamba create -n build -c conda-forge clang=17 clangxx=17
+  compiler-rt lld sysroot_linux-64 cmake ninja pkg-config gtk3 libsecret
+  jsoncpp xz imagemagick binutils file glib 'libstdcxx-devel_linux-64=12'
+  'libgcc-devel_linux-64=12'`, then export
+  `PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig:$CONDA_PREFIX/share/pkgconfig"`
+  (the env's activate scripts don't set it, and `expat` ships no `expat.pc` —
+  write a stub). The gcc-12 downgrade matters: GCC 16's libstdc++ headers drop
+  C++14, which the Flutter Linux template's `cxx_std_14` needs.
+- Even `unzip`/`bzip2` may be missing — a static busybox in `~/opt/bin`\n  provides them (Flutter's bootstrap needs unzip).
 - **Docker CLI is present but the daemon was NOT running** — `docker build`
   could not be exercised here. The Dockerfile is verified only by `dart compile
   exe` + a native-binary curl smoke test (see §4).
-- Flutter runs as root and prints a "don't run as root" warning — harmless.
+- Flutter may run as root and print a "don't run as root" warning — harmless.
 
 ---
 
@@ -247,17 +261,28 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 - `scripts/build.sh` — builds every target this host can build (`server`,
   `docker`, `app`, `apk`); skips targets whose toolchain is missing, fails only
-  on targets you name explicitly. Artifacts are staged into `dist/`;
-  `--install` builds the host's app and installs it (macOS:
-  `/Applications/Séance.app`; Linux: `~/.local/opt/seance`), then reveals the
-  installed copy. `--help` prints the contract.
+  on targets you name explicitly. Artifacts are staged into `dist/`; on Linux
+  the `app` target additionally runs `scripts/package-linux.sh` to produce a
+  `.deb` and an AppImage there. `--install` builds the host's app and installs
+  it (macOS: `/Applications/Séance.app`; Linux: `~/.local/opt/seance`), then
+  reveals the installed copy. `--help` prints the contract.
+- `scripts/package-linux.sh` — turns a built Flutter Linux bundle into
+  installable artifacts: `seance_<version>-1_<arch>.deb` (dpkg-deb; Depends
+  derived from the bundle's actual ELF headers via readelf/objdump — a
+  soname→package table with t64 alternatives, glibc/libstdc++ symbol-version
+  floors — so the metadata can't go stale as plugins change) and
+  `seance-linux-<arch>.AppImage` (appimagetool, fetched once and cached).
+  Deliberately no .rpm/Flatpak: non-Debian users get the AppImage. Runs from
+  `scripts/build.sh` (best-effort AppImage) and both CI workflows (required).
 - `scripts/release.sh X.Y.Z [--push]` — stub over the shared
   [release-tool](https://github.com/L-K-M/release-tool) engine (`lkm-release`):
   bumps all four pubspecs in lockstep (+ app lockfile + README version line),
   commits, tags `v<version>`; the pushed tag triggers
   `.github/workflows/release.yml` (tests gate; publishes sync-server binaries,
-  the GHCR Docker image, and all five app clients). Runs on macOS (BSD sed),
-  like the engine.
+  the GHCR Docker image, and all app clients, now including the Linux
+  .deb + AppImage packages). Runs on macOS (BSD sed),
+  like the engine. (The post-bump hook is sed-portable since 0.7.0, so Linux
+  hosts can cut releases too.)
 - `./update.sh` — on a deployment host: pull the latest code, then
   `docker compose up -d --build` the sync server. Honors per-deployment
   overrides in `packages/seance_sync_server/.env` (e.g. `SEANCE_PUBLISH_ADDR`
@@ -270,13 +295,21 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 ## 4. How things were verified (so you can re-verify)
 
 - 181 Dart tests + 107 Flutter tests, all analyze clean.
-- Sync correctness is proven two ways: `seance_core/test/sync_test.dart` (engine,
+- Sync correctness is proven two ways: `packages/seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and
-  `seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +
+  `packages/seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +
   `SyncEngine` against a live server over a socket).
 - The server was compiled to a native binary and smoke-tested with `curl`:
   register → login (accept correct verifier, reject wrong) → push (assigns seq)
   → pull → unauthenticated 401.
+- The Linux installers were built and smoke-tested end-to-end: `flutter build
+  linux --release` → `scripts/package-linux.sh` produced a `.deb` and an
+  AppImage; `dpkg-deb -I/-c` confirmed the control fields (Depends derived
+  from the bundle's ELF headers) and file layout, `dpkg-deb -x` + running the
+  extracted binary and `APPIMAGE_EXTRACT_AND_RUN=1 ./seance-linux-*.AppImage`
+  both reach GTK's "cannot open display" on a headless host — i.e. every ELF
+  and library path resolves; only the GUI needs a display. (Built in a no-root
+  Debian 12 container using a conda-forge toolchain — see §1.)
 - SQLite backend has its own test (round-trips + durability across reopen).
 
 ---
@@ -353,9 +386,9 @@ Do not "simplify" these away — they are load-bearing:
 
 - Commit messages end with a co-author trailer and the session link, per repo
   convention. **Do not put a model identifier** in commits, code, or docs.
-- Development happens on branch `claude/ssh-client-design-proposal-esejrg` and is
-  also mirrored to `main`. Push with `git push -u origin <branch>` and retry on
-  network errors.
+- Earlier design work used `claude/ssh-client-design-proposal-esejrg`.
+  New work follows the shared implementation and review rules below.
+  Push with `git push -u origin <branch>` and retry on network errors.
 - Keep new code matching the surrounding style: small focused files, doc
   comments that explain *why*, `analyze` clean before committing.
 - The assistant (LLM) is intentionally **always on** (personal tool) — there is
@@ -374,3 +407,149 @@ Both are behind interfaces and swappable without touching callers:
 
 See [docs/STATUS.md](docs/STATUS.md) for the full list of known gaps and the
 prioritized next-steps checklist.
+
+<!-- shared-rules:start -->
+
+## Working practices
+
+- Follow explicit task instructions over the default workflow below.
+- Before editing, inspect the branch and working tree, fetch remote updates,
+  and fast-forward where safe. Never overwrite existing work to update.
+- Resolve ambiguity before making consequential changes. State low-risk
+  assumptions; ask when scope, safety, or expected behavior is unclear.
+- Keep changes focused. Do not modify unrelated code, formatting, or comments.
+- Prefer surgical edits over whole-file rewrites when the result is equivalent.
+- Stage only intended files. Inspect the diff before committing.
+
+## Communication
+
+- Be concise, factual, and direct. Preserve necessary context and uncertainty.
+- Avoid praise, motivational filler, emojis, and em dashes in new prose.
+- Address the reader directly in user-facing copy.
+- Report what was verified and what remains unverified. Never imply that an
+  unavailable check passed.
+
+## Code design
+
+- Prefer early returns and shallow nesting. Separate logical blocks with
+  blank lines.
+- Use descriptive constants or enums for meaningful or repeated values.
+  Use existing standard definitions for protocol/specification constants.
+  Keep obvious, one-off values inline.
+- Use enums for behavioral modes that would otherwise require ambiguous
+  boolean arguments.
+- Default members to private. Widen visibility only for required consumers,
+  and review the change as an API design decision.
+- Follow the repository's declared dependency boundaries. UI and controllers
+  must use application services rather than directly accessing databases,
+  subprocesses, sockets, or other low-level mechanisms.
+- Encapsulate low-level mechanics behind domain-oriented interfaces.
+- Reuse genuinely shared logic. Avoid speculative abstractions and layers
+  that only forward calls.
+- Prefer pure functions for business rules and immutable data where practical.
+  Isolate side effects; document non-obvious state ownership or synchronization.
+- Explain non-obvious intent, constraints, and tradeoffs in comments.
+  Do not narrate obvious code. Add examples or diagrams when they clarify it.
+
+## Validation and errors
+
+- Validate untrusted input at entry points. Where practical, represent valid
+  states in types and enforce persistent invariants in database schemas.
+- Represent absence and failure explicitly.
+- Use assertions for internal programming invariants, not external-input
+  validation or required runtime error handling.
+- Prefer explicit, actionable errors over silent failure or undocumented
+  fallback. Document intentional recovery behavior.
+- Never report a skipped or failed operation as successful.
+
+## Bug fixes
+
+1. Identify the root cause and define an observable success criterion.
+2. Add a regression test and observe the relevant failure before fixing it.
+3. Implement the fix and observe the test passing.
+4. Check surrounding behavior for regressions and architectural consistency.
+
+If an automated regression test is impractical, document the reproduction
+and verification procedure. State any inability to reproduce the failure.
+
+## Verification
+
+- Run relevant tests and lint after changes.
+- Choose coverage by affected behavior and risk, not patch size.
+- Use integration or end-to-end tests for critical workflows and boundaries;
+  test isolated business rules at the lowest effective level.
+- Run broader suites for cross-cutting or high-risk changes, and the full
+  required release checks before releasing.
+- Validate the requested command, options, platform, and configuration.
+  Unrelated green CI is not proof that the reported problem is fixed.
+- Recheck after the final edit. Distinguish local checks from CI results.
+
+## Commit messages
+
+- Use a capitalized, imperative subject without a final period.
+- Target 50 characters; never exceed 72.
+- Separate the subject and body with one blank line.
+- Wrap body text at 72 characters.
+- Explain what changed and why. Leave implementation mechanics to the code.
+
+## Implementation and review
+
+Unless explicitly instructed otherwise:
+
+1. Work on a focused branch and open a PR against main.
+2. Inspect CI results and completed review feedback for the latest commit.
+   A successful reviewer job does not mean the review found no problems.
+3. Address important findings or explain why they do not apply. Handle minor
+   findings according to the stopping rules below.
+4. Evaluate each fix in the surrounding project, add regression coverage,
+   and rerun affected checks before pushing.
+5. Repeat until a stopping criterion is met.
+6. Merge without asking again once the stopping criterion is met, required
+   checks pass on the latest commit, and no unresolved blockers or required
+   human review requests remain.
+
+### Automated review stopping rules
+
+Judge findings by verified impact, not the reviewer's severity label.
+Important findings concern correctness, security, data loss, broken builds,
+or materially degraded behavior/performance.
+
+Track completed review rounds and consecutive rounds without important
+findings. Reruns of the same revision and integration failures do not count.
+
+- No applicable actionable feedback: finish immediately.
+- First minor-only round: optionally fix worthwhile, low-risk findings.
+  Do not manufacture another push merely to obtain another review.
+- Two consecutive rounds without important findings: stop responding to
+  automated nitpicks, even if actionable minor suggestions remain.
+  Defer worthwhile leftovers rather than continuing the cycle.
+- A confirmed important finding resets the minor-only streak. Address it
+  and verify the fix before continuing.
+
+After ten completed rounds, enter stabilization:
+
+- Stop optional cleanup, refactoring, and nitpick fixes.
+- One completed review without confirmed important findings is sufficient
+  to finish, even if minor suggestions remain.
+- Continue only for confirmed important defects. If resolving them stalls,
+  report the blockers rather than continuing indefinitely.
+
+These limits end optional automated-feedback work. They do not waive
+confirmed blockers, unresolved human review requests, or required checks.
+
+### Reviewer integration failures
+
+After two consecutive reviewer-integration failures, stop and report the
+review gap. Do not treat failures as approval. An explicit user instruction
+may waive review; report that waiver rather than claiming review passed.
+
+## Completion checklist
+
+- The requested behavior is implemented without unrelated changes.
+- Relevant checks pass for the latest code.
+- Important review findings are addressed or rejected with reasons.
+- Deferred suggestions, remaining risks, and validation gaps are disclosed.
+- The final response accurately states whether work is committed, pushed,
+  and merged.
+
+<!-- shared-rules:end -->

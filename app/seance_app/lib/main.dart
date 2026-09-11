@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_state.dart';
 import 'services/app_services.dart';
+import 'services/secure_master_key.dart';
 import 'theme.dart';
 import 'ui/adaptive_shell.dart';
 import 'ui/app_menus.dart';
@@ -110,9 +111,52 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
     await state.load();
     _installMacMenu(state);
     _warnIfSettingsWereRecovered(state);
+    _warnIfKeystoreUnavailable(state);
     // Fire-and-forget: don't let a slow/offline update check hold up startup.
     unawaited(_checkForUpdate(state));
     return state;
+  }
+
+  /// The OS keystore was down at bootstrap (locked login keyring, no Secret
+  /// Service daemon — the app still started, but saved passwords/keys/tokens
+  /// are unreachable). Tell the user, once, with a retry: a locked keyring on
+  /// an auto-login machine unlocks without any Séance change, and
+  /// gnome-keyring appears on minimal desktops after one install + relaunch.
+  void _warnIfKeystoreUnavailable(AppState state) {
+    final masterKeys = state.services.masterKeys;
+    if (masterKeys.keystoreStatus != KeystoreStatus.unavailable) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = navigatorKey.currentContext;
+      if (context == null) return;
+      showTopToast(
+        Overlay.of(context, rootOverlay: true),
+        message: 'The OS keyring is locked or unavailable '
+            '(${masterKeys.lastKeystoreError ?? 'no details'}) — saved '
+            'passwords, keys, and tokens are unreachable. Unlock the login '
+            'keyring (or install gnome-keyring), then retry.',
+        duration: const Duration(seconds: 12),
+        actionLabel: 'Retry',
+        onAction: () => unawaited(_retryKeystoreUnlock(state)),
+      );
+    });
+  }
+
+  Future<void> _retryKeystoreUnlock(AppState state) async {
+    if (await state.services.unlockVaultFromKeystore()) {
+      await state.onVaultUnlocked();
+      final context = navigatorKey.currentContext;
+      if (context == null) return;
+      showTopToast(
+        // navigatorKey's context is the root Navigator's — it outlives the
+        // awaits above; the lint can't see that this isn't widget-local.
+        // ignore: use_build_context_synchronously
+        Overlay.of(context, rootOverlay: true),
+        message: 'Keyring unlocked — saved secrets are available again.',
+      );
+    } else {
+      // Still locked: re-show the warning with the (possibly newer) reason.
+      _warnIfKeystoreUnavailable(state);
+    }
   }
 
   /// Tell the user their settings file could not be read, once, after the shell

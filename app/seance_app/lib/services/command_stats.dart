@@ -1,5 +1,8 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
+
+import 'package:seance_core/seance_core.dart';
 
 import 'atomic_file.dart';
 
@@ -16,8 +19,19 @@ class CommandStats {
   final Set<String> dismissed;
 
   CommandStats({Map<String, int>? counts, Set<String>? dismissed})
-      : counts = counts ?? {},
-        dismissed = dismissed ?? {};
+      : counts = {
+          for (final entry in (counts ?? <String, int>{}).entries)
+            if (_safeToRetain(entry.key)) entry.key: entry.value,
+        },
+        dismissed = {
+          for (final command in dismissed ?? <String>{})
+            if (_safeToRetain(command)) command,
+        };
+
+  // Filter before persistence, independent of the assistant's redaction toggle.
+  // Unmarked no-echo passwords remain undetectable: capture stays opt-in.
+  static final _redactor = SecretRedactor();
+  static bool _safeToRetain(String command) => !_redactor.wouldRedact(command);
 
   /// Cap the tracked set so the file can't grow without bound; when exceeded,
   /// the least-used entries are dropped.
@@ -26,7 +40,7 @@ class CommandStats {
   /// Record one submitted command. Returns true if the counts changed.
   bool record(String command) {
     final cmd = command.trim();
-    if (cmd.length < 2) return false; // skip single-key noise
+    if (cmd.length < 2 || !_safeToRetain(cmd)) return false;
     counts[cmd] = (counts[cmd] ?? 0) + 1;
     if (counts.length > _maxTracked) _trim();
     return true;
@@ -51,6 +65,7 @@ class CommandStats {
         .where((e) =>
             e.value >= minCount &&
             !dismissed.contains(e.key) &&
+            _safeToRetain(e.key) &&
             !isExisting(e.key))
         .toList()
       ..sort((a, b) => b.value.compareTo(a.value));
@@ -59,11 +74,21 @@ class CommandStats {
 
   int countFor(String command) => counts[command] ?? 0;
 
-  void dismiss(String command) => dismissed.add(command);
+  void dismiss(String command) {
+    if (!_safeToRetain(command)) return;
+    dismissed.add(command);
+  }
 
+  // Existing callers can mutate these collections; guard the disk boundary too.
   Map<String, dynamic> toJson() => {
-        'counts': counts,
-        'dismissed': dismissed.toList(),
+        'counts': {
+          for (final entry in counts.entries)
+            if (_safeToRetain(entry.key)) entry.key: entry.value,
+        },
+        'dismissed': [
+          for (final command in dismissed)
+            if (_safeToRetain(command)) command,
+        ],
       };
 
   factory CommandStats.fromJson(Map<String, dynamic> json) => CommandStats(
@@ -86,12 +111,31 @@ class CommandStatsStore {
 
   Future<CommandStats> load() async {
     if (!await file.exists()) return CommandStats();
+    final Map<String, dynamic> json;
+    final CommandStats stats;
     try {
-      return CommandStats.fromJson(
-          jsonDecode(await file.readAsString()) as Map<String, dynamic>);
+      json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      stats = CommandStats.fromJson(json);
     } catch (_) {
       return CommandStats();
     }
+
+    final oldCount = (json['counts'] as Map? ?? {}).length;
+    final oldDismissals = (json['dismissed'] as List? ?? []).length;
+    if (stats.counts.length == oldCount &&
+        stats.dismissed.length == oldDismissals) {
+      return stats;
+    }
+
+    // Scrub legacy records even when command capture is disabled after upgrade.
+    try {
+      await save(stats);
+    } on FileSystemException {
+      // Keep safe in-memory history usable; never log the rejected commands.
+      developer.log('Could not scrub command history; retry on next save.',
+          name: 'seance.command_stats');
+    }
+    return stats;
   }
 
   Future<void> save(CommandStats stats) async {

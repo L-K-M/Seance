@@ -64,11 +64,19 @@ jobs:
       - name: Test
         working-directory: app/seance_app
         run: flutter test
+      # App tests do not discover the vendored selection/IME/parser suite.
+      - name: Resolve terminal fork dependencies
+        working-directory: third_party/xterm
+        run: flutter pub get
+      - name: Test terminal fork
+        working-directory: third_party/xterm
+        run: flutter test
 
-  # Compile every client the release workflow ships (android / linux / macos /
-  # ios / windows) so a platform-breaking change is caught here, not when a tag
-  # tries to publish. Mirrors release.yml's `client` job minus the packaging
-  # and publishing — keep the two matrices in step.
+  # Compile every client the release workflow ships (android / linux x64 /
+  # macos / ios / windows) and run the Linux packaging step, so a
+  # platform- or packaging-breaking change is caught here, not when a tag
+  # tries to publish. Mirrors release.yml's `client` job minus publishing
+  # — keep the two matrices in step.
   client:
     name: Client build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -83,6 +91,12 @@ jobs:
           - os: ubuntu-latest
             target: linux
             build: linux --release
+            flavor: x64
+          # NOTE: no linux-arm64 entry, on purpose — Flutter does not publish
+          # linux-arm64 host artifacts (releases_linux.json is x64-only), so
+          # `flutter build linux` cannot run on the arm runners at all. Revisit
+          # when Flutter ships arm64 Linux host builds; until then arm64 Linux
+          # users have no native client.
           - os: macos-latest
             target: macos
             build: macos --release
@@ -102,13 +116,14 @@ jobs:
           distribution: temurin
           java-version: '17'
       # GTK toolchain for the Flutter Linux embedder, plus libsecret/jsoncpp
-      # for flutter_secure_storage's keyring backend.
+      # for flutter_secure_storage's keyring backend. imagemagick/file: the
+      # packaging step resizes the launcher icon and appimagetool needs `file`.
       - name: Install Linux desktop toolchain
-        if: matrix.target == 'linux'
+        if: startsWith(matrix.target, 'linux')
         run: >-
           sudo apt-get update && sudo apt-get install -y
           clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
-          libsecret-1-dev libjsoncpp-dev
+          libsecret-1-dev libjsoncpp-dev imagemagick file
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -130,6 +145,18 @@ jobs:
       - name: Build
         working-directory: app/seance_app
         run: flutter build ${{ matrix.build }}
+      # Exercise the same packaging the release workflow ships (keep the two
+      # in step) and expose the artifacts for inspection on every CI run.
+      - name: Package Linux artifacts (.deb + AppImage)
+        if: startsWith(matrix.target, 'linux')
+        run: scripts/package-linux.sh --output-dir dist-packages
+      - name: Upload Linux packages
+        if: startsWith(matrix.target, 'linux')
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.flavor }}-packages
+          path: dist-packages/*
+          if-no-files-found: error
 
   docker:
     name: Sync server Docker image

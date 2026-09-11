@@ -136,6 +136,55 @@ class ServerConfig {
   /// unrecognized-value behavior, which is identical.
   final ServerIcon? icon;
 
+  /// A command to run on the remote host once the shell opens, or null for
+  /// none.
+  ///
+  /// It is sent as keyboard input into the interactive session — not executed
+  /// on a separate channel — so "set up *this* shell" scripts behave as
+  /// expected: `cd`, `tmux attach`, exporting aliases all land in the session
+  /// you are looking at, and anything the script prints appears in the
+  /// scrollback like typed output would. The trade-offs of that choice: the
+  /// keystrokes are queued before the shell exists, so on servers where login
+  /// itself reads stdin (a passphrase prompt, a forced menu) the script's
+  /// first lines feed that prompt instead of running; and like anything typed,
+  /// both the script and its output are echoed into scrollback — this field
+  /// is no place for secrets.
+  final String? loginScript;
+
+  /// Keep this server on this device only: its configuration is never pushed
+  /// to the sync server, and a copy pushed before the flag went on is
+  /// retracted with a tombstone — which also removes it from the other devices
+  /// that had pulled it. The local copy is untouched.
+  ///
+  /// The tombstone is a last-write-wins record like any other, so a device
+  /// still holding a copy from before the flag went on can push that copy
+  /// dated past it and put the config back on the server — until this device
+  /// syncs again, sees a copy that outranks its retraction, and re-dates the
+  /// retraction past it. And a copy of the credential already sitting in
+  /// another device's vault stays there as an orphan: tombstones for
+  /// credentials are pushed but never honoured (see the sync coordinator).
+  ///
+  /// The flag rides on the config rather than in device-local settings because
+  /// it is only ever read next to the config it governs, and it costs nothing
+  /// to carry: the one record that could publish it is exactly the record it
+  /// suppresses. Clearing it pushes the config again, with the flag false.
+  ///
+  /// Scope is this server's own record and its stored credential. A pinned
+  /// host key is *not* retracted: it is keyed by `host:port` rather than by
+  /// server, another device may have pinned the same host on its own, and
+  /// deleting it there would drop that device back to trust-on-first-use — a
+  /// weaker position than the one the user asked for. Going forward, a pin for
+  /// a `host:port` that is named only by excluded servers is simply not
+  /// pushed.
+  ///
+  /// Any write that *changes* this must carry a strictly later [updatedAt].
+  /// The retraction tombstone is dated from it, so a stale one — or the
+  /// current one, which ties — loses the tie-break to the copy already on the
+  /// server, and the UI would report the server as excluded while its record
+  /// sat there untouched. [copyWith] throws on that rather than leaving it to
+  /// be discovered in a sync log.
+  final bool excludeFromSync;
+
   final int createdAt;
   final int updatedAt;
 
@@ -153,6 +202,8 @@ class ServerConfig {
     this.group,
     this.color,
     this.icon,
+    this.loginScript,
+    this.excludeFromSync = false,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -176,8 +227,27 @@ class ServerConfig {
     bool clearColor = false,
     ServerIcon? icon,
     bool clearIcon = false,
+    String? loginScript,
+    bool clearLoginScript = false,
+    bool? excludeFromSync,
     int? updatedAt,
   }) {
+    // A throw rather than an assert, which profile and release builds strip:
+    // the mistake this catches is a record that keeps syncing while the UI
+    // says it does not, and a privacy setting failing silently in the only
+    // build users run is not a trade worth making. `RecordCodec.encrypt`
+    // rejects an impossible kind the same way.
+    if (excludeFromSync != null &&
+        excludeFromSync != this.excludeFromSync &&
+        (updatedAt == null || updatedAt <= this.updatedAt)) {
+      throw ArgumentError.value(
+        updatedAt,
+        'updatedAt',
+        'Changing excludeFromSync needs an updatedAt later than the current '
+            'one: the retraction tombstone is dated from it, and a date that '
+            'ties with the copy already on the sync server loses to it',
+      );
+    }
     return ServerConfig(
       id: id,
       label: label ?? this.label,
@@ -197,6 +267,10 @@ class ServerConfig {
       group: clearGroup ? null : normalizeServerGroup(group ?? this.group),
       color: clearColor ? null : (color ?? this.color),
       icon: clearIcon ? null : (icon ?? this.icon),
+      loginScript: clearLoginScript
+          ? null
+          : normalizeLoginScript(loginScript ?? this.loginScript),
+      excludeFromSync: excludeFromSync ?? this.excludeFromSync,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -216,6 +290,12 @@ class ServerConfig {
         if (group != null) 'group': group,
         if (color != null) 'color': color!.name,
         if (icon != null) 'icon': icon!.name,
+        if (loginScript != null) 'loginScript': loginScript,
+        // Written unconditionally, like `syncSecret` and unlike the optional
+        // presentation fields above: the two sync-policy booleans are a pair
+        // and should read the same way round, and "no, I want this synced" is
+        // an answer the user gave rather than an attribute left unset.
+        'excludeFromSync': excludeFromSync,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
@@ -237,6 +317,8 @@ class ServerConfig {
         group: normalizeServerGroup(json['group'] as String?),
         color: _colorFromName(json['color'] as String?),
         icon: _iconFromName(json['icon'] as String?),
+        loginScript: normalizeLoginScript(json['loginScript'] as String?),
+        excludeFromSync: json['excludeFromSync'] as bool? ?? false,
         createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
         updatedAt: (json['updatedAt'] as num?)?.toInt() ?? 0,
       );
@@ -249,6 +331,21 @@ class ServerConfig {
 String? normalizeServerGroup(String? group) {
   if (group == null) return null;
   final trimmed = group.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+/// The stored form of a login script: CR family line endings canonicalized to
+/// LF and outer edges trimmed (so an editor's trailing newline doesn't survive
+/// as a stray Enter keystroke), with blank meaning "none". Interior newlines
+/// are the point of a multi-line script and are kept verbatim — after
+/// canonicalization, because a `\r` inside a line reaches a PTY's line
+/// discipline as an Enter of its own, turning one stored line into two.
+String? normalizeLoginScript(String? script) {
+  if (script == null) return null;
+  final trimmed = script
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .trim();
   return trimmed.isEmpty ? null : trimmed;
 }
 

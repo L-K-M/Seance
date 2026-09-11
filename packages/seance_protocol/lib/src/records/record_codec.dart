@@ -15,6 +15,14 @@ class RecordCodec {
   const RecordCodec(this.vaultKey);
 
   Future<EncryptedRecord> encrypt(DecryptedRecord record) async {
+    if (record.kind == RecordKind.unknown) {
+      throw ArgumentError.value(
+        record.kind,
+        'record.kind',
+        'Unknown record kinds cannot be encrypted',
+      );
+    }
+
     // Tombstones carry no payload — nothing to encrypt or leak.
     final Uint8List blob = record.deleted
         ? Uint8List(0)
@@ -36,7 +44,7 @@ class RecordCodec {
     if (record.deleted || record.blob.isEmpty) {
       return DecryptedRecord(
         id: record.id,
-        kind: RecordKind.serverConfig, // unknown; irrelevant for a tombstone
+        kind: RecordKind.unknown,
         updatedAt: record.updatedAt,
         deviceId: record.deviceId,
         deleted: true,

@@ -2,9 +2,12 @@
 
 A cross-platform SSH client for Mac and Android with an optional self-hostable sync server, a file browser, and a built-in LLM assistant.
 
+> [!IMPORTANT]
+> LLM disclosure: This codebase was written with substantial help from large language models: AI coding agents working from the [`AGENTS.md`](AGENTS.md) brief in this repo.
+
 *You summon remote machines and talk to them.*
 
-**Latest release:** v<!-- version -->0.6.0<!-- /version --> · [Download](https://github.com/L-K-M/Seance/releases/latest)
+**Latest release:** v<!-- version -->0.8.0<!-- /version --> · [Download](https://github.com/L-K-M/Seance/releases/latest)
 
 ![Screenshot Mac OS X](screenshot.png)
 
@@ -16,6 +19,8 @@ that for the full rationale, alternatives considered, and roadmap).
 - **Two-pane / two-screen UI** — servers with online/offline/**unknown**
   indicators on the left, terminal sessions on the right; collapses to
   back/forward screens on narrow layouts.
+- **Clickable shell URLs** — Ctrl-click (⌘-click on Mac) or tap on touch
+  screens to open HTTP(S) links in your browser. Wrapped URLs work too.
 - **SSH** via [dartssh2](https://pub.dev/packages/dartssh2): password,
   private-key (stored or referenced-on-disk), and keyboard-interactive (2FA).
 - **Trust-on-first-use host keys** with a hard, un-dismissable block when a
@@ -28,3 +33,8 @@ that for the full rationale, alternatives considered, and roadmap).
   auto-run) and a session-aware chat whose only two tools are web search and a
   never-executing paste-to-prompt. Secret redaction is on by default; point it
   at local Ollama for a fully offline setup.
+
+## License
+
+Séance's original code uses the [Unlicense](LICENSE). Vendored xterm.dart
+remains [MIT-licensed](third_party/xterm/LICENSE).

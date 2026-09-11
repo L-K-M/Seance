@@ -16,11 +16,18 @@ class Argon2Params {
   final int parallelism;
   final int hashLength;
 
+  // Untrusted prelogin parameters must fit an interactive client's resources.
+  static const int _maximumMemory = 64 * 1024; // KiB
+  static const int _maximumIterations = 10;
+  static const int _maximumParallelism = 4;
+  static const int _keyLength = 32;
+  static const int _minimumBlocksPerLane = 8; // Argon2 requirement
+
   const Argon2Params({
     this.memory = 19456,
     this.iterations = 2,
     this.parallelism = 1,
-    this.hashLength = 32,
+    this.hashLength = _keyLength,
   });
 
   /// Deliberately weak parameters for fast unit tests. Never use in production.
@@ -28,7 +35,7 @@ class Argon2Params {
       : memory = 256,
         iterations = 1,
         parallelism = 1,
-        hashLength = 32;
+        hashLength = _keyLength;
 
   /// The minimum work factors a client will accept when deriving its vault key
   /// from a passphrase — the v1 defaults. Parameters may be *raised* over time
@@ -53,22 +60,36 @@ class Argon2Params {
 
   factory Argon2Params.fromJson(Map<String, dynamic> json) {
     final params = Argon2Params(
-      memory: (json['memory'] as num).toInt(),
-      iterations: (json['iterations'] as num).toInt(),
-      parallelism: (json['parallelism'] as num).toInt(),
-      hashLength: (json['hashLength'] as num).toInt(),
+      memory: _integer(json, 'memory'),
+      iterations: _integer(json, 'iterations'),
+      parallelism: _integer(json, 'parallelism'),
+      hashLength: _integer(json, 'hashLength'),
     );
-    // Reject nonsensical values (a non-positive or absurd count would crash the
-    // Argon2id constructor or, at 0, silently weaken the KDF). 4 GiB (in KiB)
-    // is a generous memory ceiling that still blocks an OOM-inducing value.
-    if (params.memory < 1 ||
-        params.memory > 4 * 1024 * 1024 ||
-        params.iterations < 1 ||
-        params.parallelism < 1 ||
-        params.hashLength < 16) {
-      throw const FormatException('Argon2 parameters out of range');
-    }
+    params._validate();
     return params;
+  }
+
+  static int _integer(Map<String, dynamic> json, String field) {
+    final value = json[field];
+    if (value is int) return value;
+    throw FormatException('Argon2 $field must be an integer');
+  }
+
+  void _validate() {
+    // Never clamp: changing an account's work factors derives a different key.
+    if (parallelism < 1 ||
+        parallelism > _maximumParallelism ||
+        memory < _minimumBlocksPerLane * parallelism ||
+        memory > _maximumMemory ||
+        iterations < 1 ||
+        iterations > _maximumIterations ||
+        hashLength != _keyLength) {
+      throw FormatException(
+        'Unsupported Argon2 resource parameters: '
+        'memory=$memory KiB, iterations=$iterations, '
+        'parallelism=$parallelism, hashLength=$hashLength',
+      );
+    }
   }
 }
 
@@ -114,6 +135,8 @@ class VaultCrypto {
     required List<int> salt,
     Argon2Params params = const Argon2Params(),
   }) async {
+    // Direct callers must obey the same limits as server-provided JSON.
+    params._validate();
     final argon = Argon2id(
       parallelism: params.parallelism,
       memory: params.memory,
