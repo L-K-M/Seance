@@ -33,8 +33,10 @@ class ServerListPane extends StatefulWidget {
 
 class _ServerListPaneState extends State<ServerListPane> {
   /// Bottom padding that lets the last row scroll clear of the floating
-  /// Add-server button: 48 (button height) + 16 (endFloat margin) + 16 (gap)
-  /// so the row's trailing menu is never tapped through to the button.
+  /// Add-server button: 48 (extended button height) + 16 (endFloat margin)
+  /// + 16 (gap) so the row's trailing menu is never tapped through to the
+  /// button. The geometry assertion in server_list_pane_test.dart fails if
+  /// a button change ever erodes the gap.
   static const double _fabScrollClearance = 80;
 
   final _search = TextEditingController();
