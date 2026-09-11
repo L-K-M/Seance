@@ -414,7 +414,10 @@ class SyncCoordinator {
         // key pins are not where to widen it. The fix is sealing tombstones —
         // an authenticator over id, kind and date, keyed like the payload —
         // not a per-apply special case, so the records stay staged for a
-        // build that can check them.
+        // build that can check them. Sealing must cover `snippet:` tombstones
+        // too: they are applied on arrival like configs, so an unsealed one
+        // lets a sync server delete a snippet on every device (a lost snippet,
+        // the same bounded cost configs already accept).
         if (dec.deleted) {
           // Routed on the delimiter alone because a config id never carries
           // one: every config is minted with `uuidV4()` (the editor's draft

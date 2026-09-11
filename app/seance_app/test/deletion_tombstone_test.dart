@@ -124,6 +124,43 @@ void main() {
     expect(pending.single.deleted, isTrue);
   });
 
+  test('re-saving a server cancels its pending deletion tombstone', () async {
+    final services = await AppServices.initialize();
+    final state = AppState(services);
+    addTearDown(() async {
+      state.dispose();
+      await services.probe.dispose();
+    });
+
+    await state.saveServer(server('a'));
+    await state.deleteServer('a');
+    expect(await services.tombstoneStore.all(), hasLength(1));
+
+    await state.saveServer(server('a'));
+    expect(await services.tombstoneStore.all(), isEmpty,
+        reason: 're-saving an id clears its pending deletion');
+    expect(await services.configStore.getServer('a'), isNotNull);
+  });
+
+  test('re-saving a snippet cancels its pending deletion tombstone', () async {
+    final services = await AppServices.initialize();
+    final state = AppState(services);
+    addTearDown(() async {
+      state.dispose();
+      await services.probe.dispose();
+    });
+
+    const snippet = Snippet(
+        id: 's1', title: 'list', body: 'ls -la', createdAt: 1, updatedAt: 1);
+    await state.saveSnippet(snippet);
+    await state.deleteSnippet('s1');
+    expect(await services.tombstoneStore.all(), hasLength(1));
+
+    await state.saveSnippet(snippet);
+    expect(await services.tombstoneStore.all(), isEmpty,
+        reason: 're-saving a snippet clears its pending deletion');
+  });
+
   test('FileTombstoneStore round-trips and tolerates a corrupt file', () async {
     final file = File('${directory.path}/deleted_records.json');
     final store = FileTombstoneStore(file);

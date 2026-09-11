@@ -739,6 +739,23 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
+  /// The `snippet:` record-id prefix, shared by the delete and save paths so
+  /// the tombstone id always matches what `collectLocal` publishes.
+  static const String _snippetRecordPrefix = 'snippet:';
+
+  /// A deletion stamp that beats every version of the record this device has
+  /// seen — max(now, prior + 1) — so a same-ms tie or a clock behind a peer's
+  /// last edit cannot let the live copy win last-write-wins, while a peer's
+  /// genuinely newer edit still does. [priorUpdatedAt] is the doomed row's
+  /// stamp, or null when the row is already gone (a retry or double-delete),
+  /// where "now" is the honest floor.
+  int _deletionStamp(int? priorUpdatedAt) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return (priorUpdatedAt != null && priorUpdatedAt >= now)
+        ? priorUpdatedAt + 1
+        : now;
+  }
+
   Future<void> deleteServer(String id) async {
     // Outside the queue: tearing sessions down touches no store, and holding
     // the queue across a session teardown would stall every other mutation
@@ -757,10 +774,7 @@ class AppState extends ChangeNotifier {
       // blocks it. Fail-soft: a failed write is logged, and collectLocal skips
       // a tombstone whose row still exists, so the delete is retried rather
       // than wedging the UI on a server the store no longer has.
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final deletedAt = (server != null && server.updatedAt >= now)
-          ? server.updatedAt + 1
-          : now;
+      final deletedAt = _deletionStamp(server?.updatedAt);
       try {
         await services.tombstoneStore.add(EncryptedRecord.tombstone(
           id: id,
@@ -1136,7 +1150,7 @@ class AppState extends ChangeNotifier {
     // See _saveServerNow: re-saving an id cancels its pending deletion so a
     // stale tombstone cannot shadow the live record.
     try {
-      await services.tombstoneStore.remove('snippet:${snippet.id}');
+      await services.tombstoneStore.remove('$_snippetRecordPrefix${snippet.id}');
     } catch (error, stackTrace) {
       developer.log(
         'Could not clear a pending deletion tombstone for saved snippet '
@@ -1158,13 +1172,10 @@ class AppState extends ChangeNotifier {
     // across devices too: applyToStores honours it, because a snippet is
     // non-secret — unlike the `secret:`/`hostkey:` tombstones it still refuses.
     final existing = await services.snippetStore.getSnippet(id);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final deletedAt = (existing != null && existing.updatedAt >= now)
-        ? existing.updatedAt + 1
-        : now;
+    final deletedAt = _deletionStamp(existing?.updatedAt);
     try {
       await services.tombstoneStore.add(EncryptedRecord.tombstone(
-        id: 'snippet:$id',
+        id: '$_snippetRecordPrefix$id',
         updatedAt: deletedAt,
         deviceId: services.settings.deviceId,
       ));
