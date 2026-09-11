@@ -159,7 +159,12 @@ class TerminalPane extends StatelessWidget {
       title: Row(
         children: [
           if (server != null) ...[
-            ServerBadge(color: server.color, mark: server.mark, size: 24),
+            ServerBadge(
+              color: server.color,
+              mark: server.mark,
+              semanticsLabel: server.label,
+              size: 24,
+            ),
             const SizedBox(width: 10),
           ],
           Flexible(

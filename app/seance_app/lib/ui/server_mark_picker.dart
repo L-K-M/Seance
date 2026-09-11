@@ -71,7 +71,16 @@ Future<Uint8List?> _pickImageBytes() async {
     withData: true,
   );
   final files = result?.files ?? const [];
-  return files.isEmpty ? null : files.first.bytes;
+  if (files.isEmpty) return null;
+  final bytes = files.first.bytes;
+  if (bytes == null) {
+    // `withData` was asked for and the picker produced a file without any:
+    // reported on some Android document providers. Returning null here would
+    // be read as a cancel and the dialog would sit there having silently done
+    // nothing, so it is raised for the caller's handler to show.
+    throw Exception('the file picker returned no image bytes');
+  }
+  return bytes;
 }
 
 class _MarkPickerDialog extends StatelessWidget {

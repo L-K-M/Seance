@@ -23,6 +23,10 @@ void main() {
     /// above, in table order — which is how a real font carries its localized
     /// spellings: English first, then the rest by ascending language id.
     List<(int, int, String)> extraNames = const [],
+    /// Both are optional in the spec and absent from many subsetted and web
+    /// fonts, so the reader has to cope with a face that carries neither.
+    bool includePost = true,
+    bool includeOs2 = true,
   }) {
     final names = <(int nameId, int languageId, String value)>[
       if (family != null) (1, 0x0409, family),
@@ -76,10 +80,11 @@ void main() {
       os2[35] = 9; // monospaced
     }
 
+    // Kept in tag order, which stays spec-valid for any subset of the three.
     final tables = <(String, List<int>)>[
-      ('OS/2', os2),
+      if (includeOs2) ('OS/2', os2),
       ('name', name),
-      ('post', post),
+      if (includePost) ('post', post),
     ];
 
     final out = <int>[];
@@ -227,7 +232,7 @@ void main() {
       final view = ByteData.sublistView(bytes);
       // The name table is the second of the three tables the builder writes;
       // its records start 6 bytes in, and encodingId is at record + 2.
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < view.getUint16(4); i++) {
         final record = 12 + i * 16;
         final tag = String.fromCharCodes(bytes.sublist(record, record + 4));
         if (tag != 'name') continue;
@@ -235,6 +240,35 @@ void main() {
         view.setUint16(nameOffset + 6 + 2, 0); // encodingId := symbol
       }
       expect(await read('a.ttf', bytes), isEmpty);
+    });
+
+    test('keeps a face that carries neither post nor OS/2', () async {
+      // Both tables are optional and absent from plenty of subsetted and web
+      // fonts. The pitch is then simply unknown; losing the family over it
+      // would be the wrong trade.
+      final families = await read(
+        'a.ttf',
+        sfnt(family: 'Subset Sans', includePost: false, includeOs2: false),
+      );
+      expect(families.single.name, 'Subset Sans');
+      expect(families.single.monospaced, isFalse);
+    });
+
+    test('keeps a face whose post table offset is past the end', () async {
+      // The offset comes from the untrusted table directory, so it can point
+      // anywhere. Reading the pitch then throws — which must not take the
+      // family name that was already read successfully with it.
+      final bytes = sfnt(family: 'Truncated Mono');
+      final view = ByteData.sublistView(bytes);
+      for (var i = 0; i < view.getUint16(4); i++) {
+        final record = 12 + i * 16;
+        final tag = String.fromCharCodes(bytes.sublist(record, record + 4));
+        if (tag != 'post') continue;
+        view.setUint32(record + 8, bytes.length + 4096);
+      }
+      final families = await read('a.ttf', bytes);
+      expect(families.single.name, 'Truncated Mono');
+      expect(families.single.monospaced, isFalse);
     });
 
     test('decodes a non-ASCII family name from UTF-16BE', () async {
@@ -303,7 +337,7 @@ void main() {
       final view = ByteData.sublistView(bytes);
       // The table directory starts at 12; entries are 16 bytes, and 'name' is
       // the second of the three this builder writes.
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < view.getUint16(4); i++) {
         final record = 12 + i * 16;
         final tag = String.fromCharCodes(bytes.sublist(record, record + 4));
         if (tag == 'name') view.setUint32(record + 12, 0xFFFFFFF0);
@@ -396,7 +430,7 @@ void main() {
       expect(families.map((f) => f.name), ['Cantarell', 'Hack']);
     });
 
-    test('the same root twice is walked once', () async {
+    test('a duplicated root yields one family, not two', () async {
       // XDG_DATA_HOME set to its own default makes this the normal case.
       await File('${directory.path}/a.ttf').writeAsBytes(sfnt(family: 'Hack'));
       final fonts = SfntSystemFonts(roots: [directory, directory]);
@@ -414,6 +448,11 @@ void main() {
       );
       final families = await SfntSystemFonts(roots: [directory]).families();
       expect(families.length, 1);
+      expect(
+        families.single.name,
+        'JetBrains Mono',
+        reason: 'the surviving spelling cannot depend on directory order',
+      );
       expect(
         families.single.monospaced,
         isTrue,

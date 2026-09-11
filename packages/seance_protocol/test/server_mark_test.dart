@@ -13,10 +13,18 @@ void main() {
   /// declaring 8x8, and padding. The protocol checks the signature, the size
   /// and the declared dimensions, never the pixels — it is not an image
   /// decoder, and the app re-encodes every import anyway.
-  Uint8List pngHeader({int width = 8, int height = 8, int tail = 64}) =>
+  Uint8List pngHeader({
+    int width = 8,
+    int height = 8,
+    int tail = 64,
+    String chunk = 'IHDR',
+    int chunkLength = 13,
+  }) =>
       Uint8List.fromList([
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
-        0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, // chunk length 13, "IHDR"
+        (chunkLength >> 24) & 0xFF, (chunkLength >> 16) & 0xFF,
+        (chunkLength >> 8) & 0xFF, chunkLength & 0xFF,
+        ...chunk.codeUnits,
         (width >> 24) & 0xFF, (width >> 16) & 0xFF,
         (width >> 8) & 0xFF, width & 0xFF,
         (height >> 24) & 0xFF, (height >> 16) & 0xFF,
@@ -117,6 +125,44 @@ void main() {
       expect(chain.length, greaterThan(64));
       expect(normalizeServerEmoji(chain), isNull);
     });
+
+    test('refuses invisible and bidi formatting characters', () {
+      // Each is a single grapheme cluster, so the cluster rule lets it in;
+      // each renders as nothing, and the bidi ones reorder the text around
+      // wherever the badge's label is drawn.
+      for (final invisible in [
+        '\u00AD', // soft hyphen
+        '\u061C', // Arabic letter mark
+        '\u200B', // zero-width space
+        '\u200E', // left-to-right mark
+        '\u200F', // right-to-left mark
+        '\u202E', // right-to-left override
+        '\u2060', // word joiner
+        '\u2069', // pop directional isolate
+        '\uFEFF', // byte order mark
+      ]) {
+        expect(
+          normalizeServerEmoji(invisible),
+          isNull,
+          reason: 'U+${invisible.codeUnitAt(0).toRadixString(16)}',
+        );
+      }
+    });
+
+    test('keeps the joiners and modifiers real emoji are built from', () {
+      // The filter above must not catch these: U+200D holds a multi-part
+      // emoji together, and the rest are how the common ones are spelled.
+      for (final emoji in [
+        '\u{1F469}\u200D\u{1F692}', // woman firefighter (ZWJ)
+        '\u{1F469}\u{1F3FD}', // skin-tone modifier
+        '\u2764\uFE0F', // variation selector 16
+        '1\uFE0F\u20E3', // keycap sequence
+        '\u{1F1E8}\u{1F1ED}', // regional indicator flag
+        '\u{1F3F3}\uFE0F\u200D\u{1F308}', // rainbow flag
+      ]) {
+        expect(normalizeServerEmoji(emoji), emoji);
+      }
+    });
   });
 
   group('image validation', () {
@@ -171,6 +217,22 @@ void main() {
       );
     });
 
+    test('refuses a PNG that does not lead with IHDR', () {
+      // The dimension guard reads fixed offsets, which only address the
+      // dimensions when IHDR really is the first chunk. A file leading with
+      // something else would otherwise be measured on whatever bytes happen
+      // to sit there while its real IHDR, further in, declares anything.
+      expect(
+        decodeServerIconImage(base64Encode(pngHeader(chunk: 'gAMA'))),
+        isNull,
+      );
+      // Right tag, wrong declared length: also not the chunk this assumes.
+      expect(
+        decodeServerIconImage(base64Encode(pngHeader(chunkLength: 9))),
+        isNull,
+      );
+    });
+
     test('refuses anything past the record ceiling', () {
       final huge = pngHeader(tail: kMaxServerIconImageBytes);
       expect(encodeServerIconImage(huge), isNull);
@@ -218,6 +280,21 @@ void main() {
       final json = config(icon: ServerIcon.rocket).toJson()
         ..['icon'] = 'holodeck';
       expect(ServerConfig.fromJson(json).mark, const ServerGlyphMark(null));
+    });
+
+    test('a mark field of the wrong type costs the field, not the server', () {
+      // A record can arrive from a device this one does not control. A cast
+      // would throw out of fromJson and drop the whole server, including the
+      // fields that were fine.
+      for (final bad in [5, <String>[], <String, Object?>{}, true]) {
+        final json = config(icon: ServerIcon.rocket).toJson()
+          ..['icon'] = bad
+          ..['iconEmoji'] = bad
+          ..['iconImage'] = bad;
+        final decoded = ServerConfig.fromJson(json);
+        expect(decoded.mark, const ServerGlyphMark(null));
+        expect(decoded.host, config().host, reason: 'the rest survives');
+      }
     });
 
     test('copyWith clears each mark field independently', () {

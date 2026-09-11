@@ -31,7 +31,7 @@ void main() {
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     picture.dispose();
     image.dispose();
-    return data!.buffer.asUint8List();
+    return data!.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
   }
 
   /// A [side]×[side] PNG of deterministic noise. Flat colour compresses to
@@ -57,7 +57,7 @@ void main() {
     final image = await _imageFromPixels(pixels, side, side);
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     image.dispose();
-    return data!.buffer.asUint8List();
+    return data!.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
   }
 
   Future<ui.Image> decode(Uint8List bytes) async {
@@ -97,7 +97,9 @@ void main() {
     // 200x200 crop lies entirely inside it: a crop is solid circle colour to
     // the corners, while a squash maps the circle to a narrow ellipse and
     // leaves the surrounding field visible there.
-    final pixels = (await image.toByteData())!.buffer.asUint8List();
+    final data = (await image.toByteData())!;
+    final pixels =
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     bool circleAt(int x, int y) {
       final offset = (y * image.width + x) * 4;
       return pixels[offset] > 0x80 &&

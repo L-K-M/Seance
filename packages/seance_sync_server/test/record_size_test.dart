@@ -16,14 +16,17 @@ void main() {
     // signature, an IHDR declaring the 256 px square the app stores at, then
     // incompressible filler. Incompressible is the honest case for a ceiling —
     // a real 256 px photograph measures around 53 KiB.
-    final image = Uint8List(kMaxServerIconImageBytes)
-      ..setAll(0, const [
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
-        0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, // chunk length 13, "IHDR"
-        0, 0, 1, 0, // width 256
-        0, 0, 1, 0, // height 256
-      ]);
-    for (var i = 24; i < image.length; i++) {
+    const header = [
+      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+      0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, // chunk length 13, "IHDR"
+      0, 0, 1, 0, // width 256
+      0, 0, 1, 0, // height 256
+    ];
+    final image = Uint8List(kMaxServerIconImageBytes)..setAll(0, header);
+    // From the header's own length: filler that started at a stale literal
+    // would either overwrite it or leave a run of compressible zeros, which
+    // would quietly make this measurement optimistic.
+    for (var i = header.length; i < image.length; i++) {
       image[i] = (i * 2654435761) & 0xFF;
     }
     final stored = encodeServerIconImage(image);

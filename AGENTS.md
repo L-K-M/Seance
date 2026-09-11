@@ -111,7 +111,7 @@ the latest code and rebuilds + recreates the stack in one step.
 Everything security- or correctness-critical is covered by tests that run in CI
 (`.github/workflows/ci.yml`):
 
-- **622 Dart tests** across the three packages — crypto round-trips and
+- **626 Dart tests** across the three packages — crypto round-trips and
   wrong-key/tamper rejection, verifier independence, recovery-code corruption
   detection, TOFU decisions, the danger linter, paste sanitization, secret
   redaction, LLM request/response handling and the chat tool loop, **two-device
@@ -301,8 +301,10 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 622 Dart tests + 571 Flutter tests + 166 in the vendored xterm fork, all
-  analyze clean.
+- 626 Dart tests + 574 Flutter tests + 167 in the vendored xterm fork.
+  `dart analyze` and the app's `flutter analyze` are clean; the vendored
+  fork carries 11 upstream `info` lints and is deliberately not analyze-
+  gated in CI (only its tests run).
 - Sync correctness is proven two ways: `packages/seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and
   `packages/seance_sync_server/test/integration_test.dart` (the real `HttpSyncClient` +
@@ -383,11 +385,14 @@ Do not "simplify" these away — they are load-bearing:
   `write(String)`, `buffer.getText()`, `TerminalView(terminal, ...)`. SSH is
   bytes; the engine decodes UTF-8 leniently (`allowMalformed: true`).
 - **`dart:ui` is the whole image pipeline.** Badge images are decoded, cropped,
-  scaled and re-encoded with `ui.instantiateImageCodec` → `PictureRecorder` +
+  scaled and re-encoded with `ui.ImageDescriptor.encoded` (deliberately not
+  `instantiateImageCodec`: the descriptor reports the dimensions *before*
+  a pixel buffer is allocated, which is what lets an oversized source be
+  refused) → `instantiateCodec` → `PictureRecorder` +
   `Canvas.drawImageRect` → `Picture.toImage` → `Image.toByteData(format:
   ImageByteFormat.png)`, with no image package. All of it works under
   `flutter_test` (see `badge_image_test.dart`), which is why there is no
-  platform channel here. `instantiateImageCodec`'s `targetWidth`/`targetHeight`
+  platform channel here. `instantiateCodec`'s `targetWidth`/`targetHeight`
   are deliberately *not* used: they scale but cannot crop, and a badge has to
   be square.
 - **Font families are resolved by name by the platform, not by Flutter.**

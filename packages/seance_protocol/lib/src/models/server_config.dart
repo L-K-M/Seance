@@ -349,7 +349,13 @@ class ServerConfig {
         // put a nameless section in the list on the device that read it.
         group: normalizeServerGroup(json['group'] as String?),
         color: _colorFromName(json['color'] as String?),
-        icon: serverIconFromName(json['icon'] as String?),
+        // Type-tested like the two fields below rather than cast: a record
+        // carrying a number here would otherwise throw out of fromJson and
+        // take the whole server entry with it, which is the degradation the
+        // sibling fields exist to avoid.
+        icon: json['icon'] is String
+            ? serverIconFromName(json['icon'] as String)
+            : null,
         // A mark from a newer build, or from a device whose idea of an emoji
         // this one does not share, degrades to the glyph beside it rather
         // than poisoning the whole record. Tested for type rather than cast:

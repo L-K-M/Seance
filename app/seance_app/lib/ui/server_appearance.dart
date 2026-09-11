@@ -511,12 +511,22 @@ String serverColorLabel(ServerColor? color) => color == null
 class ServerBadge extends StatelessWidget {
   final ServerColor? color;
   final ServerMark mark;
+
+  /// What the badge announces, overriding the mark's own description.
+  ///
+  /// An imported image has nothing to describe itself with, so it otherwise
+  /// falls back to the name of the glyph stored beside it — and two servers
+  /// with different logos and the same fallback then read identically, in the
+  /// widget whose whole job is telling them apart. A caller holding the server
+  /// passes its name.
+  final String? semanticsLabel;
   final double size;
 
   const ServerBadge({
     super.key,
     required this.color,
     required this.mark,
+    this.semanticsLabel,
     this.size = 32,
   });
 
@@ -525,6 +535,7 @@ class ServerBadge extends StatelessWidget {
     super.key,
     required this.color,
     required ServerIcon? icon,
+    this.semanticsLabel,
     this.size = 32,
   }) : mark = ServerGlyphMark(icon);
 
@@ -569,11 +580,11 @@ class ServerBadge extends StatelessWidget {
           // and stays at or below the side the image is stored at.
           cacheWidth: (size * 3).round(),
           filterQuality: FilterQuality.medium,
-          // Labelled from the glyph it keeps as a fallback: an Image only gets
-          // a Semantics node when given one, so without this the badge
-          // announces nothing — in the widget whose whole job is telling
-          // servers apart, which is why the glyph path carries a label.
-          semanticLabel: serverIconLabel(fallback),
+          // An Image only gets a Semantics node when given a label, so
+          // without this the badge announces nothing. The fallback glyph's
+          // name is the last resort: it describes the image only by accident,
+          // which is why a caller that knows the server passes its name.
+          semanticLabel: semanticsLabel ?? serverIconLabel(fallback),
           // Bytes that will not decode fall back to the glyph stored beside
           // them, which is what an older build would have drawn anyway.
           errorBuilder: (_, _, _) => _glyphIcon(fallback, accent, scheme),
@@ -648,6 +659,7 @@ class ServerAvatar extends StatelessWidget {
           ServerBadge(
             color: server.color,
             mark: server.mark,
+            semanticsLabel: server.label,
             size: _badgeSize,
           ),
           // Directional so the dot tucks into the badge's trailing corner

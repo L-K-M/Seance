@@ -100,7 +100,15 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
     try {
       final descriptor = await ui.ImageDescriptor.encoded(buffer);
       try {
-        if (descriptor.width * descriptor.height > kMaxBadgeSourcePixels) {
+        // Each side is bounded before the product is taken. Not reachable
+        // through a PNG — its dimensions are capped at 2^31-1, whose square
+        // still fits int64, and the engine rejects a header declaring more
+        // than that before this runs (measured: `encoded` throws "Invalid
+        // image data" for a 0xFFFFFFFF square). It costs one comparison to
+        // stop the guard this file calls load-bearing from depending on that.
+        if (descriptor.width > kMaxBadgeSourcePixels ||
+            descriptor.height > kMaxBadgeSourcePixels ||
+            descriptor.width * descriptor.height > kMaxBadgeSourcePixels) {
           return (image: null, failure: BadgeImageFailure.tooLarge);
         }
         final codec = await descriptor.instantiateCodec();

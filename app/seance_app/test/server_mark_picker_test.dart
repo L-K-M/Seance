@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -23,6 +24,9 @@ void main() {
     ServerMark current = const ServerGlyphMark(null),
     ServerColor? accent,
     Future<Uint8List?> Function()? readImage,
+    /// False when a mark in force holds a live [Image]: its resolution never
+    /// completes here, so settling would spin forever (see AGENTS.md §5).
+    bool settle = true,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -44,18 +48,33 @@ void main() {
       ),
     );
     await tester.tap(find.text('open'));
-    await tester.pumpAndSettle();
+    if (settle) {
+      await tester.pumpAndSettle();
+    } else {
+      await tester.pump(const Duration(milliseconds: 400));
+    }
   }
 
-  /// An 8x8 PNG, the shape a real import arrives in.
-  Future<Uint8List> samplePng() async {
+  /// A [side]x[side] PNG, the shape a real import arrives in.
+  Future<Uint8List> samplePng({int side = 8}) async {
     final recorder = ui.PictureRecorder();
-    ui.Canvas(recorder).drawRect(
-      const ui.Rect.fromLTWH(0, 0, 8, 8),
+    final canvas = ui.Canvas(recorder);
+    canvas.drawRect(
+      ui.Rect.fromLTWH(0, 0, side.toDouble(), side.toDouble()),
       ui.Paint()..color = const ui.Color(0xFF00AAFF),
     );
+    // Varied content, so a large source does not compress to nothing and the
+    // size assertions below are about the re-encode rather than about PNG
+    // being good at flat colour.
+    for (var i = 0; i < side; i += 4) {
+      canvas.drawCircle(
+        ui.Offset(i.toDouble(), (i * 7 % side).toDouble()),
+        side / 8,
+        ui.Paint()..color = ui.Color(0xFF000000 | (i * 2654435761) & 0xFFFFFF),
+      );
+    }
     final picture = recorder.endRecording();
-    final image = await picture.toImage(8, 8);
+    final image = await picture.toImage(side, side);
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     picture.dispose();
     image.dispose();
@@ -65,8 +84,15 @@ void main() {
   /// [samplePng] run on the real event loop, non-null. The image codec never
   /// completes inside a widget test's fake-async zone, and `runAsync` only
   /// returns null when nested inside another one, which no caller here does.
-  Future<Uint8List> samplePngBytes(WidgetTester tester) async =>
-      (await tester.runAsync(samplePng))!;
+  Future<Uint8List> samplePngBytes(WidgetTester tester, {int side = 8}) async {
+    final bytes = await tester.runAsync(() => samplePng(side: side));
+    if (bytes == null) {
+      // Rather than a bare null-check crash: runAsync returns null only when
+      // it is nested inside another one, which is worth naming.
+      throw StateError('samplePngBytes cannot run inside another runAsync');
+    }
+    return bytes;
+  }
 
   group('icons', () {
     testWidgets('opens on the glyphs and files them under headings', (
@@ -220,6 +246,35 @@ void main() {
       // Re-encoded rather than passed through, so what the record stores is
       // bounded whatever was picked.
       expect(mark.stored.image, isNotNull);
+      expect(
+        mark.stored.image!.length,
+        lessThan(kMaxServerIconImageBytes),
+      );
+    });
+
+    testWidgets('a source far larger than the badge is shrunk to fit', (
+      tester,
+    ) async {
+      // The teeth behind the claim above: an 8x8 sample would store the same
+      // handful of bytes whether it was re-encoded or passed through, so only
+      // a source that has to shrink can show that it did.
+      final bytes = await samplePngBytes(tester, side: 1024);
+      await open(tester, readImage: () async => bytes);
+      await tester.tap(find.text('Image'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(
+        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
+      );
+      await pumpUntil(tester, () => picked.isNotEmpty);
+
+      final stored = picked.single!.stored.image;
+      expect(stored, isNotNull);
+      expect(
+        base64Decode(stored!).length,
+        lessThan(bytes.length),
+        reason: 'a pass-through would store the source unchanged',
+      );
+      expect(stored.length, lessThan(kMaxServerIconImageBytes));
     });
 
     testWidgets('a file that is not an image is reported, not stored', (
@@ -288,32 +343,12 @@ void main() {
       tester,
     ) async {
       final bytes = await samplePngBytes(tester);
-      // Opens on the image tab, because that is what is in force. The badge
-      // preview holds a live Image, so this cannot settle (see above).
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Builder(
-            builder: (context) => Scaffold(
-              body: TextButton(
-                onPressed: () async => picked.add(
-                  await showServerMarkPicker(
-                    context,
-                    current: ServerImageMark(
-                      bytes,
-                      fallback: ServerIcon.cluster,
-                    ),
-                    accent: null,
-                    readImage: () async => null,
-                  ),
-                ),
-                child: const Text('open'),
-              ),
-            ),
-          ),
-        ),
+      // Opens on the image tab, because that is what is in force.
+      await open(
+        tester,
+        current: ServerImageMark(bytes, fallback: ServerIcon.cluster),
+        settle: false,
       );
-      await tester.tap(find.text('open'));
-      await tester.pump(const Duration(milliseconds: 400));
 
       await tester.tap(find.widgetWithText(OutlinedButton, 'Remove image'));
       await tester.pump(const Duration(milliseconds: 400));

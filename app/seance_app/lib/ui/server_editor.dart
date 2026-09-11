@@ -691,24 +691,27 @@ class _ServerEditorState extends State<_ServerEditor> {
       // A button rather than the grid this used to be: the glyphs alone no
       // longer fit a form field, and emoji and imported images need room of
       // their own. The preview beside "Appearance" above shows the result.
-      Row(
+      // Wrap rather than Row: at 280 logical pixels of form width — what a
+      // dialog gives on a phone — and 1.5x text the three controls overflow
+      // a Row by 30 pixels. Measured, and the reason the grid this replaced
+      // was a Wrap too.
+      Wrap(
+        spacing: 12,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           ServerBadge(color: _color, mark: _mark, size: 44),
-          const SizedBox(width: 12),
           OutlinedButton.icon(
             onPressed: _pickMark,
             icon: const Icon(Icons.palette_outlined),
             label: const Text('Choose…'),
           ),
-          if (_mark != _defaultMark) ...[
-            const SizedBox(width: 4),
+          if (_mark != _defaultMark)
             IconButton(
               tooltip: 'Use the default mark',
               icon: const Icon(Icons.backspace_outlined),
-              onPressed: () =>
-                  setState(() => _mark = _defaultMark),
+              onPressed: () => setState(() => _mark = _defaultMark),
             ),
-          ],
         ],
       ),
     ];

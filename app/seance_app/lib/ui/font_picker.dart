@@ -220,6 +220,9 @@ class _FontList extends StatelessWidget {
             // A sample rather than more prose: what a terminal shows is
             // columns of these, and whether they line up is the question.
             'ILl1 0OQ {}[]()<> —— 123',
+            // The glyphs are chosen to be told apart by eye; read aloud they
+            // are a minute of punctuation on every row of the list.
+            semanticsLabel: 'Sample text',
             style: TextStyle(
               fontFamily: family.name,
               fontFamilyFallback: SeanceTheme.monoFallback,

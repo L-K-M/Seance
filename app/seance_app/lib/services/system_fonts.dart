@@ -196,7 +196,9 @@ class SfntSystemFonts implements SystemFonts {
           final key = face.name.toLowerCase();
           final previous = found[key];
           found[key] = SystemFontFamily(
-            name: previous?.name ?? face.name,
+            name: previous == null
+                ? face.name
+                : _preferredSpelling(previous.name, face.name),
             monospaced: (previous?.monospaced ?? false) || face.monospaced,
           );
         }
@@ -205,6 +207,28 @@ class SfntSystemFonts implements SystemFonts {
     final families = found.values.toList()..sort();
     return List.unmodifiable(families);
   }
+}
+
+/// Which of two spellings of one family to show.
+///
+/// Keeping whichever was read first would make the label depend on
+/// `Directory.list` order, so the same two files could present differently on
+/// two machines. Fewer capitals wins because the odd spelling out is usually
+/// the shouted one (`JETBRAINS MONO` beside `JetBrains Mono`), with a
+/// lexicographic tie-break so the rule is total.
+String _preferredSpelling(String a, String b) {
+  final capsA = _capitals(a);
+  final capsB = _capitals(b);
+  if (capsA != capsB) return capsA < capsB ? a : b;
+  return a.compareTo(b) <= 0 ? a : b;
+}
+
+int _capitals(String value) {
+  var count = 0;
+  for (final unit in value.codeUnits) {
+    if (unit >= 0x41 && unit <= 0x5A) count++;
+  }
+  return count;
 }
 
 /// The families [file] declares — several for a `.ttc` collection, one
@@ -311,6 +335,9 @@ String _tag(ByteData data, int offset) => String.fromCharCodes([
   data.getUint8(offset + 3),
 ]);
 
+/// The Windows language id for en-US. See [_familyName].
+const int _langEnglishUs = 0x409;
+
 /// The family name from a `name` table.
 ///
 /// Prefers nameID 16 (typographic family) over nameID 1 (family), because for
@@ -318,9 +345,6 @@ String _tag(ByteData data, int offset) => String.fromCharCodes([
 /// "Roboto Light" and "Roboto" would otherwise list as unrelated families,
 /// while nameID 16 says "Roboto" for both. Within a nameID, a Windows/Unicode
 /// record (UTF-16BE) wins over a Macintosh one, which is read as ASCII.
-/// The Windows language id for en-US. See [_familyName].
-const int _langEnglishUs = 0x409;
-
 String? _familyName(ByteData name) {
   final count = name.getUint16(2);
   final storage = name.getUint16(4);
@@ -350,8 +374,11 @@ String? _familyName(ByteData name) {
     // `0x411 IPAゴシック`, and the picker listed the latter while the English
     // name sat right there in the table. The `??=` fallback still covers a
     // font that carries no English record at all.
-    final preferred =
-        platformId == 0 || (platformId == 3 && languageId == _langEnglishUs);
+    // Platform 0 defines no language ids and the spec says to set the field
+    // to zero, so a non-zero one is not a record to prefer over an en-US
+    // Windows name.
+    final preferred = (platformId == 0 && languageId == 0) ||
+        (platformId == 3 && languageId == _langEnglishUs);
     if (nameId == 16) {
       typographic ??= value;
       if (preferred) typographic = value;
@@ -397,17 +424,25 @@ Future<bool> _isFixedPitch(
   int? postOffset,
   int? os2Offset,
 ) async {
-  if (postOffset != null) {
-    // version(4) italicAngle(4) underlinePosition(2) underlineThickness(2)
-    // then isFixedPitch at 12.
-    final post = await _readAt(handle, postOffset, 16);
-    if (post.getUint32(12) != 0) return true;
-  }
-  if (os2Offset != null) {
-    // PANOSE is 10 bytes at offset 32; byte 0 is the family type and byte 3
-    // the proportion.
-    final os2 = await _readAt(handle, os2Offset, 42);
-    if (os2.getUint8(32) == 2 && os2.getUint8(35) == 9) return true;
+  // Both offsets come from the table directory, so either can point past the
+  // end of a truncated file. That only makes the pitch unknown: the family
+  // name has already been read, and letting the throw escape would drop the
+  // face from the picker over advisory metadata.
+  try {
+    if (postOffset != null) {
+      // version(4) italicAngle(4) underlinePosition(2) underlineThickness(2)
+      // then isFixedPitch at 12.
+      final post = await _readAt(handle, postOffset, 16);
+      if (post.getUint32(12) != 0) return true;
+    }
+    if (os2Offset != null) {
+      // PANOSE is 10 bytes at offset 32; byte 0 is the family type and byte 3
+      // the proportion.
+      final os2 = await _readAt(handle, os2Offset, 42);
+      if (os2.getUint8(32) == 2 && os2.getUint8(35) == 9) return true;
+    }
+  } on _MalformedFont {
+    return false;
   }
   return false;
 }

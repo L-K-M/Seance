@@ -835,6 +835,30 @@ void main() {
       expect(selection.begin.y, 1);
     });
 
+    testWidgets('double-clicking the void selects no blank cells',
+        (tester) async {
+      // The word paths are the only clamped callers that hand contentEnd —
+      // one cell *past* the last written cell — to getWordBoundary, so what
+      // that returns at the end of content is load-bearing and was unpinned.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await multiClick(tester, cellCenter(tester, 6, 9), 2);
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'bravo',
+        reason: 'pre-fix a word of blank cells was taken, copying nothing',
+      );
+      expect(selection.begin.y, 1, reason: 'the last row holding text');
+    });
+
     testWidgets('an untouched terminal cannot be selected into', (tester) async {
       final terminal = Terminal();
       final controller = TerminalController();

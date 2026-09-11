@@ -96,8 +96,10 @@ setting rather than against arithmetic.
 The other server-side limit, 8 MiB per *request*, is the one an image can
 reach today: `SyncEngine._pushOnce` still sends every dirty record in one push,
 and the blob is base64 on the wire, so a cap-sized config costs about 344 KiB
-of request body. Two dozen such servers dirty at once overflow the request, and
-the server rejects the whole push with 413 rather than refusing any one record.
+of request body. Two dozen such servers dirty at once overflow the request — or
+fewer beside the rest of a dirty set, since one push carries every dirty record
+of every kind — and the server rejects the whole push with 413 rather than
+refusing any one record.
 Those records stay dirty, so every later sync re-sends the same oversized body
 and that device stops converging. The fix is to batch by size in `_pushOnce`;
 it is tracked separately.

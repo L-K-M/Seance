@@ -288,8 +288,11 @@ void main() {
       // path is a platform round trip with no bound a fixed delay could rely
       // on, and this is the kind of flake that looks unrelated to whatever
       // change triggered the rerun.
-      await _untilFallback(tester, Icons.hub_outlined);
-      expect(find.byIcon(Icons.hub_outlined), findsOneWidget);
+      // From the mapping rather than a literal: a remapped cluster glyph
+      // should fail as a wrong-icon mismatch, not as a poll timeout.
+      final fallback = serverIconData(ServerIcon.cluster);
+      await _untilFallback(tester, fallback);
+      expect(find.byIcon(fallback), findsOneWidget);
       // Absorbed by the errorBuilder, not escaped: asserting null rather than
       // discarding means an unrelated exception during these pumps still
       // fails the test.
@@ -373,7 +376,7 @@ void main() {
 
 /// Advances real time and frames until the badge's image has decoded.
 Future<void> _untilDecoded(WidgetTester tester) =>
-    _until(tester, () {
+    _until(tester, 'the image to decode', () {
       final images = find.byType(RawImage).evaluate();
       return images.isNotEmpty &&
           (images.first.widget as RawImage).image != null;
@@ -381,15 +384,21 @@ Future<void> _untilDecoded(WidgetTester tester) =>
 
 /// Advances real time and frames until [icon] appears — the fallback glyph a
 /// failed decode swaps in.
-Future<void> _untilFallback(WidgetTester tester, IconData icon) =>
-    _until(tester, () => find.byIcon(icon).evaluate().isNotEmpty);
+Future<void> _untilFallback(WidgetTester tester, IconData icon) => _until(
+      tester,
+      'the fallback glyph to replace the image',
+      () => find.byIcon(icon).evaluate().isNotEmpty,
+    );
 
 /// Alternates [WidgetTester.runAsync] with a pump until [done] holds.
 ///
 /// An image codec only progresses on the real event loop, and what it produces
 /// is only findable once a frame is built, so neither alone is enough.
+/// [what] names the wait, because a timeout here reports the wrong cause
+/// otherwise: the fallback waiter is not waiting on a codec.
 Future<void> _until(
   WidgetTester tester,
+  String what,
   bool Function() done, {
   int attempts = 50,
 }) async {
@@ -399,5 +408,5 @@ Future<void> _until(
     );
     await tester.pump();
   }
-  expect(done(), isTrue, reason: 'timed out waiting for the codec');
+  expect(done(), isTrue, reason: 'timed out waiting for $what');
 }

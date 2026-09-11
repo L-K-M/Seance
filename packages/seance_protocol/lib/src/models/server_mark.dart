@@ -163,9 +163,15 @@ const List<int> _pngSignature = [
 
 /// Byte offsets of IHDR's dimensions: the 8-byte signature, then the chunk's
 /// 4-byte length and 4-byte type, then width and height as big-endian uint32.
+const int _ihdrLength = 8;
+const int _ihdrType = 12;
 const int _ihdrWidth = 16;
 const int _ihdrHeight = 20;
 const int _ihdrEnd = 24;
+
+/// `IHDR` as a big-endian uint32, and the chunk's fixed data length.
+const int _ihdrTypeTag = 0x49484452;
+const int _ihdrDataLength = 13;
 
 /// The largest side an image mark may declare.
 ///
@@ -189,13 +195,21 @@ String? normalizeServerEmoji(String? emoji) {
   if (trimmed.isEmpty || trimmed.length > 64) return null;
   if (trimmed.characters.length != 1) return null;
   // Control and invisible formatting characters are not marks, and a record
-  // could carry one: the bidi overrides in particular would reorder the text
-  // around wherever the badge's label is rendered.
+  // could carry one: the bidi controls in particular (the overrides and
+  // isolates, and the plain LRM/RLM/ALM marks) would reorder the text around
+  // wherever the badge's label is rendered, and the zero-width ones would
+  // render an empty badge. U+200D is deliberately absent — it is the joiner
+  // that holds a multi-part emoji together.
   for (final unit in trimmed.codeUnits) {
     if (unit < 0x20 ||
         (unit >= 0x7F && unit <= 0x9F) ||
-        (unit >= 0x202A && unit <= 0x202E) ||
-        (unit >= 0x2066 && unit <= 0x2069) ||
+        unit == 0x00AD || // soft hyphen
+        unit == 0x061C || // Arabic letter mark
+        unit == 0x200B || // zero-width space
+        (unit >= 0x200E && unit <= 0x200F) || // LRM, RLM
+        (unit >= 0x202A && unit <= 0x202E) || // embeddings and overrides
+        (unit >= 0x2060 && unit <= 0x2064) || // word joiner, invisible ops
+        (unit >= 0x2066 && unit <= 0x2069) || // isolates
         unit == 0xFEFF) {
       return null;
     }
@@ -225,9 +239,13 @@ String? normalizeServerIconImage(String? base64Png) {
 /// frame rather than merely re-running base64. Returning the same list keeps
 /// the image cached.
 ///
-/// Bounded, and cleared wholesale rather than evicted one at a time: the cap is
-/// far above the number of servers anyone configures, so in practice it never
-/// trips, and a cache that never trips does not need a policy.
+/// Bounded, and cleared wholesale rather than evicted one at a time. The
+/// binding bound is the byte budget, not the entry count: it admits about 42
+/// images at the size cap, or around 150 photograph-sized ones. Both are above
+/// any plausible number of image-marked servers, and a cache that does not
+/// trip in practice does not need an eviction policy — a fleet past that point
+/// re-decodes on the reads after a clear, which costs frames rather than
+/// correctness.
 final Map<String, Uint8List> _decodedIconImages = {};
 const int _decodedIconImageLimit = 256;
 
@@ -268,6 +286,14 @@ Uint8List? decodeServerIconImage(String base64Png) {
   // paints. IHDR is required to be the first chunk, so the dimensions sit at
   // fixed offsets and can be refused before anything decodes them.
   final header = ByteData.sublistView(bytes);
+  // Checked rather than assumed: the fixed offsets only address the dimensions
+  // if IHDR really is first. A file that leads with some other chunk would
+  // otherwise be measured on whatever bytes happen to sit there, and could
+  // carry a real IHDR declaring anything further in.
+  if (header.getUint32(_ihdrLength) != _ihdrDataLength ||
+      header.getUint32(_ihdrType) != _ihdrTypeTag) {
+    return null;
+  }
   final width = header.getUint32(_ihdrWidth);
   final height = header.getUint32(_ihdrHeight);
   if (width == 0 || height == 0) return null;
