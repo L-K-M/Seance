@@ -1689,6 +1689,29 @@ void main() {
       expect(api.stored('s2')!.deleted, isFalse);
     });
 
+    test('an interrupted row-drop keeps its tombstone pending', () async {
+      // The prune must not drop a tombstone the delete has not yet won. A
+      // tombstone recorded at a later stamp than a row that still exists (an
+      // interrupted row-drop) has a mirrored live record that is sequenced but
+      // *older*, so the tombstone can still win and is retained, not pruned.
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 10));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      expect(await cfg.getServer('s1'), isNotNull,
+          reason: 'the still-live row is untouched');
+      expect(await tombstones.all(), hasLength(1),
+          reason: 'a tombstone an older sequenced live record cannot supersede '
+              'is retained for retry, not pruned');
+    });
+
     test('a tombstone a newer peer edit supersedes is pruned', () async {
       // A peer's later edit wins last-write-wins, so the delete lost and the
       // record converges back locally. The tombstone can never beat that newer

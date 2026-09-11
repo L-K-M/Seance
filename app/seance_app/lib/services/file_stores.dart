@@ -202,7 +202,10 @@ class FileTombstoneStore implements TombstoneStore {
   @override
   Future<void> remove(String id) async {
     await _load();
-    _cache.remove(id);
+    // Skip the rewrite when nothing was pending: saveServer/saveSnippet call
+    // remove() on every save, so without this a delete-free install would
+    // create and rewrite the file on each save.
+    if (_cache.remove(id) == null) return;
     await _flush();
   }
 }
