@@ -1,6 +1,7 @@
 import 'package:seance_protocol/seance_protocol.dart';
 
 import 'local_record_store.dart';
+import 'push_batcher.dart';
 
 /// The authenticated record endpoints the engine needs. Implemented over HTTP
 /// by [HttpSyncClient]; faked in tests.
@@ -26,6 +27,12 @@ class SyncEngine {
   final LocalRecordStore store;
   final int maxRounds;
 
+  /// How the next push may be sized. Refreshed from every pull that carries an
+  /// advertisement, which — since a round always pulls first — means a push is
+  /// sized to the deployment it is about to hit. The defaults stand in for a
+  /// server too old to advertise; see [PushLimits].
+  PushLimits _limits = const PushLimits();
+
   SyncEngine(this.store, {this.maxRounds = 5});
 
   Future<SyncOutcome> sync(SyncApi api) async {
@@ -50,6 +57,8 @@ class SyncEngine {
   Future<int> _pullOnce(SyncApi api) async {
     final since = await store.highWaterSeq();
     final resp = await api.pull(since: since);
+    final advertised = resp.limits;
+    if (advertised != null) _limits = advertised;
     var applied = 0;
     var snapshotHighWater = since;
     // Pulled records should carry server-assigned seqs; trust only observed seqs.
@@ -78,20 +87,31 @@ class SyncEngine {
     return applied;
   }
 
+  /// Pushes everything dirty, in as many requests as the server's limits
+  /// require. One oversized request would be refused whole and the next round
+  /// would rebuild it identically, so an unbatched push turns a large dirty set
+  /// into a sync that never converges rather than one that is merely slow.
+  ///
+  /// Batches go out in sequence and each response is applied before the next
+  /// request leaves, so a batch that fails costs the batches behind it, never
+  /// the bookkeeping for the ones already accepted. The counts returned still
+  /// cover the whole dirty set, which is what [sync]'s no-progress guard reads.
   Future<({int accepted, int rejected})> _pushOnce(SyncApi api) async {
     final dirty = await store.dirtyRecords();
     if (dirty.isEmpty) return (accepted: 0, rejected: 0);
-    final resp = await api.push(dirty);
     var accepted = 0;
     var rejected = 0;
-    for (final result in resp.results) {
-      if (result.accepted) {
-        await store.markSynced(result.id, result.seq);
-        accepted++;
-      } else {
-        // Keep the losing local version dirty until a pull adopts the server
-        // winner; assigning the winner's seq here would mislabel our payload.
-        rejected++;
+    for (final batch in batchForPush(dirty, _limits)) {
+      final resp = await api.push(batch);
+      for (final result in resp.results) {
+        if (result.accepted) {
+          await store.markSynced(result.id, result.seq);
+          accepted++;
+        } else {
+          // Keep the losing local version dirty until a pull adopts the server
+          // winner; assigning the winner's seq here would mislabel our payload.
+          rejected++;
+        }
       }
     }
     return (accepted: accepted, rejected: rejected);

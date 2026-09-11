@@ -1,4 +1,5 @@
 import '../crypto/vault.dart';
+import '../json_size.dart';
 import '../records/record.dart';
 import '../version.dart';
 
@@ -95,6 +96,60 @@ class LoginResponse {
       LoginResponse(token: json['token'] as String);
 }
 
+/// The shipped server's cap on one push body. Doubles as the client's fallback
+/// when a server does not advertise its limits, so an unadvertised batch still
+/// fits a default deployment.
+const int kDefaultMaxPushBodyBytes = 8 * 1024 * 1024;
+
+/// The shipped server's cap on records in one push. Fallback, as above.
+const int kDefaultMaxRecordsPerPush = 1000;
+
+/// What a single push may contain. Both caps are enforced server-side and both
+/// are env-tunable per deployment, so the server advertises its own values in
+/// every [PullResponse] and the client sizes its batches to them. The defaults
+/// only apply to a server too old to advertise, which is why they are the
+/// values that server shipped with.
+class PushLimits {
+  /// Largest accepted request body, in bytes. Exceeding it is refused before
+  /// any record is read, so the whole push fails — batching is what keeps a
+  /// large dirty set from failing identically every round.
+  final int maxBodyBytes;
+
+  /// Most records accepted in one push.
+  final int maxRecordsPerPush;
+
+  const PushLimits({
+    this.maxBodyBytes = kDefaultMaxPushBodyBytes,
+    this.maxRecordsPerPush = kDefaultMaxRecordsPerPush,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'maxBodyBytes': maxBodyBytes,
+        'maxRecordsPerPush': maxRecordsPerPush,
+      };
+
+  factory PushLimits.fromJson(Map<String, dynamic> json) => PushLimits(
+        maxBodyBytes:
+            (json['maxBodyBytes'] as num?)?.toInt() ?? kDefaultMaxPushBodyBytes,
+        maxRecordsPerPush: (json['maxRecordsPerPush'] as num?)?.toInt() ??
+            kDefaultMaxRecordsPerPush,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is PushLimits &&
+      other.maxBodyBytes == maxBodyBytes &&
+      other.maxRecordsPerPush == maxRecordsPerPush;
+
+  @override
+  int get hashCode => Object.hash(maxBodyBytes, maxRecordsPerPush);
+
+  @override
+  String toString() =>
+      'PushLimits(maxBodyBytes: $maxBodyBytes, '
+      'maxRecordsPerPush: $maxRecordsPerPush)';
+}
+
 /// `GET /v1/sync?since=<seq>` — pull records newer than the client's
 /// high-water mark. [latestSeq] is the account's current maximum sequence
 /// number.
@@ -102,11 +157,23 @@ class PullResponse {
   final List<EncryptedRecord> records;
   final int latestSeq;
 
-  const PullResponse({required this.records, required this.latestSeq});
+  /// The limits the next push must respect, or null from a server that does
+  /// not advertise them. Carried here rather than on an endpoint of its own
+  /// because every sync round pulls before it pushes: the client learns the
+  /// limits of the deployment it is about to push to, on the request it was
+  /// making anyway.
+  final PushLimits? limits;
+
+  const PullResponse({
+    required this.records,
+    required this.latestSeq,
+    this.limits,
+  });
 
   Map<String, dynamic> toJson() => {
         'records': records.map((r) => r.toJson()).toList(),
         'latestSeq': latestSeq,
+        if (limits != null) 'limits': limits!.toJson(),
       };
 
   factory PullResponse.fromJson(Map<String, dynamic> json) => PullResponse(
@@ -114,6 +181,9 @@ class PullResponse {
             .map((e) => EncryptedRecord.fromJson((e as Map).cast()))
             .toList(),
         latestSeq: (json['latestSeq'] as num).toInt(),
+        limits: json['limits'] == null
+            ? null
+            : PushLimits.fromJson((json['limits'] as Map).cast()),
       );
 }
 
@@ -127,10 +197,37 @@ class PushRequest {
     required this.records,
   });
 
+  /// Keep [bodyBytesFor] in step with this map — see
+  /// [EncryptedRecord.toJson] for why.
   Map<String, dynamic> toJson() => {
         'protocolVersion': protocolVersion,
         'records': records.map((r) => r.toJson()).toList(),
       };
+
+  /// Byte length of the body [toJson] encodes to, without building it.
+  int encodedSizeBytes() => bodyBytesFor(
+        recordCount: records.length,
+        recordBytes: records.fold(0, (sum, r) => sum + r.encodedJsonBytes()),
+        protocolVersion: protocolVersion,
+      );
+
+  /// Byte length of a push body holding [recordCount] records whose encoded
+  /// sizes sum to [recordBytes].
+  ///
+  /// Split out from [encodedSizeBytes] so a client filling a batch can test
+  /// the next candidate in constant time, instead of re-measuring every record
+  /// it has already accepted each time it adds one.
+  static int bodyBytesFor({
+    required int recordCount,
+    required int recordBytes,
+    int protocolVersion = kProtocolVersion,
+  }) =>
+      jsonObjectFramingBytes(2) +
+      jsonKeyBytes('protocolVersion') +
+      jsonIntBytes(protocolVersion) +
+      jsonKeyBytes('records') +
+      jsonArrayFramingBytes(recordCount) +
+      recordBytes;
 
   factory PushRequest.fromJson(Map<String, dynamic> json) => PushRequest(
         protocolVersion:

@@ -307,6 +307,31 @@ void main() {
       expect(pull.latestSeq, 2);
     });
 
+    test('a pull advertises this deployment\'s push limits', () async {
+      // Env-tunable, so a client cannot infer them: it sizes its push batches
+      // from what the pull it just made told it.
+      final server = SyncServer(
+        storage: InMemoryStorage(),
+        settings: const ServerSettings(
+          openRegistration: true,
+          maxBodyBytes: 4096,
+          maxRecordsPerPush: 7,
+        ),
+      );
+      final c = await authed(server, 'limits');
+
+      final (status, body) = await c.send(
+        'GET',
+        '/v1/sync',
+        auth: true,
+        query: {'since': '0'},
+      );
+
+      expect(status, 200);
+      expect(PullResponse.fromJson(body).limits,
+          const PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 7));
+    });
+
     test('since filter returns only newer records', () async {
       final server = makeServer();
       final c = await authed(server, 'heidi');

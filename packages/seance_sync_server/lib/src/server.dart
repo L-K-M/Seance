@@ -177,7 +177,15 @@ class SyncServer {
   Future<Response> _sync(Request req) => _withAuth(req, (username) async {
     final since = int.tryParse(req.url.queryParameters['since'] ?? '0') ?? 0;
     final snapshot = await storage.pullSnapshot(username, since);
-    return _json(snapshot.toJson());
+    // Every round pulls before it pushes, so this is where a client learns how
+    // to size the push it is about to make — see [PushLimits].
+    return _json(
+      PullResponse(
+        records: snapshot.records,
+        latestSeq: snapshot.latestSeq,
+        limits: settings.pushLimits,
+      ).toJson(),
+    );
   });
 
   Future<Response> _push(Request req) => _withAuth(req, (username) async {

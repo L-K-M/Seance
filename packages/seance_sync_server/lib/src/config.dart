@@ -1,3 +1,5 @@
+import 'package:seance_protocol/seance_protocol.dart';
+
 /// Server settings, sourced from environment variables (with CLI overrides
 /// applied in `bin/`). TLS is intentionally not handled here — run behind a
 /// reverse proxy, the same shape as Atuin's deployment guidance.
@@ -24,6 +26,14 @@ class ServerSettings {
   final int maxRecordsPerPush;
   final int maxBlobBytes;
 
+  /// The two push caps as the client sees them. Advertised in every pull
+  /// response so a client can split a large dirty set into pushes this
+  /// deployment accepts instead of guessing at env-tuned values.
+  PushLimits get pushLimits => PushLimits(
+        maxBodyBytes: maxBodyBytes,
+        maxRecordsPerPush: maxRecordsPerPush,
+      );
+
   const ServerSettings({
     this.bindAddress = '0.0.0.0',
     this.port = 8787,
@@ -31,8 +41,8 @@ class ServerSettings {
     this.dbPath,
     this.loginMaxAttempts = 10,
     this.loginWindow = const Duration(minutes: 1),
-    this.maxBodyBytes = 8 * 1024 * 1024,
-    this.maxRecordsPerPush = 1000,
+    this.maxBodyBytes = kDefaultMaxPushBodyBytes,
+    this.maxRecordsPerPush = kDefaultMaxRecordsPerPush,
     this.maxBlobBytes = 1024 * 1024,
   });
 
@@ -52,10 +62,11 @@ class ServerSettings {
           int.tryParse(env['SEANCE_LOGIN_MAX_ATTEMPTS'] ?? '') ?? 10,
       loginWindow: Duration(
           seconds: int.tryParse(env['SEANCE_LOGIN_WINDOW_SECONDS'] ?? '') ?? 60),
-      maxBodyBytes:
-          int.tryParse(env['SEANCE_MAX_BODY_BYTES'] ?? '') ?? 8 * 1024 * 1024,
+      maxBodyBytes: int.tryParse(env['SEANCE_MAX_BODY_BYTES'] ?? '') ??
+          kDefaultMaxPushBodyBytes,
       maxRecordsPerPush:
-          int.tryParse(env['SEANCE_MAX_RECORDS_PER_PUSH'] ?? '') ?? 1000,
+          int.tryParse(env['SEANCE_MAX_RECORDS_PER_PUSH'] ?? '') ??
+              kDefaultMaxRecordsPerPush,
       maxBlobBytes:
           int.tryParse(env['SEANCE_MAX_BLOB_BYTES'] ?? '') ?? 1024 * 1024,
     );
