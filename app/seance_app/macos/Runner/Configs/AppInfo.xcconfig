@@ -11,6 +11,7 @@
 // stages/installs the signed bundle under the file name "Séance.app"
 // (renaming a signed .app is safe: the wrapper name isn't part of the seal).
 PRODUCT_NAME = Seance
+SWIFT_OBJC_BRIDGING_HEADER = Runner/Runner-Bridging-Header.h
 
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.lkm.seanceApp

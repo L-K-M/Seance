@@ -223,6 +223,13 @@ flutter test             # widget tests (TOFU dialog)
 flutter run -d linux     # needs GTK/clang/ninja for a Linux desktop build
 ```
 
+On macOS, `scripts/test-macos-accessibility.sh` runs the native accessibility
+lifecycle regression against the cached release engine. Run it after
+`flutter build macos`; it also gates macOS CI and release builds. The fixture
+does not launch the Dart app or use saved user data. See
+[the crash investigation](docs/macos-accessibility-crash.md) for the native
+compatibility boundary and the limits of the reproduction.
+
 The platform folders (android/ios/linux/macos/windows) ARE committed — they
 carry real configuration: the display name (`Séance` — AndroidManifest label;
 macOS `CFBundleName`/`CFBundleDisplayName`, while `PRODUCT_NAME` stays ASCII
@@ -294,7 +301,7 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 621 Dart tests + 553 Flutter tests + 166 in the vendored xterm fork, all
+- 621 Dart tests + 552 Flutter tests + 166 in the vendored xterm fork, all
   analyze clean.
 - Sync correctness is proven two ways: `packages/seance_core/test/sync_test.dart` (engine,
   two devices converge, concurrent-edit LWW, tombstones) and
@@ -340,8 +347,8 @@ compiles the app for android/linux/macos/ios/windows on their native runners
   starts it — starting it outside and delaying inside does not help), then
   `pump()` fixed frames rather than settling. An `Image` *widget* is in the
   tree from the first frame, so assertions about the widget itself need none
-  of this; only its decoded result does. See `server_list_add_button_test.dart`
-  and `server_mark_picker_test.dart`.
+  of this; only its decoded result does. See `server_list_pane_test.dart` and
+  `server_mark_picker_test.dart`.
 - **file_picker ≥11 breaks the APK build** ("cannot find symbol:
   FilePickerPlugin" in GeneratedPluginRegistrant.java): on AGP 9+ the plugin
   stops applying the Kotlin plugin and expects AGP's built-in Kotlin, which the

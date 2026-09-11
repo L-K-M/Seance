@@ -4,10 +4,10 @@ Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
 _Last updated: 2026-09-11. The terminal font can be picked from the fonts
-actually installed on the host; the "Add server" button no longer covers the
-last row's menu; a drag through the empty area under the shell prompt no
-longer paints a selection over it; and a server's mark can now be one of 77
-built-in glyphs, an emoji, or an imported image. Before that, the TOFU
+actually installed on the host; a drag through the empty area under the shell
+prompt no longer paints a selection over it; and a server's mark can now be one
+of 77 built-in glyphs, an emoji, or an imported image. The "Add server" button
+also no longer covers the last row's menu. Before that, the TOFU
 host-key dialog's review content is
 now scrollable, so the changed-key warning and both fingerprints stay
 reachable and the buttons stay pinned in constrained layouts (ported back
@@ -24,9 +24,12 @@ be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
 
-## Font picker, server marks, and two UI defects (2026-09-11)
+## Font picker, server marks, and terminal selection (2026-09-11)
 
-Four requests, each its own commit on top of the section below.
+Three requests, each its own commit on top of the section below. A fourth —
+the "Add server" button covering the last row's menu — was reported at the same
+time and fixed independently on its own branch; this work was rebuilt on top of
+that rather than duplicating it.
 
 **A terminal font picker on desktop** (`services/system_fonts.dart`,
 `ui/font_picker.dart`). The font family was a name typed from memory. The
@@ -42,15 +45,6 @@ free-text field stays everywhere, because what the OS registers and what the
 engine renders are not quite the same set. Verified against this container's
 own fonts as well as synthetic ones: 22 families, with DejaVu Sans Mono,
 FreeMono, Liberation Mono and Unifont correctly marked fixed-pitch.
-
-**The "Add server" button no longer covers the last row** (`ui/server_list_pane.dart`).
-The button floats over the list and nothing in `Scaffold` reserves room for it,
-so scrolled to the end the last server sat underneath it and every tap aimed at
-its three-dot menu landed on the button instead. The list now reserves the
-button's footprint plus the system's bottom inset. The height is a framework
-default the app cannot read back, so it is a named constant and the widget test
-measures the real button — a framework change fails the build rather than
-quietly re-covering the row.
 
 **Terminal selection is bounded by the content** (vendored fork patch 28).
 Dragging through the blank area under the shell prompt painted a selection band
@@ -122,9 +116,8 @@ three-tab picker (Icons / Emoji / Image), since 77 glyphs no longer fit a form
 field. Duplicating a server carries all three fields, which its whole-record
 comparison test now catches.
 
-621 Dart tests, 553 Flutter tests and 166 in the vendored fork pass; every
-analyzer is clean. The two defect fixes were confirmed to fail before their
-fixes and pass after.
+Every analyzer is clean and the whole suite passes; the selection fix was
+confirmed to fail before it and pass after. Counts are in AGENTS.md section 4.
 
 ## Host-key review reachability (2026-09-09)
 
