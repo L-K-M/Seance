@@ -17,17 +17,17 @@ const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 /// must stay reachable.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  late Directory directory;
-  late AppServices services;
-  late AppState state;
+  Directory? directory;
+  AppServices? services;
+  AppState? state;
 
   tearDown(() async {
-    state.dispose();
-    await services.probe.dispose();
+    state?.dispose();
+    await services?.probe.dispose();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_pathChannel, null);
     FlutterSecureStorage.setMockInitialValues({});
-    await directory.delete(recursive: true);
+    await directory?.delete(recursive: true);
   });
 
   ServerConfig server(String id) => ServerConfig(
@@ -46,28 +46,39 @@ void main() {
       directory = await Directory.systemTemp.createTemp('seance-list-pane-');
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(
-              _pathChannel, (call) async => directory.path);
+              _pathChannel, (call) async => directory!.path);
       FlutterSecureStorage.setMockInitialValues({});
       services = await AppServices.initialize();
-      state = AppState(services);
+      state = AppState(services!);
       // Enough rows to force scrolling on the 800x600 test surface.
       // Zero-padded ids because the list sorts by label: "box19" would sort
       // before "box9" and the last row would not be the one named last.
       for (var i = 0; i < 20; i++) {
-        await state.saveServer(server('box${i.toString().padLeft(2, '0')}'));
+        await state!.saveServer(server('box${i.toString().padLeft(2, '0')}'));
       }
     });
 
     await tester.pumpWidget(
       MaterialApp(
-        home: AppScope(state: state, child: ServerListPane(onOpen: (_) {})),
+        home: AppScope(state: state!, child: ServerListPane(onOpen: (_) {})),
       ),
     );
     await tester.pumpAndSettle();
 
-    // Small settled steps rather than one fling, so the list rests exactly at
-    // its scroll extent instead of mid-bounce.
-    for (var i = 0; i < 20; i++) {
+    // Settled steps until the list rests exactly at its real max extent —
+    // the premise of this test is "deepest scroll", not a fixed drag budget.
+    // Scoped under the ListView because the filter TextField has its own
+    // Scrollable too.
+    final scrollPosition = tester.state<ScrollableState>(
+      find.descendant(
+        of: find.byType(ListView),
+        matching: find.byType(Scrollable),
+      ),
+    ).position;
+    expect(scrollPosition.maxScrollExtent, greaterThan(0),
+        reason: 'the list must overflow the viewport for this test to '
+            'be meaningful');
+    while (scrollPosition.pixels < scrollPosition.maxScrollExtent) {
       await tester.drag(find.byType(ListView), const Offset(0, -200));
       await tester.pumpAndSettle();
     }
