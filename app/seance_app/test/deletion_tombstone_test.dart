@@ -1,0 +1,119 @@
+import 'dart:io';
+
+import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:seance_app/app_state.dart';
+import 'package:seance_app/services/app_services.dart';
+import 'package:seance_app/services/file_stores.dart';
+import 'package:seance_core/seance_core.dart';
+
+const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+/// Regression for issue #54: a delete must leave a durable tombstone so the
+/// next sync pushes it, or the deleted record returns on the next full pull.
+/// The coordinator's own tests prove the tombstone then propagates and is not
+/// re-adopted; these prove the app records it, durably, the way the coordinator
+/// expects to find it.
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory directory;
+
+  setUp(() async {
+    directory = await Directory.systemTemp.createTemp('seance-deletion-');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_pathChannel, (call) async => directory.path);
+    FlutterSecureStorage.setMockInitialValues({});
+  });
+
+  tearDown(() async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_pathChannel, null);
+    FlutterSecureStorage.setMockInitialValues({});
+    await directory.delete(recursive: true);
+  });
+
+  ServerConfig server(String id) => ServerConfig(
+        id: id,
+        label: id,
+        host: '$id.example.com',
+        username: 'deploy',
+        createdAt: 1,
+        updatedAt: 1,
+      );
+
+  test('deleting a server records a durable tombstone', () async {
+    final services = await AppServices.initialize();
+    final state = AppState(services);
+    addTearDown(() async {
+      state.dispose();
+      await services.probe.dispose();
+    });
+
+    await state.saveServer(server('a'));
+    await state.deleteServer('a');
+
+    final pending = await services.tombstoneStore.all();
+    expect(pending, hasLength(1));
+    expect(pending.single.id, 'a');
+    expect(pending.single.deleted, isTrue);
+    expect(pending.single.blob, isEmpty, reason: 'a tombstone leaks no payload');
+    expect(pending.single.deviceId, services.settings.deviceId);
+    expect(await services.configStore.getServer('a'), isNull);
+
+    // A fresh services on the same directory still owes the deletion, so an
+    // app restart before the next sync round does not lose it.
+    final reopened = await AppServices.initialize();
+    final stillPending = await reopened.tombstoneStore.all();
+    expect(stillPending, hasLength(1));
+    expect(stillPending.single.id, 'a');
+    expect(stillPending.single.deleted, isTrue);
+  });
+
+  test('deleting a snippet records a snippet-scoped tombstone', () async {
+    final services = await AppServices.initialize();
+    final state = AppState(services);
+    addTearDown(() async {
+      state.dispose();
+      await services.probe.dispose();
+    });
+
+    await state.saveSnippet(const Snippet(
+      id: 's1',
+      title: 'list',
+      body: 'ls -la',
+      createdAt: 1,
+      updatedAt: 1,
+    ));
+    await state.deleteSnippet('s1');
+
+    final pending = await services.tombstoneStore.all();
+    expect(pending, hasLength(1));
+    expect(pending.single.id, 'snippet:s1',
+        reason: 'the tombstone id must match the snippet record id');
+    expect(pending.single.deleted, isTrue);
+  });
+
+  test('FileTombstoneStore round-trips and tolerates a corrupt file', () async {
+    final file = File('${directory.path}/deleted_records.json');
+    final store = FileTombstoneStore(file);
+    await store.add(
+        EncryptedRecord.tombstone(id: 'x', updatedAt: 42, deviceId: 'D'));
+
+    final reloaded = await FileTombstoneStore(file).all();
+    expect(reloaded, hasLength(1));
+    expect(reloaded.single.id, 'x');
+    expect(reloaded.single.updatedAt, 42);
+    expect(reloaded.single.deviceId, 'D');
+    expect(reloaded.single.deleted, isTrue);
+    expect(reloaded.single.blob, isEmpty);
+
+    await store.remove('x');
+    expect(await FileTombstoneStore(file).all(), isEmpty);
+
+    // A corrupt file must not wedge startup: it reads as empty (quarantined),
+    // like the other file-backed stores.
+    await file.writeAsString('{not valid json');
+    expect(await FileTombstoneStore(file).all(), isEmpty);
+  });
+}

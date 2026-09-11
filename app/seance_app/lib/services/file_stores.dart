@@ -127,6 +127,61 @@ class FileSnippetStore implements SnippetStore {
   }
 }
 
+/// JSON-file [TombstoneStore]: the deletions this device still owes the sync
+/// server. Each entry is an [EncryptedRecord] tombstone (empty blob, no vault
+/// key needed to mint), persisted so a delete survives an app restart before
+/// the next sync pushes it. `SyncCoordinator` prunes an entry once the server
+/// has taken it, so the file stays small.
+class FileTombstoneStore implements TombstoneStore {
+  final File file;
+  final Map<String, EncryptedRecord> _cache = {};
+  bool _loaded = false;
+
+  FileTombstoneStore(this.file);
+
+  Future<void> _load() async {
+    if (_loaded) return;
+    if (await file.exists()) {
+      try {
+        final list = jsonDecode(await file.readAsString()) as List;
+        for (final j in list) {
+          final r = EncryptedRecord.fromJson((j as Map).cast<String, dynamic>());
+          _cache[r.id] = r;
+        }
+      } catch (_) {
+        _cache.clear();
+        await quarantineCorruptFile(file);
+      }
+    }
+    _loaded = true;
+  }
+
+  Future<void> _flush() async {
+    await writeStringAtomically(
+        file, jsonEncode(_cache.values.map((r) => r.toJson()).toList()));
+  }
+
+  @override
+  Future<List<EncryptedRecord>> all() async {
+    await _load();
+    return _cache.values.toList();
+  }
+
+  @override
+  Future<void> add(EncryptedRecord tombstone) async {
+    await _load();
+    _cache[tombstone.id] = tombstone;
+    await _flush();
+  }
+
+  @override
+  Future<void> remove(String id) async {
+    await _load();
+    _cache.remove(id);
+    await _flush();
+  }
+}
+
 /// JSON-file [VaultStore] holding only opaque, already-encrypted blobs
 /// (base64). [SecretVault] seals/opens; this just persists bytes.
 class FileVaultStore implements VaultStore {

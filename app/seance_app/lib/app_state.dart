@@ -736,6 +736,30 @@ class AppState extends ChangeNotifier {
       // the user only meets at connect time. Reversed, the worst a failure
       // leaves is a vault entry nothing names — invisible rather than broken.
       await services.configStore.deleteServer(id);
+      // Record the deletion durably so the next sync pushes a tombstone. The
+      // sync mirror is rebuilt from a full pull each round, so without this the
+      // server's still-live record returns from the sync server and the row
+      // reappears (issue #54). Fail-soft like the writes below: the config is
+      // already gone, so a failed tombstone write is logged — the delete just
+      // does not propagate until it is retried — rather than wedging the UI on
+      // a server the store no longer has. No vault key is needed to mint a
+      // tombstone (its blob is empty), so a locked keyring does not block it.
+      try {
+        await services.tombstoneStore.add(EncryptedRecord.tombstone(
+          id: id,
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+          deviceId: services.settings.deviceId,
+        ));
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not record the deletion tombstone for server $id; it may '
+          'reappear on the next sync until it is deleted again',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
       // After the config for the same reason the vault delete is: revoked
       // first, a throw from `deleteServer` left a live server whose
       // Browse…-picked key had already lost its security-scoped grant — the
@@ -1076,6 +1100,27 @@ class AppState extends ChangeNotifier {
 
   Future<void> deleteSnippet(String id) async {
     await services.snippetStore.deleteSnippet(id);
+    // A tombstone under the snippet's record id, so the snippet does not return
+    // from the sync server on the next full pull, the way a deleted server used
+    // to (issue #54). Fail-soft like the server delete. A `snippet:` tombstone
+    // is not honoured across devices yet (the apply path no-ops prefixed
+    // tombstones — that waits on sealed tombstones), but it stops this device's
+    // own resurrection, which is the bug the user sees.
+    try {
+      await services.tombstoneStore.add(EncryptedRecord.tombstone(
+        id: 'snippet:$id',
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+        deviceId: services.settings.deviceId,
+      ));
+    } catch (error, stackTrace) {
+      developer.log(
+        'Could not record the deletion tombstone for snippet $id',
+        name: 'seance.app',
+        level: 900,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
     snippets = await services.snippetStore.listSnippets();
     notifyListeners();
     _scheduleAutoSync();

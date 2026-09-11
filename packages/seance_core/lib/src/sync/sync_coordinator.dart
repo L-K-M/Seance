@@ -65,6 +65,14 @@ class SyncCoordinator {
   final bool syncSecrets;
   final SecretVault? secretVault;
 
+  /// Durable record of servers (and other kinds) the user has deleted, awaiting
+  /// propagation. Optional so the pure-Dart tests and any embedding without a
+  /// deletion path can omit it; when present, [collectLocal] republishes each
+  /// pending tombstone so the engine pushes it, and [run] prunes it once the
+  /// sync server has taken it. Null means deletions are not propagated — the
+  /// pre-existing behaviour, which the app no longer relies on.
+  final TombstoneStore? tombstoneStore;
+
   SyncCoordinator({
     required this.configStore,
     required this.hostKeyStore,
@@ -75,6 +83,7 @@ class SyncCoordinator {
     this.assistantStore,
     this.syncSecrets = false,
     this.secretVault,
+    this.tombstoneStore,
   });
 
   /// Encode current local state into the record store (as local edits).
@@ -123,6 +132,18 @@ class SyncCoordinator {
           )));
         }
       }
+    }
+    // Deletions the user made are remembered in [tombstoneStore], not in
+    // configStore — the row is gone. Republish each as a dirty tombstone so the
+    // engine pushes it and last-write-wins carries the delete to the server and
+    // every other device, instead of the deleted record returning on the next
+    // full pull and being re-adopted by [applyToStores]. Pruned in [run] once
+    // the server has the tombstone. A config tombstone is honoured on apply
+    // regardless of the payload it replaces (routed by its bare id), so the
+    // deletion converges even for a kind a peer cannot yet decode.
+    for (final tombstone
+        in await tombstoneStore?.all() ?? const <EncryptedRecord>[]) {
+      await local.putLocal(tombstone);
     }
     for (final hk in await hostKeyStore.all()) {
       if (excludedLocators.contains(hk.locator) &&
@@ -281,6 +302,29 @@ class SyncCoordinator {
       deviceId: deviceId,
       deleted: true,
     )));
+  }
+
+  /// Drop pending tombstones the sync server has taken.
+  ///
+  /// [collectLocal] republishes every [tombstoneStore] entry each round; this
+  /// bounds that list so it does not grow without limit. An entry is done once
+  /// the mirror holds the record as a sequenced tombstone — either this round's
+  /// push was accepted, or a pull carried the server's own copy back — which is
+  /// the proof the server (and so, in time, every device) has the delete.
+  ///
+  /// Unconfirmed entries stay: a round that pushed nothing (offline, or a push
+  /// the server outranked with a newer live edit) has not propagated the
+  /// delete, and dropping it would strand the deletion while the live record
+  /// resurrects. Keeping it costs one idempotent re-push next round.
+  Future<void> _pruneConfirmedTombstones() async {
+    final store = tombstoneStore;
+    if (store == null) return;
+    for (final pending in await store.all()) {
+      final mirrored = await local.getRecord(pending.id);
+      if (mirrored != null && mirrored.deleted && mirrored.seq != null) {
+        await store.remove(pending.id);
+      }
+    }
   }
 
   /// Write every record in the local store back into the domain stores,
@@ -761,9 +805,13 @@ class SyncCoordinator {
     // applied — which would double every round's traffic on the hot path,
     // hidden inside the summed outcome.
     final redated = await applyToStores();
-    if (redated == 0) return first;
+    if (redated == 0) {
+      await _pruneConfirmedTombstones();
+      return first;
+    }
     final second = await engine.sync(api);
     await applyToStores();
+    await _pruneConfirmedTombstones();
     return SyncOutcome(
       pulled: first.pulled + second.pulled,
       pushed: first.pushed + second.pushed,
