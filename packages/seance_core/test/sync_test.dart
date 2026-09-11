@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:seance_core/src/sync/local_record_store.dart';
@@ -12,17 +13,49 @@ class FakeServer implements SyncApi {
   final Map<String, EncryptedRecord> _store = {};
   int _seq = 0;
 
+  /// What one push may carry, enforced exactly as the real server does and
+  /// advertised in every pull. Null models a server too old to advertise: it
+  /// still enforces the shipped defaults, so a client that guesses them wrong
+  /// is caught here rather than in production.
+  final PushLimits? advertisedLimits;
+
+  /// The size of each push the engine sent, in order, so a test can assert how
+  /// a dirty set was split rather than only that it arrived.
+  final List<int> pushedBatchSizes = [];
+
+  FakeServer({this.advertisedLimits});
+
+  PushLimits get _enforced => advertisedLimits ?? const PushLimits();
+
   @override
   Future<PullResponse> pull({required int since}) async {
     final records = _store.values
         .where((r) => (r.seq ?? 0) > since)
         .toList()
       ..sort((a, b) => (a.seq ?? 0).compareTo(b.seq ?? 0));
-    return PullResponse(records: records, latestSeq: _seq);
+    return PullResponse(
+        records: records, latestSeq: _seq, limits: advertisedLimits);
   }
 
   @override
   Future<PushResponse> push(List<EncryptedRecord> records) async {
+    pushedBatchSizes.add(records.length);
+    if (records.length > _enforced.maxRecordsPerPush) {
+      throw ApiError(
+          code: 'payload_too_large',
+          message: 'Too many records in one push '
+              '(max ${_enforced.maxRecordsPerPush})');
+    }
+    // Measured the way the server measures it — the bytes of the encoded body
+    // — not with the arithmetic the batcher uses, so a batch sized by a wrong
+    // count is rejected here just as it would be over HTTP.
+    final bodyBytes =
+        utf8.encode(jsonEncode(PushRequest(records: records).toJson())).length;
+    if (bodyBytes > _enforced.maxBodyBytes) {
+      throw ApiError(
+          code: 'payload_too_large',
+          message: 'Request body too large ($bodyBytes bytes)');
+    }
     final results = <PushResult>[];
     for (final incoming in records) {
       final existing = _store[incoming.id];
@@ -101,6 +134,45 @@ class PullRaceApi implements SyncApi {
   @override
   Future<PushResponse> push(List<EncryptedRecord> records) =>
       throw UnsupportedError('PullRaceApi does not accept pushes');
+}
+
+/// Fails from the [failFromPush]th push onwards, so a test can observe what the
+/// engine has already committed when a later batch dies.
+class FailingBatchApi implements SyncApi {
+  final FakeServer server;
+  final int failFromPush;
+  int _pushes = 0;
+
+  FailingBatchApi(this.server, {required this.failFromPush});
+
+  @override
+  Future<PullResponse> pull({required int since}) => server.pull(since: since);
+
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) async {
+    _pushes++;
+    if (_pushes >= failFromPush) {
+      throw const ApiError(code: 'storage_busy', message: 'Storage is busy');
+    }
+    return server.push(records);
+  }
+}
+
+/// Accepts nothing, ever: the standing-rejection case the round cap exists for.
+class RejectEverythingApi implements SyncApi {
+  @override
+  Future<PullResponse> pull({required int since}) async =>
+      const PullResponse(records: [], latestSeq: 0);
+
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) async =>
+      PushResponse(
+        results: [
+          for (final r in records)
+            PushResult(id: r.id, seq: 0, accepted: false),
+        ],
+        latestSeq: 0,
+      );
 }
 
 EncryptedRecord rec(String id, int updatedAt, String device,
@@ -263,6 +335,152 @@ void main() {
       expect(a.deviceId, 'B');
       expect(b!.updatedAt, 30);
       expect(a.blob, equals(b.blob));
+    });
+
+    group('push batching', () {
+      /// A record of roughly [blobBytes] sealed bytes.
+      EncryptedRecord bulky(String id, int blobBytes) => EncryptedRecord(
+            id: id,
+            updatedAt: 10,
+            deviceId: 'A',
+            deleted: false,
+            seq: null,
+            blob: Uint8List(blobBytes),
+          );
+
+      test('splits a dirty set too large for one body', () async {
+        const limits = PushLimits(maxBodyBytes: 8 * 1024);
+        final server = FakeServer(advertisedLimits: limits);
+        final store = InMemoryLocalRecordStore();
+        // ~40 KiB of records against an 8 KiB body limit: unbatched this is
+        // rejected whole, and the next round rebuilds the same request.
+        for (var i = 0; i < 20; i++) {
+          await store.putLocal(bulky('r$i', 1500));
+        }
+
+        final outcome = await SyncEngine(store).sync(server);
+
+        expect(outcome.pushed, 20);
+        expect(await store.dirtyRecords(), isEmpty);
+        expect(server.pushedBatchSizes.length, greaterThan(1),
+            reason: 'the dirty set cannot fit in one body');
+        expect((await server.pull(since: 0)).records, hasLength(20));
+      });
+
+      test('splits a dirty set with more records than one push allows',
+          () async {
+        const limits = PushLimits(maxRecordsPerPush: 3);
+        final server = FakeServer(advertisedLimits: limits);
+        final store = InMemoryLocalRecordStore();
+        for (var i = 0; i < 10; i++) {
+          await store.putLocal(rec('r$i', 10, 'A'));
+        }
+
+        final outcome = await SyncEngine(store).sync(server);
+
+        expect(outcome.pushed, 10);
+        expect(await store.dirtyRecords(), isEmpty);
+        expect(server.pushedBatchSizes, [3, 3, 3, 1]);
+      });
+
+      test('falls back to the shipped limits when none are advertised',
+          () async {
+        final server = FakeServer();
+        final store = InMemoryLocalRecordStore();
+        for (var i = 0; i < kDefaultMaxRecordsPerPush + 1; i++) {
+          await store.putLocal(rec('r$i', 10, 'A'));
+        }
+
+        final outcome = await SyncEngine(store).sync(server);
+
+        expect(outcome.pushed, kDefaultMaxRecordsPerPush + 1);
+        expect(server.pushedBatchSizes, [kDefaultMaxRecordsPerPush, 1],
+            reason: 'an unadvertised server still enforces what it shipped '
+                'with, so the fallback has to match it');
+      });
+
+      test('a failing batch keeps the earlier batches marked synced', () async {
+        const limits = PushLimits(maxRecordsPerPush: 2);
+        final server = FakeServer(advertisedLimits: limits);
+        final api = FailingBatchApi(server, failFromPush: 2);
+        final store = InMemoryLocalRecordStore();
+        for (var i = 0; i < 6; i++) {
+          await store.putLocal(rec('r$i', 10, 'A'));
+        }
+
+        await expectLater(SyncEngine(store).sync(api), throwsA(isA<ApiError>()));
+
+        // The first batch was accepted and recorded before the second left, so
+        // its records are clean and the retry only carries what is still owed.
+        final stillDirty =
+            (await store.dirtyRecords()).map((r) => r.id).toSet();
+        expect(stillDirty, hasLength(4));
+        expect((await server.pull(since: 0)).records, hasLength(2));
+      });
+
+      test('an advertisement does not outlive the server that made it',
+          () async {
+        final tight = FakeServer(
+            advertisedLimits: const PushLimits(maxRecordsPerPush: 2));
+        final store = InMemoryLocalRecordStore();
+        for (var i = 0; i < 5; i++) {
+          await store.putLocal(rec('r$i', 10, 'A'));
+        }
+        final engine = SyncEngine(store);
+        await engine.sync(tight);
+        expect(tight.pushedBatchSizes, [2, 2, 1]);
+
+        // The same engine, now pointed at a server that advertises nothing:
+        // it enforces the shipped defaults, so sizing to what the previous
+        // deployment allowed would batch for the wrong server.
+        final silent = FakeServer();
+        for (var i = 0; i < 5; i++) {
+          await store.putLocal(rec('s$i', 20, 'A'));
+        }
+        await engine.sync(silent);
+
+        expect(silent.pushedBatchSizes, [5]);
+      });
+
+      test('a record no single body can carry surfaces the server error',
+          () async {
+        const limits = PushLimits(maxBodyBytes: 2048);
+        final server = FakeServer(advertisedLimits: limits);
+        final store = InMemoryLocalRecordStore();
+        // Put the unbatchable record first, so its move to the back of the
+        // queue is what lets the record behind it through.
+        await store.putLocal(bulky('huge', 8192));
+        await store.putLocal(bulky('small', 100));
+
+        await expectLater(
+            SyncEngine(store).sync(server), throwsA(isA<ApiError>()));
+
+        // The refusal is reported rather than counted as a benign rejection:
+        // nothing local can make this record fit, so a sync that returned
+        // normally would claim success while the record never leaves. What
+        // did fit is already pushed and clean, so the error costs only itself.
+        expect((await server.pull(since: 0)).records.map((r) => r.id),
+            ['small']);
+        expect((await store.dirtyRecords()).map((r) => r.id), ['huge']);
+        expect(server.pushedBatchSizes, [1, 1]);
+      });
+
+      test('a server that rejects every batch still terminates', () async {
+        final api = RejectEverythingApi();
+        final store = InMemoryLocalRecordStore();
+        for (var i = 0; i < 5; i++) {
+          await store.putLocal(rec('r$i', 10, 'A'));
+        }
+
+        final engine = SyncEngine(store, maxRounds: 3);
+        final outcome = await engine.sync(api);
+
+        // Nothing converges, but the round cap ends it: batching must not turn
+        // a standing rejection into an unbounded retry loop.
+        expect(outcome.pushed, 0);
+        expect(outcome.rounds, 3);
+        expect(await store.dirtyRecords(), hasLength(5));
+      });
     });
 
     test('a delete propagates as a tombstone', () async {

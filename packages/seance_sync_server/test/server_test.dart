@@ -73,6 +73,92 @@ void main() {
     settings: ServerSettings(openRegistration: openRegistration),
   );
 
+  group('settings from the environment', () {
+    test('a non-positive push limit refuses to start', () {
+      for (final key in const [
+        'SEANCE_MAX_BODY_BYTES',
+        'SEANCE_MAX_RECORDS_PER_PUSH',
+        'SEANCE_MAX_BLOB_BYTES',
+      ]) {
+        for (final value in const ['0', '-1']) {
+          // Silently advertising a cap no push can satisfy would surface as
+          // every sync failing with an opaque 413. The error names the
+          // variable, which is the whole point of failing at startup.
+          expect(
+              () => ServerSettings.fromEnvironment({key: value}),
+              throwsA(isA<ArgumentError>()
+                  .having((e) => e.name, 'name', key)),
+              reason: '$key=$value');
+        }
+      }
+    });
+
+    test('a limit set to something unparseable refuses to start', () {
+      // A typo is not an intent: silently defaulting would run a cap other
+      // than the one the operator asked for.
+      for (final key in const [
+        'SEANCE_MAX_BODY_BYTES',
+        'SEANCE_MAX_RECORDS_PER_PUSH',
+        'SEANCE_MAX_BLOB_BYTES',
+      ]) {
+        for (final value in const ['lots', '4096b', '1_000_000']) {
+          expect(
+              () => ServerSettings.fromEnvironment({key: value}),
+              throwsA(isA<ArgumentError>()
+                  .having((e) => e.name, 'name', key)),
+              reason: '$key=$value');
+        }
+      }
+    });
+
+    test('unset limits keep the shipped defaults', () {
+      final settings = ServerSettings.fromEnvironment(const {});
+      expect(settings.pushLimits, const PushLimits());
+      expect(settings.maxBlobBytes, 1024 * 1024);
+    });
+
+    test('an empty value means unset and keeps the default', () {
+      // `KEY=` in an env file, an empty Compose interpolation and an empty
+      // ConfigMap entry all arrive this way, and all mean "unset".
+      for (final value in const ['', '  ']) {
+        final settings = ServerSettings.fromEnvironment({
+          'SEANCE_MAX_BODY_BYTES': value,
+          'SEANCE_MAX_RECORDS_PER_PUSH': value,
+          'SEANCE_MAX_BLOB_BYTES': value,
+        });
+        expect(settings.maxBodyBytes, kDefaultMaxPushBodyBytes);
+        expect(settings.maxRecordsPerPush, kDefaultMaxRecordsPerPush);
+        expect(settings.maxBlobBytes, 1024 * 1024);
+      }
+    });
+
+    test('surrounding whitespace is not a typo', () {
+      // Env files pick up trailing newlines; that must not stop the server.
+      final settings = ServerSettings.fromEnvironment(
+          const {'SEANCE_MAX_BODY_BYTES': ' 4096\n'});
+      expect(settings.maxBodyBytes, 4096);
+    });
+
+    test('valid overrides are parsed and advertised, leaving others alone', () {
+      final settings = ServerSettings.fromEnvironment(const {
+        'SEANCE_MAX_BODY_BYTES': '4096',
+        'SEANCE_MAX_RECORDS_PER_PUSH': '7',
+      });
+      expect(settings.pushLimits,
+          const PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 7));
+      expect(settings.maxBlobBytes, 1024 * 1024,
+          reason: 'overriding one cap must not disturb another');
+    });
+
+    test('the blob cap is read too, not only validated', () {
+      // The other tests here only prove this key is rejected when invalid.
+      final settings = ServerSettings.fromEnvironment(
+          const {'SEANCE_MAX_BLOB_BYTES': '2048'});
+      expect(settings.maxBlobBytes, 2048);
+      expect(settings.pushLimits, const PushLimits());
+    });
+  });
+
   group('health + registration', () {
     test('healthz is 200', () async {
       final c = TestClient(makeServer().handler);
@@ -305,6 +391,31 @@ void main() {
       final pull = PullResponse.fromJson(sBody);
       expect(pull.records.map((r) => r.id).toSet(), {'a', 'b'});
       expect(pull.latestSeq, 2);
+    });
+
+    test('a pull advertises this deployment\'s push limits', () async {
+      // Env-tunable, so a client cannot infer them: it sizes its push batches
+      // from what the pull it just made told it.
+      final server = SyncServer(
+        storage: InMemoryStorage(),
+        settings: const ServerSettings(
+          openRegistration: true,
+          maxBodyBytes: 4096,
+          maxRecordsPerPush: 7,
+        ),
+      );
+      final c = await authed(server, 'limits');
+
+      final (status, body) = await c.send(
+        'GET',
+        '/v1/sync',
+        auth: true,
+        query: {'since': '0'},
+      );
+
+      expect(status, 200);
+      expect(PullResponse.fromJson(body).limits,
+          const PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 7));
     });
 
     test('since filter returns only newer records', () async {

@@ -1,4 +1,5 @@
 import '../crypto/vault.dart';
+import '../json_size.dart';
 import '../records/record.dart';
 import '../version.dart';
 
@@ -95,6 +96,99 @@ class LoginResponse {
       LoginResponse(token: json['token'] as String);
 }
 
+/// The shipped server's cap on one push body. Doubles as the client's fallback
+/// when a server does not advertise its limits, so an unadvertised batch still
+/// fits a default deployment.
+const int kDefaultMaxPushBodyBytes = 8 * 1024 * 1024;
+
+/// The shipped server's cap on records in one push. Fallback, as above.
+const int kDefaultMaxRecordsPerPush = 1000;
+
+/// What a single push may contain. Both caps are enforced server-side and both
+/// are env-tunable per deployment, so the server advertises its own values in
+/// every [PullResponse] and the client sizes its batches to them. The defaults
+/// only apply to a server too old to advertise, which is why they are the
+/// values that server shipped with.
+class PushLimits {
+  /// Largest accepted request body, in bytes. Exceeding it is refused before
+  /// any record is read, so the whole push fails — batching is what keeps a
+  /// large dirty set from failing identically every round.
+  final int maxBodyBytes;
+
+  /// Most records accepted in one push.
+  final int maxRecordsPerPush;
+
+  const PushLimits({
+    this.maxBodyBytes = kDefaultMaxPushBodyBytes,
+    this.maxRecordsPerPush = kDefaultMaxRecordsPerPush,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'maxBodyBytes': maxBodyBytes,
+        'maxRecordsPerPush': maxRecordsPerPush,
+      };
+
+  /// Strict decoder, for data this process produced — a present field that is
+  /// not a number throws. Decode a *server's* advertisement with [tryFromJson],
+  /// which answers null instead of taking the response down with it.
+  factory PushLimits.fromJson(Map<String, dynamic> json) => PushLimits(
+        maxBodyBytes:
+            (json['maxBodyBytes'] as num?)?.toInt() ?? kDefaultMaxPushBodyBytes,
+        maxRecordsPerPush: (json['maxRecordsPerPush'] as num?)?.toInt() ??
+            kDefaultMaxRecordsPerPush,
+      );
+
+  /// The largest integer a JSON number is still exact at. `jsonDecode` returns
+  /// a double for any number too large to hold as an int, and past 2^53 a
+  /// double no longer represents integers exactly.
+  static const int _maxAdvertisableLimit = 9007199254740992;
+
+  /// Whether an advertised field is a cap a push could actually satisfy.
+  /// Type alone is not enough: the JSON number `1e999` decodes to infinity,
+  /// whose `toInt()` throws, and a cap of zero or less accepts nothing — the
+  /// same value the server refuses to start on. The last clause is that same
+  /// rule applied to the value that will actually be used: [fromJson]
+  /// truncates, so a fraction below 1 would arrive as a zero cap. Order
+  /// matters — the earlier clauses are what make `toInt()` safe to call.
+  static bool _isUsableLimit(Object? field) =>
+      field is num &&
+      field.isFinite &&
+      field > 0 &&
+      field <= _maxAdvertisableLimit &&
+      field.toInt() > 0;
+
+  /// Decode an advertisement that may be anything at all, or null when it is
+  /// not a usable one. Absent fields fall back to the shipped defaults; a
+  /// field that is present but unusable voids the whole advertisement, since
+  /// a server that got one wrong has not earned trust in the other.
+  ///
+  /// Lives here, beside the fields, so a caller does not have to restate their
+  /// names and types to validate them — and so adding a limit cannot leave a
+  /// caller's hand-rolled guard behind.
+  static PushLimits? tryFromJson(Object? value) {
+    if (value is! Map) return null;
+    for (final key in const ['maxBodyBytes', 'maxRecordsPerPush']) {
+      final field = value[key];
+      if (field != null && !_isUsableLimit(field)) return null;
+    }
+    return PushLimits.fromJson(value.cast<String, dynamic>());
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is PushLimits &&
+      other.maxBodyBytes == maxBodyBytes &&
+      other.maxRecordsPerPush == maxRecordsPerPush;
+
+  @override
+  int get hashCode => Object.hash(maxBodyBytes, maxRecordsPerPush);
+
+  @override
+  String toString() =>
+      'PushLimits(maxBodyBytes: $maxBodyBytes, '
+      'maxRecordsPerPush: $maxRecordsPerPush)';
+}
+
 /// `GET /v1/sync?since=<seq>` — pull records newer than the client's
 /// high-water mark. [latestSeq] is the account's current maximum sequence
 /// number.
@@ -102,11 +196,23 @@ class PullResponse {
   final List<EncryptedRecord> records;
   final int latestSeq;
 
-  const PullResponse({required this.records, required this.latestSeq});
+  /// The limits the next push must respect, or null from a server that does
+  /// not advertise them. Carried here rather than on an endpoint of its own
+  /// because every sync round pulls before it pushes: the client learns the
+  /// limits of the deployment it is about to push to, on the request it was
+  /// making anyway.
+  final PushLimits? limits;
+
+  const PullResponse({
+    required this.records,
+    required this.latestSeq,
+    this.limits,
+  });
 
   Map<String, dynamic> toJson() => {
         'records': records.map((r) => r.toJson()).toList(),
         'latestSeq': latestSeq,
+        if (limits != null) 'limits': limits!.toJson(),
       };
 
   factory PullResponse.fromJson(Map<String, dynamic> json) => PullResponse(
@@ -114,6 +220,11 @@ class PullResponse {
             .map((e) => EncryptedRecord.fromJson((e as Map).cast()))
             .toList(),
         latestSeq: (json['latestSeq'] as num).toInt(),
+        // Anything that is not a well-formed advertisement counts as "not
+        // advertised": the field is advisory and has a documented fallback, so
+        // a mangled value must not take the records and watermark down with
+        // it. The required fields above stay strict on purpose.
+        limits: PushLimits.tryFromJson(json['limits']),
       );
 }
 
@@ -127,10 +238,37 @@ class PushRequest {
     required this.records,
   });
 
+  /// Keep [bodyBytesFor] in step with this map — see
+  /// [EncryptedRecord.toJson] for why.
   Map<String, dynamic> toJson() => {
         'protocolVersion': protocolVersion,
         'records': records.map((r) => r.toJson()).toList(),
       };
+
+  /// Byte length of the body [toJson] encodes to, without building it.
+  int encodedSizeBytes() => bodyBytesFor(
+        recordCount: records.length,
+        recordBytes: records.fold(0, (sum, r) => sum + r.encodedJsonBytes()),
+        protocolVersion: protocolVersion,
+      );
+
+  /// Byte length of a push body holding [recordCount] records whose encoded
+  /// sizes sum to [recordBytes].
+  ///
+  /// Split out from [encodedSizeBytes] so a client filling a batch can test
+  /// the next candidate in constant time, instead of re-measuring every record
+  /// it has already accepted each time it adds one.
+  static int bodyBytesFor({
+    required int recordCount,
+    required int recordBytes,
+    int protocolVersion = kProtocolVersion,
+  }) =>
+      jsonObjectFramingBytes(2) +
+      jsonKeyBytes('protocolVersion') +
+      jsonIntBytes(protocolVersion) +
+      jsonKeyBytes('records') +
+      jsonArrayFramingBytes(recordCount) +
+      recordBytes;
 
   factory PushRequest.fromJson(Map<String, dynamic> json) => PushRequest(
         protocolVersion:

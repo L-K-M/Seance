@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:logging/logging.dart';
 
+import '../json_size.dart';
+
 const String _recordLoggerName = 'seance_protocol.records';
 
 final Logger _log = Logger(_recordLoggerName);
@@ -114,6 +116,9 @@ class EncryptedRecord {
         blob: blob,
       );
 
+  /// Keep [encodedJsonBytes] in step with this map: it counts exactly these
+  /// entries, and a push batched against a stale count is a push the server
+  /// rejects.
   Map<String, dynamic> toJson() => {
         'id': id,
         'updatedAt': updatedAt,
@@ -122,6 +127,30 @@ class EncryptedRecord {
         if (seq != null) 'seq': seq,
         'blob': base64.encode(blob),
       };
+
+  /// Byte length of the JSON [toJson] encodes to, without building it.
+  ///
+  /// Record sizes span orders of magnitude — a host-key pin is a few hundred
+  /// bytes, a config carrying an image is a megabyte — so a client batching a
+  /// push cannot bound the body by record count alone. See `json_size.dart`
+  /// for why this counts rather than encodes.
+  int encodedJsonBytes() {
+    final seqValue = seq;
+    return jsonObjectFramingBytes(seqValue == null ? 5 : 6) +
+        jsonKeyBytes('id') +
+        jsonStringBytes(id) +
+        jsonKeyBytes('updatedAt') +
+        jsonIntBytes(updatedAt) +
+        jsonKeyBytes('deviceId') +
+        jsonStringBytes(deviceId) +
+        jsonKeyBytes('deleted') +
+        jsonBoolBytes(deleted) +
+        (seqValue == null
+            ? 0
+            : jsonKeyBytes('seq') + jsonIntBytes(seqValue)) +
+        jsonKeyBytes('blob') +
+        jsonBase64StringBytes(blob.length);
+  }
 
   factory EncryptedRecord.fromJson(Map<String, dynamic> json) =>
       EncryptedRecord(
