@@ -223,6 +223,13 @@ flutter test             # widget tests (TOFU dialog)
 flutter run -d linux     # needs GTK/clang/ninja for a Linux desktop build
 ```
 
+On macOS, `scripts/test-macos-accessibility.sh` runs the native accessibility
+lifecycle regression against the cached release engine. Run it after
+`flutter build macos`; it also gates macOS CI and release builds. The fixture
+does not launch the Dart app or use saved user data. See
+[the crash investigation](docs/macos-accessibility-crash.md) for the native
+compatibility boundary and the limits of the reproduction.
+
 The platform folders (android/ios/linux/macos/windows) ARE committed — they
 carry real configuration: the display name (`Séance` — AndroidManifest label;
 macOS `CFBundleName`/`CFBundleDisplayName`, while `PRODUCT_NAME` stays ASCII
