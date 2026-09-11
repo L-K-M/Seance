@@ -7,6 +7,8 @@ import '../main.dart';
 import '../services/app_settings.dart';
 import '../services/assistant_settings_sync.dart';
 import '../services/external_file_opener.dart';
+import '../services/system_fonts.dart';
+import 'font_picker.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
 import 'top_toast.dart';
@@ -18,7 +20,17 @@ enum SettingsTab { general, assistant, files, sync }
 class SettingsScreen extends StatefulWidget {
   final SettingsTab initialTab;
 
-  const SettingsScreen({super.key, this.initialTab = SettingsTab.general});
+  /// Test seam: the source of installed font families behind the terminal
+  /// font picker. Defaults to the host's own collection, which a widget test
+  /// must not depend on.
+  @visibleForTesting
+  final SystemFonts? systemFonts;
+
+  const SettingsScreen({
+    super.key,
+    this.initialTab = SettingsTab.general,
+    this.systemFonts,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -57,6 +69,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _checkForUpdates;
   late bool _keepSessionsAlive;
   late EditorRegistry _editorRegistry;
+  /// Read once: scanning the host's fonts is a directory walk, and the
+  /// service caches its result for exactly this reason.
+  late final SystemFonts _systemFonts =
+      widget.systemFonts ?? hostSystemFonts();
+
   late double _terminalFontSize;
   late TerminalPalette _terminalPalette;
   final _terminalFont = TextEditingController();
@@ -416,8 +433,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'device. With the terminal focused you can zoom without opening '
             'Settings: ⌘ with +, − or 0 on macOS and iPadOS, Ctrl+Shift with '
             'the same keys elsewhere (plain Ctrl chords belong to the shell). '
-            'Leave the font family blank to use Séance’s bundled monospace '
-            'stack.',
+            'Leave the font family blank to use Séance’s own monospace '
+            'stack. On desktop the button in the field lists the fonts '
+            'installed here, previewed in their own face; you can also type '
+            'any family name the system knows.',
       ),
       Row(
         children: [
@@ -448,9 +467,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       TextField(
         controller: _terminalFont,
-        decoration: const InputDecoration(
+        decoration: InputDecoration(
           labelText: 'Font family (optional)',
           hintText: 'e.g. JetBrains Mono — blank uses the built-in stack',
+          // Only where there is an installed collection to read: on mobile an
+          // app sees the system faces it is given rather than a user-managed
+          // library, so a picker there would list the fallback stack back at
+          // the user. The field itself stays typeable everywhere.
+          suffixIcon: _systemFonts.isSupported
+              ? IconButton(
+                  tooltip: 'Choose an installed font',
+                  icon: const Icon(Icons.font_download_outlined),
+                  onPressed: () => _pickTerminalFont(state),
+                )
+              : null,
         ),
         onSubmitted: (_) => _persistTerminalAppearance(state),
         onTapOutside: (_) {
@@ -1388,6 +1418,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Terminals read the settings during build, so they need a nudge.
     state.terminalAppearanceChanged();
     await state.services.saveSettings();
+  }
+
+  /// Opens the installed-font picker and applies what it returns.
+  ///
+  /// A dismissal leaves the field alone; the built-in-stack choice clears it,
+  /// which is what a blank family already means to [TerminalAppearance].
+  Future<void> _pickTerminalFont(AppState state) async {
+    final chosen = await showFontPicker(
+      context,
+      fonts: _systemFonts,
+      current: _terminalFont.text.trim(),
+    );
+    if (chosen == null || !mounted) return;
+    _terminalFont.text = chosen;
+    await _persistTerminalAppearance(state);
   }
 
   Future<void> _persistEditorRegistry(AppState state) async {
