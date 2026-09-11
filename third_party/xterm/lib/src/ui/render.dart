@@ -291,9 +291,42 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     );
   }
 
+  /// [seance fork] The cell a *selection* gesture at pixel [offset] resolves
+  /// to: [getCellOffset] clamped to the buffer's content.
+  ///
+  /// Deliberately not folded into [getCellOffset] itself, which mouse
+  /// reporting ([mouseEvent]), link hit-testing and the secondary-tap
+  /// callbacks also go through — a remote app that owns the mouse has to be
+  /// told the row the pointer is really on, void or not.
+  CellOffset _selectionCellOffset(Offset offset) =>
+      _clampToContent(getCellOffset(offset));
+
+  /// [seance fork] Pulls [position] back to the end of the buffer's content.
+  ///
+  /// Rows past the last row holding anything collapse onto
+  /// [Buffer.contentEnd], and on that last row the column stops there too. So
+  /// a drag that never leaves the void below the prompt starts and ends on the
+  /// same cell — an empty selection, painting nothing and copying nothing —
+  /// while a drag that begins in real output and runs off the bottom simply
+  /// ends where the output does.
+  ///
+  /// Scope is the void *past* the content: a blank row between two rows of
+  /// output is inside it and stays selectable, because its newline is part of
+  /// what the user is copying. Trailing blanks to the right of a short line
+  /// mid-selection are left alone as well — every terminal paints those, and
+  /// `BufferLine.getText` already drops them from the copy.
+  CellOffset _clampToContent(CellOffset position) {
+    final end = _terminal.buffer.contentEnd;
+    // Nothing has been written at all: every gesture collapses to the origin.
+    if (end == null) return const CellOffset(0, 0);
+    if (position.y > end.y) return end;
+    if (position.y == end.y && position.x > end.x) return end;
+    return position;
+  }
+
   /// Selects entire words in the terminal that contains [from] and [to].
   void selectWord(Offset from, [Offset? to]) {
-    final fromOffset = getCellOffset(from);
+    final fromOffset = _selectionCellOffset(from);
     final fromBoundary = _terminal.buffer.getWordBoundary(fromOffset);
     if (fromBoundary == null) return;
     if (to == null) {
@@ -303,7 +336,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         mode: SelectionMode.line,
       );
     } else {
-      final toOffset = getCellOffset(to);
+      final toOffset = _selectionCellOffset(to);
       final toBoundary = _terminal.buffer.getWordBoundary(toOffset);
       if (toBoundary == null) return;
       final range = fromBoundary.merge(toBoundary);
@@ -318,18 +351,22 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// Selects characters in the terminal that starts from [from] to [to]. At
   /// least one cell is selected even if [from] and [to] are same.
   void selectCharacters(Offset from, [Offset? to]) {
-    final fromPosition = getCellOffset(from);
+    final fromPosition = _selectionCellOffset(from);
     if (to == null) {
       _controller.setSelection(
         _terminal.buffer.createAnchorFromOffset(fromPosition),
         _terminal.buffer.createAnchorFromOffset(fromPosition),
       );
     } else {
-      var toPosition = getCellOffset(to);
+      var toPosition = _selectionCellOffset(to);
       // [seance fork] End-inclusive bump for forward drags. Upstream compared
-      // x alone (ignoring y), so an up-and-left drag got a spurious +1.
+      // x alone (ignoring y), so an up-and-left drag got a spurious +1. The
+      // bump is re-clamped: without that it would reach one cell past the
+      // content it was just pulled back to.
       if (!toPosition.isBefore(fromPosition)) {
-        toPosition = CellOffset(toPosition.x + 1, toPosition.y);
+        toPosition = _clampToContent(
+          CellOffset(toPosition.x + 1, toPosition.y),
+        );
       }
       _controller.setSelection(
         _terminal.buffer.createAnchorFromOffset(fromPosition),
@@ -350,9 +387,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // buffer's height — resolving it here would throw (or select nonsense).
     if (!_terminal.buffer.ownsAnchor(start)) return;
     final fromPosition = start.offset;
-    var toPosition = getCellOffset(to);
+    var toPosition = _selectionCellOffset(to);
     if (!toPosition.isBefore(fromPosition)) {
-      toPosition = CellOffset(toPosition.x + 1, toPosition.y);
+      toPosition = _clampToContent(CellOffset(toPosition.x + 1, toPosition.y));
     }
     _controller.setSelection(
       _terminal.buffer.createAnchorFromOffset(fromPosition),
@@ -369,7 +406,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         !_terminal.buffer.ownsAnchor(wordEnd)) {
       return;
     }
-    final toBoundary = _terminal.buffer.getWordBoundary(getCellOffset(to));
+    final toBoundary =
+        _terminal.buffer.getWordBoundary(_selectionCellOffset(to));
     if (toBoundary == null) return;
     final range =
         BufferRangeLine(wordBegin.offset, wordEnd.offset).merge(toBoundary);
@@ -399,7 +437,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// [seance fork] Selects the full logical line at pixel [from], following
   /// soft-wrap continuations in both directions — the triple-click gesture.
   void selectLine(Offset from) {
-    final (first, last) = _logicalLineRows(getCellOffset(from).y);
+    final (first, last) = _logicalLineRows(_selectionCellOffset(from).y);
     _controller.setSelection(
       _terminal.buffer.createAnchor(0, first),
       _terminal.buffer.createAnchor(_terminal.viewWidth, last),
@@ -417,7 +455,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         !_terminal.buffer.ownsAnchor(lineEnd)) {
       return;
     }
-    final (first, last) = _logicalLineRows(getCellOffset(to).y);
+    final (first, last) = _logicalLineRows(_selectionCellOffset(to).y);
     final toRange = BufferRangeLine(
       CellOffset(0, first),
       CellOffset(_terminal.viewWidth, last),
@@ -434,13 +472,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// [seance fork] Creates a buffer anchor for the cell at pixel [offset].
   /// The caller owns the anchor and must dispose it.
   CellAnchor createAnchorAt(Offset offset) {
-    return _terminal.buffer.createAnchorFromOffset(getCellOffset(offset));
+    return _terminal.buffer.createAnchorFromOffset(
+      _selectionCellOffset(offset),
+    );
   }
 
   /// [seance fork] Creates owned anchors pinning the word at pixel [offset],
   /// or null when there is no word there. The caller must dispose them.
   (CellAnchor, CellAnchor)? createWordAnchorsAt(Offset offset) {
-    final boundary = _terminal.buffer.getWordBoundary(getCellOffset(offset));
+    final boundary =
+        _terminal.buffer.getWordBoundary(_selectionCellOffset(offset));
     if (boundary == null) return null;
     return (
       _terminal.buffer.createAnchorFromOffset(boundary.begin),
@@ -452,7 +493,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// [offset] (soft-wrap continuations included). The caller must dispose
   /// them.
   (CellAnchor, CellAnchor) createLineAnchorsAt(Offset offset) {
-    final (first, last) = _logicalLineRows(getCellOffset(offset).y);
+    final (first, last) = _logicalLineRows(_selectionCellOffset(offset).y);
     return (
       _terminal.buffer.createAnchor(0, first),
       _terminal.buffer.createAnchor(_terminal.viewWidth, last),

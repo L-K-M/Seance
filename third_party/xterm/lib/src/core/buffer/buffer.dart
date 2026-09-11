@@ -567,6 +567,30 @@ class Buffer {
   bool ownsAnchor(CellAnchor anchor) => anchor.line?.attachedTo(lines) ?? false;
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
+  /// [seance fork] One cell past the last cell in the buffer that holds
+  /// anything, or null when the whole buffer is blank.
+  ///
+  /// A terminal buffer is never short of rows: it is built with [viewHeight]
+  /// blank lines ([Buffer]'s constructor) and gains a blank line per newline,
+  /// so every row under the shell prompt is a real, addressable [BufferLine]
+  /// rather than past the end. That is why an unclamped drag below the prompt
+  /// used to paint a selection band across rows that hold nothing — and copy
+  /// the newlines those rows contribute. The selection paths in
+  /// `RenderTerminal` clamp to this; mouse reporting and link hit-testing
+  /// deliberately do not.
+  ///
+  /// Scanned from the end, so the common case (content, then blank rows) stops
+  /// within a screen height. An all-blank buffer is the worst case and is
+  /// bounded by [viewHeight], since blank rows only ever accumulate from the
+  /// initial fill or from an erase.
+  CellOffset? get contentEnd {
+    for (var row = lines.length - 1; row >= 0; row--) {
+      final length = lines[row].getTrimmedLength(viewWidth);
+      if (length > 0) return CellOffset(length, row);
+    }
+    return null;
+  }
+
   CellAnchor createAnchor(int x, int y) {
     return lines[y].createAnchor(x);
   }
