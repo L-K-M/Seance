@@ -27,7 +27,13 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_pathChannel, null);
     FlutterSecureStorage.setMockInitialValues({});
-    await directory?.delete(recursive: true);
+    // Handles can linger briefly after dispose (notably on Windows CI); the
+    // OS reaps system temp dirs, so cleanup must not fail the suite.
+    try {
+      await directory?.delete(recursive: true);
+    } on FileSystemException {
+      // Deliberately ignored.
+    }
   });
 
   ServerConfig server(String id) => ServerConfig(

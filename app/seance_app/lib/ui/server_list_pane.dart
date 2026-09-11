@@ -222,8 +222,13 @@ class _ServerListPaneState extends State<ServerListPane> {
     return ListView.separated(
       itemCount: rows.length,
       // The floating Add-server button hovers over the trailing menus; the
-      // clearance keeps the last row reachable at the deepest scroll.
-      padding: const EdgeInsets.only(bottom: _fabScrollClearance),
+      // clearance keeps the last row reachable at the deepest scroll. The
+      // MediaQuery base preserves the insets a null padding would have
+      // applied (gesture-nav bar on Android), which an explicit EdgeInsets
+      // would silently drop.
+      padding: MediaQuery.paddingOf(context).copyWith(
+        bottom: MediaQuery.paddingOf(context).bottom + _fabScrollClearance,
+      ),
       // Rules belong between servers, not under a section header — the
       // header's own fill already separates it from what follows.
       separatorBuilder: (_, i) =>
