@@ -146,4 +146,24 @@ void main() {
     await file.writeAsString('{not valid json');
     expect(await FileTombstoneStore(file).all(), isEmpty);
   });
+
+  test('FileTombstoneStore.add keeps the higher-stamped tombstone', () async {
+    // A retry or double-delete after the row is gone recomputes an older
+    // stamp; a blind overwrite would regress the pending skew-beating
+    // tombstone and let the live record win last-write-wins.
+    final file = File('${directory.path}/deleted_records.json');
+    final store = FileTombstoneStore(file);
+
+    await store
+        .add(EncryptedRecord.tombstone(id: 'x', updatedAt: 2000, deviceId: 'D'));
+    await store
+        .add(EncryptedRecord.tombstone(id: 'x', updatedAt: 1000, deviceId: 'D'));
+    expect((await store.all()).single.updatedAt, 2000,
+        reason: 'an older stamp must not regress the pending tombstone');
+
+    await store
+        .add(EncryptedRecord.tombstone(id: 'x', updatedAt: 3000, deviceId: 'D'));
+    expect((await store.all()).single.updatedAt, 3000,
+        reason: 'a newer stamp replaces it');
+  });
 }

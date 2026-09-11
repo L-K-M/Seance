@@ -501,6 +501,25 @@ void main() {
       // The wire form is just base64 of the sealed blob — no plaintext leaks.
       expect(enc.toJson()['blob'], isNot(contains('top-secret')));
     });
+
+    test('a tombstone round-trips through the wire form', () async {
+      // Delete propagation relies on this shape surviving JSON: a decoder that
+      // dropped `deleted` or rejected an empty blob would resurrect every
+      // deletion.
+      final original =
+          EncryptedRecord.tombstone(id: 's1', updatedAt: 20, deviceId: 'A');
+      final back = EncryptedRecord.fromJson(original.toJson());
+      expect(back.id, 's1');
+      expect(back.updatedAt, 20);
+      expect(back.deviceId, 'A');
+      expect(back.deleted, isTrue);
+      expect(back.seq, isNull);
+      expect(back.blob, isEmpty);
+
+      // decrypt reads it as a deleted record, no vault key required.
+      final dec = await RecordCodec(secureRandomBytes(32)).decrypt(back);
+      expect(dec.deleted, isTrue);
+    });
   });
 
   group('Lww', () {

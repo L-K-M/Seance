@@ -29,7 +29,12 @@ abstract class SnippetStore {
 /// [EncryptedRecord] with `deleted: true` and an empty blob) is republished as a
 /// dirty record each round so the delete is pushed and last-write-wins carries
 /// it to every device, then dropped once the server holds it. Keyed by record
-/// id; re-adding an id keeps the latest tombstone.
+/// id.
+///
+/// [add] is monotonic: re-adding an id keeps whichever tombstone has the higher
+/// `updatedAt`, so a retry or double-delete that recomputes an older stamp
+/// (the doomed row is already gone, so its date can no longer be read) cannot
+/// regress a pending skew-beating tombstone into one the live record outranks.
 abstract class TombstoneStore {
   Future<List<EncryptedRecord>> all();
   Future<void> add(EncryptedRecord tombstone);
@@ -238,8 +243,11 @@ class InMemoryTombstoneStore implements TombstoneStore {
   Future<List<EncryptedRecord>> all() async => _tombstones.values.toList();
 
   @override
-  Future<void> add(EncryptedRecord tombstone) async =>
-      _tombstones[tombstone.id] = tombstone;
+  Future<void> add(EncryptedRecord tombstone) async {
+    final existing = _tombstones[tombstone.id];
+    if (existing != null && existing.updatedAt > tombstone.updatedAt) return;
+    _tombstones[tombstone.id] = tombstone;
+  }
 
   @override
   Future<void> remove(String id) async => _tombstones.remove(id);

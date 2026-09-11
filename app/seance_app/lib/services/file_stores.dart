@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -132,6 +133,12 @@ class FileSnippetStore implements SnippetStore {
 /// key needed to mint), persisted so a delete survives an app restart before
 /// the next sync pushes it. `SyncCoordinator` prunes an entry once the server
 /// has taken it, so the file stays small.
+///
+/// Unlike the sealed record blobs, entries here are plaintext (record id,
+/// deletion timestamp, deviceId) — the same class of metadata `servers.json`
+/// already stores in the clear, and it also travels to the sync server as the
+/// tombstone record. Server and snippet ids are random `uuidV4`s, so an id
+/// reveals only that *something* was deleted and when, not what.
 class FileTombstoneStore implements TombstoneStore {
   final File file;
   final Map<String, EncryptedRecord> _cache = {};
@@ -148,7 +155,19 @@ class FileTombstoneStore implements TombstoneStore {
           final r = EncryptedRecord.fromJson((j as Map).cast<String, dynamic>());
           _cache[r.id] = r;
         }
-      } catch (_) {
+      } catch (error, stackTrace) {
+        // Unlike a corrupt config/snippet file (re-fetched on the next pull),
+        // losing pending deletions silently means deleted items reappear with
+        // nothing in the logs to say why — so this one failure gets a warning
+        // before it is quarantined and the pending deletes are dropped.
+        developer.log(
+          'Could not read ${file.path}; pending deletion tombstones were '
+          'dropped and deleted items may reappear on the next sync',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
         _cache.clear();
         await quarantineCorruptFile(file);
       }
@@ -170,6 +189,12 @@ class FileTombstoneStore implements TombstoneStore {
   @override
   Future<void> add(EncryptedRecord tombstone) async {
     await _load();
+    final existing = _cache[tombstone.id];
+    // Monotonic (see [TombstoneStore]): a retry or double-delete after the row
+    // is gone recomputes a bare-"now" stamp that can trail a pending
+    // skew-beating tombstone; keeping the higher stamp stops a regression that
+    // would lose last-write-wins and resurrect the row.
+    if (existing != null && existing.updatedAt > tombstone.updatedAt) return;
     _cache[tombstone.id] = tombstone;
     await _flush();
   }

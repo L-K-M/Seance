@@ -109,6 +109,19 @@ class SyncCoordinator {
       }
     }
 
+    // Record ids of domain objects that still exist this round. A pending
+    // tombstone whose id is still present was re-created (import/migration) or
+    // never actually removed, so it is not republished — see the tombstone
+    // loop. Read from the stores, not the sync mirror: the mirror is rebuilt
+    // per round, and a persistent one (the documented future store) would hold
+    // a live copy of a just-deleted record that must not suppress its
+    // tombstone. Fetched once and reused for the snippet publishing loop.
+    final snippetList = await snippetStore?.listSnippets() ?? const <Snippet>[];
+    final presentIds = <String>{
+      for (final s in servers) s.id,
+      for (final s in snippetList) '$_snippetIdPrefix${s.id}',
+    };
+
     for (final server in servers) {
       if (server.excludeFromSync) {
         await _retract(server, syncedSecretRefs);
@@ -144,16 +157,13 @@ class SyncCoordinator {
     // deletion converges even for a kind a peer cannot yet decode.
     for (final tombstone
         in await tombstoneStore?.all() ?? const <EncryptedRecord>[]) {
-      // Skip a tombstone whose id is a live record this round already
-      // published above: an id re-created (import or migration) while its
-      // delete was still pending, or a delete whose row-drop was interrupted.
-      // Publishing the tombstone would overwrite that live record in the
-      // mirror and push a delete for something that exists. The app also clears
-      // a pending tombstone when its id is re-saved; this guards the window
-      // before that lands, and is why a re-created id is never deleted from
-      // under the user.
-      final live = await local.getRecord(tombstone.id);
-      if (live != null && !live.deleted) continue;
+      // Skip a tombstone whose id still names a live domain object this round:
+      // an id re-created (import or migration) while its delete was pending, or
+      // one whose row-drop was interrupted. Publishing it would push a delete
+      // for something that exists. Checked against [presentIds] (the stores),
+      // not the mirror, so it holds however the mirror is backed; the app also
+      // clears a pending tombstone when its id is re-saved.
+      if (presentIds.contains(tombstone.id)) continue;
       await local.putLocal(tombstone);
     }
     for (final hk in await hostKeyStore.all()) {
@@ -224,17 +234,14 @@ class SyncCoordinator {
         data: assistant.toJson(),
       )));
     }
-    final snippets = snippetStore;
-    if (snippets != null) {
-      for (final s in await snippets.listSnippets()) {
-        await local.putLocal(await codec.encrypt(DecryptedRecord(
-          id: 'snippet:${s.id}',
-          kind: RecordKind.snippet,
-          updatedAt: s.updatedAt,
-          deviceId: deviceId,
-          data: s.toJson(),
-        )));
-      }
+    for (final s in snippetList) {
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: '$_snippetIdPrefix${s.id}',
+        kind: RecordKind.snippet,
+        updatedAt: s.updatedAt,
+        deviceId: deviceId,
+        data: s.toJson(),
+      )));
     }
   }
 
@@ -448,7 +455,9 @@ class SyncCoordinator {
           // material. The refused kinds stay staged for a sealed-tombstone
           // build (they simply fall through this branch to the `continue`).
           final snippets = snippetStore;
-          if (snippets != null && dec.id.startsWith(_snippetIdPrefix)) {
+          if (snippets != null &&
+              dec.id.length > _snippetIdPrefix.length &&
+              dec.id.startsWith(_snippetIdPrefix)) {
             await snippets
                 .deleteSnippet(dec.id.substring(_snippetIdPrefix.length));
           }

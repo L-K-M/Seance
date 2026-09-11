@@ -1718,6 +1718,8 @@ void main() {
 
       expect(await tombstones.all(), hasLength(1),
           reason: 'the losing tombstone is retained, not silently dropped');
+      expect(await cfg.getServer('s1'), isNotNull,
+          reason: 'the newer peer edit converges back onto this device');
       expect(api.stored('s1')!.deleted, isFalse,
           reason: 'the peer edit outranks the delete (LWW), as it should');
     });
@@ -1739,6 +1741,9 @@ void main() {
       expect(api.stored('s1')!.deleted, isFalse,
           reason: 'the live re-created record wins, not the shadowed tombstone');
       expect(await cfg.getServer('s1'), isNotNull);
+      expect(await tombstones.all(), hasLength(1),
+          reason: 'the shadowed tombstone is retained (pruned only once the '
+              'server confirms a delete); the app clears it on re-save');
     });
 
     test('a snippet deletion converges to a second device', () async {
