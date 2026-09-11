@@ -27,6 +27,27 @@ class ServerListPane extends StatefulWidget {
   /// the filter would just be chrome. Matches the Snippets pane's threshold.
   static const int filterThreshold = 5;
 
+  /// Height of the extended "Add server" FAB under Material 3, which this app
+  /// opts into. Not exported by the framework: it is the
+  /// `extendedSizeConstraints` of `_FABDefaultsM3` in
+  /// `material/floating_action_button.dart`. The widget test measures the real
+  /// button, so a framework change fails there rather than silently
+  /// re-covering the last row.
+  static const double _addButtonHeight = 56;
+
+  /// Bottom padding the list reserves for the floating "Add server" button.
+  ///
+  /// Nothing in [Scaffold] reserves it: the body is laid out over the full
+  /// height and the FAB is painted on top, so without this the last row sits
+  /// *under* the button once the list is scrolled to the end and its
+  /// three-dot menu cannot be hit at all.
+  /// [FloatingActionButtonLocation.endFloat] parks the button
+  /// [kFloatingActionButtonMargin] above the body's bottom edge (plus the
+  /// system's own bottom inset, added per-build below), and the second margin
+  /// here keeps the last row clear of it rather than flush against it.
+  static const double addButtonReservedExtent =
+      _addButtonHeight + kFloatingActionButtonMargin * 2;
+
   @override
   State<ServerListPane> createState() => _ServerListPaneState();
 }
@@ -213,6 +234,15 @@ class _ServerListPaneState extends State<ServerListPane> {
       collapsedKeys: _query.isEmpty ? state.collapsedServerGroups : const {},
     );
     return ListView.separated(
+      // Keep the last row's controls clear of the floating "Add server"
+      // button. `viewPadding` rather than `padding` because Scaffold strips
+      // the latter for its body but never the former, and the FAB's own
+      // placement is computed from the same unstripped inset.
+      padding: EdgeInsets.only(
+        bottom:
+            ServerListPane.addButtonReservedExtent +
+            MediaQuery.viewPaddingOf(context).bottom,
+      ),
       itemCount: rows.length,
       // Rules belong between servers, not under a section header — the
       // header's own fill already separates it from what follows.
