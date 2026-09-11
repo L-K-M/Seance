@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import window_manager
 
 class MainFlutterWindow: NSWindow {
   private var menuChannel: FlutterMethodChannel?
@@ -132,6 +133,16 @@ class MainFlutterWindow: NSWindow {
     }
 
     super.awakeFromNib()
+  }
+
+  /// Keep the window invisible while Dart puts it back where it was closed:
+  /// WindowStateService.restoreAndTrack() (main.dart, before runApp) applies
+  /// the previous session's frame and then shows the window — always, even
+  /// when restoring fails — so the storyboard's default-size window never
+  /// flashes. Do not remove this without removing that contract too.
+  override public func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+    super.order(place, relativeTo: otherWin)
+    hiddenWindowAtLaunch()
   }
 
   /// Keep the storyboard's standard menus (Edit, Window, Help, …) and add our

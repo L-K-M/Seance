@@ -1,3 +1,5 @@
+import 'dart:async' show unawaited;
+
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -39,10 +41,21 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
+    final settings = state.services.settings;
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
         return AdaptivePaneLayout(
+          initialListWidth:
+              settings.paneListWidth ?? AdaptiveShell.defaultListWidth,
+          initialUtilityWidth:
+              settings.paneUtilityWidth ?? AdaptiveShell.defaultUtilityWidth,
+          onPaneWidthsChanged: (listWidth, utilityWidth) => unawaited(
+            state.setPaneWidths(
+              listWidth: listWidth,
+              utilityWidth: utilityWidth,
+            ),
+          ),
           listPane: ServerListPane(onOpen: (s) => _open(state, s)),
           terminalPane: const TerminalPane(showAppBar: false),
           // The utility panel (Assistant + Snippets) is always available;
@@ -161,12 +174,27 @@ class AdaptivePaneLayout extends StatefulWidget {
     required this.terminalPane,
     required this.utilityPane,
     required this.narrowPane,
+    this.initialListWidth = AdaptiveShell.defaultListWidth,
+    this.initialUtilityWidth = AdaptiveShell.defaultUtilityWidth,
+    this.onPaneWidthsChanged,
   });
 
   final Widget listPane;
   final Widget terminalPane;
   final Widget utilityPane;
   final Widget narrowPane;
+
+  /// Requested pane widths to start from (the persisted values, on real
+  /// launches). The widget owns them once mounted; later changes to these
+  /// fields do not reset a live layout.
+  final double initialListWidth;
+  final double initialUtilityWidth;
+
+  /// Fired when a resize drag ends, with the user's *requested* widths — the
+  /// values worth persisting (rendered widths are just these, clamped to the
+  /// current window).
+  final void Function(double listWidth, double utilityWidth)?
+  onPaneWidthsChanged;
 
   static const listPaneKey = ValueKey('adaptive-list-pane');
   static const terminalPaneKey = ValueKey('adaptive-terminal-pane');
@@ -182,8 +210,8 @@ class AdaptivePaneLayout extends StatefulWidget {
 }
 
 class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
-  double _requestedListWidth = AdaptiveShell.defaultListWidth;
-  double _requestedUtilityWidth = AdaptiveShell.defaultUtilityWidth;
+  late double _requestedListWidth = widget.initialListWidth;
+  late double _requestedUtilityWidth = widget.initialUtilityWidth;
   double? _temporaryListWidth;
   double? _temporaryUtilityWidth;
 
@@ -313,6 +341,10 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
       _listDragStart = null;
       _temporaryUtilityWidth = null;
     });
+    widget.onPaneWidthsChanged?.call(
+      _requestedListWidth,
+      _requestedUtilityWidth,
+    );
   }
 
   void _endUtilityResize() {
@@ -320,6 +352,10 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
       _utilityDragStart = null;
       _temporaryListWidth = null;
     });
+    widget.onPaneWidthsChanged?.call(
+      _requestedListWidth,
+      _requestedUtilityWidth,
+    );
   }
 }
 
