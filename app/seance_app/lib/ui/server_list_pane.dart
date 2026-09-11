@@ -32,6 +32,11 @@ class ServerListPane extends StatefulWidget {
 }
 
 class _ServerListPaneState extends State<ServerListPane> {
+  /// Bottom padding that lets the last row scroll clear of the floating
+  /// Add-server button: 48 (button height) + 16 (endFloat margin) + 16 (gap)
+  /// so the row's trailing menu is never tapped through to the button.
+  static const double _fabScrollClearance = 80;
+
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
   String _query = '';
@@ -214,6 +219,9 @@ class _ServerListPaneState extends State<ServerListPane> {
     );
     return ListView.separated(
       itemCount: rows.length,
+      // The floating Add-server button hovers over the trailing menus; the
+      // clearance keeps the last row reachable at the deepest scroll.
+      padding: const EdgeInsets.only(bottom: _fabScrollClearance),
       // Rules belong between servers, not under a section header — the
       // header's own fill already separates it from what follows.
       separatorBuilder: (_, i) =>

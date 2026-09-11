@@ -1,0 +1,88 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:seance_app/app_state.dart';
+import 'package:seance_app/main.dart';
+import 'package:seance_app/services/app_services.dart';
+import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_core/seance_core.dart';
+
+const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+/// Layout regressions of the pane itself: the floating Add-server button and
+/// the list share one Scaffold, so anything the list scrolls under the button
+/// must stay reachable.
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory directory;
+  late AppServices services;
+  late AppState state;
+
+  tearDown(() async {
+    state.dispose();
+    await services.probe.dispose();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_pathChannel, null);
+    FlutterSecureStorage.setMockInitialValues({});
+    await directory.delete(recursive: true);
+  });
+
+  ServerConfig server(String id) => ServerConfig(
+        id: id,
+        label: id,
+        host: '$id.example.com',
+        username: 'deploy',
+        createdAt: 1,
+        updatedAt: 1,
+      );
+
+  testWidgets(
+      'the last row menu is tappable at the deepest scroll '
+      '(the Add-server button must not cover it)', (tester) async {
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('seance-list-pane-');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+              _pathChannel, (call) async => directory.path);
+      FlutterSecureStorage.setMockInitialValues({});
+      services = await AppServices.initialize();
+      state = AppState(services);
+      // Enough rows to force scrolling on the 800x600 test surface.
+      // Zero-padded ids because the list sorts by label: "box19" would sort
+      // before "box9" and the last row would not be the one named last.
+      for (var i = 0; i < 20; i++) {
+        await state.saveServer(server('box${i.toString().padLeft(2, '0')}'));
+      }
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppScope(state: state, child: ServerListPane(onOpen: (_) {})),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Small settled steps rather than one fling, so the list rests exactly at
+    // its scroll extent instead of mid-bounce.
+    for (var i = 0; i < 20; i++) {
+      await tester.drag(find.byType(ListView), const Offset(0, -200));
+      await tester.pumpAndSettle();
+    }
+
+    final lastMenu = find.descendant(
+      of: find.byKey(const ValueKey('box19')),
+      matching: find.byType(PopupMenuButton<String>),
+    );
+    expect(tester.any(lastMenu), isTrue, reason: 'last row is scrolled in');
+
+    await tester.tap(lastMenu);
+    await tester.pumpAndSettle();
+
+    // If the button had covered the menu, this tap would have opened the
+    // server editor ("Add server") instead of the row's menu.
+    expect(find.text('Duplicate'), findsOneWidget);
+  });
+}
