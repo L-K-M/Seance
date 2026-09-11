@@ -1,0 +1,265 @@
+/// The assistant's configuration, as one synced record.
+///
+/// Everything here describes *which assistant*, not *which machine*: the
+/// provider and model, where to reach it, which web-search backends are on,
+/// and whether outbound context is redacted. That is the line the rest of
+/// `AppSettings` draws too — terminal font size, editor registry and
+/// security-scoped bookmarks stay on the device that has the screen, the apps
+/// and the OS grants they refer to.
+///
+/// It is a singleton: one record under a fixed id, so two devices that each
+/// configure an assistant converge onto one row rather than two. That also
+/// means conflicts are resolved whole-record by [Lww], like a `ServerConfig`
+/// and unlike a field-level merge — configuring a model on one device while
+/// changing the search backend on another loses one of the two edits. The
+/// alternative (per-field timestamps merged on apply) would be a second
+/// conflict rule the *server* does not share, since it runs `Lww.resolve` too.
+class AssistantSettings {
+  /// The provider's `LlmProviderKind` **name**, not a parsed value.
+  ///
+  /// A closed set stored as a name, for the reason `ServerConfig.color` is:
+  /// a device on a newer build may name a provider this one has never heard
+  /// of, and the reader decides what to do with that (keep what it has) rather
+  /// than being handed a wrong value. The enum itself lives in `seance_core`,
+  /// which this package deliberately does not depend on.
+  final String providerKind;
+
+  final String baseUrl;
+  final String model;
+
+  /// Keystore entry *name* for the provider key, matching
+  /// `AppSettings.llmApiKeyRef`. Empty for a keyless local endpoint.
+  final String llmApiKeyRef;
+
+  final String? searxngUrl;
+  final String? braveApiKeyRef;
+  final String? zaiApiKeyRef;
+
+  /// Whether the assistant redacts secrets from outbound context.
+  ///
+  /// Synced along with the rest even though the risky direction is "off": this
+  /// is one person's own devices behind end-to-end encryption, and a setting
+  /// that silently means something different on each of them is its own kind
+  /// of surprise. Nothing here can turn it off without the user turning it off.
+  final bool redactSecrets;
+
+  /// API keys by keystore entry name, empty when this configuration
+  /// references none.
+  ///
+  /// Empty is a real state rather than an opt-out: a local gateway that wants
+  /// no key at all leaves every reference blank. There is no switch for
+  /// syncing the configuration *without* its keys — that would publish a
+  /// setup which looks configured everywhere and answers nowhere — so
+  /// assistant sync is all-or-nothing by design.
+  ///
+  /// Absent from this map means "look locally", never "forget the entry you
+  /// have": a record that cleared local keys would break the assistant on
+  /// every device that adopted it, which is why the apply path only ever
+  /// writes the keys a record carries.
+  ///
+  /// Keys travel *inside* the record, which is sealed with the vault key
+  /// before it leaves — the same protection a synced password gets. The map is
+  /// built from the entry names this object itself references and never by
+  /// enumerating the keystore: the sync token and the vault key live in that
+  /// same keystore, and neither may ever appear here.
+  final Map<String, String> apiKeys;
+
+  /// When the user last changed any of this. Deliberately not "now at collect
+  /// time": the coordinator re-collects every round, so a moving timestamp
+  /// would make each five-minute sync a fresh winning write and two devices
+  /// would trade the record back and forth forever.
+  ///
+  /// Device wall-clock time, like every other record's, so a device whose
+  /// clock runs fast wins concurrent edits until the others catch up. The app
+  /// clamps its own stamps upward past whatever record it already holds, which
+  /// covers the case that actually bites — an edit losing to the record the
+  /// same device just adopted. Genuine skew between two devices' edits is what
+  /// a hybrid logical clock or a server-assigned sequence would answer, and
+  /// that is a change to how every record resolves, not this one.
+  final int updatedAt;
+
+  const AssistantSettings({
+    required this.providerKind,
+    required this.baseUrl,
+    required this.model,
+    this.llmApiKeyRef = '',
+    this.searxngUrl,
+    this.braveApiKeyRef,
+    this.zaiApiKeyRef,
+    this.redactSecrets = true,
+    this.apiKeys = const {},
+    required this.updatedAt,
+  });
+
+  /// The one id this record ever has. Constant rather than a uuid — that is
+  /// what makes it a singleton — and prefixed, because `applyToStores` reads a
+  /// tombstone with a bare id as a server deletion.
+  static const String recordId = 'assistant:settings';
+
+  AssistantSettings copyWith({
+    String? providerKind,
+    String? baseUrl,
+    String? model,
+    String? llmApiKeyRef,
+    String? searxngUrl,
+    bool clearSearxngUrl = false,
+    String? braveApiKeyRef,
+    bool clearBraveApiKeyRef = false,
+    String? zaiApiKeyRef,
+    bool clearZaiApiKeyRef = false,
+    bool? redactSecrets,
+    Map<String, String>? apiKeys,
+    int? updatedAt,
+  }) =>
+      AssistantSettings(
+        providerKind: providerKind ?? this.providerKind,
+        baseUrl: baseUrl ?? this.baseUrl,
+        model: model ?? this.model,
+        llmApiKeyRef: llmApiKeyRef ?? this.llmApiKeyRef,
+        searxngUrl: clearSearxngUrl ? null : (searxngUrl ?? this.searxngUrl),
+        braveApiKeyRef: clearBraveApiKeyRef
+            ? null
+            : (braveApiKeyRef ?? this.braveApiKeyRef),
+        zaiApiKeyRef:
+            clearZaiApiKeyRef ? null : (zaiApiKeyRef ?? this.zaiApiKeyRef),
+        redactSecrets: redactSecrets ?? this.redactSecrets,
+        apiKeys: apiKeys ?? this.apiKeys,
+        updatedAt: updatedAt ?? this.updatedAt,
+      );
+
+  Map<String, dynamic> toJson() {
+    // Filtered once. The whole design rests on the reader and the writer
+    // applying the *same* filter, and calling it twice on one line puts two
+    // copies of that decision a comma apart — where editing one is the
+    // obvious mistake and nothing catches it.
+    // The names this record's own references name, which is the whole of
+    // what `apiKeys` is allowed to carry.
+    final referenced = <String>{
+      if (_isSet(llmApiKeyRef)) llmApiKeyRef.trim(),
+      if (_isSet(braveApiKeyRef)) braveApiKeyRef!.trim(),
+      if (_isSet(zaiApiKeyRef)) zaiApiKeyRef!.trim(),
+    };
+    // Bounded here as well as at the two ends. The doc on [apiKeys] says the
+    // map is built from this object's own references and never by sweeping
+    // the keystore — the sync token and the vault key live in that same
+    // keystore — and the collect path and the apply path each hold to it.
+    // Neither of them is the wire format, though, and one refactor of a
+    // builder is all it would take to put an unreferenced entry on the
+    // account under a name no reader will ever look up. A no-op for every
+    // caller that follows the rule.
+    final keys = {
+      for (final entry in _stringMap(apiKeys).entries)
+        if (referenced.contains(entry.key)) entry.key: entry.value,
+    };
+    return {
+        // Trimmed on the way out for the same reason [_blankToNull] trims on
+        // the way in, and [_stringMap] trims in both directions: the reader
+        // normalizes, so a padded value written verbatim makes the collecting
+        // device hold `' anthropic '` while every device that adopts the
+        // record holds `'anthropic'` — a record that does not describe the
+        // settings it was built from, and does not survive its own round trip.
+        'providerKind': providerKind.trim(),
+        'baseUrl': baseUrl.trim(),
+        'model': model.trim(),
+        // Blank reads as empty (see [fromJson]); written the same way so the
+        // record round-trips.
+        'llmApiKeyRef': _isSet(llmApiKeyRef) ? llmApiKeyRef.trim() : '',
+        // Blank is the same as absent on the way *in* (see [_blankToNull]),
+        // so writing one out would be a field the writer calls set and every
+        // reader — including this class re-reading its own record — calls
+        // unset. A cleared text box is the ordinary way to produce one.
+        // `_isSet` is false for null, so the `!` is what the guard already
+        // proved.
+        if (_isSet(searxngUrl)) 'searxngUrl': searxngUrl!.trim(),
+        if (_isSet(braveApiKeyRef)) 'braveApiKeyRef': braveApiKeyRef!.trim(),
+        if (_isSet(zaiApiKeyRef)) 'zaiApiKeyRef': zaiApiKeyRef!.trim(),
+        'redactSecrets': redactSecrets,
+        // Omitted rather than written empty, so a record from a device that
+        // does not sync keys is byte-identical to one that has none.
+        // Through the same filter [fromJson] applies, so a degenerate entry
+        // a caller built by hand is not written as set and read back as gone.
+        if (keys.isNotEmpty) 'apiKeys': keys,
+        'updatedAt': updatedAt,
+      };
+  }
+
+  factory AssistantSettings.fromJson(Map<String, dynamic> json) =>
+      AssistantSettings(
+        // Read as leniently as every other field here: a wrong-typed value
+        // from a divergent build or a corrupted entry lands on the same
+        // "unknown, keep what you have" path an unknown provider name takes,
+        // rather than throwing out of the decode. An empty provider is
+        // refused by both the publish and the apply side.
+        providerKind: _blankToNull(json['providerKind']) ?? '',
+        baseUrl: _blankToNull(json['baseUrl']) ?? '',
+        model: _blankToNull(json['model']) ?? '',
+        llmApiKeyRef: _blankToNull(json['llmApiKeyRef']) ?? '',
+        searxngUrl: _blankToNull(json['searxngUrl']),
+        braveApiKeyRef: _blankToNull(json['braveApiKeyRef']),
+        zaiApiKeyRef: _blankToNull(json['zaiApiKeyRef']),
+        // Absent means "an older writer that had no such field"; the safe
+        // reading of that is the default the app ships with, which is on.
+        redactSecrets:
+            json['redactSecrets'] is bool ? json['redactSecrets'] as bool : true,
+        // Unmodifiable so a decoded record cannot have its key material
+        // rewritten through the field it exposes. The const constructor still
+        // aliases a caller-supplied map; callers treat it as read-only.
+        apiKeys: Map.unmodifiable(_stringMap(json['apiKeys'])),
+        // `isFinite` as well as `is num`: `toInt()` throws
+        // `UnsupportedError` on a NaN or an infinity, which would take the
+        // whole decode with it — and this constructor's contract, stated for
+        // the provider fields above, is that a wrong-typed value degrades to
+        // its default rather than throwing. A stamp of zero loses to every
+        // real one, which is the safe reading of a timestamp that is not a
+        // number.
+        updatedAt: json['updatedAt'] is num && (json['updatedAt'] as num).isFinite
+            ? (json['updatedAt'] as num).toInt()
+            : 0,
+      );
+
+  @override
+  String toString() =>
+      'AssistantSettings(providerKind: $providerKind, model: $model, '
+      'apiKeys: <${apiKeys.length} redacted>)';
+}
+
+/// A blank string reads as "not set", so a cleared field on one device does
+/// not arrive on another as an endpoint made of nothing. Whitespace counts as
+/// blank: a field cleared down to a stray space is a cleared field, and
+/// keeping it would hand the request layer a URL made of nothing at all.
+String? _blankToNull(Object? value) {
+  if (value is! String) return null;
+  // Trimmed, not merely tested for blankness: a padded ` anthropic ` passes
+  // the blank check, travels verbatim, and then matches no keystore entry on
+  // any device that adopts it — a configuration that looks set everywhere and
+  // works nowhere. The decode is where it is cheapest to normalize, and doing
+  // it here makes a second decode of the same record a no-op.
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+/// The writer's half of [_blankToNull] — the two have to agree, or a record
+/// fails to round-trip through its own encoder.
+bool _isSet(String? value) => value != null && value.trim().isNotEmpty;
+
+Map<String, String> _stringMap(Object? value) {
+  if (value is! Map) return const {};
+  return {
+    for (final entry in value.entries)
+      // A blank name addresses no keystore entry, and a blank value would
+      // overwrite a working key with nothing on every device that adopted
+      // the record — the one outcome "an absent key means look locally"
+      // exists to prevent, arriving as a present one instead.
+      // Blank as [_isSet] reads it, whitespace included: this class has one
+      // meaning of blank, and a name or value of stray spaces is no more a
+      // keystore entry than an empty one.
+      if (entry.key is String &&
+          entry.value is String &&
+          _isSet(entry.key as String) &&
+          _isSet(entry.value as String))
+        // Trimmed like every reference field: a padded name here sat beside a
+        // ref [_blankToNull] had already trimmed, so the adopting device
+        // wrote the entry under one name and looked it up under another.
+        (entry.key as String).trim(): (entry.value as String).trim(),
+  };
+}

@@ -1,8 +1,11 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../services/app_settings.dart';
+import '../services/assistant_settings_sync.dart';
 import '../services/external_file_opener.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
@@ -21,11 +24,23 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
+/// Keystore entry name for the Z.AI search key. A constant rather than a typed
+/// value: settings hold key *names*, never keys.
+const String _zaiKeyRef = 'zai';
+
 class _SettingsScreenState extends State<SettingsScreen> {
+  /// Shown by both of `_save`'s refusals, which are one message about one
+  /// situation: written twice, a wording fix or a translation reaches one of
+  /// them and the drift is invisible in review.
+  static const String _adoptedMidSave =
+      'The assistant settings changed on another device while this screen '
+      'was open. They have been reloaded — review them and save again.';
+
   late final _baseUrl = TextEditingController();
   late final _model = TextEditingController();
   late final _apiKey = TextEditingController();
   late final _searxng = TextEditingController();
+  final _zaiApiKey = TextEditingController();
   late final _syncUrl = TextEditingController();
   late final _syncUser = TextEditingController();
   final _syncPassword = TextEditingController();
@@ -33,11 +48,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _syncEncryptionPassphraseConfirm = TextEditingController();
 
   late LlmProviderKind _kind;
+  late bool _zai;
+  late bool _syncAssistant;
   late bool _redaction;
   late bool _autoSync;
   late bool _syncSecrets;
   late bool _commandSuggestions;
   late bool _checkForUpdates;
+  late bool _keepSessionsAlive;
   late EditorRegistry _editorRegistry;
   late double _terminalFontSize;
   late TerminalPalette _terminalPalette;
@@ -57,22 +75,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Deferred to didChangeDependencies to read AppScope.
   }
 
+  /// Load the assistant half of [settings] into this screen's fields.
+  ///
+  /// Separate from the rest of the load because it is the one half another
+  /// device can rewrite while the screen is open: turning assistant sync on
+  /// adopts the account's configuration into `settings`, and a Save made
+  /// afterwards would otherwise write these stale values back over it — and
+  /// stamp them, so the revert would win everywhere.
+  void _loadAssistantFields(AppSettings s) {
+    _kind = s.llmKind;
+    _baseUrl.text = s.llmBaseUrl;
+    _model.text = s.llmModel;
+    _searxng.text = s.searxngUrl ?? '';
+    // Only whether it is on — never the key itself, which stays in the OS
+    // keystore and is not something a settings screen should be able to show.
+    // Trimmed, like `buildSearchProvider` reads it: a hand-edited or synced
+    // `settings.json` holding `"   "` would otherwise show the switch on for
+    // a backend every search silently skips.
+    _zai = (s.zaiApiKeyRef ?? '').trim().isNotEmpty;
+    _redaction = s.redactionEnabled;
+  }
+
+  /// [AppState.llmConfigVersion] as of the last [_loadAssistantFields]: a
+  /// sync round that adopts another device's configuration bumps it, and
+  /// that is how [_save] tells that the fields it holds are stale.
+  int _assistantVersionSeen = 0;
+
+  /// [_loadAssistantFields], and remember which configuration it loaded.
+  void _syncAssistantFields(AppState state) {
+    _loadAssistantFields(state.services.settings);
+    _assistantVersionSeen = state.llmConfigVersion;
+  }
+
   bool _initialized = false;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_initialized) return;
     _initialized = true;
-    final s = AppScope.of(context).services.settings;
-    _kind = s.llmKind;
-    _baseUrl.text = s.llmBaseUrl;
-    _model.text = s.llmModel;
-    _searxng.text = s.searxngUrl ?? '';
-    _redaction = s.redactionEnabled;
+    final state = AppScope.of(context);
+    final s = state.services.settings;
+    _syncAssistantFields(state);
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;
+    _syncAssistant = s.syncAssistant;
     _commandSuggestions = s.commandSuggestions;
     _checkForUpdates = s.checkForUpdates;
+    _keepSessionsAlive = s.keepSessionsAliveInBackground;
     _editorRegistry = s.editorRegistry;
     _terminalFontSize = clampTerminalFontSize(s.terminalFontSize);
     _terminalPalette = s.terminalPalette;
@@ -88,6 +137,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _model,
       _apiKey,
       _searxng,
+      _zaiApiKey,
       _syncUrl,
       _syncUser,
       _syncPassword,
@@ -243,12 +293,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
         controller: _apiKey,
         obscureText: true,
         decoration: const InputDecoration(
-          labelText: 'API key (stored in OS keystore, never synced)',
+          // Not "never synced" any more, which is what this said before the
+          // record below existed and carried these keys. It is the sentence a
+          // user reads before deciding to paste a credential in, so it has to
+          // describe what the switch further down actually does.
+          labelText: 'API key (OS keystore; synced if assistant sync is on)',
           hintText: 'leave blank to keep the existing key / keyless local',
         ),
       ),
       const SizedBox(height: 16),
-      _section('Web search (chat tool)'),
+      _section(
+        'Web search (chat tool)',
+        helpTitle: 'Web search backends',
+        help:
+            'Every backend you configure is used, and their results are '
+            'merged — so filling in more than one uses them all, and '
+            'clearing one leaves the others. With none configured, the '
+            'assistant '
+            'has no search tool at all.',
+      ),
       TextField(
         controller: _searxng,
         decoration: const InputDecoration(
@@ -256,6 +319,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
           hintText: 'https://searx.example.com',
         ),
       ),
+      const SizedBox(height: 8),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Z.AI Web Search Prime'),
+        subtitle: const Text('Needs a Z.AI key with a GLM Coding Plan.'),
+        value: _zai,
+        // Frozen while a save runs, like the Save button and the sync
+        // switches. This used to be the invariant: `_save` read `_zai` twice,
+        // before the awaits to decide whether to write the key and after them
+        // to set the reference, so a toggle in between made one save act on
+        // two different answers — off-to-on persisting a reference with
+        // nothing stored behind it, on-to-off storing a key the settings it
+        // just wrote call unused. `_saveInner` snapshots `_zai` once now,
+        // before any await, so the two writes can no longer disagree and this
+        // gate is defense in depth rather than the thing holding it up.
+        onChanged: _saving ? null : (v) => setState(() => _zai = v),
+      ),
+      if (_zai)
+        TextField(
+          controller: _zaiApiKey,
+          obscureText: true,
+          decoration: const InputDecoration(
+            // Same correction as the LLM key's above: this one rides the
+            // assistant record too.
+            labelText:
+                'Z.AI API key (OS keystore; synced if assistant sync is on)',
+            hintText: 'leave blank to keep the existing key',
+          ),
+        ),
       const SizedBox(height: 8),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
@@ -295,6 +387,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _persistCheckForUpdates(state);
         },
       ),
+      // Android freezes cached processes, killing every live SSH connection
+      // moments after the app leaves the screen; only this platform needs (and
+      // has) a mechanism to opt out of that. dart:io's Platform would crash on
+      // a web build; foundation's target detection compiles everywhere.
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Keep sessions alive in the background'),
+          subtitle: const Text(
+            'Keeps connections open while Séance is backgrounded, via an '
+            'ongoing Android notification. Uses some battery.',
+          ),
+          value: _keepSessionsAlive,
+          onChanged: (value) {
+            setState(() => _keepSessionsAlive = value);
+            _persistKeepSessionsAlive(state);
+          },
+        ),
+      ],
       const Divider(height: 40),
       _section(
         'Terminal',
@@ -558,10 +670,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Runs on startup, after edits, and every few minutes.',
         ),
         value: _autoSync,
-        onChanged: (value) {
-          setState(() => _autoSync = value);
-          _persistSyncPrefs(state);
-        },
+        onChanged: _saving
+            ? null
+            : (value) {
+                setState(() => _autoSync = value);
+                _persistSyncPrefs(state);
+              },
       ),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
@@ -570,10 +684,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Only includes servers where credential sync is also enabled.',
         ),
         value: _syncSecrets,
-        onChanged: (value) {
-          setState(() => _syncSecrets = value);
-          _persistSyncPrefs(state);
-        },
+        onChanged: _saving
+            ? null
+            : (value) {
+                setState(() => _syncSecrets = value);
+                _persistSyncPrefs(state);
+              },
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Sync assistant settings'),
+        subtitle: const Text(
+          'Provider, model, endpoint, web search and redaction — with their '
+          'API keys, so the assistant works on the other device. '
+          'End-to-end encrypted. A localhost endpoint will not resolve '
+          'elsewhere. Turning this on adopts the settings already on the '
+          'account, replacing the assistant setup on this device. '
+          'Turning this off stops this device sharing further '
+          'changes; it does not remove what was already shared, which the '
+          'other devices are still using.',
+        ),
+        value: _syncAssistant,
+        onChanged: _saving
+            ? null
+            : (value) {
+                setState(() => _syncAssistant = value);
+                _persistSyncPrefs(state);
+              },
       ),
       const SizedBox(height: 8),
       TextField(
@@ -741,35 +878,459 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _save(AppState state) async {
-    setState(() => _saving = true);
-    final s = state.services.settings;
-    s.llmKind = _kind;
-    s.llmBaseUrl = _baseUrl.text.trim();
-    s.llmModel = _model.text.trim();
-    s.redactionEnabled = _redaction;
-    s.searxngUrl = _searxng.text.trim().isEmpty ? null : _searxng.text.trim();
-    // Store the API key under a per-provider name.
-    final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
-    s.llmApiKeyRef = ref;
-    if (_apiKey.text.isNotEmpty) {
-      await state.services.masterKeys.putApiKey(ref, _apiKey.text);
+    // The toggle-on path reloads these fields after adopting, but a periodic
+    // round adopts too, and this screen may be open while it does. Saving
+    // the fields it loaded earlier would write the pre-adoption values back
+    // over the adopted ones — and stamp them, so the revert would win on
+    // every device. Refused before anything is written: the adopted values
+    // are loaded instead, and the user saves again from what is actually
+    // configured. Typed keys are left in their fields; only the assistant
+    // half is reloaded.
+    if (state.llmConfigVersion != _assistantVersionSeen) {
+      setState(() => _syncAssistantFields(state));
+      showTopToastIn(
+        context,
+        message: _adoptedMidSave,
+      );
+      return;
     }
+    // For the re-check at the end: the guard above sees an adoption that
+    // landed before this Save, not one that lands during its awaits.
+    final versionAtEntry = state.llmConfigVersion;
+    // Before the keystore writes below, which await: the fields stay editable
+    // while a Save is in flight, and `putApiKey` reads the controller at the
+    // moment it is called. Taken afterwards, these would count text typed
+    // during those awaits — text the store never saw — and the equality check
+    // at the end would then clear it from the field as if it had been saved.
+    // Taken here they can only lag what was stored, which fails that check
+    // and leaves the text where the user can save it again.
+    final enteredLlmKey = _apiKey.text;
+    final enteredZaiKey = _zaiApiKey.text;
+    final keyEntered =
+        enteredLlmKey.trim().isNotEmpty || enteredZaiKey.trim().isNotEmpty;
+    setState(() => _saving = true);
+    // Every await below can throw — the keystore reads, `saveSettings`, and
+    // the provider reload. Without this, one of them escaping leaves `_saving`
+    // set, and it is what disables Save *and* all three sync switches, the
+    // Z.AI switch, the mode selector and both sync buttons: a transient disk
+    // failure would lock the whole assistant section of this screen until it
+    // is closed and reopened.
+    try {
+      await _saveInner(state, versionAtEntry, enteredLlmKey, enteredZaiKey,
+          keyEntered);
+    } catch (e) {
+      // The keystore writes and the publish are caught where they happen, but
+      // `saveSettings` and `reloadLlmProvider` are not — and this method is
+      // called from `onPressed` without an awaiter, so one escaping is an
+      // unhandled async error and the user sees a Save that reports nothing
+      // at all. The settings may well not be on disk, which is the one
+      // outcome silence must not cover.
+      if (mounted) {
+        showTopToastIn(context, message: 'Settings not saved — $e');
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveInner(
+    AppState state,
+    int versionAtEntry,
+    String enteredLlmKey,
+    String enteredZaiKey,
+    bool keyEntered,
+  ) async {
+    final s = state.services.settings;
+    // Store the API key under a per-provider name.
+    //
+    // Snapshotted with the key fields below, and for the same reason: the
+    // keystore writes are awaits and the provider dropdown is not frozen
+    // while one runs. `ref` was taken from `_kind` here and `s.llmKind` read
+    // it again afterwards, so a flip in between wrote a provider with the
+    // *other* provider's key reference beside it — `openaiCompatible`
+    // holding `'anthropic'` — which authenticates against nothing until the
+    // user notices and saves again. Reading it once also stops the invariant
+    // depending on a widget six hundred lines up keeping its `onChanged`
+    // gated on `_saving`.
+    final kind = _kind;
+    final ref = kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
+
+    // Keys first, settings after. A keystore failure returns without saving,
+    // and the settings object is the one the running app reads — leaving it
+    // mutated to say "Z.AI is on" behind a key that never landed would make
+    // the failed save take effect anyway, until the next launch.
+    // Snapshotted before the writes below, and before any await: the fields
+    // stay editable while a save is in flight, so what is cleared afterwards
+    // has to be what this save actually stored rather than whatever the box
+    // holds by then.
+    //
+    // And read from below, not just cleared against: the LLM key's own write
+    // sits *after* the Z.AI keystore write's `await`, so reading the live
+    // controller there stores whatever the box holds by then. A user
+    // correcting a typo while the Z.AI key is being written had the
+    // half-typed value persisted, and the clear check then failed — leaving
+    // plaintext in the field and the assistant authenticating with the
+    // fragment until the next save. Same fix as the Z.AI switch (round 23)
+    // and the provider dropdown (round 24): read once, up here.
+    //
+    // The two key fields are read one frame earlier still, in `_save`, and
+    // arrive as parameters — this branch needs `keyEntered` before the
+    // `setState` that disables the form, and re-reading the controllers here
+    // would have shadowed the parameters with values the caller never saw.
+    // The Z.AI merge brought the reads back as locals; keeping both would
+    // leave two of the parameters dead.
+    // The rest of the form, for the same reason and in the same place. Round
+    // 25 snapshotted the two key fields and left these four reading live at
+    // assignment time, several awaits later — and a keystore write is
+    // exactly where a save stalls, since an OS keyring can put a prompt in
+    // front of it. Text typed into the endpoint box during that stall was
+    // folded into the save already in flight and handed straight to
+    // `reloadLlmProvider`. It also made the comment on the Z.AI switch
+    // ("the text fields' mid-save edits are already snapshotted") false for
+    // every field but the two it was written about.
+    final enteredBaseUrl = _baseUrl.text.trim();
+    final enteredModel = _model.text.trim();
+    final enteredSearxng = _searxng.text.trim();
+    final enteredRedaction = _redaction;
+    // The switch too, and this is the last live read in the method. It is
+    // safe today only because the `SwitchListTile` six hundred lines up is
+    // gated on `_saving` — which is exactly the external dependency the
+    // provider snapshot beside it was added to remove. Make that switch
+    // responsive during a save, a natural thing to want, and the split-brain
+    // returns: one save writing the key while writing `zaiApiKeyRef: null`,
+    // or setting the ref with nothing stored behind it.
+    final zaiEnabled = _zai;
+    if (zaiEnabled && enteredZaiKey.trim().isNotEmpty) {
+      try {
+        await state.services.masterKeys.putApiKey(
+          _zaiKeyRef,
+          // Trimmed like every other field here: a key pasted from a password
+          // manager carries a trailing newline more often than not, and it
+          // authenticates as garbage that CompositeSearch swallows into a log
+          // line.
+          enteredZaiKey.trim(),
+        );
+      } catch (e) {
+        if (!mounted) return;
+        // Named like the LLM key's failure below: the same class of error
+        // otherwise produced a bare `KeystoreException` string with nothing
+        // saying which of the two keys failed to save.
+        showTopToastIn(
+          context,
+          message: 'Settings not saved — could not store the Z.AI key: $e',
+        );
+        return;
+      }
+    }
+    // Trimmed and tested trimmed, for the same reason as the Z.AI key above —
+    // and it matters more here: a search backend that authenticates as
+    // garbage leaves the others working, while this key is the assistant's
+    // only one. A whitespace-only paste is no key at all, so it does not
+    // overwrite the stored one.
+    if (enteredLlmKey.trim().isNotEmpty) {
+      try {
+        await state.services.masterKeys.putApiKey(ref, enteredLlmKey.trim());
+      } catch (e) {
+        // KeystoreException: the OS keyring is unavailable — don't report
+        // "Saved" for a key that never landed.
+        if (!mounted) return;
+        showTopToastIn(
+          context,
+          message: 'Settings not saved — could not store the API key: $e',
+        );
+        return;
+      }
+    }
+
+    // Ordered deliberately, and the two halves came from different
+    // branches: the Z.AI keystore read below is an `await`, and the
+    // adoption guard after it is written to be the last thing before the
+    // assignments. Put the read second and an adoption landing inside it
+    // lands *after* the guard has passed, which is the race the guard
+    // exists for. Read first, then guard, then assign.
+    // Parenthesized: `await` does bind tighter than `==`, but the form
+    // readers misparse is one edit away from being the form that compiles and
+    // is always false.
+    //
+    // Read before the assignments below rather than between them and
+    // `saveSettings`: this method's rule is keys first, settings after, so
+    // that nothing can leave `s` mutated and unsaved. `getApiKey` answers
+    // null on a locked keyring rather than throwing, so the old position was
+    // sound — but only because of that, and it is the one await that had to
+    // stay sound for a reason outside this file.
+    final zaiWithoutKey =
+        zaiEnabled &&
+            (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
+
+    // Both taken before the assignments below, and before any `await`, so a
+    // Save that changes nothing does not stamp: see
+    // [assistantSyncFingerprint]. The fields stay editable while a Save is in
+    // flight, so reading `keyEntered` after the keystore and settings writes
+    // would count text typed during them — text that is then cleared below
+    // without ever having been stored, since the storing already happened.
+    //
+    // A key typed into *any* of these fields counts even when every other
+    // field matched: the keys travel in the record too, under refs that do not
+    // change when the value behind them is rotated, so nothing about a
+    // re-entered key moves the fingerprint. Trimmed on both sides, because
+    // whitespace is not a key and treating it as one stamps a write with no
+    // edit behind it.
+    // The guard at the top of this method cannot see an adoption that landed
+    // during the keystore writes above. Assigning over it would put the
+    // pre-adoption fields back and republish them stamped `now` — the revert
+    // that wins on every device, which is the whole reason for the guard.
+    // Refused here too, before anything is assigned to `s`; a key stored
+    // above stays stored, since refs are per provider and adoption keeps
+    // them.
+    if (state.llmConfigVersion != versionAtEntry) {
+      if (mounted) {
+        setState(() => _syncAssistantFields(state));
+        showTopToastIn(
+          context,
+          message: _adoptedMidSave,
+        );
+      }
+      return;
+    }
+    final before = assistantSyncFingerprint(s);
+    s.llmKind = kind;
+    s.llmBaseUrl = enteredBaseUrl;
+    s.llmModel = enteredModel;
+    s.llmApiKeyRef = ref;
+    s.redactionEnabled = enteredRedaction;
+    s.searxngUrl = enteredSearxng.isEmpty ? null : enteredSearxng;
+    // The reference is what switches the backend on; turning it off leaves the
+    // key in the keystore rather than deleting it, like every other key here.
+    s.zaiApiKeyRef = zaiEnabled ? _zaiKeyRef : null;
+    // Turning the switch on with the field left blank and nothing stored is
+    // the one way to end up with a backend that reads as on and is silently
+    // skipped on every search. Reported rather than blocked: the rest of this
+    // page has been saved, and a locked keyring — which also answers null —
+    // is not a reason to refuse a model change.
     await state.services.saveSettings();
-    // Rebuild the chat provider (new key/model) and refresh sidebar visibility.
-    await state.reloadLlmProvider();
+    // Stamp and publish: this is the edit the synced record's timestamp is
+    // supposed to move for. A no-op when assistant sync is off.
+    //
+    // Re-checked against `versionAtEntry`, because the guard before the
+    // assignments does not cover this. `saveSettings` is a plain disk write
+    // and not queued behind the mutation lock, so a periodic round can adopt
+    // during that await — which is the same window `adoptedMeanwhile` below
+    // exists to notice. Noticing it there is too late for the record: the
+    // publish has already stamped `now` on this Save's pre-adoption values,
+    // and `now` beats the adopted record on every device. That is the revert
+    // the guard above calls "the whole reason for the guard", reachable one
+    // await further down. Skipping the publish loses nothing the arithmetic
+    // below does not already handle — `assistantSettingsEdited` never
+    // touches the counter, so `adoptedMeanwhile` still reads true, reloads
+    // the fields and asks for the Save to be made again.
+    if (state.llmConfigVersion == versionAtEntry &&
+        (keyEntered || assistantSyncFingerprint(s) != before)) {
+      try {
+        await state.assistantSettingsEdited();
+      } catch (e) {
+        // The settings are already on disk. A failed publish must not skip
+        // the provider rebuild below and surface as an unhandled async error
+        // that reads like Save itself broke.
+        if (mounted) {
+          showTopToastIn(context, message: 'Assistant sync: $e');
+        }
+      }
+    }
+    // `mounted` first: these are `TextEditingController`s owned by this
+    // widget, and the awaits above give the user time to leave the screen.
+    // Clearing a disposed one throws — an unhandled async error from a Save
+    // that otherwise succeeded, and there is nothing left to clear anyway.
+    if (keyEntered && mounted) {
+      // Cleared once stored, or the text left in the field makes every later
+      // Save on this screen look like a key change: it would stamp `now` and
+      // republish, and on last-write-wins that beats a genuinely newer edit
+      // from another device with content that did not change. The field is
+      // write-only anyway — it is never populated from the keystore.
+      //
+      // Only what this Save stored, though: the fields stay editable during
+      // the awaits above, and text typed into one meanwhile was never
+      // persisted — clearing it would discard it without a trace.
+      if (_apiKey.text == enteredLlmKey) _apiKey.clear();
+      // `zaiEnabled` as well, because the write above is gated on it — the
+      // same snapshot, so the clear cannot decide on a switch position the
+      // write never saw. A key typed with the switch off is never stored,
+      // and clearing it would discard it without a trace, which is exactly
+      // what the paragraph above promises not to do. The LLM key needs no
+      // equivalent; its write is gated only on the text being non-blank, and
+      // blank is nothing to lose.
+      if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
+    }
+    // Rebuild the chat provider (new key/model) and refresh sidebar
+    // visibility.
+    //
+    // Caught rather than left to `_save`'s handler: everything above is past
+    // the point of no return — the keystores, `settings.json` and the
+    // published record are all written — so letting this escape reported
+    // "Settings not saved" for a save that succeeded, and told the user to
+    // re-enter secrets that are on disk. The failure still surfaces, as the
+    // rebuild failure it is. Catching it also keeps the version arithmetic
+    // below correct rather than breaking it: `reloadLlmProvider` does
+    // `llmConfigVersion++` as its first statement, before any await, so the
+    // one bump `bumpsThisSaveMakes` accounts for has already landed even
+    // when a later step throws. Letting the error escape would skip that
+    // arithmetic entirely and leave `_assistantVersionSeen` stale.
+    Object? reloadError;
+    try {
+      await state.reloadLlmProvider();
+    } catch (e) {
+      reloadError = e;
+    }
+    // This Save is the configuration the fields now show — unless a periodic
+    // round adopted another device's configuration during the awaits above,
+    // past the guard at the top. The reload just made is one bump; any other
+    // is an adoption, and blessing this version would let the next Save
+    // revert it silently, with a fresh stamp. The fields are reloaded instead,
+    // as the guard does, and the user saves again from what is configured.
+    // The reload just above is this Save's own bump, and the only one it
+    // makes: `assistantSettingsEdited` does not touch the counter. Anything
+    // else is an adoption that landed while the awaits ran.
+    const bumpsThisSaveMakes = 1; // reloadLlmProvider
+    final adoptedMeanwhile =
+        state.llmConfigVersion != versionAtEntry + bumpsThisSaveMakes;
+    if (adoptedMeanwhile) {
+      if (mounted) setState(() => _syncAssistantFields(state));
+    } else {
+      _assistantVersionSeen = state.llmConfigVersion;
+    }
     if (mounted) {
-      setState(() => _saving = false);
-      showTopToastIn(context, message: 'Saved');
+      showTopToastIn(
+        context,
+        // Ordered by what the user has to act on. An adoption means this
+        // Save's values are not what is configured any more and it has to be
+        // made again — nothing else matters until that is done. A reload
+        // failure is next: the assistant in this process is still the old
+        // one. The Z.AI notice is last, about a key the next search reads.
+        message: adoptedMeanwhile
+            ? 'Saved — but the assistant settings changed on another device '
+                  'meanwhile. The fields show what is configured now; review '
+                  'them and save again.'
+            : reloadError != null
+                ? 'Saved — but the assistant could not be reloaded, so it is '
+                      'still running the previous configuration: $reloadError'
+                : zaiWithoutKey
+                    ? 'Saved — but no Z.AI key could be read (none stored, or '
+                          'the keyring is locked), so Z.AI search will be '
+                          'skipped.'
+                    : 'Saved',
+      );
     }
   }
 
   /// Persist the sync preference toggles and (re)start the auto-sync timer.
   Future<void> _persistSyncPrefs(AppState state) async {
+    // The same flag Save sets, for the same reason it exists: these handlers
+    // await a disk write and, on switch-on, a whole sync round, and the
+    // switches are only disabled while it is set. Without it the user can
+    // press Save — or flip a second toggle — while adoption is rewriting the
+    // very `settings` object this method assigns to and rolls back, so a
+    // rollback here can undo a sibling's persisted choice and `_save`'s
+    // assignments can interleave with adoption's.
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await _persistSyncPrefsInner(state);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _persistSyncPrefsInner(AppState state) async {
     final s = state.services.settings;
+    final wasAutoSync = s.autoSync;
+    final wasSyncSecrets = s.syncSecrets;
+    final wasSyncingAssistant = s.syncAssistant;
     s.autoSync = _autoSync;
     s.syncSecrets = _syncSecrets;
-    await state.services.saveSettings();
+    s.syncAssistant = _syncAssistant;
+    try {
+      await state.services.saveSettings();
+    } catch (e) {
+      // Fired without await from `onChanged`: a disk failure here would be an
+      // unhandled async error with the switch left visually on. Say so, and
+      // do not go on to adopt for a switch that was not persisted.
+      //
+      // And roll the flag back: left on in memory, the next successful save
+      // of anything on this page would persist it, switching on a sync that
+      // carries API keys without the adopt-first step this failure skipped.
+      //
+      // All three, not only the assistant's: the other two are left in memory
+      // by the same failed write, and the next successful save of anything on
+      // this page would persist them without the user asking again — the same
+      // reasoning, one switch over.
+      s.syncAssistant = wasSyncingAssistant;
+      s.autoSync = wasAutoSync;
+      s.syncSecrets = wasSyncSecrets;
+      if (mounted) {
+        setState(() {
+          _syncAssistant = wasSyncingAssistant;
+          _autoSync = wasAutoSync;
+          _syncSecrets = wasSyncSecrets;
+        });
+        showTopToastIn(context, message: 'Sync preferences: $e');
+      }
+      return;
+    }
     state.ensureAutoSyncTimer();
+    // Switching it on adopts what the account already has, and publishes what
+    // this device has only when there was nothing to adopt.
+    if (_syncAssistant && !wasSyncingAssistant) {
+      // Taken immediately before the round, not from `_assistantVersionSeen`,
+      // which is the version this screen loaded its fields at. A periodic
+      // round that adopted earlier in the screen's life also moves the counter
+      // away from that baseline, and on the publish path — where this round
+      // itself bumps nothing — it would satisfy the check below and reload the
+      // fields, discarding whatever the user had typed into them. Only this
+      // round's own bump means "adopted".
+      final versionBeforeRound = state.llmConfigVersion;
+      try {
+        await state.assistantSyncSwitchedOn();
+      } catch (e) {
+        // Fire-and-forget from `onChanged`, so without this the failure is an
+        // unhandled async error and the switch reads as "on and adopted".
+        //
+        // Rolled back for the same reason the failed `saveSettings` above is:
+        // both mean the adopt-first step did not run, and leaving the toggle
+        // on lets the next Save stamp `now` and publish this device's
+        // configuration over the account's newer record — the clobber
+        // adopting first exists to prevent. Turning it on again retries.
+        s.syncAssistant = false;
+        try {
+          await state.services.saveSettings();
+        } catch (_) {
+          // The original failure is the one worth telling; the in-memory
+          // flag and the switch below still agree with each other.
+        }
+        if (mounted) setState(() => _syncAssistant = false);
+        if (mounted) showTopToastIn(context, message: 'Assistant sync: $e');
+        // And stop here. The reload below exists to show what adoption wrote,
+        // and this branch is the one where adoption did not run — reloading
+        // anyway would overwrite whatever the user had typed into the
+        // assistant fields with the stored values, as a side effect of a
+        // network failure they did not cause.
+        return;
+      }
+      // Adoption rewrites the assistant half of `settings`, and this screen
+      // loaded its fields once. Without this, the next Save writes the
+      // pre-adoption values back — with a fresh stamp, so the revert wins on
+      // every device. (A periodic round can adopt too; `_save` checks for
+      // that itself.)
+      //
+      // Only when adoption actually ran, though. The switch adopts when the
+      // account already holds a record and otherwise *publishes*, which
+      // rewrites nothing here — and reloading then overwrites whatever the
+      // user had typed into the assistant fields but not yet saved, from a
+      // toggle whose subtitle promises it only changes what is shared. The
+      // version counter is what separates the two: `_runSyncAndRefresh`
+      // reloads the provider, and so bumps it, only when the round adopted.
+      if (mounted && state.llmConfigVersion != versionBeforeRound) {
+        setState(() => _syncAssistantFields(state));
+      }
+    }
   }
 
   /// Persist the command-suggestions toggle and refresh the current list.
@@ -785,6 +1346,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     state.services.settings.checkForUpdates = _checkForUpdates;
     await state.services.saveSettings();
     if (!_checkForUpdates) state.dismissUpdateNotice();
+  }
+
+  /// Persist the background keep-alive toggle and apply it to live sessions.
+  /// A failed save reverts the switch and the in-memory setting — unless the
+  /// user toggled again while the save was in flight, in which case the newer
+  /// choice is authoritative and stands.
+  Future<void> _persistKeepSessionsAlive(AppState state) async {
+    final requested = _keepSessionsAlive;
+    state.services.settings.keepSessionsAliveInBackground = requested;
+    try {
+      await state.services.saveSettings();
+      // A newer toggle may have landed while this save was in flight; its
+      // own persist owns the apply, and this stale one must not clobber it.
+      if (_keepSessionsAlive != requested) return;
+      state.setKeepSessionsAliveEnabled(requested);
+    } catch (_) {
+      if (_keepSessionsAlive != requested) return;
+      // Revert the field and the in-memory setting even if this screen is
+      // gone by the time the save fails; only the rebuild is conditional.
+      _keepSessionsAlive = !requested;
+      state.services.settings.keepSessionsAliveInBackground = _keepSessionsAlive;
+      if (mounted) setState(() {});
+    }
   }
 
   /// Persist terminal appearance and repaint every live session. Called on

@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
@@ -239,7 +241,7 @@ class _ServerListPaneState extends State<ServerListPane> {
   Widget _tile(BuildContext context, AppState state, ServerConfig server) {
     final reachability = state.statuses[server.id] ?? ProbeStatus.unknown;
     final tabs = state.sessionsForServer(server.id);
-    return _ServerTile(
+    return ServerTile(
       // Stable identity so a background sync replacing the list
       // reconciles each tile to its server instead of by position.
       key: ValueKey(server.id),
@@ -251,6 +253,7 @@ class _ServerListPaneState extends State<ServerListPane> {
       onTap: () => widget.onOpen(server),
       onNewTab: () => state.newTab(server),
       onEdit: () => _editServer(context, state, server),
+      onDuplicate: () => _duplicateServer(context, state, server),
       onDelete: () => _deleteServer(context, state, server),
       // Disconnect every live tab; reconnect the lone dead tab.
       onDisconnect: () {
@@ -277,6 +280,70 @@ class _ServerListPaneState extends State<ServerListPane> {
     ServerConfig? server,
   ) async {
     await showServerEditor(context, state, server);
+  }
+
+  /// Copy a server, then offer the editor — duplicating is almost always the
+  /// first half of "…and change one thing", and the toast's action is a
+  /// shorter route back than finding the new row and reopening its menu.
+  Future<void> _duplicateServer(
+    BuildContext context,
+    AppState state,
+    ServerConfig server,
+  ) async {
+    final ServerConfig copy;
+    try {
+      copy = await state.duplicateServer(server);
+    } on SourceServerChanged catch (error) {
+      // Verbatim: this one is written as a whole sentence *for* this toast,
+      // and "Could not duplicate: …Nothing was created." says it twice.
+      if (context.mounted) {
+        showTopToastIn(context, message: '$error');
+      } else {
+        // Nowhere to show it. Logged so the refusal is not the failure that
+        // vanished — the same reason the branch below logs.
+        developer.log(
+          'Could not duplicate "${server.label}": $error',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+        );
+      }
+      return;
+    } catch (error, stackTrace) {
+      // The vault throws when the OS keyring is locked. Say so rather than
+      // leaving the menu looking like it did nothing — and name the server,
+      // because a toast is all the user gets and two rows can fail apart.
+      // The error itself stays verbatim: `VaultLockedException.toString()` is
+      // the sentence that says what to do about it.
+      final message = 'Could not duplicate "${server.label}": $error';
+      // Logged whether or not there is a toast to show: the toast and the
+      // log are for different readers. With the trace, because this catch is
+      // broad, and for the failures it was not written for the message names
+      // the server and nothing else — no throw site to tell a locked keyring
+      // from a bug in the vault.
+      developer.log(
+        message,
+        name: 'seance.app',
+        level: 900,
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (context.mounted) showTopToastIn(context, message: message);
+      return;
+    }
+    if (!context.mounted) return;
+    showTopToastIn(
+      context,
+      message: 'Duplicated as "${copy.label}"',
+      actionLabel: 'Edit',
+      // Checked again inside the closure, not only before showing the toast:
+      // the action fires whenever the user taps it, which can be after this
+      // pane is gone, and a defunct context reaches showDialog as an ancestor
+      // lookup on a deactivated widget.
+      onAction: () {
+        if (context.mounted) _editServer(context, state, copy);
+      },
+    );
   }
 
   Future<void> _deleteServer(
@@ -461,7 +528,13 @@ TerminalStatus _aggregateStatus(List<TerminalSession> tabs) {
   return TerminalStatus.disconnected;
 }
 
-class _ServerTile extends StatelessWidget {
+/// One server's row in the list.
+///
+/// Public, like [ServerGroupHeader] and unlike the rest of this pane's parts,
+/// so a widget test can assert what the row says without standing up an
+/// [AppState]: the sync-exclusion mark is an icon, and what a screen reader
+/// makes of an icon is not something to assume.
+class ServerTile extends StatelessWidget {
   final ServerConfig server;
   final TerminalStatus connection;
 
@@ -473,6 +546,7 @@ class _ServerTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onNewTab;
   final VoidCallback onEdit;
+  final VoidCallback onDuplicate;
   final VoidCallback onDelete;
   final VoidCallback onDisconnect;
 
@@ -480,7 +554,7 @@ class _ServerTile extends StatelessWidget {
   /// reconnect otherwise lives in the pane.
   final VoidCallback? onReconnect;
 
-  const _ServerTile({
+  const ServerTile({
     super.key,
     required this.server,
     required this.connection,
@@ -490,6 +564,7 @@ class _ServerTile extends StatelessWidget {
     required this.onTap,
     required this.onNewTab,
     required this.onEdit,
+    required this.onDuplicate,
     required this.onDelete,
     required this.onDisconnect,
     required this.onReconnect,
@@ -525,6 +600,7 @@ class _ServerTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (server.excludeFromSync) const _ExcludedFromSyncMark(),
           _ReachabilityDot(status: reachability),
           PopupMenuButton<String>(
             onSelected: (v) {
@@ -533,6 +609,8 @@ class _ServerTile extends StatelessWidget {
                   onNewTab();
                 case 'edit':
                   onEdit();
+                case 'duplicate':
+                  onDuplicate();
                 case 'delete':
                   onDelete();
                 case 'disconnect':
@@ -554,10 +632,52 @@ class _ServerTile extends StatelessWidget {
                   child: Text('Reconnect'),
                 ),
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
+              const PopupMenuItem(
+                value: 'duplicate',
+                child: Text('Duplicate'),
+              ),
               const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The mark on a row whose server never leaves this device.
+///
+/// Shown whether or not sync is set up: the flag is the user's standing answer
+/// for this server, and hiding it until an account exists would make it look
+/// like it had been forgotten.
+///
+/// The description is carried as a [Semantics] *label* and the [Tooltip] is
+/// kept out of the semantics tree, which is not the obvious way round. A
+/// [ListTile] merges everything under it into one node, and a merge keeps only
+/// one tooltip while concatenating every label — so a tooltip here would be
+/// dropped in favour of some other one on the row (the row already has
+/// several), and a screen reader would be told nothing at all. The tooltip
+/// still does its own job for a pointer.
+class _ExcludedFromSyncMark extends StatelessWidget {
+  const _ExcludedFromSyncMark();
+
+  static const String description = 'Excluded from sync — this device only';
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: description,
+      child: Tooltip(
+        message: description,
+        excludeFromSemantics: true,
+        child: Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Icon(
+            Icons.cloud_off_outlined,
+            size: 16,
+            color: Theme.of(context).hintColor,
+          ),
+        ),
       ),
     );
   }

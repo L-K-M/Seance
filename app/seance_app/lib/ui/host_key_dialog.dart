@@ -12,7 +12,19 @@ Future<bool> showHostKeyDialog(
     barrierDismissible: false,
     builder: (context) {
       final scheme = Theme.of(context).colorScheme;
+      // Only the dialog's own route may be popped: a rapid second activation
+      // during the exit animation — or a callback from a dialog obscured by a
+      // newer route — would otherwise pop whatever sits below instead.
+      void close(bool accepted) {
+        if (ModalRoute.of(context)?.isCurrent != true) return;
+        Navigator.pop(context, accepted);
+      }
+
       return AlertDialog(
+        // The changed-key review (warning + two fingerprints) must stay
+        // reachable when height is scarce — small windows, split screens, or
+        // accessibility text scaling — instead of overflowing the dialog.
+        scrollable: true,
         icon: Icon(changed ? Icons.gpp_bad : Icons.verified_user_outlined,
             color: changed ? scheme.error : null),
         title: Text(changed ? 'HOST KEY CHANGED' : 'Unknown host key'),
@@ -52,7 +64,7 @@ Future<bool> showHostKeyDialog(
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => close(false),
             child: const Text('Cancel'),
           ),
           FilledButton(
@@ -61,7 +73,7 @@ Future<bool> showHostKeyDialog(
                     backgroundColor: scheme.error,
                     foregroundColor: scheme.onError)
                 : null,
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => close(true),
             child: Text(changed ? 'Trust the new key' : 'Trust and connect'),
           ),
         ],

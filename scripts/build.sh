@@ -8,7 +8,9 @@
 #   docker — sync-server image (packages/seance_sync_server/Dockerfile, build
 #            context = repo root) → seance-sync:local
 #   app    — Flutter desktop app for THIS host (linux/macos/windows); platform
-#            folders are committed (missing ones are regenerated as a fallback)
+#            folders are committed (missing ones are regenerated as a fallback).
+#            On Linux, release builds are also packaged into installable
+#            artifacts (.deb + AppImage) via scripts/package-linux.sh → dist/
 #   apk    — Android APK (needs flutter + an Android SDK)
 #
 # Usage:
@@ -187,6 +189,38 @@ ensure_platform() {
   ( cd app/seance_app && flutter create --platforms="$platform" --project-name seance_app . )
 }
 
+# ---------------------------------------------------------------------------
+# Linux installers (.deb + AppImage) for a just-built bundle. build.sh stays
+# the orchestrator; the actual packaging logic lives in package-linux.sh.
+package_linux() {
+  # Debug builds aren't for distributing, and the .deb needs dpkg-deb.
+  if [[ "$PROFILE" != "release" ]]; then
+    record "packages: skipped (debug profile)"
+    return 0
+  fi
+  if ! command -v dpkg-deb >/dev/null 2>&1; then
+    echo ".. packages: .deb unavailable without dpkg-deb — scripts/package-linux.sh builds the AppImage anyway"
+    # No dpkg-deb → package-linux.sh itself falls back to AppImage-only.
+  fi
+  echo "== packages (deb + AppImage, via scripts/package-linux.sh) =="
+  # best-effort AppImage: fetching appimagetool can fail on an offline host,
+  # and the local path shouldn't hard-fail on that — CI runs the same script
+  # in required mode and catches real breakage.
+  if scripts/package-linux.sh --appimage=best-effort; then
+    local f staged=""
+    for f in dist/seance_*.deb dist/seance-linux-*.AppImage; do
+      [[ -e "$f" ]] || continue
+      record "packages: $(basename "$f") -> dist/"
+      staged=1
+    done
+    [[ -n "$staged" ]] || record "packages: built (nothing staged?)"
+  else
+    echo "!! packages: package-linux.sh failed" >&2
+    record "packages: FAILED"
+    return 1
+  fi
+}
+
 build_app() {
   echo "== app (Flutter desktop, this host) =="
   if [[ "$HOST" == "unknown" ]]; then
@@ -227,6 +261,7 @@ build_app() {
     else
       record "app: built ($HOST, $PROFILE) — product not found to stage"
     fi
+    if [[ "$HOST" == "linux" ]]; then package_linux; fi
     if $INSTALL; then
       if [[ -z "$out" ]]; then
         echo "!! app: nothing to install (product not found)" >&2

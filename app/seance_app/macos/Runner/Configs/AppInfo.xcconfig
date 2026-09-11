@@ -16,4 +16,4 @@ PRODUCT_NAME = Seance
 PRODUCT_BUNDLE_IDENTIFIER = com.lkm.seanceApp
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.lkm. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 com.lkm.

@@ -443,6 +443,10 @@ void main() {
       );
       expect(tooBig, 413);
       expect(b2['error'], 'payload_too_large');
+
+      final (_, after) = await c.send('GET', '/v1/sync', auth: true);
+      expect(after['latestSeq'], 0);
+      expect(after['records'], isEmpty);
     });
   });
 }

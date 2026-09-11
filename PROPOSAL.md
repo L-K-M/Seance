@@ -80,7 +80,7 @@ Three full architectures were developed and scored independently through three l
 |---|---|---|
 | UI | **Flutter 3.4x** (one codebase: macOS, Windows, Linux now; iOS, Android later) | Only proven single-codebase desktop+mobile path for this app shape |
 | Terminal | **xterm.dart 4.x, vendored/forked**, behind an internal `TerminalEngine` interface | Proven with dartssh2; seam allows libghostty (`flterm`) swap later |
-| SSH | **dartssh2 2.22+** (pure Dart, MIT, actively maintained — 2.22.0 released 2026-07-03) | Password + key auth (Ed25519/ECDSA/RSA), keyboard-interactive, PTY + resize, keepalives, port forwarding, jump-host chaining |
+| SSH | **[dartssh2 3.0.2](https://pub.dev/packages/dartssh2/versions/3.0.2), exactly pinned** (pure Dart, MIT) | Password + key auth (Ed25519/ECDSA/RSA), keyboard-interactive, PTY + resize, keepalives, port forwarding, and jump-host chaining; [3.0.2's read pipeline](https://github.com/vicajilau/dartssh2/pull/200) attaches completion and error handlers to every scheduled read, keeping late SFTP abort errors owned when cancellation tears down the consumer |
 | Local data | **SQLite (drift)** for configs, pinned host keys, sync metadata | Boring, portable, testable |
 | Secrets | **flutter_secure_storage 10.x** (OS keystore) holds a random 32-byte master key; secrets live in an **XChaCha20-Poly1305 vault** (libsodium via `sodium_libs`) inside the DB | No OS keystore is sufficient alone (Windows Credential Manager caps blobs at 2'560 bytes; headless Linux often has no Secret Service) |
 | Sync server | Single static binary + SQLite + Docker `scratch` image, ~7 REST endpoints, E2E-encrypted blobs (client-side crypto) | Atuin's proven deployment shape; server is a dumb blob store |

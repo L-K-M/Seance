@@ -8,10 +8,12 @@ import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../services/web_links.dart';
 import '../services/xterm_engine.dart';
 import '../theme.dart';
 import 'app_menus.dart';
 import 'command_generator.dart';
+import 'connection_log_view.dart';
 import 'files_pane.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_appearance.dart';
@@ -622,6 +624,9 @@ class _TabChip extends StatelessWidget {
 /// the only clue to *which host you are typing into* was the highlighted row
 /// in the server list.
 class SessionStatusBar extends StatelessWidget {
+  static const double _locationGap = 12;
+  static const double _maximumTargetShare = 0.5;
+
   final TerminalSession session;
   const SessionStatusBar({super.key, required this.session});
 
@@ -629,13 +634,15 @@ class SessionStatusBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final config = session.config;
+    final target = '${config.username}@${config.host}:${config.port}';
     final style = Theme.of(context).textTheme.labelSmall?.copyWith(
       color: scheme.onSurfaceVariant,
       fontFamily: 'monospace',
     );
     return Container(
-      height: 24,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      // Grow with accessibility text size instead of clipping the host identity.
+      constraints: const BoxConstraints(minHeight: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHigh,
         border: Border(top: BorderSide(color: scheme.outlineVariant)),
@@ -644,21 +651,7 @@ class SessionStatusBar extends StatelessWidget {
         children: [
           _TabStatusDot(status: session.status),
           const SizedBox(width: 8),
-          Text(
-            '${config.username}@${config.host}:${config.port}',
-            style: style,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ValueListenableBuilder<SessionMetadata>(
-              valueListenable: session.metadata,
-              builder: (context, metadata, _) {
-                final cwd = metadata.workingDirectory;
-                if (cwd == null) return const SizedBox.shrink();
-                return MiddleEllipsisText(sanitizeRemoteLabel(cwd), style: style);
-              },
-            ),
-          ),
+          Expanded(child: _location(target, style)),
           // The exit code comes from the live engine's OSC 133 state, so it is
           // only shown while the engine exists (a closed session disposes it).
           if (session.isConnected)
@@ -680,6 +673,37 @@ class SessionStatusBar extends StatelessWidget {
       ),
     );
   }
+
+  Widget _location(String target, TextStyle? style) =>
+      ValueListenableBuilder<SessionMetadata>(
+        valueListenable: session.metadata,
+        builder: (context, metadata, _) {
+          final identity = Tooltip(
+            message: target,
+            excludeFromSemantics: true,
+            child: MiddleEllipsisText(target, style: style),
+          );
+          final cwd = metadata.workingDirectory;
+          if (cwd == null) return identity;
+
+          // Cap long targets; let cwd reclaim unused space from short ones.
+          return LayoutBuilder(builder: (context, constraints) {
+            if (constraints.maxWidth <= _locationGap) return identity;
+            final targetLimit =
+                (constraints.maxWidth - _locationGap) * _maximumTargetShare;
+            return Row(children: [
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: targetLimit),
+                child: identity,
+              ),
+              const SizedBox(width: _locationGap),
+              Expanded(
+                child: MiddleEllipsisText(sanitizeRemoteLabel(cwd), style: style),
+              ),
+            ]);
+          });
+        },
+      );
 }
 
 /// The small status dot on a tab chip (mirrors the server-list dot semantics
@@ -819,6 +843,7 @@ class _SessionViewState extends State<_SessionView> {
         focusNode: _focus,
         autofocus: widget.isActive,
         onKeyEvent: _handleKeyEvent,
+        onLinkTap: _openLink,
         textStyle: appearance.style,
         theme: appearance.theme,
         keyboardAppearance: appearance.brightness,
@@ -832,6 +857,11 @@ class _SessionViewState extends State<_SessionView> {
         padding: const EdgeInsets.all(6),
       ),
     );
+  }
+
+  Future<void> _openLink(Uri uri) async {
+    if (await openWebLink(uri) || !mounted) return;
+    showTopToastIn(context, message: 'Could not open link.');
   }
 
   /// Intercept a few shortcuts before the terminal consumes the keystroke: the
@@ -1008,65 +1038,20 @@ class _Disconnected extends StatelessWidget {
   }
 }
 
-/// A collapsible view of the raw connection transcript, with a copy button.
+/// The failed tab's transcript. Wraps the shared [ConnectionLogView] with the
+/// session's own log notifier — not with AppState: a handshake appends a line
+/// per packet, and routing those through the app-wide notifier rebuilt the
+/// entire tree hundreds of times per connection.
 class _ConnectionLogView extends StatelessWidget {
   final TerminalSession session;
   const _ConnectionLogView({required this.session});
 
   @override
   Widget build(BuildContext context) {
-    // Listens to the session's own log notifier, not to AppState: a handshake
-    // appends a line per packet, and routing those through the app-wide
-    // notifier rebuilt the entire tree hundreds of times per connection.
     return ListenableBuilder(
       listenable: session.logNotifier,
-      builder: (context, _) => _log(context, session.log.toString()),
-    );
-  }
-
-  Widget _log(BuildContext context, String text) {
-    final scheme = Theme.of(context).colorScheme;
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        tilePadding: EdgeInsets.zero,
-        title: const Text('Connection log'),
-        childrenPadding: EdgeInsets.zero,
-        children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: text.isEmpty
-                  ? null
-                  : () {
-                      Clipboard.setData(ClipboardData(text: text));
-                      showTopToastIn(context, message: 'Log copied');
-                    },
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text('Copy'),
-            ),
-          ),
-          Container(
-            width: double.infinity,
-            constraints: const BoxConstraints(maxHeight: 260),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: SingleChildScrollView(
-              child: SelectableText(
-                text.isEmpty ? '(no log captured)' : text,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  height: 1.4,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+      builder: (context, _) =>
+          ConnectionLogView(text: session.log.toString()),
     );
   }
 }

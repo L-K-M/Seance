@@ -1,7 +1,49 @@
+import 'package:logging/logging.dart';
 import 'package:seance_protocol/seance_protocol.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('Secret.copyWith carries every field but the one replaced', () {
+    // The app's duplication test compares the same way, but the guard belongs
+    // here too: a field added to Secret and forgotten in copyWith still
+    // compiles, and this package cannot rely on a test in another one that
+    // may be renamed, moved, or absent for a different client.
+    const original = Secret(
+      id: 'source',
+      kind: SecretKind.privateKey,
+      value: 'PEM',
+      keyPassphrase: 'phrase',
+    );
+    final rekeyed = original.copyWith(id: 'copy');
+    expect(rekeyed.id, 'copy');
+    // The comparison below only guards copyWith while toJson writes every
+    // field the fixture sets. Pin that for the nullable one, which is the
+    // field a serializer is most likely to omit.
+    expect(original.toJson(), containsPair('keyPassphrase', 'phrase'));
+    expect({...rekeyed.toJson(), 'id': original.id}, original.toJson());
+    // Directly too, which survives a serializer omission: a field dropped from
+    // both `toJson` and `copyWith` would be absent from each side of the map
+    // comparison and pass it. A field added to Secret goes on `original` above
+    // and gets a line here.
+    expect(rekeyed.kind, original.kind);
+    expect(rekeyed.value, original.value);
+    expect(rekeyed.keyPassphrase, original.keyPassphrase);
+    // And the other half of the contract: a parameter that is passed has to
+    // *replace*. Every assertion above is about what `copyWith` carries, so a
+    // body that ignored its argument (`value: this.value`) would pass them
+    // all — and the one caller that matters replaces a field.
+    expect(original.copyWith(value: 'other').value, 'other');
+    expect(original.copyWith(value: 'other').id, original.id);
+    // Every replaceable parameter, not just one: `kind: this.kind` would pass
+    // a test that only exercises `value`, and duplication is not the last
+    // caller this method will get.
+    final otherKind =
+        SecretKind.values.firstWhere((k) => k != original.kind);
+    expect(original.copyWith(kind: otherKind).kind, otherKind);
+    expect(original.copyWith(keyPassphrase: 'rekeyed').keyPassphrase,
+        'rekeyed');
+  });
+
   group('model JSON round-trips', () {
     test('ServerConfig', () {
       final c = ServerConfig(
@@ -40,6 +82,117 @@ void main() {
       expect(back.icon, ServerIcon.rocket);
     });
 
+    test('ServerConfig carries excludeFromSync explicitly', () {
+      final c = ServerConfig(
+        id: 's1',
+        label: 'laptop',
+        host: 'localhost',
+        username: 'me',
+        excludeFromSync: true,
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      final back = ServerConfig.fromJson(c.toJson());
+      expect(back.toJson(), equals(c.toJson()));
+      expect(back.excludeFromSync, isTrue);
+      // Both answers are written, so a record can say "sync me" rather than
+      // only ever being silent about it.
+      expect(c.toJson()['excludeFromSync'], isTrue);
+      expect(
+        ServerConfig.fromJson({...c.toJson(), 'excludeFromSync': false})
+            .toJson()['excludeFromSync'],
+        isFalse,
+      );
+      // A config written before the field existed reads as "syncs", which is
+      // what it did.
+      final legacy = {...c.toJson()}..remove('excludeFromSync');
+      expect(ServerConfig.fromJson(legacy).excludeFromSync, isFalse);
+      // An explicit null reads like an absent key, and a legacy record writes
+      // the explicit answer back out on its next save.
+      expect(
+        ServerConfig.fromJson({...c.toJson(), 'excludeFromSync': null})
+            .excludeFromSync,
+        isFalse,
+      );
+      expect(ServerConfig.fromJson(legacy).toJson()['excludeFromSync'], isFalse);
+      // Including one built here rather than read back: if the field were
+      // stored tri-state and only normalized on the way in, a record this app
+      // wrote would still be silent about it.
+      expect(
+        ServerConfig(
+          id: 's2',
+          label: 'laptop',
+          host: 'localhost',
+          username: 'me',
+          createdAt: 1,
+          updatedAt: 2,
+        ).toJson()['excludeFromSync'],
+        isFalse,
+      );
+    });
+
+    test('copyWith flips excludeFromSync without touching anything else', () {
+      final c = ServerConfig(
+        id: 's1',
+        label: 'laptop',
+        host: 'localhost',
+        username: 'me',
+        syncSecret: true,
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      final excluded = c.copyWith(excludeFromSync: true, updatedAt: 3);
+      expect(excluded.excludeFromSync, isTrue);
+      // "Without touching anything else" is the name's promise; assert it —
+      // the id first, since a copy under another id splits the record.
+      expect(excluded.id, c.id);
+      expect(excluded.label, c.label);
+      expect(excluded.host, c.host);
+      expect(excluded.username, c.username);
+      expect(excluded.createdAt, c.createdAt);
+      expect(excluded.updatedAt, 3);
+      // The credential's own opt-in survives the exclusion, so clearing it
+      // gives the user back the answer they picked rather than a silent no.
+      expect(excluded.syncSecret, isTrue);
+      expect(
+        excluded
+            .copyWith(excludeFromSync: false, updatedAt: 4)
+            .excludeFromSync,
+        isFalse,
+      );
+      // The pairing is enforced in every build, not merely documented: a
+      // stale tombstone ties with the record already on the sync server and
+      // loses to it, and an assert would be stripped from the build users run.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Re-stating the current timestamp ties, which loses the same way.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 3),
+        throwsA(isA<ArgumentError>()),
+      );
+      // A strictly older timestamp loses outright rather than merely tying.
+      expect(
+        () => excluded.copyWith(excludeFromSync: false, updatedAt: 2),
+        throwsA(isA<ArgumentError>()),
+      );
+      // And the guard is symmetric: raising the flag without a fresh
+      // timestamp ships a tombstone the server's copy already outranks.
+      expect(
+        () => c.copyWith(excludeFromSync: true),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Omitting it leaves it alone, like every other copyWith field — and
+      // that edit may keep a stale timestamp, unlike the flip: losing that
+      // conflict only reverts an edit, it never resurrects a record the user
+      // asked to stop syncing.
+      expect(excluded.copyWith(label: 'other').excludeFromSync, isTrue);
+      // Re-stating the current value is not a flip: no tombstone is minted
+      // for it, so it must not demand a fresh timestamp either.
+      expect(excluded.copyWith(excludeFromSync: true).excludeFromSync, isTrue);
+    });
+
     test('ServerConfig omits the presentation fields when they are unset', () {
       final json = ServerConfig(
         id: 's1',
@@ -54,6 +207,7 @@ void main() {
       expect(json.containsKey('group'), isFalse);
       expect(json.containsKey('color'), isFalse);
       expect(json.containsKey('icon'), isFalse);
+      expect(json.containsKey('loginScript'), isFalse);
     });
 
     test('ServerConfig tolerates a group or an accent it does not know', () {
@@ -133,6 +287,65 @@ void main() {
       );
     });
 
+    test('ServerConfig round-trips a multi-line login script', () {
+      final script = 'cd /srv/app\ndocker compose ps\ntmux attach -t work';
+      final c = ServerConfig(
+        id: 's1',
+        label: 'l',
+        host: 'h',
+        username: 'u',
+        loginScript: script,
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      final back = ServerConfig.fromJson(c.toJson());
+      expect(back.loginScript, script);
+      expect(back.toJson(), equals(c.toJson()));
+    });
+
+    test('login scripts normalize their edges but keep interior newlines', () {
+      final base = ServerConfig(
+        id: 's1',
+        label: 'l',
+        host: 'h',
+        username: 'u',
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      // A trailing newline must not survive as a stray Enter keystroke, while
+      // the interior lines are the point of a multi-line script.
+      final normalized = ServerConfig.fromJson({
+        ...base.toJson(),
+        'loginScript': '  cd work \n\ntail -f log  ',
+      });
+      expect(normalized.loginScript, 'cd work \n\ntail -f log');
+      // Blank means none, by either route in.
+      expect(normalized.copyWith(loginScript: '   ').loginScript, isNull);
+      expect(base.copyWith(loginScript: '').loginScript, isNull);
+      expect(base.copyWith(clearLoginScript: true).loginScript, isNull);
+      expect(base.copyWith(loginScript: null).loginScript, isNull);
+    });
+
+    test('login scripts canonicalize CR line endings to LF', () {
+      final base = ServerConfig(
+        id: 's1',
+        label: 'l',
+        host: 'h',
+        username: 'u',
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      // A \r inside a line reaches a PTY's line discipline as an Enter of its
+      // own — one pasted-from-Windows line would otherwise run twice.
+      final crlf = ServerConfig.fromJson({
+        ...base.toJson(),
+        'loginScript': 'cd work\r\ntail -f log\r\n',
+      });
+      expect(crlf.loginScript, 'cd work\ntail -f log');
+      final crOnly = base.copyWith(loginScript: 'cd work\rtail -f log\r');
+      expect(crOnly.loginScript, 'cd work\ntail -f log');
+    });
+
     test('Secret does not leak its value in toString', () {
       final s = Secret(id: 's1', kind: SecretKind.password, value: 'hunter2');
       expect(s.toString(), isNot(contains('hunter2')));
@@ -165,6 +378,24 @@ void main() {
   });
 
   group('RecordCodec', () {
+    test('unknown kind fallback emits a fine-level diagnostic', () async {
+      final previousLevel = Logger.root.level;
+      final records = <LogRecord>[];
+      Logger.root.level = Level.ALL;
+      final subscription = Logger.root.onRecord.listen(records.add);
+
+      try {
+        expect(recordKindFromName('flurb'), RecordKind.unknown);
+        await pumpEventQueue();
+        expect(records, hasLength(1));
+        expect(records.single.level, Level.FINE);
+        expect(records.single.message, contains('flurb'));
+      } finally {
+        await subscription.cancel();
+        Logger.root.level = previousLevel;
+      }
+    });
+
     test('encrypts a server config and decrypts it back', () async {
       final vaultKey = secureRandomBytes(32);
       final codec = RecordCodec(vaultKey);
@@ -199,6 +430,62 @@ void main() {
       expect(enc.deleted, isTrue);
       final dec = await codec.decrypt(enc);
       expect(dec.deleted, isTrue);
+      expect(dec.kind, RecordKind.unknown);
+    });
+
+    test('serialized envelope has no separate kind field', () async {
+      final codec = RecordCodec(secureRandomBytes(32));
+      final enc = await codec.encrypt(
+        DecryptedRecord(
+          id: 'bookmark:b1',
+          kind: RecordKind.bookmark,
+          updatedAt: 42,
+          deviceId: 'device-a',
+          data: const {'id': 'b1'},
+        ),
+      );
+
+      final wire = enc.toJson();
+      expect(wire.containsKey('kind'), isFalse);
+      expect(wire['id'], 'bookmark:b1');
+      expect(
+        wire.keys,
+        unorderedEquals(['id', 'updatedAt', 'deviceId', 'deleted', 'blob']),
+      );
+    });
+
+    test('unknown kinds decode as unknown and cannot be encrypted', () async {
+      final vaultKey = secureRandomBytes(32);
+      final codec = RecordCodec(vaultKey);
+      // Unknown kinds cannot pass encrypt, so mirror its plaintext shape.
+      final blob = await VaultCrypto.sealJson(vaultKey, const {
+        'kind': 'flurb',
+        'data': {'value': 1},
+      });
+      final decoded = await codec.decrypt(
+        EncryptedRecord(
+          id: 'flurb:r1',
+          updatedAt: 42,
+          deviceId: 'device-a',
+          deleted: false,
+          seq: 1,
+          blob: blob,
+        ),
+      );
+
+      expect(decoded.kind, RecordKind.unknown);
+      expect(decoded.data, {'value': 1});
+      await expectLater(
+        () async => codec.encrypt(
+          const DecryptedRecord(
+            id: 'flurb:r1',
+            kind: RecordKind.unknown,
+            updatedAt: 42,
+            deviceId: 'device-a',
+          ),
+        ),
+        throwsArgumentError,
+      );
     });
 
     test('a server holding the blob cannot read it without the vault key',

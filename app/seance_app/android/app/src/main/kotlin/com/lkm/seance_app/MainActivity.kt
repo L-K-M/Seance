@@ -1,8 +1,11 @@
 package com.lkm.seance_app
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
@@ -20,20 +23,94 @@ import java.util.concurrent.RejectedExecutionException
 class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "seance/files"
+        private const val KEEP_ALIVE_CHANNEL = "seance/keepalive"
         private const val DIRECTORY_REQUEST = 7341
         private const val PREFERENCES = "seance_file_exports"
         private const val TREE_URI = "export_tree_uri"
+        private const val REQUEST_POST_NOTIFICATIONS = 7342
     }
 
     private val copyExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val preferences by lazy { getSharedPreferences(PREFERENCES, MODE_PRIVATE) }
     private var pendingDirectoryResult: MethodChannel.Result? = null
+    private var notificationPermissionAsked = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler(::handleFileMethod)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, KEEP_ALIVE_CHANNEL)
+            .setMethodCallHandler(::handleKeepAliveMethod)
+    }
+
+    private fun handleKeepAliveMethod(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "activate" -> {
+                val count = keepAliveSessionCount(call)
+                if (count < 0) {
+                    result.error(
+                        "INVALID_ARGUMENT",
+                        "sessionCount is required.",
+                        null,
+                    )
+                    return
+                }
+                try {
+                    KeepAliveService.start(this, count)
+                    requestNotificationPermissionOnce()
+                    result.success(null)
+                } catch (error: Exception) {
+                    // E.g. Android 12+ forbidding a foreground-service start
+                    // from the background; Dart treats this as best-effort.
+                    result.error(
+                        "KEEP_ALIVE_FAILED",
+                        "Could not start the keep-alive service: ${error.message}",
+                        null,
+                    )
+                }
+            }
+            "sessionCountChanged" -> {
+                val count = keepAliveSessionCount(call)
+                if (count < 0) {
+                    result.error(
+                        "INVALID_ARGUMENT",
+                        "sessionCount is required.",
+                        null,
+                    )
+                    return
+                }
+                KeepAliveService.update(this, count)
+                result.success(null)
+            }
+            "deactivate" -> {
+                KeepAliveService.stop(this)
+                result.success(null)
+            }
+            else -> result.notImplemented()
+        }
+    }
+
+    private fun keepAliveSessionCount(call: MethodCall): Int =
+        (call.arguments as? Map<*, *>)?.get("sessionCount") as? Int ?: -1
+
+    /**
+     * The keep-alive's foreground-service notification is invisible on
+     * Android 13+ without POST_NOTIFICATIONS; the service runs either way,
+     * but a hidden notification reads as unexplained battery use. Ask once
+     * per process, at the first anchor, and take no for an answer.
+     */
+    private fun requestNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (notificationPermissionAsked) return
+        notificationPermissionAsked = true
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        requestPermissions(
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            REQUEST_POST_NOTIFICATIONS,
+        )
     }
 
     private fun handleFileMethod(call: MethodCall, result: MethodChannel.Result) {
@@ -346,6 +423,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        // The Flutter engine is torn down with this activity, so Dart can no
+        // longer manage the anchor — drop it rather than linger as an empty
+        // foreground service. (Swiping the app away and configuration-driven
+        // recreation both end here; the sessions it held die with the engine.)
+        KeepAliveService.stop(this)
         copyExecutor.shutdown()
         super.onDestroy()
     }

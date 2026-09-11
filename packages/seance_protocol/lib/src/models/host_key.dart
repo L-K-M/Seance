@@ -57,7 +57,14 @@ class HostKey {
   }
 
   /// Natural key used for storage and record ids.
-  String get locator => '$host:$port';
+  String get locator => hostKeyLocator(host, port);
+
+  /// The id of this pin's sync record: the [locator] under the `hostkey:`
+  /// prefix that routes it. One builder, because the coordinator both mints
+  /// the id on the way out and checks a pulled record against it on the way
+  /// in — two literals could drift apart, and a drifted check would refuse
+  /// every pin this build ever published.
+  String get recordId => 'hostkey:$locator';
 
   /// True if [other] is the same host but a different key — the dangerous case.
   bool conflictsWith(HostKey other) =>
@@ -91,3 +98,15 @@ class HostKey {
         pinnedAt: (json['pinnedAt'] as num?)?.toInt() ?? 0,
       );
 }
+
+/// The [HostKey.locator] a given host and port would produce, without a key to
+/// ask. Callers that decide *about* a pin before they hold one — the sync
+/// coordinator matching server configs against pinned hosts — need the same
+/// spelling, and two places building `'$host:$port'` by hand is how they stop
+/// agreeing.
+/// [host] goes in verbatim, so two spellings of one host are two locators.
+/// That holds today because both sides come from the same string: a pin is
+/// created with `host: config.host` (ssh_session.dart), the same value the
+/// coordinator matches against. A caller that ever takes a host from
+/// somewhere else has to normalize it first.
+String hostKeyLocator(String host, int port) => '$host:$port';

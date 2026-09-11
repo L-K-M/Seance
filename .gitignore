@@ -22,8 +22,9 @@ app/seance_app/**/GeneratedPluginRegistrant.*
 third_party/xterm/pubspec.lock
 third_party/xterm/test/src/failures/
 
-# Server runtime data
+# Server runtime data + per-deployment compose overrides
 packages/seance_sync_server/data/
+packages/seance_sync_server/.env
 *.sqlite
 *.sqlite-journal
 

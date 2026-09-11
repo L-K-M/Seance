@@ -28,7 +28,42 @@ publish it more broadly only behind TLS or on a trusted private network.
 
 To update a running deployment (pull the latest code, rebuild the image,
 recreate the container in one step), run `./update.sh` from the repository
-root.
+root. It probes the published `/healthz` after the recreate and fails with the
+container's logs when the server doesn't answer.
+
+### Reverse proxy in a container (Nginx Proxy Manager, Traefik, …)
+
+The default `127.0.0.1:8787` publish is only reachable from processes on the
+host itself — inside a proxy *container*, `127.0.0.1` is that container, so it
+gets connection-refused and serves **502 Bad Gateway**. Publish on the Docker
+bridge gateway instead, which only the host and its containers can reach, and
+point the proxy at that same address:
+
+```bash
+cp packages/seance_sync_server/.env.example packages/seance_sync_server/.env
+echo 'SEANCE_PUBLISH_ADDR=172.17.0.1' >> packages/seance_sync_server/.env
+./update.sh   # or: docker compose --env-file packages/seance_sync_server/.env \
+              #     -f packages/seance_sync_server/docker-compose.yml up -d
+```
+
+The `.env` file is gitignored, so updates keep the setting. Use
+`SEANCE_PUBLISH_ADDR=0.0.0.0` for every interface (firewall it), or attach the
+proxy and this service to a shared Docker network and skip publishing entirely.
+
+### Troubleshooting: the app reports a 502
+
+A 502 is never produced by this server — it comes from whatever sits in front
+(reverse proxy or CDN) when the sync container doesn't answer. On the host:
+
+```bash
+docker compose -f packages/seance_sync_server/docker-compose.yml ps    # running? healthy?
+docker compose -f packages/seance_sync_server/docker-compose.yml logs --tail=40
+curl -i "http://$(docker compose -f packages/seance_sync_server/docker-compose.yml \
+  port seance-sync 8787)/healthz"                                      # expect: ok
+```
+
+If `/healthz` answers on the host but the proxy still serves 502, the proxy is
+pointing somewhere the port isn't published (see the section above).
 
 ## Run without Docker
 
@@ -70,6 +105,37 @@ so an old client and new server detect a mismatch instead of corrupting data.
 | `PUT /v1/records` | Bearer | Push a batch of encrypted records (LWW) |
 | `DELETE /v1/account` | Bearer | Delete the account and all its data |
 
+### Sync transaction semantics
+
+A push resolves LWW, allocates sequences and commits all accepted records in one
+storage transaction. Entries run in list order, including repeated ids; empty
+batches return the current watermark. An LWW rejection is a per-record result,
+not a batch failure. Existing request limits apply before storage: by default,
+1,000 records, 1 MiB per blob and 8 MiB per request body.
+A database failure rolls back the batch and its sequence changes. A lost HTTP
+reply can still follow a successful commit; clients must reconcile by pulling.
+
+Pull records and `latestSeq` come from one snapshot: every returned sequence is
+`since < seq <= latestSeq`. Later writes belong to the next pull. This does not
+yet provide pagination, client-side durable revisions or authenticated metadata.
+
+SQLite uses `BEGIN IMMEDIATE` for writes and a read transaction for snapshots.
+Transaction lock contention returns `503 storage_busy` without committing the
+batch; retry later. There is no synchronous wait or non-atomic fallback.
+If transaction cleanup itself fails, SQLite storage fails closed and returns
+`503 storage_unavailable` for the triggering and subsequent storage requests.
+Diagnostics retain the original cause and log only exception types/SQLite numeric
+codes—not messages, SQL, parameters or blobs. Restart after investigating the
+database failure; automatic reopen could
+silently replace an injected or in-memory database. `/healthz` remains liveness,
+not storage readiness. Closing the disabled connection is safe to repeat.
+The memory backend stages batches without yielding, then swaps state together.
+
+Custom server `Storage` implementations must implement `pushRecords` and
+`pullSnapshot` with these guarantees. The older primitives remain for source
+compatibility with callers, but must not be composed into sync operations. Wire
+DTOs and the database schema are unchanged; this is not an account migration.
+
 ## Security model
 
 - The client derives a vault key and an **independent** auth verifier from the
@@ -91,4 +157,6 @@ dart test packages/seance_sync_server
 Covers the endpoints (register/prelogin/login/push/pull/delete, auth, rate
 limiting, protocol-version and open-registration gating), the SQLite backend
 (round-trips + durability across reopen), and a full end-to-end run of the real
-client against a live server with two devices converging.
+client against a live server with two devices converging. Atomic-sync regressions
+force stale-write and watermark races over HTTP, a separate-connection SQLite
+commit during a pull, and a late batch-write failure followed by reopen/retry.

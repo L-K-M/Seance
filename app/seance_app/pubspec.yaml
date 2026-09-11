@@ -1,7 +1,7 @@
 name: seance_app
 description: "Séance — a personal cross-platform SSH client."
 publish_to: none
-version: 0.6.0
+version: 0.8.0
 
 environment:
   sdk: ^3.12.0
@@ -47,8 +47,13 @@ dependencies:
   # Enumerates connected displays so a frame saved on a now-disconnected
   # monitor falls back to the default placement instead of opening off-screen.
   screen_retriever: ^0.2.2
+  # Owner-only mode bits for path-bearing local files (identity audit log);
+  # the calls are guarded to desktop POSIX, other platforms use storage ACLs.
+  posix: ^6.5.0
 
 dev_dependencies:
+  # Mock network lifetimes at the AppServices boundary.
+  http: ^1.6.0
   flutter_lints: ^5.0.0
   # Regenerates every platform's launcher icon from media-sources/seance-icon.png
   # (config in flutter_launcher_icons.yaml): dart run flutter_launcher_icons

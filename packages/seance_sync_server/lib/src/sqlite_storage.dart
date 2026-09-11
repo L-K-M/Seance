@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:seance_protocol/seance_protocol.dart';
@@ -6,14 +7,23 @@ import 'package:sqlite3/sqlite3.dart';
 
 import 'storage.dart';
 
+enum _TransactionMode { read, write }
+
 /// SQLite-backed [Storage] for production. Single file, no server process — the
 /// whole deployment is this binary plus a `.sqlite` file. All record blobs are
 /// already end-to-end encrypted; this layer only shuffles opaque bytes.
 class SqliteStorage implements Storage {
-  final Database _db;
+  final Database _connection;
+  StorageUnavailableException? _failure;
 
-  SqliteStorage(this._db) {
+  SqliteStorage(this._connection) {
     _migrate();
+  }
+
+  Database get _db {
+    final failure = _failure;
+    if (failure != null) throw failure;
+    return _connection;
   }
 
   /// Open (or create) the database at [path]. Use `:memory:` for ephemeral.
@@ -115,14 +125,117 @@ class SqliteStorage implements Storage {
   }
 
   @override
-  Future<EncryptedRecord?> getRecord(String username, String id) async {
+  Future<PushResponse> pushRecords(
+      String username, List<EncryptedRecord> records) async {
+    // A no-op push must not contend with writers.
+    final mode = records.isEmpty
+        ? _TransactionMode.read
+        : _TransactionMode.write;
+    return _transaction(mode, () {
+      final results = <PushResult>[];
+      for (final incoming in records) {
+        final existing = _getRecord(username, incoming.id);
+        if (existing != null &&
+            !identical(Lww.resolve(existing, incoming), incoming)) {
+          results.add(PushResult(
+              id: incoming.id, seq: existing.seq ?? 0, accepted: false));
+          continue;
+        }
+
+        final seq = _nextSeq(username);
+        _putRecord(username, incoming.withSeq(seq));
+        results.add(PushResult(id: incoming.id, seq: seq, accepted: true));
+      }
+      return PushResponse(results: results, latestSeq: _latestSeq(username));
+    });
+  }
+
+  @override
+  Future<PullResponse> pullSnapshot(String username, int since) async =>
+      _transaction(_TransactionMode.read, () {
+        final watermark = _latestSeq(username);
+        return PullResponse(
+          records: _recordsSince(username, since, through: watermark),
+          latestSeq: watermark,
+        );
+      });
+
+  T _transaction<T>(_TransactionMode mode, T Function() action) {
+    // No awaits while the connection owns a transaction. Acquire the write
+    // lock before comparing LWW so another process cannot commit a stale winner.
+    _begin(mode);
+    try {
+      final result = action();
+      _db.execute('COMMIT');
+      return result;
+    } catch (e) {
+      _rollback(e);
+      final failure = _failure;
+      if (failure != null) throw failure;
+      if (_isBusy(e)) throw const StorageBusyException();
+      rethrow;
+    }
+  }
+
+  void _begin(_TransactionMode mode) {
+    try {
+      _db.execute(mode == _TransactionMode.write ? 'BEGIN IMMEDIATE' : 'BEGIN');
+    } on SqliteException catch (e) {
+      if (_isBusy(e)) throw const StorageBusyException();
+      rethrow;
+    }
+  }
+
+  static bool _isBusy(Object error) => error is SqliteException &&
+      (error.resultCode == SqlError.SQLITE_BUSY ||
+          error.resultCode == SqlError.SQLITE_LOCKED);
+
+  static String _diagnosticCause(Object error) => error is SqliteException
+      ? 'SQLite ${error.extendedResultCode}'
+      : error.runtimeType.toString();
+
+  void _rollback(Object cause) {
+    final Object cleanupCause;
+    try {
+      // SQLite may already have rolled back after a trigger or storage error.
+      if (!_db.autocommit) _db.execute('ROLLBACK');
+      return;
+    } catch (e) {
+      cleanupCause = e;
+    }
+
+    // Never reuse a connection whose transaction state is uncertain.
+    _failure = StorageUnavailableException(cause: cause);
+    try {
+      // Log types/codes, not SQL, parameters, messages or ciphertext.
+      stderr.writeln('Transaction failed (${_diagnosticCause(cause)}); '
+          'cleanup failed (${_diagnosticCause(cleanupCause)}). $_failure');
+    } catch (_) {
+      // Diagnostics must not replace the original failure.
+    }
+
+    try {
+      _connection.dispose();
+    } catch (_) {
+      // Preserve the original write/commit failure, not a cleanup exception.
+    }
+  }
+
+  @override
+  Future<EncryptedRecord?> getRecord(String username, String id) async =>
+      _getRecord(username, id);
+
+  EncryptedRecord? _getRecord(String username, String id) {
     final rows = _db.select(
         'SELECT * FROM records WHERE username = ? AND id = ?', [username, id]);
     return rows.isEmpty ? null : _rowToRecord(rows.first);
   }
 
   @override
-  Future<void> putRecord(String username, EncryptedRecord record) async {
+  Future<void> putRecord(String username, EncryptedRecord record) async =>
+      _putRecord(username, record);
+
+  void _putRecord(String username, EncryptedRecord record) {
     _db.execute(
       '''INSERT INTO records (username, id, updated_at, device_id, deleted, seq, blob)
          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -142,15 +255,26 @@ class SqliteStorage implements Storage {
   }
 
   @override
-  Future<List<EncryptedRecord>> recordsSince(String username, int since) async {
+  Future<List<EncryptedRecord>> recordsSince(
+          String username, int since) async =>
+      _recordsSince(username, since);
+
+  List<EncryptedRecord> _recordsSince(String username, int since,
+      {int? through}) {
     final rows = _db.select(
-        'SELECT * FROM records WHERE username = ? AND seq > ? ORDER BY seq ASC',
-        [username, since]);
+        through == null
+            ? 'SELECT * FROM records WHERE username = ? AND seq > ? '
+                'ORDER BY seq ASC'
+            : 'SELECT * FROM records WHERE username = ? AND seq > ? '
+                'AND seq <= ? ORDER BY seq ASC',
+        [username, since, if (through != null) through]);
     return rows.map(_rowToRecord).toList();
   }
 
   @override
-  Future<int> nextSeq(String username) async {
+  Future<int> nextSeq(String username) async => _nextSeq(username);
+
+  int _nextSeq(String username) {
     _db.execute(
       '''INSERT INTO seqs (username, value) VALUES (?, 1)
          ON CONFLICT(username) DO UPDATE SET value = value + 1''',
@@ -162,7 +286,9 @@ class SqliteStorage implements Storage {
   }
 
   @override
-  Future<int> latestSeq(String username) async {
+  Future<int> latestSeq(String username) async => _latestSeq(username);
+
+  int _latestSeq(String username) {
     final rows =
         _db.select('SELECT value FROM seqs WHERE username = ?', [username]);
     return rows.isEmpty ? 0 : rows.first['value'] as int;
@@ -179,5 +305,5 @@ class SqliteStorage implements Storage {
             : Uint8List.fromList((r['blob'] as List).cast<int>()),
       );
 
-  void close() => _db.dispose();
+  void close() => _connection.dispose();
 }

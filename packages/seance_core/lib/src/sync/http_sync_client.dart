@@ -11,6 +11,8 @@ import 'sync_engine.dart';
 class HttpSyncClient implements SyncApi {
   final String baseUrl;
   final http.Client _client;
+  final bool _ownsClient;
+  bool _closed = false;
 
   /// Per-request timeout. Without one, a hung connection would leave
   /// `AppState.syncing` stuck true forever (spinner frozen, auto-sync wedged
@@ -26,7 +28,16 @@ class HttpSyncClient implements SyncApi {
     http.Client? client,
     this.timeout = const Duration(seconds: 30),
   })  : baseUrl = _normalizeBaseUrl(baseUrl),
-        _client = client ?? http.Client();
+        _client = client ?? http.Client(),
+        _ownsClient = client == null;
+
+  /// Release owned connections. Injected clients remain caller-owned.
+  /// Repeated calls are harmless; this wrapper cannot be reused afterwards.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    if (_ownsClient) _client.close();
+  }
 
   /// Paths are appended verbatim, so a pasted "https://host/" would produce
   /// "https://host//v1/..." and 404.
@@ -43,15 +54,59 @@ class HttpSyncClient implements SyncApi {
         if (token != null) 'authorization': 'Bearer $token',
       };
 
-  Uri _uri(String path, [Map<String, String>? query]) =>
-      Uri.parse('$baseUrl$path').replace(queryParameters: query);
+  Uri _uri(String path, [Map<String, String>? query]) {
+    if (_closed) throw StateError('Sync client is closed');
+    return Uri.parse('$baseUrl$path').replace(queryParameters: query);
+  }
 
   Never _fail(http.Response res) {
+    // The server's own errors are JSON with an `error` code. Anything else —
+    // an HTML error page, a CDN's plain-text body, a JSON scalar — came from
+    // whatever sits in front of the server (or from a URL that is not a
+    // Séance server), so describe the failure instead of echoing the body.
+    Object? decoded;
     try {
-      throw ApiError.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
-    } on FormatException {
-      throw ApiError(code: 'http_${res.statusCode}', message: res.body);
+      decoded = jsonDecode(res.body);
+    } catch (_) {
+      decoded = null;
     }
+    if (decoded is Map<String, dynamic> && decoded['error'] is String) {
+      throw ApiError.fromJson(decoded);
+    }
+    throw ApiError(
+      code: 'http_${res.statusCode}',
+      message: _describeHttpFailure(res.statusCode, res.body),
+    );
+  }
+
+  static String _describeHttpFailure(int status, String body) {
+    switch (status) {
+      case 502:
+        return 'The reverse proxy could not reach the sync server — it looks '
+            'stopped, crashed, or unreachable on its published port.';
+      case 503:
+        return 'The sync server is unavailable — it may be restarting or '
+            'overloaded.';
+      case 504:
+        return 'The reverse proxy timed out waiting for the sync server.';
+      default:
+        final snippet = _sanitizeBody(body);
+        return snippet.isEmpty
+            ? 'Unexpected response with an empty body.'
+            : 'Unexpected response: $snippet';
+    }
+  }
+
+  /// Strip markup and collapse whitespace so a proxy's HTML error page renders
+  /// as one short readable line in the app, not tag soup.
+  static String _sanitizeBody(String body) {
+    var text = body
+        .replaceAll(RegExp(r'<[^>]*>'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    const cap = 160;
+    if (text.length > cap) text = '${text.substring(0, cap)}…';
+    return text;
   }
 
   /// Create an account and receive a session token.

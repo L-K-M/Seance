@@ -12,9 +12,14 @@ services:
     image: seance-sync:latest
     restart: unless-stopped
     ports:
-      # Plain HTTP is intended to sit behind a local TLS reverse proxy. Bind the
-      # host port to loopback so compose does not expose it on every interface.
-      - "127.0.0.1:8787:8787"
+      # Plain HTTP is intended to sit behind a local TLS reverse proxy. By
+      # default the host port binds to loopback so compose does not expose it
+      # on every interface. If your reverse proxy runs in a container (Nginx
+      # Proxy Manager, Traefik, …), loopback is NOT reachable from it — set
+      # SEANCE_PUBLISH_ADDR in packages/seance_sync_server/.env (gitignored,
+      # survives updates; see .env.example): 172.17.0.1 publishes only on the
+      # Docker bridge gateway, 0.0.0.0 on every interface (firewall it).
+      - "${SEANCE_PUBLISH_ADDR:-127.0.0.1}:8787:8787"
     environment:
       SEANCE_BIND: "0.0.0.0"
       SEANCE_PORT: "8787"
@@ -25,7 +30,14 @@ services:
     volumes:
       - seance-data:/data
     healthcheck:
-      test: ["CMD", "/usr/local/bin/seance-sync", "--help"]
+      # A real liveness probe against /healthz (the slim image has no curl or
+      # wget; bash's /dev/tcp does the job — bash is an essential package in
+      # debian:*-slim, so it is always present; revisit this probe if the
+      # Dockerfile ever moves to alpine/distroless). Matching ' 200 ' on the
+      # status line only, so a body or date header can never false-positive.
+      # The old `seance-sync --help` check only proved the binary could
+      # execute, so a wedged server still showed "healthy".
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/8787 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
       interval: 30s
       timeout: 5s
       retries: 3

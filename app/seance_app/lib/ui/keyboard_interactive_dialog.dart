@@ -50,6 +50,19 @@ class _KeyboardInteractiveDialogState
     for (final _ in widget.prompts) TextEditingController(),
   ];
 
+  final Set<int> _revealed = {};
+
+  // Only the dialog's own route may be popped: a rapid second activation
+  // during the exit animation — or a callback from a dialog obscured by a
+  // newer route — would otherwise pop whatever sits below instead.
+  void _close(List<String> answers) {
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    Navigator.pop(context, answers);
+  }
+
+  void _submit() =>
+      _close([for (final controller in _controllers) controller.text]);
+
   @override
   void dispose() {
     for (final c in _controllers) {
@@ -61,6 +74,8 @@ class _KeyboardInteractiveDialogState
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      // Long challenges must remain reachable above the software keyboard.
+      scrollable: true,
       title: Text(widget.name.isEmpty ? 'Authentication' : widget.name),
       content: Column(
         mainAxisSize: MainAxisSize.min,
@@ -76,19 +91,35 @@ class _KeyboardInteractiveDialogState
               child: TextField(
                 controller: _controllers[i],
                 autofocus: i == 0,
-                decoration: InputDecoration(labelText: widget.prompts[i]),
+                keyboardType: TextInputType.visiblePassword,
+                // Echo metadata is absent; reveal only on explicit user request.
+                obscureText: !_revealed.contains(i),
+                autocorrect: false,
+                enableSuggestions: false,
+                enableIMEPersonalizedLearning: false,
+                decoration: InputDecoration(
+                  labelText: widget.prompts[i],
+                  suffixIcon: IconButton(
+                    tooltip: _revealed.contains(i) ? 'Hide answer' : 'Show answer',
+                    icon: Icon(_revealed.contains(i)
+                        ? Icons.visibility_off
+                        : Icons.visibility),
+                    onPressed: () => setState(() {
+                      if (!_revealed.remove(i)) _revealed.add(i);
+                    }),
+                  ),
+                ),
               ),
             ),
         ],
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, <String>[]),
+          onPressed: () => _close(const <String>[]),
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () =>
-              Navigator.pop(context, [for (final c in _controllers) c.text]),
+          onPressed: _submit,
           child: const Text('Submit'),
         ),
       ],
