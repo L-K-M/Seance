@@ -66,6 +66,10 @@ class LockedSecretVault extends SecretVault {
 class AppServices {
   final ConfigStore configStore;
   final SnippetStore snippetStore;
+  /// Durable record of deletions awaiting sync (see [TombstoneStore]). Without
+  /// it a deleted server returns on the next full pull, since the sync mirror
+  /// is rebuilt each round.
+  final TombstoneStore tombstoneStore;
   // Mutable so sync enrolment can re-key the vault to the shared encryption key.
   SecretVault vault;
   final HostKeyStore hostKeyStore;
@@ -109,6 +113,7 @@ class AppServices {
   AppServices._({
     required this.configStore,
     required this.snippetStore,
+    required this.tombstoneStore,
     required this.vault,
     required this.hostKeyStore,
     required this.tofu,
@@ -138,6 +143,7 @@ class AppServices {
 
     final configStore = FileConfigStore(File(p('servers.json')));
     final snippetStore = FileSnippetStore(File(p('snippets.json')));
+    final tombstoneStore = FileTombstoneStore(File(p('deleted_records.json')));
     final vaultStore = FileVaultStore(File(p('vault.json')));
     final hostKeyStore = FileHostKeyStore(File(p('known_hosts.json')));
     final settingsStore = SettingsStore(File(p('settings.json')));
@@ -163,6 +169,7 @@ class AppServices {
     return AppServices._(
       configStore: configStore,
       snippetStore: snippetStore,
+      tombstoneStore: tombstoneStore,
       vault: vaultKey == null
           ? LockedSecretVault(vaultStore)
           : SecretVault(vaultStore, vaultKey),
@@ -389,6 +396,7 @@ class AppServices {
       deviceId: settings.deviceId,
       syncSecrets: settings.syncSecrets,
       secretVault: settings.syncSecrets ? vault : null,
+      tombstoneStore: tombstoneStore,
     );
     try {
       return await _withSyncClient(baseUrl, (client) {

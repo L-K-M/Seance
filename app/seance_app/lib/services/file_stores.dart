@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -123,6 +124,88 @@ class FileSnippetStore implements SnippetStore {
   Future<void> deleteSnippet(String id) async {
     await _load();
     _cache.remove(id);
+    await _flush();
+  }
+}
+
+/// JSON-file [TombstoneStore]: the deletions this device still owes the sync
+/// server. Each entry is an [EncryptedRecord] tombstone (empty blob, no vault
+/// key needed to mint), persisted so a delete survives an app restart before
+/// the next sync pushes it. `SyncCoordinator` prunes an entry once the server
+/// has taken it, so the file stays small.
+///
+/// Unlike the sealed record blobs, entries here are plaintext (record id,
+/// deletion timestamp, deviceId) — the same class of metadata `servers.json`
+/// already stores in the clear, and it also travels to the sync server as the
+/// tombstone record. Server and snippet ids are random `uuidV4`s, so an id
+/// reveals only that *something* was deleted and when, not what.
+class FileTombstoneStore implements TombstoneStore {
+  final File file;
+  final Map<String, EncryptedRecord> _cache = {};
+  bool _loaded = false;
+
+  FileTombstoneStore(this.file);
+
+  Future<void> _load() async {
+    if (_loaded) return;
+    if (await file.exists()) {
+      try {
+        final list = jsonDecode(await file.readAsString()) as List;
+        for (final j in list) {
+          final r = EncryptedRecord.fromJson((j as Map).cast<String, dynamic>());
+          _cache[r.id] = r;
+        }
+      } catch (error, stackTrace) {
+        // Unlike a corrupt config/snippet file (re-fetched on the next pull),
+        // losing pending deletions silently means deleted items reappear with
+        // nothing in the logs to say why — so this one failure gets a warning
+        // before it is quarantined and the pending deletes are dropped.
+        developer.log(
+          'Could not read ${file.path}; pending deletion tombstones were '
+          'dropped and deleted items may reappear on the next sync',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+        _cache.clear();
+        await quarantineCorruptFile(file);
+      }
+    }
+    _loaded = true;
+  }
+
+  Future<void> _flush() async {
+    await writeStringAtomically(
+        file, jsonEncode(_cache.values.map((r) => r.toJson()).toList()));
+  }
+
+  @override
+  Future<List<EncryptedRecord>> all() async {
+    await _load();
+    return _cache.values.toList();
+  }
+
+  @override
+  Future<void> add(EncryptedRecord tombstone) async {
+    await _load();
+    final existing = _cache[tombstone.id];
+    // Monotonic (see [TombstoneStore]): a retry or double-delete after the row
+    // is gone recomputes a bare-"now" stamp that can trail a pending
+    // skew-beating tombstone; keeping the higher stamp stops a regression that
+    // would lose last-write-wins and resurrect the row.
+    if (existing != null && existing.updatedAt > tombstone.updatedAt) return;
+    _cache[tombstone.id] = tombstone;
+    await _flush();
+  }
+
+  @override
+  Future<void> remove(String id) async {
+    await _load();
+    // Skip the rewrite when nothing was pending: saveServer/saveSnippet call
+    // remove() on every save, so without this a delete-free install would
+    // create and rewrite the file on each save.
+    if (_cache.remove(id) == null) return;
     await _flush();
   }
 }

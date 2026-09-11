@@ -20,6 +20,27 @@ abstract class SnippetStore {
   Future<void> deleteSnippet(String id);
 }
 
+/// Durable list of deletion tombstones awaiting propagation to the sync server.
+///
+/// [SyncCoordinator] rebuilds its record mirror from a full pull each round, so
+/// a deleted domain object leaves nothing for the next round to notice — its
+/// still-live record simply returns from the server and is re-adopted, which is
+/// the "deleted servers reappear" bug. An entry recorded here (an
+/// [EncryptedRecord] with `deleted: true` and an empty blob) is republished as a
+/// dirty record each round so the delete is pushed and last-write-wins carries
+/// it to every device, then dropped once the server holds it. Keyed by record
+/// id.
+///
+/// [add] is monotonic: re-adding an id keeps whichever tombstone has the higher
+/// `updatedAt`, so a retry or double-delete that recomputes an older stamp
+/// (the doomed row is already gone, so its date can no longer be read) cannot
+/// regress a pending skew-beating tombstone into one the live record outranks.
+abstract class TombstoneStore {
+  Future<List<EncryptedRecord>> all();
+  Future<void> add(EncryptedRecord tombstone);
+  Future<void> remove(String id);
+}
+
 /// Holds the assistant's configuration as a single synced value.
 ///
 /// Read/write rather than list/delete: there is exactly one of these, and the
@@ -213,4 +234,21 @@ class InMemoryHostKeyStore implements HostKeyStore {
 
   @override
   Future<void> put(HostKey key) async => _keys[key.locator] = key;
+}
+
+class InMemoryTombstoneStore implements TombstoneStore {
+  final Map<String, EncryptedRecord> _tombstones = {};
+
+  @override
+  Future<List<EncryptedRecord>> all() async => _tombstones.values.toList();
+
+  @override
+  Future<void> add(EncryptedRecord tombstone) async {
+    final existing = _tombstones[tombstone.id];
+    if (existing != null && existing.updatedAt > tombstone.updatedAt) return;
+    _tombstones[tombstone.id] = tombstone;
+  }
+
+  @override
+  Future<void> remove(String id) async => _tombstones.remove(id);
 }

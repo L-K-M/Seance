@@ -556,6 +556,23 @@ class AppState extends ChangeNotifier {
   }) async {
     if (secret != null) await services.vault.putSecret(secret);
     await services.configStore.putServer(config);
+    // Re-saving an id (re-creating one deleted while offline, or an import
+    // restoring it) cancels any pending deletion for it, so a stale tombstone
+    // cannot shadow the live record collectLocal is about to publish. Fail-soft:
+    // the collectLocal shadow guard already blocks the destructive case, so a
+    // failed clear leaves only an inert entry, never a wrong delete.
+    try {
+      await services.tombstoneStore.remove(config.id);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Could not clear a pending deletion tombstone for saved server '
+        '${config.id}',
+        name: 'seance.app',
+        level: 900,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
     final bookmarks = services.settings.identityFileBookmarks;
     if (identityFileBookmark != null) {
       if (bookmarks[config.id] != identityFileBookmark) {
@@ -722,6 +739,23 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
+  /// The `snippet:` record-id prefix, shared by the delete and save paths so
+  /// the tombstone id always matches what `collectLocal` publishes.
+  static const String _snippetRecordPrefix = 'snippet:';
+
+  /// A deletion stamp that beats every version of the record this device has
+  /// seen — max(now, prior + 1) — so a same-ms tie or a clock behind a peer's
+  /// last edit cannot let the live copy win last-write-wins, while a peer's
+  /// genuinely newer edit still does. [priorUpdatedAt] is the doomed row's
+  /// stamp, or null when the row is already gone (a retry or double-delete),
+  /// where "now" is the honest floor.
+  int _deletionStamp(int? priorUpdatedAt) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return (priorUpdatedAt != null && priorUpdatedAt >= now)
+        ? priorUpdatedAt + 1
+        : now;
+  }
+
   Future<void> deleteServer(String id) async {
     // Outside the queue: tearing sessions down touches no store, and holding
     // the queue across a session teardown would stall every other mutation
@@ -729,7 +763,35 @@ class AppState extends ChangeNotifier {
     await closeAllTabsForServer(id);
     await _mutate(() async {
       final server = await services.configStore.getServer(id);
-      // The config goes first, and the credential after it — the order
+      // Record the deletion durably BEFORE dropping the row: a crash between
+      // the two writes must not leave the row gone with no tombstone, or the
+      // next full pull re-adopts it (issue #54). Stamp it to beat the record it
+      // deletes — a bare "now" that ties with, or under clock skew trails, the
+      // live copy on the sync server would lose last-write-wins and resurrect
+      // the row — so use max(now, prior + 1): past every version this device
+      // has seen, still losing to a peer's genuinely newer edit. No vault key
+      // is needed (a tombstone's blob is empty), so a locked keyring never
+      // blocks it. Fail-soft: a failed write is logged, and collectLocal skips
+      // a tombstone whose row still exists, so the delete is retried rather
+      // than wedging the UI on a server the store no longer has.
+      final deletedAt = _deletionStamp(server?.updatedAt);
+      try {
+        await services.tombstoneStore.add(EncryptedRecord.tombstone(
+          id: id,
+          updatedAt: deletedAt,
+          deviceId: services.settings.deviceId,
+        ));
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not record the deletion tombstone for server $id; it may '
+          'reappear on the next sync until it is deleted again',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      // The config row next, and the credential after it — the order
       // `SyncCoordinator` states for the same pair. Dropping the vault entry
       // first meant a throw from either write below left the server row on
       // disk naming a credential that was already gone: a dangling reference
@@ -1084,15 +1146,59 @@ class AppState extends ChangeNotifier {
 
   /// Save (create or update) a snippet, then refresh the list.
   Future<void> saveSnippet(Snippet snippet) async {
-    await services.snippetStore.putSnippet(snippet);
-    snippets = await services.snippetStore.listSnippets();
+    await _mutate(() async {
+      await services.snippetStore.putSnippet(snippet);
+      // See _saveServerNow: re-saving an id cancels its pending deletion so a
+      // stale tombstone cannot shadow the live record. Serialized through the
+      // same queue as deleteSnippet so a save and a delete of one id cannot
+      // interleave into "row gone, tombstone gone".
+      try {
+        await services.tombstoneStore
+            .remove('$_snippetRecordPrefix${snippet.id}');
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not clear a pending deletion tombstone for saved snippet '
+          '${snippet.id}',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      snippets = await services.snippetStore.listSnippets();
+    });
     notifyListeners();
     _scheduleAutoSync();
   }
 
   Future<void> deleteSnippet(String id) async {
-    await services.snippetStore.deleteSnippet(id);
-    snippets = await services.snippetStore.listSnippets();
+    await _mutate(() async {
+      // Record the tombstone before dropping the row (see deleteServer),
+      // stamped to beat the record it deletes. A `snippet:` tombstone now
+      // propagates across devices too: applyToStores honours it, because a
+      // snippet is non-secret — unlike the `secret:`/`hostkey:` tombstones it
+      // still refuses. Serialized through the same queue as saveSnippet so the
+      // two cannot interleave into "row gone, tombstone gone".
+      final existing = await services.snippetStore.getSnippet(id);
+      final deletedAt = _deletionStamp(existing?.updatedAt);
+      try {
+        await services.tombstoneStore.add(EncryptedRecord.tombstone(
+          id: '$_snippetRecordPrefix$id',
+          updatedAt: deletedAt,
+          deviceId: services.settings.deviceId,
+        ));
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not record the deletion tombstone for snippet $id',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      await services.snippetStore.deleteSnippet(id);
+      snippets = await services.snippetStore.listSnippets();
+    });
     notifyListeners();
     _scheduleAutoSync();
   }

@@ -11,6 +11,7 @@ import 'sync_engine.dart';
 const int _warningLogLevel = 900;
 const String _recordKindDelimiter = ':';
 const String _secretIdPrefix = 'secret$_recordKindDelimiter';
+const String _snippetIdPrefix = 'snippet$_recordKindDelimiter';
 const String _syncLoggerName = 'seance.sync';
 
 /// Bridges the app's domain objects (server configs, pinned host keys, and —
@@ -65,6 +66,14 @@ class SyncCoordinator {
   final bool syncSecrets;
   final SecretVault? secretVault;
 
+  /// Durable record of servers (and other kinds) the user has deleted, awaiting
+  /// propagation. Optional so the pure-Dart tests and any embedding without a
+  /// deletion path can omit it; when present, [collectLocal] republishes each
+  /// pending tombstone so the engine pushes it, and [run] prunes it once the
+  /// sync server has taken it. Null means deletions are not propagated — the
+  /// pre-existing behaviour, which the app no longer relies on.
+  final TombstoneStore? tombstoneStore;
+
   SyncCoordinator({
     required this.configStore,
     required this.hostKeyStore,
@@ -75,6 +84,7 @@ class SyncCoordinator {
     this.assistantStore,
     this.syncSecrets = false,
     this.secretVault,
+    this.tombstoneStore,
   });
 
   /// Encode current local state into the record store (as local edits).
@@ -98,6 +108,19 @@ class SyncCoordinator {
         syncedSecretRefs.add(s.secretRef!);
       }
     }
+
+    // Record ids of domain objects that still exist this round. A pending
+    // tombstone whose id is still present was re-created (import/migration) or
+    // never actually removed, so it is not republished — see the tombstone
+    // loop. Read from the stores, not the sync mirror: the mirror is rebuilt
+    // per round, and a persistent one (the documented future store) would hold
+    // a live copy of a just-deleted record that must not suppress its
+    // tombstone. Fetched once and reused for the snippet publishing loop.
+    final snippetList = await snippetStore?.listSnippets() ?? const <Snippet>[];
+    final presentIds = <String>{
+      for (final s in servers) s.id,
+      for (final s in snippetList) '$_snippetIdPrefix${s.id}',
+    };
 
     for (final server in servers) {
       if (server.excludeFromSync) {
@@ -123,6 +146,25 @@ class SyncCoordinator {
           )));
         }
       }
+    }
+    // Deletions the user made are remembered in [tombstoneStore], not in
+    // configStore — the row is gone. Republish each as a dirty tombstone so the
+    // engine pushes it and last-write-wins carries the delete to the server and
+    // every other device, instead of the deleted record returning on the next
+    // full pull and being re-adopted by [applyToStores]. Pruned in [run] once
+    // the server has the tombstone. A config tombstone is honoured on apply
+    // regardless of the payload it replaces (routed by its bare id), so the
+    // deletion converges even for a kind a peer cannot yet decode.
+    for (final tombstone
+        in await tombstoneStore?.all() ?? const <EncryptedRecord>[]) {
+      // Skip a tombstone whose id still names a live domain object this round:
+      // an id re-created (import or migration) while its delete was pending, or
+      // one whose row-drop was interrupted. Publishing it would push a delete
+      // for something that exists. Checked against [presentIds] (the stores),
+      // not the mirror, so it holds however the mirror is backed; the app also
+      // clears a pending tombstone when its id is re-saved.
+      if (presentIds.contains(tombstone.id)) continue;
+      await local.putLocal(tombstone);
     }
     for (final hk in await hostKeyStore.all()) {
       if (excludedLocators.contains(hk.locator) &&
@@ -192,17 +234,14 @@ class SyncCoordinator {
         data: assistant.toJson(),
       )));
     }
-    final snippets = snippetStore;
-    if (snippets != null) {
-      for (final s in await snippets.listSnippets()) {
-        await local.putLocal(await codec.encrypt(DecryptedRecord(
-          id: 'snippet:${s.id}',
-          kind: RecordKind.snippet,
-          updatedAt: s.updatedAt,
-          deviceId: deviceId,
-          data: s.toJson(),
-        )));
-      }
+    for (final s in snippetList) {
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: '$_snippetIdPrefix${s.id}',
+        kind: RecordKind.snippet,
+        updatedAt: s.updatedAt,
+        deviceId: deviceId,
+        data: s.toJson(),
+      )));
     }
   }
 
@@ -283,6 +322,35 @@ class SyncCoordinator {
     )));
   }
 
+  /// Drop pending tombstones that are done, so [tombstoneStore] stays bounded.
+  ///
+  /// [collectLocal] republishes every entry each round (unless its id is a
+  /// live record again — see [presentIds]). An entry is done in two cases, both
+  /// judged from the sequenced record the mirror holds after the round:
+  ///
+  ///  * a sequenced tombstone — this round's push was accepted, or a pull
+  ///    carried the server's own copy back: the delete has propagated.
+  ///  * a sequenced live record strictly newer than the tombstone — a peer's
+  ///    later edit won last-write-wins (or the id was re-created), so the
+  ///    tombstone can never win and [collectLocal] already skips it; retrying
+  ///    it forever would only leak store entries.
+  ///
+  /// Everything else stays: an unconfirmed entry (a round that pushed nothing —
+  /// offline), or a live record the tombstone still outranks (an interrupted
+  /// row-drop, where the delete may yet win). Dropping either would strand a
+  /// deletion while the record resurrects.
+  Future<void> _pruneConfirmedTombstones() async {
+    final store = tombstoneStore;
+    if (store == null) return;
+    for (final pending in await store.all()) {
+      final mirrored = await local.getRecord(pending.id);
+      if (mirrored == null || mirrored.seq == null) continue;
+      if (mirrored.deleted || mirrored.updatedAt > pending.updatedAt) {
+        await store.remove(pending.id);
+      }
+    }
+  }
+
   /// Write every record in the local store back into the domain stores,
   /// honouring tombstones. Returns the number of records that had to be
   /// re-dated — retractions the server outranked (see [rescheduleOutranked])
@@ -339,18 +407,23 @@ class SyncCoordinator {
 
         // Tombstones have no encrypted kind, so the id prefix is what routes
         // them. Bare ids are the legacy server-deletion form and still delete.
-        // Every prefixed kind — `secret:`, `hostkey:` — is deliberately a
-        // no-op: `RecordCodec.decrypt` returns a deleted record straight from
-        // the envelope's flag without opening anything, so a tombstone is the
-        // one signal a sync server can assert entirely on its own. Honouring
-        // those would hand it a primitive for emptying the vault (tombstone
-        // the configs first, then the credentials no config still names) and
-        // for stripping this device's TOFU pins. Configs already carried that
+        // A `snippet:` tombstone is applied like a config below (a snippet is
+        // non-secret settings, the same risk class as a config). The other
+        // prefixed kinds — `secret:`, `hostkey:` — are deliberately a no-op:
+        // `RecordCodec.decrypt` returns a deleted record straight from the
+        // envelope's flag without opening anything, so a tombstone is the one
+        // signal a sync server can assert entirely on its own. Honouring those
+        // would hand it a primitive for emptying the vault (tombstone the
+        // configs first, then the credentials no config still names) and for
+        // stripping this device's TOFU pins. Configs already carried that
         // exposure before any of this; a credential vault and a set of host
         // key pins are not where to widen it. The fix is sealing tombstones —
         // an authenticator over id, kind and date, keyed like the payload —
         // not a per-apply special case, so the records stay staged for a
-        // build that can check them.
+        // build that can check them. Sealing must cover `snippet:` tombstones
+        // too: they are applied on arrival like configs, so an unsealed one
+        // lets a sync server delete a snippet on every device (a lost snippet,
+        // the same bounded cost configs already accept).
         if (dec.deleted) {
           // Routed on the delimiter alone because a config id never carries
           // one: every config is minted with `uuidV4()` (the editor's draft
@@ -382,6 +455,20 @@ class SyncCoordinator {
               continue;
             }
             await configStore.deleteServer(dec.id);
+            continue;
+          }
+          // A `snippet:` tombstone IS applied, unlike `secret:`/`hostkey:`: a
+          // snippet is non-secret settings, the same risk class as a config an
+          // unsealed tombstone can already delete on a sync server's say-so, so
+          // honouring it costs at most a lost snippet, never vault or trust
+          // material. The refused kinds stay staged for a sealed-tombstone
+          // build (they simply fall through this branch to the `continue`).
+          final snippets = snippetStore;
+          if (snippets != null &&
+              dec.id.length > _snippetIdPrefix.length &&
+              dec.id.startsWith(_snippetIdPrefix)) {
+            await snippets
+                .deleteSnippet(dec.id.substring(_snippetIdPrefix.length));
           }
           continue;
         }
@@ -761,9 +848,13 @@ class SyncCoordinator {
     // applied — which would double every round's traffic on the hot path,
     // hidden inside the summed outcome.
     final redated = await applyToStores();
-    if (redated == 0) return first;
+    if (redated == 0) {
+      await _pruneConfirmedTombstones();
+      return first;
+    }
     final second = await engine.sync(api);
     await applyToStores();
+    await _pruneConfirmedTombstones();
     return SyncOutcome(
       pulled: first.pulled + second.pulled,
       pushed: first.pushed + second.pushed,

@@ -93,6 +93,18 @@ class EncryptedRecord {
     required this.blob,
   });
 
+  /// A tombstone: the deletion of [id], carrying no payload. Identity and date
+  /// are all a delete needs — [RecordCodec] leaves the empty [blob] unsealed, so
+  /// no vault key is required to mint one — and [seq] stays null until the
+  /// server assigns one on push.
+  EncryptedRecord.tombstone({
+    required this.id,
+    required this.updatedAt,
+    required this.deviceId,
+  })  : deleted = true,
+        seq = null,
+        blob = Uint8List(0);
+
   EncryptedRecord withSeq(int newSeq) => EncryptedRecord(
         id: id,
         updatedAt: updatedAt,

@@ -1572,6 +1572,245 @@ void main() {
     });
   });
 
+  group('deleting a server propagates instead of reappearing', () {
+    // Regression for "I can't delete servers; they immediately reappear"
+    // (issue #54). The app rebuilds its record mirror from a full pull each
+    // round, so a deleted server used to return from the server and be
+    // re-adopted. The fix records the deletion in a durable [TombstoneStore]
+    // that the coordinator republishes as a tombstone until the server has it.
+    //
+    // Each round gets a *fresh* mirror, as `AppServices.runSync` does; the
+    // config store and the tombstone store persist across rounds, as the app's
+    // files do. Deleting is modelled the way the app performs it: drop the
+    // config row and record a tombstone.
+    SyncCoordinator coord(
+      String deviceId,
+      ConfigStore configStore,
+      TombstoneStore tombstones,
+      RecordCodec codec,
+    ) => SyncCoordinator(
+          configStore: configStore,
+          hostKeyStore: InMemoryHostKeyStore(),
+          codec: codec,
+          local: InMemoryLocalRecordStore(),
+          deviceId: deviceId,
+          tombstoneStore: tombstones,
+        );
+
+    EncryptedRecord tombstoneFor(String id, String deviceId, int at) =>
+        EncryptedRecord.tombstone(id: id, updatedAt: at, deviceId: deviceId);
+
+    test('a deleted server is not re-adopted from the server', () async {
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 10));
+      await coord('A', cfg, tombstones, codec).run(api);
+      expect(api.stored('s1')!.deleted, isFalse,
+          reason: 'the server was pushed live');
+
+      await cfg.deleteServer('s1');
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      expect(await cfg.getServer('s1'), isNull,
+          reason: 'the still-live server record must not be re-adopted');
+      expect(api.stored('s1')!.deleted, isTrue,
+          reason: 'the delete reached the server as a tombstone');
+      expect(api.stored('s1')!.blob, isEmpty,
+          reason: 'a tombstone leaks no payload');
+      expect(await tombstones.all(), isEmpty,
+          reason: 'a tombstone the server has taken is pruned');
+    });
+
+    test('the deletion converges to a second device', () async {
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32)); // shared vault
+      final cfgA = InMemoryConfigStore();
+      final tsA = InMemoryTombstoneStore();
+      final cfgB = InMemoryConfigStore();
+      final tsB = InMemoryTombstoneStore();
+
+      await cfgA.putServer(server('s1', 'alpha', 10));
+      await coord('A', cfgA, tsA, codec).run(api);
+      // B has to hold the server before it can be asked to lose it.
+      await coord('B', cfgB, tsB, codec).run(api);
+      expect(await cfgB.getServer('s1'), isNotNull);
+
+      await cfgA.deleteServer('s1');
+      await tsA.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfgA, tsA, codec).run(api);
+      await coord('B', cfgB, tsB, codec).run(api);
+
+      expect(await cfgB.getServer('s1'), isNull,
+          reason: 'B honours the tombstone A pushed');
+    });
+
+    test('a settled deletion pushes nothing on later rounds', () async {
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 10));
+      await coord('A', cfg, tombstones, codec).run(api);
+      await cfg.deleteServer('s1');
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+      expect(await tombstones.all(), isEmpty);
+
+      final settledSeq = api.latestSeq;
+      await coord('A', cfg, tombstones, codec).run(api);
+      expect(api.latestSeq, settledSeq,
+          reason: 'a pruned tombstone is not re-pushed every round');
+      expect(await cfg.getServer('s1'), isNull,
+          reason: 'the server still holds the tombstone, so it stays gone');
+    });
+
+    test('deleting one server leaves the others untouched', () async {
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 10));
+      await cfg.putServer(server('s2', 'beta', 10));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      await cfg.deleteServer('s1');
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      expect(await cfg.getServer('s1'), isNull);
+      expect(await cfg.getServer('s2'), isNotNull,
+          reason: 'only the deleted server goes');
+      expect(api.stored('s2')!.deleted, isFalse);
+    });
+
+    test('an interrupted row-drop keeps its tombstone pending', () async {
+      // The prune must not drop a tombstone the delete has not yet won. A
+      // tombstone recorded at a later stamp than a row that still exists (an
+      // interrupted row-drop) has a mirrored live record that is sequenced but
+      // *older*, so the tombstone can still win and is retained, not pruned.
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 10));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      expect(await cfg.getServer('s1'), isNotNull,
+          reason: 'the still-live row is untouched');
+      expect(await tombstones.all(), hasLength(1),
+          reason: 'a tombstone an older sequenced live record cannot supersede '
+              'is retained for retry, not pruned');
+    });
+
+    test('a tombstone a newer peer edit supersedes is pruned', () async {
+      // A peer's later edit wins last-write-wins, so the delete lost and the
+      // record converges back locally. The tombstone can never beat that newer
+      // record, and collectLocal skips it while the row exists, so it is pruned
+      // rather than left to leak — distinct from an unconfirmed (offline) entry,
+      // which is retained and retried.
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 10));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      // A peer edits the same server later than this device's delete stamp.
+      final peerEdit = await codec.encrypt(DecryptedRecord(
+        id: 's1',
+        kind: RecordKind.serverConfig,
+        updatedAt: 99,
+        deviceId: 'B',
+        data: server('s1', 'alpha-renamed', 99).toJson(),
+      ));
+      await api.push([peerEdit]);
+
+      await cfg.deleteServer('s1');
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      expect(await cfg.getServer('s1'), isNotNull,
+          reason: 'the newer peer edit converges back onto this device');
+      expect(api.stored('s1')!.deleted, isFalse,
+          reason: 'the peer edit outranks the delete (LWW), as it should');
+      expect(await tombstones.all(), isEmpty,
+          reason: 'a tombstone a strictly-newer live record superseded can '
+              'never win, so it is pruned rather than retried forever');
+    });
+
+    test('a pending tombstone never shadows a re-created live record', () async {
+      // An id deleted while offline (tombstone still pending) then re-created
+      // with the same id: collectLocal must publish the live record and skip
+      // the tombstone, so the delete is not pushed for a row that exists.
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+      final cfg = InMemoryConfigStore();
+      final tombstones = InMemoryTombstoneStore();
+
+      await cfg.putServer(server('s1', 'alpha', 30));
+      await tombstones.add(tombstoneFor('s1', 'A', 20));
+      await coord('A', cfg, tombstones, codec).run(api);
+
+      expect(api.stored('s1'), isNotNull);
+      expect(api.stored('s1')!.deleted, isFalse,
+          reason: 'the live re-created record wins, not the shadowed tombstone');
+      expect(await cfg.getServer('s1'), isNotNull);
+      expect(await tombstones.all(), isEmpty,
+          reason: 'the shadowed tombstone is superseded by the newer live '
+              'record and pruned (the app also clears it on re-save)');
+    });
+
+    test('a snippet deletion converges to a second device', () async {
+      final api = FakeServer();
+      final codec = RecordCodec(secureRandomBytes(32));
+
+      SyncCoordinator coordS(
+        String deviceId,
+        SnippetStore snippets,
+        TombstoneStore tombstones,
+      ) => SyncCoordinator(
+            configStore: InMemoryConfigStore(),
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: InMemoryLocalRecordStore(),
+            deviceId: deviceId,
+            snippetStore: snippets,
+            tombstoneStore: tombstones,
+          );
+
+      final snipA = InMemorySnippetStore();
+      final tsA = InMemoryTombstoneStore();
+      final snipB = InMemorySnippetStore();
+      final tsB = InMemoryTombstoneStore();
+
+      await snipA.putSnippet(const Snippet(
+          id: 'x', title: 't', body: 'ls', createdAt: 1, updatedAt: 10));
+      await coordS('A', snipA, tsA).run(api);
+      await coordS('B', snipB, tsB).run(api);
+      expect(await snipB.getSnippet('x'), isNotNull);
+
+      await snipA.deleteSnippet('x');
+      await tsA.add(tombstoneFor('snippet:x', 'A', 20));
+      await coordS('A', snipA, tsA).run(api);
+      await coordS('B', snipB, tsB).run(api);
+
+      expect(await snipB.getSnippet('x'), isNull,
+          reason: 'a snippet tombstone is honoured on the peer, unlike '
+              'secret:/hostkey:');
+    });
+  });
+
   group('assistant settings', () {
     AssistantSettings assistant({
       String model = 'claude-haiku-4-5-20251001',
