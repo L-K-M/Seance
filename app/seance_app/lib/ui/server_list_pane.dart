@@ -33,11 +33,11 @@ class ServerListPane extends StatefulWidget {
 
 class _ServerListPaneState extends State<ServerListPane> {
   /// Bottom padding that lets the last row scroll clear of the floating
-  /// Add-server button: 48 (extended button height) + 16 (endFloat margin)
-  /// + 16 (gap) so the row's trailing menu is never tapped through to the
-  /// button. The geometry assertion in server_list_pane_test.dart fails if
-  /// a button change ever erodes the gap.
-  static const double _fabScrollClearance = 80;
+  /// Add-server button, so the row's trailing menu is never tapped through
+  /// to the button: 48 (extended button height) + 16 (endFloat margin)
+  /// + 16 (gap). The geometry assertion in server_list_pane_test.dart
+  /// fails if a button change ever erodes the gap.
+  static const double _fabScrollClearance = 48 + 16 + 16;
 
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
@@ -224,13 +224,13 @@ class _ServerListPaneState extends State<ServerListPane> {
     // Rebuild exactly that base, extended by the clearance for the floating
     // Add-server button, so an explicit EdgeInsets neither drops the bottom
     // inset nor adds side insets the default never had.
-    final viewInsets = MediaQuery.paddingOf(context);
+    final safeAreaInsets = MediaQuery.paddingOf(context);
     return ListView.separated(
       itemCount: rows.length,
-      padding: viewInsets.copyWith(
+      padding: safeAreaInsets.copyWith(
         left: 0,
         right: 0,
-        bottom: viewInsets.bottom + _fabScrollClearance,
+        bottom: safeAreaInsets.bottom + _fabScrollClearance,
       ),
       // Rules belong between servers, not under a section header — the
       // header's own fill already separates it from what follows.
