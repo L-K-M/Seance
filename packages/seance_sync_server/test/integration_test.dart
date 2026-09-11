@@ -14,8 +14,8 @@ void main() {
   /// push limits are per-test, so a test can shrink them instead of having to
   /// build a payload that exceeds the shipped 8 MiB / 1000-record defaults.
   Future<String> startServer({
-    int maxBodyBytes = 8 * 1024 * 1024,
-    int maxRecordsPerPush = 1000,
+    int maxBodyBytes = kDefaultMaxPushBodyBytes,
+    int maxRecordsPerPush = kDefaultMaxRecordsPerPush,
   }) async {
     final server = SyncServer(
       storage: InMemoryStorage(),

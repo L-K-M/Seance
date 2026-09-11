@@ -73,6 +73,41 @@ void main() {
     settings: ServerSettings(openRegistration: openRegistration),
   );
 
+  group('settings from the environment', () {
+    test('a non-positive push limit refuses to start', () {
+      for (final key in const [
+        'SEANCE_MAX_BODY_BYTES',
+        'SEANCE_MAX_RECORDS_PER_PUSH',
+        'SEANCE_MAX_BLOB_BYTES',
+      ]) {
+        for (final value in const ['0', '-1']) {
+          // Silently advertising a cap no push can satisfy would surface as
+          // every sync failing with an opaque 413.
+          expect(() => ServerSettings.fromEnvironment({key: value}),
+              throwsA(isA<ArgumentError>()),
+              reason: '$key=$value');
+        }
+      }
+    });
+
+    test('unset or unparseable limits keep the shipped defaults', () {
+      for (final env in const [<String, String>{}, {'SEANCE_MAX_BODY_BYTES': 'lots'}]) {
+        final settings = ServerSettings.fromEnvironment(env);
+        expect(settings.pushLimits, const PushLimits());
+        expect(settings.maxBlobBytes, 1024 * 1024);
+      }
+    });
+
+    test('valid overrides are parsed and advertised', () {
+      final settings = ServerSettings.fromEnvironment(const {
+        'SEANCE_MAX_BODY_BYTES': '4096',
+        'SEANCE_MAX_RECORDS_PER_PUSH': '7',
+      });
+      expect(settings.pushLimits,
+          const PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 7));
+    });
+  });
+
   group('health + registration', () {
     test('healthz is 200', () async {
       final c = TestClient(makeServer().handler);

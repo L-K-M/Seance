@@ -135,6 +135,22 @@ class PushLimits {
             kDefaultMaxRecordsPerPush,
       );
 
+  /// Decode an advertisement that may be anything at all, or null when it is
+  /// not one. Absent fields fall back to the shipped defaults, but a field of
+  /// the wrong type means the whole advertisement cannot be trusted.
+  ///
+  /// Lives here, beside the fields, so a caller does not have to restate their
+  /// names and types to validate them — and so adding a limit cannot leave a
+  /// caller's hand-rolled guard behind.
+  static PushLimits? tryFromJson(Object? value) {
+    if (value is! Map) return null;
+    for (final key in const ['maxBodyBytes', 'maxRecordsPerPush']) {
+      final field = value[key];
+      if (field != null && field is! num) return null;
+    }
+    return PushLimits.fromJson(value.cast<String, dynamic>());
+  }
+
   @override
   bool operator ==(Object other) =>
       other is PushLimits &&
@@ -181,13 +197,11 @@ class PullResponse {
             .map((e) => EncryptedRecord.fromJson((e as Map).cast()))
             .toList(),
         latestSeq: (json['latestSeq'] as num).toInt(),
-        // Anything that is not an object counts as "not advertised": the
-        // field is advisory and has a documented fallback, so a mangled value
-        // must not take the records and watermark down with it. The required
-        // fields above stay strict on purpose.
-        limits: json['limits'] is Map
-            ? PushLimits.fromJson((json['limits'] as Map).cast())
-            : null,
+        // Anything that is not a well-formed advertisement counts as "not
+        // advertised": the field is advisory and has a documented fallback, so
+        // a mangled value must not take the records and watermark down with
+        // it. The required fields above stay strict on purpose.
+        limits: PushLimits.tryFromJson(json['limits']),
       );
 }
 

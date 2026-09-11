@@ -141,6 +141,16 @@ void main() {
       expect(PushLimits.fromJson(limits.toJson()), limits);
     });
 
+    test('an advertisement missing a field keeps the default for it', () {
+      final decoded = PullResponse.fromJson({
+        'records': <Object>[],
+        'latestSeq': 1,
+        'limits': {'maxBodyBytes': 4096},
+      });
+      expect(decoded.limits,
+          const PushLimits(maxBodyBytes: 4096));
+    });
+
     test('a pull response carries the limits when the server advertises', () {
       const limits = PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 5);
       final decoded = PullResponse.fromJson(
@@ -158,7 +168,16 @@ void main() {
     test('a malformed limits value degrades to the fallback, not a crash', () {
       // `limits` is advisory and has a documented fallback, so a proxy-mangled
       // or buggy value must not take the records and watermark down with it.
-      for (final malformed in <Object>['garbage', 42, <String>['nope']]) {
+      for (final malformed in <Object>[
+        'garbage',
+        42,
+        <String>['nope'],
+        // A well-shaped object whose fields are not numbers: the shape that
+        // a container-type check alone lets through into the `as num?` cast.
+        {'maxBodyBytes': '8MB'},
+        {'maxRecordsPerPush': 'many'},
+        {'maxBodyBytes': 4096, 'maxRecordsPerPush': <String>[]},
+      ]) {
         final decoded = PullResponse.fromJson({
           'records': <Object>[],
           'latestSeq': 3,

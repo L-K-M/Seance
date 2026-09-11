@@ -53,6 +53,20 @@ class ServerSettings {
       return v == '1' || v == 'true' || v == 'yes' || v == 'on';
     }
 
+    /// A cap of zero or less accepts no push at all, and clients now size
+    /// their batches against these values, so the symptom would be every sync
+    /// failing with an opaque 413. Refuse to start instead, naming the
+    /// variable. Unparseable text keeps this file's existing behaviour of
+    /// falling back to the default.
+    int positiveLimit(String key, int fallback) {
+      final raw = env[key];
+      final value = int.tryParse(raw ?? '') ?? fallback;
+      if (value <= 0) {
+        throw ArgumentError.value(raw, key, 'must be a positive integer');
+      }
+      return value;
+    }
+
     return ServerSettings(
       bindAddress: env['SEANCE_BIND'] ?? '0.0.0.0',
       port: int.tryParse(env['SEANCE_PORT'] ?? '') ?? 8787,
@@ -62,13 +76,11 @@ class ServerSettings {
           int.tryParse(env['SEANCE_LOGIN_MAX_ATTEMPTS'] ?? '') ?? 10,
       loginWindow: Duration(
           seconds: int.tryParse(env['SEANCE_LOGIN_WINDOW_SECONDS'] ?? '') ?? 60),
-      maxBodyBytes: int.tryParse(env['SEANCE_MAX_BODY_BYTES'] ?? '') ??
-          kDefaultMaxPushBodyBytes,
-      maxRecordsPerPush:
-          int.tryParse(env['SEANCE_MAX_RECORDS_PER_PUSH'] ?? '') ??
-              kDefaultMaxRecordsPerPush,
-      maxBlobBytes:
-          int.tryParse(env['SEANCE_MAX_BLOB_BYTES'] ?? '') ?? 1024 * 1024,
+      maxBodyBytes:
+          positiveLimit('SEANCE_MAX_BODY_BYTES', kDefaultMaxPushBodyBytes),
+      maxRecordsPerPush: positiveLimit(
+          'SEANCE_MAX_RECORDS_PER_PUSH', kDefaultMaxRecordsPerPush),
+      maxBlobBytes: positiveLimit('SEANCE_MAX_BLOB_BYTES', 1024 * 1024),
     );
   }
 

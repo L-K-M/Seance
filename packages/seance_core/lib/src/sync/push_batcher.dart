@@ -1,6 +1,8 @@
 import 'package:seance_protocol/seance_protocol.dart';
 
-/// Splits [records] into pushes that fit [limits], preserving order.
+/// Splits [records] into pushes that fit [limits], preserving the order of
+/// every record that fits a body at all (the rest are deferred to the end, as
+/// described below).
 ///
 /// Greedy: records accumulate into a batch until the next one would take the
 /// encoded body past [PushLimits.maxBodyBytes] or the batch past
