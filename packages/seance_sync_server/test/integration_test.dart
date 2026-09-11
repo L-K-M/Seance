@@ -130,6 +130,34 @@ void main() {
         {for (var i = 0; i < 20; i++) 'r$i'});
   });
 
+  test('the body limit is inclusive on both sides', () async {
+    // The batcher fills a batch up to maxBodyBytes; the server refuses only
+    // what exceeds it. Both halves of that "inclusive" reading are this
+    // package's own, and an off-by-one between them is a 413 no retry clears.
+    // Pushed directly rather than through the engine: the engine would split a
+    // body one byte too large and converge anyway, hiding the disagreement.
+    final records = [
+      for (var i = 0; i < 4; i++) record('r$i', blobBytes: 700),
+    ];
+    final exactBody =
+        utf8.encode(jsonEncode(PushRequest(records: records).toJson())).length;
+
+    final atLimit = await registerDevice(
+        await startServer(maxBodyBytes: exactBody), 'exact');
+    final accepted = await atLimit.push(records);
+    expect(accepted.results.where((r) => r.accepted), hasLength(4),
+        reason: 'a body of exactly maxBodyBytes must be accepted whole');
+
+    final overLimit = await registerDevice(
+        await startServer(maxBodyBytes: exactBody - 1), 'over');
+    await expectLater(
+        overLimit.push(records),
+        throwsA(isA<ApiError>()
+            .having((e) => e.code, 'code', 'payload_too_large')),
+        reason: 'one byte more than the limit must be refused, so the '
+            'accepted case above is the boundary and not slack');
+  });
+
   test('a dirty set with more records than one push allows converges',
       () async {
     final baseUrl = await startServer(maxRecordsPerPush: 3);

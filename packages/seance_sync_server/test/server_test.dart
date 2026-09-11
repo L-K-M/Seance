@@ -121,9 +121,13 @@ void main() {
       // `KEY=` in an env file, an empty Compose interpolation and an empty
       // ConfigMap entry all arrive this way, and all mean "unset".
       for (final value in const ['', '  ']) {
-        final settings = ServerSettings.fromEnvironment(
-            {'SEANCE_MAX_BODY_BYTES': value, 'SEANCE_MAX_BLOB_BYTES': value});
+        final settings = ServerSettings.fromEnvironment({
+          'SEANCE_MAX_BODY_BYTES': value,
+          'SEANCE_MAX_RECORDS_PER_PUSH': value,
+          'SEANCE_MAX_BLOB_BYTES': value,
+        });
         expect(settings.maxBodyBytes, kDefaultMaxPushBodyBytes);
+        expect(settings.maxRecordsPerPush, kDefaultMaxRecordsPerPush);
         expect(settings.maxBlobBytes, 1024 * 1024);
       }
     });
@@ -144,6 +148,14 @@ void main() {
           const PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 7));
       expect(settings.maxBlobBytes, 1024 * 1024,
           reason: 'overriding one cap must not disturb another');
+    });
+
+    test('the blob cap is read too, not only validated', () {
+      // The other tests here only prove this key is rejected when invalid.
+      final settings = ServerSettings.fromEnvironment(
+          const {'SEANCE_MAX_BLOB_BYTES': '2048'});
+      expect(settings.maxBlobBytes, 2048);
+      expect(settings.pushLimits, const PushLimits());
     });
   });
 

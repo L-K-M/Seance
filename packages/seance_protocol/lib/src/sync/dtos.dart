@@ -128,6 +128,9 @@ class PushLimits {
         'maxRecordsPerPush': maxRecordsPerPush,
       };
 
+  /// Strict decoder, for data this process produced — a present field that is
+  /// not a number throws. Decode a *server's* advertisement with [tryFromJson],
+  /// which answers null instead of taking the response down with it.
   factory PushLimits.fromJson(Map<String, dynamic> json) => PushLimits(
         maxBodyBytes:
             (json['maxBodyBytes'] as num?)?.toInt() ?? kDefaultMaxPushBodyBytes,
