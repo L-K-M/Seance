@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:seance_app/services/app_services.dart';
+import 'package:seance_app/services/secure_master_key.dart';
 import 'package:seance_core/seance_core.dart';
 
 const _baseUrl = 'https://sync.test';
@@ -24,6 +25,65 @@ class _TrackedClient extends MockClient {
     closes++;
     super.close();
   }
+}
+
+
+/// A keystore that serves reads and ordinary writes but can refuse the vault
+/// master key specifically, which is how a locked keyring fails the one write
+/// that installs a re-key's new key.
+class _SelectiveKeystore extends FlutterSecureStorage {
+  _SelectiveKeystore();
+  static const _masterKeyName = 'seance.vault.masterKey.v1';
+  final Map<String, String> _map = {};
+  bool refuseMasterKey = false;
+
+  @override
+  Future<String?> read({
+    required String key,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async =>
+      _map[key];
+
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    if (refuseMasterKey && key == _masterKeyName) {
+      throw PlatformException(code: 'KeyringLocked', message: 'KeyringLocked');
+    }
+    if (value == null) {
+      _map.remove(key);
+      return;
+    }
+    _map[key] = value;
+  }
+
+  // Nothing in MasterKeyManager deletes today, but an unstubbed override
+  // reaches the real platform channel, which no-ops under the test binding
+  // instead of failing — so the fake would diverge silently rather than loudly.
+  @override
+  Future<void> delete({
+    required String key,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async =>
+      _map.remove(key);
 }
 
 void main() {
@@ -180,4 +240,72 @@ void main() {
     expect(paths, ['/v1/prelogin']);
     expect(transport.closes, 1);
   });
+
+  test('a re-key the keystore refuses leaves every credential readable',
+      () async {
+    final keystore = _SelectiveKeystore();
+    final own = await AppServices.initialize(
+        masterKeyManager: MasterKeyManager(keystore));
+    addTearDown(() => own.probe.dispose());
+
+    final secrets = [
+      for (final id in ['alpha', 'beta', 'gamma'])
+        Secret(id: id, kind: SecretKind.password, value: 'password-$id'),
+    ];
+    for (final secret in secrets) {
+      await own.vault.putSecret(secret);
+      await own.configStore.putServer(ServerConfig(
+        id: secret.id,
+        label: secret.id,
+        host: '${secret.id}.test',
+        username: 'user',
+        secretRef: secret.id,
+        createdAt: 1,
+        updatedAt: 1,
+      ));
+    }
+
+    final transport = _TrackedClient((request) async {
+      if (request.url.path == '/v1/prelogin') {
+        return http.Response(jsonEncode({
+          'argonSalt': base64Encode(List<int>.filled(16, 0)),
+          'argonParams': const Argon2Params().toJson(),
+        }), HttpStatus.ok);
+      }
+      if (request.url.path == '/v1/sync') {
+        return http.Response(
+            jsonEncode(const PullResponse(records: [], latestSeq: 0).toJson()),
+            HttpStatus.ok);
+      }
+      return http.Response(
+          jsonEncode({'token': 'enrolled-token'}), HttpStatus.ok);
+    });
+
+    // The vault file re-seals fine; the keyring refuses the one write that
+    // would make the new key survive a restart.
+    keystore.refuseMasterKey = true;
+    await expectLater(
+      http.runWithClient(
+        () => own.registerSync(
+          baseUrl: _baseUrl,
+          username: 'user',
+          password: 'password',
+          encryptionPassphrase: 'separate-encryption-passphrase',
+        ),
+        () => transport,
+      ),
+      throwsA(isA<KeystoreException>()),
+    );
+
+    // The keystore still holds the original key, so that is the key the file
+    // has to be readable with. Leaving it under the uninstalled one would put
+    // every credential out of reach of the next launch.
+    final reopened = await AppServices.initialize(
+        masterKeyManager: MasterKeyManager(keystore));
+    addTearDown(() => reopened.probe.dispose());
+    for (final secret in secrets) {
+      expect((await reopened.vault.getSecret(secret.id))!.value, secret.value);
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
 }

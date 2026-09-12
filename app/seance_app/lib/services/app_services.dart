@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -59,6 +60,10 @@ class LockedSecretVault extends SecretVault {
 
   @override
   Future<void> putSecret(Secret secret) async => throw const VaultLockedException();
+
+  @override
+  Future<void> putSecrets(Iterable<Secret> secrets) async =>
+      throw const VaultLockedException();
 }
 
 /// Wires together the seance_core services with the app's file-backed stores
@@ -129,11 +134,16 @@ class AppServices {
     required this.settings,
   });
 
-  static Future<AppServices> initialize() async {
+  /// [masterKeyManager] is for tests that need the OS keystore to misbehave
+  /// (a locked keyring refusing the re-key's install, say); production passes
+  /// nothing and gets the real one.
+  static Future<AppServices> initialize({
+    @visibleForTesting MasterKeyManager? masterKeyManager,
+  }) async {
     final dir = await getApplicationSupportDirectory();
     String p(String name) => '${dir.path}/$name';
 
-    final masterKeys = MasterKeyManager();
+    final masterKeys = masterKeyManager ?? MasterKeyManager();
     // May be null when the OS keystore is locked or unavailable (locked login
     // keyring on auto-login systems, no Secret Service daemon on minimal
     // desktops): the app then starts with a locked vault — secrets unreadable
@@ -232,13 +242,48 @@ class AppServices {
       final secret = await vault.getSecret(ref);
       if (secret != null) secrets.add(secret);
     }
+    final previousVault = vault;
     final newVault = SecretVault(vault.store, newKey);
-    for (final secret in secrets) {
-      await newVault.putSecret(secret);
+    // One write, not one per credential. The vault file is rewritten whole on
+    // every entry, so a loop left it holding a mix of both keys when a write
+    // partway through failed — and the key the rest were sealed with is not
+    // installed until below, so a restart could not open them again.
+    await newVault.putSecrets(secrets);
+    try {
+      // The keystore is the only place the new key survives a restart, and it
+      // can refuse outright — a locked keyring throws here, which is why the
+      // rest of this class treats it as a state to recover from rather than a
+      // crash. Until it holds the new key, the file that is now sealed with
+      // that key is unreadable by the next launch, so a refused install has
+      // to put the file back rather than leave the two disagreeing.
+      await masterKeys.setKeystoreKey(newKey);
+    } catch (_) {
+      try {
+        await previousVault.putSecrets(secrets);
+      } catch (error, stackTrace) {
+        // Only the keystore error reaches the caller, and on its own it reads
+        // as an ordinary locked keyring rather than the one state where the
+        // vault is left disagreeing with the keystore. Log the write that was
+        // supposed to prevent that, or a field report cannot explain it.
+        developer.log(
+          'Vault re-key rollback failed; the vault file stays sealed with a '
+          'key the OS keystore does not hold',
+          name: 'seance.app',
+          level: 1000,
+          error: error,
+          stackTrace: stackTrace,
+        );
+        // Both writes failed, so the file keeps a key the keystore does not
+        // hold. Stay on that key here: the credentials remain readable for
+        // this session, and a retried enrolment re-attempts the install from
+        // a vault whose file and in-memory key still agree.
+        vault = newVault;
+        vaultKey = newKey;
+      }
+      rethrow;
     }
     vault = newVault;
     vaultKey = newKey;
-    await masterKeys.setKeystoreKey(newKey);
   }
 
   Future<({List<int> authVerifier, List<int> vaultKey})> _deriveSyncKeys({
