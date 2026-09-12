@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:seance_core/seance_core.dart';
 
 import 'atomic_file.dart';
+import 'file_permissions.dart';
 
 /// Simple JSON-file [ConfigStore]. For a single-user personal tool this is
 /// plenty; the proposal's SQLite/drift backend is a drop-in future swap behind
@@ -296,6 +297,14 @@ class FileVaultStore implements VaultStore, VaultRekeyJournal {
   Future<void> _read() async {
     _rekeySnapshots = await _readRekeyJournal();
     if (!await file.exists()) return;
+    // A vault created before this store restricted the file keeps whatever
+    // mode it was made with until something rewrites it — which a vault that
+    // is only read never does. Tightening on open is what keeps the installs
+    // exposed longest from being the ones the change misses. Best-effort: the
+    // mode is hardening, not a reason to refuse to open the vault.
+    try {
+      restrictFileToOwner(file);
+    } catch (_) {}
     try {
       final map = jsonDecode(await file.readAsString()) as Map;
       map.forEach((k, v) => _blobs[k as String] = v as String);

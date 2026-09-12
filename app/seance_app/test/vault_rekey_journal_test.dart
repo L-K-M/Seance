@@ -239,6 +239,21 @@ void main() {
       expect(staged, isNot(contains(base64.encode(oldKey))));
     });
 
+    test('an existing vault file is tightened when it is opened', () async {
+      await SecretVault(FileVaultStore(vaultFile), oldKey)
+          .putSecret(secret('a'));
+      // The state every install created before the store restricted the file
+      // is in, and a vault that is only ever read never leaves it on its own.
+      await Process.run('chmod', ['644', vaultFile.path]);
+      expect((await vaultFile.stat()).mode & 0x1ff, 0x1a4); // 0644
+
+      final store = FileVaultStore(vaultFile);
+      expect((await SecretVault(store, oldKey).getSecret('a'))!.value,
+          'value-a');
+
+      expect((await vaultFile.stat()).mode & 0x1ff, 0x180); // 0600
+    }, skip: !Platform.isLinux && !Platform.isMacOS);
+
     test('a valid journal never blocks a vault read', () async {
       await crashMidRekey(installed: oldKey);
 

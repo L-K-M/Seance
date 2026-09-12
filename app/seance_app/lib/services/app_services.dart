@@ -347,7 +347,7 @@ class AppServices {
   Future<void> rekeyVaultForTesting(List<int> newKey) => _rekeyVault(newKey);
 
   /// Settle the staged re-key against the key the OS keystore really holds,
-  /// and adopt it, after the install failed.
+  /// and adopt it — after a failed install, and at the head of a retry.
   ///
   /// Reads the keystore back rather than assuming the throw meant nothing
   /// landed: a write that stores the value and then fails on the way out is
