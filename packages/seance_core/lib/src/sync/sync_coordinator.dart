@@ -880,7 +880,28 @@ class SyncCoordinator {
         // this floor is all that is left. Strictly newer, so a tie still
         // resolves where it always did — in the record layer, which breaks it
         // by device and seq; this only refuses what is plainly stale.
-        final existing = await vault.getSecret(secret.id);
+        // An entry that will not decrypt is absent for this purpose, not
+        // something to protect. The floor above exists to keep a newer local
+        // edit, and an entry with no readable version has none to keep — while
+        // the record being weighed against it is the only thing that can
+        // repair the damage. Letting the read throw instead sends the record
+        // to `skip`, which leaves the vault holding a credential the user
+        // cannot use and sync unable to replace it, on this round and every
+        // round after. Before a credential carried a version at all this path
+        // simply overwrote, so failing closed here would be a new way to lose
+        // one.
+        //
+        // Narrow on purpose: the vault's own failures (a MAC that will not
+        // verify, malformed JSON, a store that cannot be read) are all
+        // exceptions, so anything deriving from `Error` is a bug in this
+        // process and still reaches the per-record handler as one rather than
+        // being read as "absent".
+        Secret? existing;
+        try {
+          existing = await vault.getSecret(secret.id);
+        } on Exception {
+          // Left null: an unreadable entry is the absent case above.
+        }
         if (existing != null && existing.updatedAt > dec.updatedAt) continue;
         // Legacy peers omit the payload stamp. Persist their envelope version
         // so subsequent local config edits never manufacture a newer one.

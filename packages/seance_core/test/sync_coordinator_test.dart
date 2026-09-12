@@ -337,6 +337,58 @@ void main() {
     });
   }
 
+  test('an unreadable vault entry is healed by the credential record', () async {
+    final key = secureRandomBytes(32);
+    final codec = RecordCodec(key);
+    final vaultStore = InMemoryVaultStore();
+    final vault = SecretVault(vaultStore, key);
+    // Sealed under a key this vault does not have, which is what a vault entry
+    // damaged in storage or left behind by a half-finished re-key looks like:
+    // `getSecret` throws a MAC error instead of returning a version to compare.
+    await SecretVault(vaultStore, secureRandomBytes(32)).putSecret(const Secret(
+      id: 'secret',
+      kind: SecretKind.password,
+      value: 'unreadable',
+      updatedAt: 99,
+    ));
+    await expectLater(vault.getSecret('secret'), throwsA(anything));
+    final local = InMemoryLocalRecordStore();
+    await local.putRemote(await codec.encrypt(const DecryptedRecord(
+      id: 'secret:secret',
+      kind: RecordKind.secret,
+      updatedAt: 10,
+      deviceId: 'B',
+      data: {
+        'id': 'secret',
+        'kind': 'password',
+        'value': 'current',
+        'updatedAt': 10,
+      },
+    )));
+    final coordinator = SyncCoordinator(
+      configStore: InMemoryConfigStore(),
+      hostKeyStore: InMemoryHostKeyStore(),
+      codec: codec,
+      local: local,
+      deviceId: 'A',
+      syncSecrets: true,
+      secretVault: vault,
+    );
+
+    await coordinator.applyToStores();
+
+    // The downgrade guard must not strand a copy that is useless anyway. An
+    // entry with no readable version is absent, not something to protect —
+    // the pull is the only thing that can repair it, and the read that decides
+    // whether to keep it is the read that fails.
+    final healed = await vault.getSecret('secret');
+    expect(healed!.value, 'current');
+    // Pinned, because a heal that wrote the value but kept the damaged entry's
+    // sealed stamp would decrypt fine and then refuse every later update below
+    // 99 — the same stranding, one step removed.
+    expect(healed.updatedAt, 10);
+  });
+
   test('opting out of credential publishing preserves a newer local edit',
       () async {
     final api = FakeServer();
