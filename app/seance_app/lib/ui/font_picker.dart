@@ -71,12 +71,23 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
   /// The log belongs on the future rather than in the builder: the builder
   /// re-runs on every keystroke in the filter field, which would re-dump the
   /// whole stack trace per character for the life of the dialog.
-  late final Future<List<SystemFontFamily>> _families = widget.fonts
-      .families()
-      .catchError((Object error, StackTrace trace) {
-    debugPrint('Font scan failed: $error\n$trace');
-    return const <SystemFontFamily>[];
-  });
+  late final Future<List<SystemFontFamily>> _families = _scan();
+
+  /// The scan, with any failure logged once and collapsed to an empty list.
+  ///
+  /// A try/catch rather than `catchError`, which only sees what the returned
+  /// future carries: an implementation that throws before returning one would
+  /// otherwise take out the first build instead of reaching the empty state
+  /// this dialog is built to show. Logged here rather than in the builder,
+  /// which re-runs on every keystroke.
+  Future<List<SystemFontFamily>> _scan() async {
+    try {
+      return await widget.fonts.families();
+    } catch (error, trace) {
+      debugPrint('Font scan failed: $error\n$trace');
+      return const <SystemFontFamily>[];
+    }
+  }
 
   @override
   void dispose() {

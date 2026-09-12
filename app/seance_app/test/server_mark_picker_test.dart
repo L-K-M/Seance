@@ -70,7 +70,8 @@ void main() {
       canvas.drawCircle(
         ui.Offset(i.toDouble(), (i * 7 % side).toDouble()),
         side / 8,
-        ui.Paint()..color = ui.Color(0xFF000000 | (i * 2654435761) & 0xFFFFFF),
+        ui.Paint()
+          ..color = ui.Color(0xFF000000 | ((i * 2654435761) & 0xFFFFFF)),
       );
     }
     final picture = recorder.endRecording();
@@ -277,7 +278,10 @@ void main() {
         lessThan(bytes.length),
         reason: 'a pass-through would store the source unchanged',
       );
-      expect(base64Decode(stored).length, lessThanOrEqualTo(kMaxServerIconImageBytes));
+      expect(
+        base64Decode(stored).length,
+        lessThanOrEqualTo(kMaxServerIconImageBytes),
+      );
     });
 
     testWidgets('a file that is not an image is reported, not stored', (
@@ -425,6 +429,10 @@ Future<void> pumpUntil(
       () => Future<void>.delayed(const Duration(milliseconds: 20)),
     );
     await tester.pump();
+    // Surfaced here rather than left to the post-test check: an exception
+    // thrown while building would otherwise burn the whole timeout and then
+    // fail with "timed out", pointing at the wrong thing.
+    expect(tester.takeException(), isNull, reason: 'thrown while importing');
   }
   expect(done(), isTrue, reason: 'timed out waiting for the import to finish');
 }

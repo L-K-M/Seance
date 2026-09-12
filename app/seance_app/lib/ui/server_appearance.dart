@@ -669,11 +669,16 @@ class ServerAvatar extends StatelessWidget {
       height: _extent,
       child: Stack(
         children: [
-          ServerBadge(
-            color: server.color,
-            mark: server.mark,
-            semanticsLabel: server.label,
-            size: _badgeSize,
+          // Decorative, like the tab strip's: every row that shows this puts
+          // the server's label in its title, and labelling the badge too
+          // would announce the name twice. The parameter stays for a caller
+          // that has no such sibling.
+          ExcludeSemantics(
+            child: ServerBadge(
+              color: server.color,
+              mark: server.mark,
+              size: _badgeSize,
+            ),
           ),
           // Directional so the dot tucks into the badge's trailing corner
           // rather than its leading one under a right-to-left locale.

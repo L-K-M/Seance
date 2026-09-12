@@ -67,8 +67,8 @@ glyph, `postgres` the database one). Beyond them a server can carry an emoji or
 an imported image.
 
 The model is three independent optional fields — `icon`, `iconEmoji`,
-`iconImage` — resolved by `ServerMark` in that order of preference, rather than
-one tagged value. That is a forward-compatibility choice: records sync between
+`iconImage` — resolved by `ServerMark` richest-first (an image outranks an
+emoji, which outranks the glyph), rather than one tagged value. That is a forward-compatibility choice: records sync between
 versions in both directions, and a build that has never heard of `iconEmoji`
 ignores the key and goes on drawing the glyph every richer mark keeps beside
 it, which approximates the choice instead of losing it. A tag inside the

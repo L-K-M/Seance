@@ -61,6 +61,12 @@ enum BadgeImageFailure {
 
   /// Decoded, but would not compress small enough at any attempted size.
   incompressible,
+
+  /// Decoded, but the engine failed while cropping or re-encoding it. Distinct
+  /// from [undecodable] because the source was fine: telling someone their
+  /// image is not an image sends them to re-export a file that was never the
+  /// problem.
+  encodeFailed,
 }
 
 /// A successful import: the PNG bytes, square and at most
@@ -119,7 +125,28 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
             descriptor.width * descriptor.height > kMaxBadgeSourcePixels) {
           return (image: null, failure: BadgeImageFailure.tooLarge);
         }
-        final codec = await descriptor.instantiateCodec();
+        // Decoded no larger than it has to be. The pixel guard above only
+        // *bounds* the allocation; without a target the engine still expands
+        // an ordinary 4000x3000 phone photo to 46 MB of RGBA to produce a
+        // 256 px badge. Both axes are scaled by the same factor, so the
+        // aspect — and therefore the centre-crop below, which is measured on
+        // the decoded image either way — is unchanged. Measured on a
+        // 4000x3000 source: 46,875 KiB full against 1,366 KiB bounded, same
+        // 256 px result.
+        //
+        // 2x the stored side leaves the final downscale something to work
+        // with rather than resampling from exactly its own size. Never
+        // upscales: a source already at or below that is decoded as-is.
+        final shortEdge = descriptor.width < descriptor.height
+            ? descriptor.width
+            : descriptor.height;
+        final decodeScale = (kBadgeImageSide * 2) / shortEdge;
+        final codec = decodeScale < 1
+            ? await descriptor.instantiateCodec(
+                targetWidth: (descriptor.width * decodeScale).round(),
+                targetHeight: (descriptor.height * decodeScale).round(),
+              )
+            : await descriptor.instantiateCodec();
         try {
           decoded = (await codec.getNextFrame()).image;
         } finally {
@@ -169,7 +196,7 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
       lastSide = side;
       final png = await _render(decoded, cropRect, side);
       if (png == null) {
-        return (image: null, failure: BadgeImageFailure.undecodable);
+        return (image: null, failure: BadgeImageFailure.encodeFailed);
       }
       if (png.lengthInBytes <= maxBytes) {
         return (image: BadgeImage(png: png, side: side), failure: null);
@@ -184,7 +211,7 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
     // Mirrors the decode phase. Without this an engine failure in `_render`
     // would be thrown past a caller that is pattern-matching the record, so
     // the import would crash instead of showing a message.
-    return (image: null, failure: BadgeImageFailure.undecodable);
+    return (image: null, failure: BadgeImageFailure.encodeFailed);
   } finally {
     decoded.dispose();
   }

@@ -407,8 +407,14 @@ class _EmojiTabState extends State<_EmojiTab> {
                           accent: widget.accent,
                           mark: ServerEmojiMark(emoji, fallback: _fallback),
                           label: emoji,
-                          selected: widget.current is ServerEmojiMark &&
-                              normalizeServerEmoji(_typed.text) == emoji,
+                          // From the mark in force, like the Icons tab, not
+                          // from the field: the two agreed only because the
+                          // field is seeded from the mark on the first build.
+                          selected: switch (widget.current) {
+                            ServerEmojiMark(emoji: final current) =>
+                              current == emoji,
+                            _ => false,
+                          },
                         ),
                     ],
                   ),
@@ -488,6 +494,8 @@ class _ImageTabState extends State<_ImageTab> {
       'That file is too big to read. Crop or export it smaller first.',
     BadgeImageFailure.undecodable =>
       'That file could not be read as an image.',
+    BadgeImageFailure.encodeFailed =>
+      'That image could not be prepared. Try again, or pick another.',
     BadgeImageFailure.incompressible =>
       'That image would not fit in a server record even at badge size. Try a '
           'simpler picture — a logo rather than a photograph.',

@@ -301,7 +301,7 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 684 Dart tests + 580 Flutter tests + 170 in the vendored xterm fork.
+- 684 Dart tests + 581 Flutter tests + 170 in the vendored xterm fork.
   `dart analyze` and the app's `flutter analyze` are clean; the vendored
   fork carries 11 upstream `info` lints and is deliberately not analyze-
   gated in CI (only its tests run).
@@ -393,8 +393,11 @@ Do not "simplify" these away — they are load-bearing:
   ImageByteFormat.png)`, with no image package. All of it works under
   `flutter_test` (see `badge_image_test.dart`), which is why there is no
   platform channel here. `instantiateCodec`'s `targetWidth`/`targetHeight`
-  are deliberately *not* used: they scale but cannot crop, and a badge has to
-  be square.
+  cannot do the *crop* — they scale, and a badge has to be square — but they
+  do bound the decode, and both axes are scaled by one factor so the crop
+  that follows is unaffected. Without them an ordinary 4000x3000 photo
+  expands to 46 MB of RGBA on the way to a 256 px badge (measured: 1.3 MB
+  with them, same result).
 - **Font families are resolved by name by the platform, not by Flutter.**
   `TextStyle.fontFamily` is handed to the OS font manager, which is why
   `SeanceTheme.monoFallback` can name Menlo and Consolas without the app

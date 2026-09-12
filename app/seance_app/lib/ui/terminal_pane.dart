@@ -159,11 +159,14 @@ class TerminalPane extends StatelessWidget {
       title: Row(
         children: [
           if (server != null) ...[
-            ServerBadge(
-              color: server.color,
-              mark: server.mark,
-              semanticsLabel: server.label,
-              size: 24,
+            // Decorative: the title beside it is the server's label, so a
+            // label here would have a screen reader say the name twice.
+            ExcludeSemantics(
+              child: ServerBadge(
+                color: server.color,
+                mark: server.mark,
+                size: 24,
+              ),
             ),
             const SizedBox(width: 10),
           ],

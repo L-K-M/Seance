@@ -171,6 +171,7 @@ void main() {
       // copy that dropped the shadowed one.
       expect(copy.iconEmoji, original.iconEmoji);
       expect(copy.iconImage, original.iconImage);
+      expect(original.iconEmoji, isNotNull, reason: 'fixture must be valid');
       expect(original.iconImage, isNotNull, reason: 'fixture must be valid');
       expect(copy.icon, ServerIcon.rocket);
       expect(copy.loginScript, 'tmux attach');

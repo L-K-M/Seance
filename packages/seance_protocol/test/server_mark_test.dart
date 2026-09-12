@@ -120,7 +120,7 @@ void main() {
       expect(normalizeServerEmoji('\u0007'), isNull);
       // One cluster can be extended with joiners indefinitely; a record from
       // elsewhere must not be able to park a kilobyte of them in a config.
-      final chain = List.filled(40, '\u{1F469}').join('‍');
+      final chain = List.filled(40, '\u{1F469}').join('\u200D');
       expect(chain.characters.length, 1);
       expect(chain.length, greaterThan(64));
       expect(normalizeServerEmoji(chain), isNull);
@@ -176,7 +176,7 @@ void main() {
       expect(normalizeServerEmoji('\u200C'), isNull);
     });
 
-    test('refuses a lone plane-15 formatting character', () {
+    test('refuses a lone plane-14 formatting character', () {
       // The whole block is invisible formatting and the code-unit loop cannot
       // see it: every value there is a surrogate pair, and the loop compares
       // BMP units.

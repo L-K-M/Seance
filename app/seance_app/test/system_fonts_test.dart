@@ -34,11 +34,22 @@ void main() {
       ...extraNames,
     ];
 
-    List<int> encode(String value) => platformId == 1
-        ? value.codeUnits
-        : [
-            for (final unit in value.codeUnits) ...[unit >> 8, unit & 0xFF],
-          ];
+    List<int> encode(String value) {
+      if (platformId == 1) {
+        // Macintosh records are one byte per character, and assembling the
+        // fixture through Uint8List.fromList would silently truncate anything
+        // wider to its low byte — so a future localized-Mac test would pin
+        // bytes it never asked for. Fail loudly instead.
+        assert(
+          value.codeUnits.every((unit) => unit <= 0xFF),
+          'a Macintosh name record must stay within one byte per character',
+        );
+        return value.codeUnits;
+      }
+      return [
+        for (final unit in value.codeUnits) ...[unit >> 8, unit & 0xFF],
+      ];
+    }
 
     // name: version, count, storageOffset, records, then the strings.
     final storageOffset = 6 + names.length * 12;
@@ -251,6 +262,17 @@ void main() {
       expect(await read('a.ttf', bytes), isEmpty);
     });
 
+    test('a face carrying only the typographic name is still listed',
+        () async {
+      // Wide-family and subsetted faces can ship nameID 16 without nameID 1;
+      // preferring 16 must not mean requiring 1.
+      final families = await read(
+        'a.ttf',
+        sfnt(family: null, typographicFamily: 'Source Han Sans'),
+      );
+      expect(families.single.name, 'Source Han Sans');
+    });
+
     test('keeps a face that carries neither post nor OS/2', () async {
       // Both tables are optional and absent from plenty of subsetted and web
       // fonts. The pitch is then simply unknown; losing the family over it
@@ -455,17 +477,6 @@ void main() {
       );
       final families = await SfntSystemFonts(roots: [directory]).families();
       expect(families.single.name, 'JetBrains Mono');
-    });
-
-    test('a face carrying only the typographic name is still listed',
-        () async {
-      // Wide-family and subsetted faces can ship nameID 16 without nameID 1;
-      // preferring 16 must not mean requiring 1.
-      final families = await read(
-        'a.ttf',
-        sfnt(family: null, typographicFamily: 'Source Han Sans'),
-      );
-      expect(families.single.name, 'Source Han Sans');
     });
 
     test('a FIFO named like a font does not hang the scan',

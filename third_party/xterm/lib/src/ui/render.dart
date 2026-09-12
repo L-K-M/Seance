@@ -436,9 +436,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     return (first, last);
   }
 
-  /// [seance fork] Selects the full logical line at pixel [from], following
-  /// soft-wrap continuations in both directions — the triple-click gesture.
-
   /// [seance fork] The logical-line rows a selection gesture at pixel
   /// [offset] resolves to, or null when the buffer holds nothing to select.
   ///
@@ -456,6 +453,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     return _logicalLineRows(_selectionCellOffset(offset).y);
   }
 
+  /// [seance fork] Selects the full logical line at pixel [from], following
+  /// soft-wrap continuations in both directions — the triple-click gesture.
   void selectLine(Offset from) {
     final rows = _clampedLineRows(from);
     if (rows == null) return;

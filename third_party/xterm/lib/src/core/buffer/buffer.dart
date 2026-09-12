@@ -580,7 +580,10 @@ class Buffer {
   ///
   /// Scanned from the end, so the ordinary case (content, then the blank rows
   /// under the prompt) stops within a screen height: about 4us on a normal
-  /// buffer, called once per pointer event of a drag.
+  /// buffer. Two or three times per pointer event of a drag, not once — each
+  /// endpoint clamps, and the end-inclusive bump re-clamps — so budget for
+  /// the multiple if the pathological case below ever matters. Hoisting one
+  /// lookup per gesture callback through the clamps would fix it.
   ///
   /// The scan is *not* bounded by [viewHeight], though: a program that prints
   /// nothing but newlines pushes blank lines into the scrollback like any

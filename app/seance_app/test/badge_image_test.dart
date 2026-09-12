@@ -79,6 +79,21 @@ void main() {
     expect(image.height, kBadgeImageSide);
   });
 
+  test('a source far larger than the badge still lands at badge size',
+      () async {
+    // The decode is bounded to 2x the stored side rather than the source's
+    // own 4000x3000 (46 MB of RGBA against 1.3 MB, measured). The result must
+    // be indistinguishable: same side, square, and a real PNG.
+    final big = await png(4000, 3000);
+    final result = await encodeBadgeImage(big, maxBytes: 192 * 1024);
+    expect(result.failure, isNull);
+    expect(result.image!.side, kBadgeImageSide);
+    final image = await decode(result.image!.png);
+    addTearDown(image.dispose);
+    expect(image.width, kBadgeImageSide);
+    expect(image.height, kBadgeImageSide);
+  });
+
   test('a wide source is cropped square, not squashed', () async {
     // The badge draws its image edge to edge, so bars down the sides would
     // read as a broken image; the shape has to be fixed here, where the bytes

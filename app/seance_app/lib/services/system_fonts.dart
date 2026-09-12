@@ -110,7 +110,20 @@ class SfntSystemFonts implements SystemFonts {
   bool get isSupported => _roots.isNotEmpty;
 
   @override
-  Future<List<SystemFontFamily>> families() => _cached ??= _scan();
+  Future<List<SystemFontFamily>> families() {
+    // A failure is not memoized. The per-file guard catches `Exception` but
+    // not `Error`, and `Directory.list` can raise things other than
+    // `FileSystemException` — and this future is held for the life of the
+    // process, so one unforeseen throw would leave the picker permanently
+    // empty with no recovery short of a restart.
+    return _cached ??= _scan().then(
+      (families) => families,
+      onError: (Object error, StackTrace trace) {
+        _cached = null;
+        return const <SystemFontFamily>[];
+      },
+    );
+  }
 
   /// Where each desktop keeps fonts. Ordered system-first, so a user copy of a
   /// family does not change the name reported for it.
@@ -202,6 +215,11 @@ class SfntSystemFonts implements SystemFonts {
     // plenty of metric and licence files beside the faces.
     var visited = 0;
     for (final root in _roots) {
+      // Checked here too: the break below leaves the inner stream only, so
+      // without this every later root would still be opened and listed — and
+      // listing has no timeout, so an exhausted scan could still block on a
+      // root that sits on an unreachable mount.
+      if (files >= maxFiles || visited > _visitBudget) break;
       await for (final entity in root.list(
         // Followed, because a font installed as a symlink is not exotic: a
         // manual `ln -s` into ~/.fonts, a distro linking into a package store,

@@ -28,14 +28,15 @@ sealed class ServerMark {
     String? image,
   }) {
     if (image != null) {
-      // Through the normalizer rather than straight to the decoder: the
-      // normalizer trims and `base64Decode` throws on whitespace, so a padded
-      // value this accepts on the way in would be dropped here. `resolve` is
-      // public and documented as the inverse of `stored`, so the two paths
-      // have to agree on what is valid.
-      final normalized = normalizeServerIconImage(image);
-      final png =
-          normalized == null ? null : decodeServerIconImage(normalized);
+      // Trimmed, then straight to the decoder — not through the normalizer,
+      // which would re-run the whole validation (a base64Decode of up to
+      // kMaxServerIconImageBytes) on every call. This runs on every build of
+      // every badge row, so that decode landed per frame per badge and was
+      // thrown away, only for the decoder to answer from its cache. The
+      // decoder validates the same trimmed string internally, so what is
+      // accepted here is unchanged and a cache hit now costs nothing.
+      final trimmed = image.trim();
+      final png = trimmed.isEmpty ? null : decodeServerIconImage(trimmed);
       if (png != null) return ServerImageMark(png, fallback: icon);
     }
     final normalized = normalizeServerEmoji(emoji);
@@ -208,7 +209,7 @@ String? normalizeServerEmoji(String? emoji) {
   final trimmed = emoji.trim();
   if (trimmed.isEmpty || trimmed.length > 64) return null;
   if (trimmed.characters.length != 1) return null;
-  // Plane 15 holds nothing but formatting: the language tag, the tag
+  // Plane 14 holds nothing but formatting: the language tag, the tag
   // characters behind subdivision flags, and the variation selectors
   // supplement. Every one has grapheme class Extend, so alone it is a single
   // cluster of two code units and the loop below — which compares UTF-16 code
