@@ -40,6 +40,13 @@ void main() {
     } on FileSystemException {
       // Deliberately ignored.
     }
+    // Cleared, not just disposed: `boot` assigns these one at a time, so a
+    // throw partway through it would leave the *previous* test's disposed
+    // instances here for the next tearDown to dispose a second time — which
+    // throws, and buries the failure that actually mattered.
+    state = null;
+    services = null;
+    directory = null;
   });
 
   ServerConfig server(String id, {String? group}) => ServerConfig(

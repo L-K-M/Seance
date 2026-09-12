@@ -725,6 +725,12 @@ class _StatusDot extends StatelessWidget {
   /// separates it from the badge behind. 10 of the default 14.
   static const double _innerRatio = 10 / 14;
 
+  /// The spinner's stroke at the default dot size, scaled with the dot like
+  /// every other dimension here. Left fixed it reads about a third heavier on
+  /// a compact row — the disproportion [ServerAvatar.size] exists to avoid,
+  /// reintroduced in the one state the eye is drawn to.
+  static const double _baseStrokeWidth = 1.6;
+
   @override
   Widget build(BuildContext context) {
     final (color, label) = switch (status) {
@@ -758,7 +764,10 @@ class _StatusDot extends StatelessWidget {
               ? SizedBox(
                   width: size * _innerRatio,
                   height: size * _innerRatio,
-                  child: const CircularProgressIndicator(strokeWidth: 1.6),
+                  child: CircularProgressIndicator(
+                    strokeWidth:
+                        _baseStrokeWidth * size / ServerAvatar._dotSize,
+                  ),
                 )
               : Container(
                   width: size * _innerRatio,
