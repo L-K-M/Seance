@@ -258,6 +258,31 @@ class AppServices {
       // to put the file back rather than leave the two disagreeing.
       await masterKeys.setKeystoreKey(newKey);
     } catch (_) {
+      // A refused install is not the only way this throws. A keyring can
+      // accept the write and still fail on the way out, leaving the new key
+      // installed — and then putting the file back under the old key is the
+      // very disagreement this catch exists to prevent, only inverted: the
+      // next launch would read the new key out of the keystore and find a
+      // file sealed with the old one, which is the unreadable-vault state.
+      // So ask the keystore which key it actually holds rather than assuming
+      // the throw means nothing landed.
+      //
+      // Null covers both "holds none" and "could not be read" — a locked
+      // keyring cannot answer — and both take the rollback below, which is
+      // the conservative half: it is correct whenever the install did not
+      // commit, and a wrong rollback is recoverable by retrying enrolment
+      // while a wrong *keep* would not be.
+      final installed = await masterKeys.readKeystoreKey();
+      if (installed != null && _sameKey(installed, newKey)) {
+        // The install committed. The file is already sealed with this key, so
+        // the two agree and there is nothing to put back. Adopt it here too,
+        // or this session would keep reading through a vault whose key the
+        // file no longer uses. The error still reaches the caller: enrolment
+        // did not finish, and the caller decides what to say about that.
+        vault = newVault;
+        vaultKey = newKey;
+        rethrow;
+      }
       try {
         await previousVault.putSecrets(secrets);
       } catch (error, stackTrace) {
@@ -284,6 +309,20 @@ class AppServices {
     }
     vault = newVault;
     vaultKey = newKey;
+  }
+
+  /// Whether two master keys are the same bytes.
+  ///
+  /// Not constant-time on purpose: both operands are this process's own keys,
+  /// compared to decide which of its own writes landed. There is no attacker
+  /// supplying either side, so there is no timing channel to close — and a
+  /// constant-time helper here would suggest otherwise to the next reader.
+  static bool _sameKey(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   Future<({List<int> authVerifier, List<int> vaultKey})> _deriveSyncKeys({
