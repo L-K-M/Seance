@@ -649,6 +649,12 @@ class ServerAvatar extends StatelessWidget {
   final ServerConfig server;
   final TerminalStatus connection;
 
+  /// The badge's edge, or null for the list's usual [_badgeSize]. The compact
+  /// server row passes a smaller one; the dot and the overhang it needs scale
+  /// with it, so the whole mark stays in proportion rather than the dot
+  /// swallowing a small badge.
+  final double? size;
+
   static const double _badgeSize = 32;
   static const double _dotSize = 14;
 
@@ -659,14 +665,17 @@ class ServerAvatar extends StatelessWidget {
     super.key,
     required this.server,
     required this.connection,
+    this.size,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final badgeSize = size ?? _badgeSize;
+    final scale = badgeSize / _badgeSize;
     return SizedBox(
-      width: _extent,
-      height: _extent,
+      width: _extent * scale,
+      height: _extent * scale,
       child: Stack(
         children: [
           // Decorative, like the tab strip's: every row that shows this puts
@@ -677,7 +686,7 @@ class ServerAvatar extends StatelessWidget {
             child: ServerBadge(
               color: server.color,
               mark: server.mark,
-              size: _badgeSize,
+              size: badgeSize,
             ),
           ),
           // Directional so the dot tucks into the badge's trailing corner
@@ -685,7 +694,11 @@ class ServerAvatar extends StatelessWidget {
           PositionedDirectional(
             end: 0,
             bottom: 0,
-            child: _StatusDot(status: connection, ring: scheme.surface),
+            child: _StatusDot(
+              status: connection,
+              ring: scheme.surface,
+              size: _dotSize * scale,
+            ),
           ),
         ],
       ),
@@ -698,7 +711,19 @@ class ServerAvatar extends StatelessWidget {
 class _StatusDot extends StatelessWidget {
   final TerminalStatus status;
   final Color ring;
-  const _StatusDot({required this.status, required this.ring});
+
+  /// The ringed dot's edge. Scales with the badge it sits on so a compact
+  /// row's smaller badge is not swallowed by a full-size dot.
+  final double size;
+  const _StatusDot({
+    required this.status,
+    required this.ring,
+    required this.size,
+  });
+
+  /// How much of the dot is the coloured centre; the rest is the ring that
+  /// separates it from the badge behind. 10 of the default 14.
+  static const double _innerRatio = 10 / 14;
 
   @override
   Widget build(BuildContext context) {
@@ -720,8 +745,8 @@ class _StatusDot extends StatelessWidget {
     return Tooltip(
       message: label,
       child: Container(
-        width: ServerAvatar._dotSize,
-        height: ServerAvatar._dotSize,
+        width: size,
+        height: size,
         decoration: BoxDecoration(
           color: ring,
           shape: BoxShape.circle,
@@ -730,14 +755,14 @@ class _StatusDot extends StatelessWidget {
           child: status == TerminalStatus.connecting
               // Sized to the dot it replaces, so the badge doesn't shift while
               // a connection is being made.
-              ? const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(strokeWidth: 1.6),
+              ? SizedBox(
+                  width: size * _innerRatio,
+                  height: size * _innerRatio,
+                  child: const CircularProgressIndicator(strokeWidth: 1.6),
                 )
               : Container(
-                  width: 10,
-                  height: 10,
+                  width: size * _innerRatio,
+                  height: size * _innerRatio,
                   decoration: BoxDecoration(
                     color: color,
                     shape: BoxShape.circle,
