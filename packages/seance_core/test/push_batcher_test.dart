@@ -128,6 +128,29 @@ void main() {
               'normally rather than being isolated last');
     });
 
+    test('several records past a cap each travel alone, still last', () {
+      // "Alone" is per record, not per tail: one combined trailing batch would
+      // let a single 413 take several records down together, which is a
+      // smaller version of the failure this isolation exists to contain. The
+      // two tests above prove only the singular case, so the loop that appends
+      // them could be "optimized" into a grouping one without failing a thing.
+      final records = [
+        rec('small'),
+        rec('fat', blobBytes: 4096),
+        rec('huge', blobBytes: 8192),
+      ];
+      const limits = PushLimits(maxBodyBytes: 1 << 20, maxBlobBytes: 1024);
+
+      final batches = batchForPush(records, limits);
+
+      expect(batches, hasLength(3));
+      expect(idsOf(batches), ['small', 'fat', 'huge'],
+          reason: 'the compliant record goes first, the doomed ones after it '
+              'in the order they were dirtied');
+      expect(batches[1].single.id, 'fat');
+      expect(batches[2].single.id, 'huge');
+    });
+
     test('absurd limits still place every record in some batch', () {
       // A misconfigured deployment must not produce an empty batch (a request
       // carrying nothing, forever) or silently swallow a record.
