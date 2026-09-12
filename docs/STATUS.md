@@ -7,8 +7,12 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-12. A single record past the server's per-record blob
-cap no longer stops the whole account's sync: that cap is advertised alongside
+_Last updated: 2026-09-12. The server list now offers a compact row and
+pinning: the app bar's density switch trades the address line for a row that
+is 40 px instead of 72, and a pinned server sits in its own section at the top
+(device-local, never synced). Before that, a single record past the server's
+per-record blob
+cap no longer stopped the whole account's sync: that cap is advertised alongside
 the other two, and such a record is now pushed alone and last. An emoji mark
 must also carry a character of its own — a lone joiner or combining mark was
 accepted and painted an empty badge. Before that, the
@@ -32,6 +36,36 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Two view options for the server list (2026-09-12)
+
+The left pane's list gained the two things a list of a few dozen servers
+starts to want.
+
+**Density.** A switch in the pane's app bar chooses between the two-line row
+the list has always drawn and a one-line compact row — 40 px against 72, so
+roughly twice as many servers fit a screen. The `user@host:port` line is what
+the compact row trades away; it becomes a tooltip for a pointer and part of the
+row's spoken label for a screen reader rather than being lost, and the badge
+and its status dot scale down with the row.
+
+**Pinning.** A row's menu pins it into a `Pinned` section at the top, built out
+of the same sectioning the groups already use — so the shortlist folds away,
+counts its members and renders like any other section. A pinned server leaves
+its group rather than appearing twice, and that group's count reports what is
+actually left in it. Filtering now also opens the first row the user can *see*
+on Enter rather than the head of the filtered list; grouping already sorted
+sections by name, so store order was never quite what the eye read.
+
+Both are device-local settings, alongside the folded sections and the pane
+widths. Pins deliberately do not sync and there is no switch to make them: a
+pin says "this is what I reach for *here*", which is rarely the same answer on
+a phone as at the desk, and keeping it out of the record layer means there is
+nothing to publish, retract or resolve — one device's shortlist can never
+reorder another's list. The obvious follow-up, if that turns out to be wanted,
+is an opt-in `pinnedServers` record modelled on the assistant's (off by
+default), which is why the pin lives in settings rather than on `ServerConfig`,
+where it would have synced unconditionally.
 
 ## One over-sized record no longer stops sync (2026-09-12)
 
