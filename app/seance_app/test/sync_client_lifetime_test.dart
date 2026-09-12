@@ -69,6 +69,21 @@ class _SelectiveKeystore extends FlutterSecureStorage {
     }
     _map[key] = value;
   }
+
+  // Nothing in MasterKeyManager deletes today, but an unstubbed override
+  // reaches the real platform channel, which no-ops under the test binding
+  // instead of failing — so the fake would diverge silently rather than loudly.
+  @override
+  Future<void> delete({
+    required String key,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async =>
+      _map.remove(key);
 }
 
 void main() {

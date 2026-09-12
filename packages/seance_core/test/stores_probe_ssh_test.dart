@@ -123,9 +123,17 @@ void main() {
       for (final secret in secrets) {
         expect((await vault.getSecret(secret.id))!.value, secret.value);
       }
+
+      // Atomicity is only half the contract: a store that recovers has to let
+      // the same re-key through, or one failed write retires the vault.
+      await SecretVault(store, newKey).putSecrets(secrets);
+      final rekeyed = SecretVault(store, newKey);
+      for (final secret in secrets) {
+        expect((await rekeyed.getSecret(secret.id))!.value, secret.value);
+      }
     });
 
-    test('putSecretBlobs leaves entries it does not name alone', () async {
+    test('putSecrets leaves entries it does not name alone', () async {
       final vaultKey = secureRandomBytes(32);
       final store = InMemoryVaultStore();
       final vault = SecretVault(store, vaultKey);

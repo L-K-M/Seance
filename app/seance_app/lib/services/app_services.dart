@@ -260,7 +260,19 @@ class AppServices {
     } catch (_) {
       try {
         await previousVault.putSecrets(secrets);
-      } catch (_) {
+      } catch (error, stackTrace) {
+        // Only the keystore error reaches the caller, and on its own it reads
+        // as an ordinary locked keyring rather than the one state where the
+        // vault is left disagreeing with the keystore. Log the write that was
+        // supposed to prevent that, or a field report cannot explain it.
+        developer.log(
+          'Vault re-key rollback failed; the vault file stays sealed with a '
+          'key the OS keystore does not hold',
+          name: 'seance.app',
+          level: 1000,
+          error: error,
+          stackTrace: stackTrace,
+        );
         // Both writes failed, so the file keeps a key the keystore does not
         // hold. Stay on that key here: the credentials remain readable for
         // this session, and a retried enrolment re-attempts the install from

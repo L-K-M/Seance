@@ -255,6 +255,30 @@ class FileVaultStore implements VaultStore {
     await writeStringAtomically(file, jsonEncode(_blobs));
   }
 
+  /// Run [body] with the cache loaded and no other operation in flight.
+  ///
+  /// Every public operation takes a slot, reads included. Serializing only the
+  /// writes is not enough and [writeStringAtomically]'s own per-path queue is
+  /// not enough either: that one orders the writes, while the snapshot, the
+  /// mutation and the restore sit outside it, so two overlapping mutations
+  /// could let one that failed restore a snapshot taken before the other
+  /// committed. A read is in here for a related reason. Merely awaiting
+  /// [_pending] before reading leaves it racing any mutation queued after that
+  /// await, and which of the two reaches the cache first comes down to the two
+  /// paths happening to take the same number of microtask hops — an invariant
+  /// no future edit to this file could be expected to preserve, since nothing
+  /// about it is visible at the point where it would break.
+  Future<T> _serialize<T>(Future<T> Function() body) {
+    final run = _pending.then((_) async {
+      await _load();
+      return body();
+    });
+    // The queue has to outlive a failed operation, so swallow the error here
+    // and hand it to the caller through [run] alone.
+    _pending = run.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return run;
+  }
+
   /// Apply [change] to the cache and persist it, or leave both as they were.
   ///
   /// The whole map is rewritten on every mutation, so the file alone is
@@ -263,43 +287,27 @@ class FileVaultStore implements VaultStore {
   /// holding a value the caller was told was never stored, which the next
   /// successful write would then commit on its behalf. Restoring the snapshot
   /// keeps the two in step.
-  ///
-  /// Mutations are queued rather than merely serialized by
-  /// [writeStringAtomically]: that queue orders the *writes*, while the
-  /// snapshot and the restore sit outside it. Two overlapping mutations would
-  /// otherwise let one that failed restore a snapshot taken before the other
-  /// committed, dropping an entry the caller was told was stored.
-  Future<void> _mutate(void Function() change) {
-    final run = _pending.then((_) async {
-      await _load();
-      final previous = Map<String, String>.from(_blobs);
-      try {
-        change();
-        await _flush();
-      } catch (_) {
-        _blobs
-          ..clear()
-          ..addAll(previous);
-        rethrow;
-      }
-    });
-    // The queue has to outlive a failed mutation, so swallow the error here
-    // and hand it to the caller through [run] alone.
-    _pending = run.then((_) {}, onError: (Object _, StackTrace __) {});
-    return run;
-  }
+  Future<void> _mutate(void Function() change) => _serialize(() async {
+        final previous = Map<String, String>.from(_blobs);
+        try {
+          change();
+          await _flush();
+        } catch (_) {
+          _blobs
+            ..clear()
+            ..addAll(previous);
+          rethrow;
+        }
+      });
 
   @override
-  Future<Uint8List?> getSecretBlob(String id) async {
-    // Reads join the queue rather than racing it. Connecting to a server
-    // resolves its credential while an auto-sync round may be writing one,
-    // and a read landing between a mutation's change and its flush would
-    // otherwise report a value that flush is about to roll back.
-    await _pending;
-    await _load();
-    final b64 = _blobs[id];
-    return b64 == null ? null : base64.decode(b64);
-  }
+  Future<Uint8List?> getSecretBlob(String id) => _serialize(() async {
+        // Connecting to a server resolves its credential while an auto-sync
+        // round may be writing one, so a read outside the queue could report
+        // a value the mutation's flush is about to roll back.
+        final b64 = _blobs[id];
+        return b64 == null ? null : base64.decode(b64);
+      });
 
   @override
   Future<void> putSecretBlob(String id, Uint8List blob) =>
