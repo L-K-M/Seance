@@ -41,14 +41,22 @@ paints an empty badge. Three kinds got through anyway:
 * **Combining marks** — an accent, the combining grapheme joiner, an enclosing
   keycap without its keycap.
 
+A fourth kind hides behind the same property but in the other direction:
+`Grapheme_Cluster_Break=Prepend` characters — U+0600 ARABIC NUMBER SIGN and its
+siblings, all invisible format characters — attach to what *follows* them
+(UAX #29 GB9b) rather than to what precedes.
+
 All of them share one property: the cluster has no base character, only the
 decorations that attach to one. That is now the rule, asked of the same
 grapheme engine rather than of a table of combining ranges that would go stale
-each Unicode revision — prepend a plain base character and see whether it
-absorbed the whole cluster. A subdivision flag, a ZWJ sequence, a keycap and a
-skin-toned emoji all keep working, which the existing tests pin; a lone
-skin-tone modifier is refused too, deliberately, since "the beige square" reads
-as a rendering failure on the next device.
+each Unicode revision — put a plain base character on each side of the cluster
+and see whether either one absorbed the whole thing. Both sides, because GB9/
+GB9a join backward and GB9b joins forward, and a probe on one side alone reads
+the other direction as a clean break. A subdivision flag, a ZWJ sequence, a
+keycap and a skin-toned emoji all keep working, which the existing tests pin;
+the visible-but-baseless cases — a lone skin-tone modifier, a lone spacing mark
+— are refused too, deliberately, since "the beige square" reads as a rendering
+failure on the next device.
 
 The picker's curated grid is now pinned against the normalizer as well: an
 entry it refused would have been a tile that silently did nothing when tapped.

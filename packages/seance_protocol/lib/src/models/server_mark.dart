@@ -209,20 +209,32 @@ const int _maxIconImageSide = 1024;
 /// from and has to stay legal *inside* a cluster.
 ///
 /// Tested by asking the same grapheme engine, rather than against a table of
-/// combining ranges that would go stale with each Unicode revision: prepend a
-/// plain base character and see whether it absorbed the whole cluster. If it
-/// did, the cluster was all Extend/ZWJ/SpacingMark and had no base of its own.
+/// combining ranges that would go stale with each Unicode revision: put a
+/// plain base character beside the cluster and see whether it absorbed the
+/// whole thing. If it did, the cluster had nothing of its own to break from.
 ///
-/// Deliberately strict about one visible case: a lone skin-tone modifier
-/// (U+1F3FB…U+1F3FF) paints a colour swatch on most platforms, and is refused
-/// here anyway. It is a modifier for the character before it, and a mark
-/// chosen as "the beige square" would look like a rendering failure on the
-/// next device.
+/// Both sides, because the decorations attach in both directions. Extend, ZWJ
+/// and SpacingMark join to what precedes them (UAX #29 GB9/GB9a), which the
+/// *prefix* probe catches. `Prepend` joins to what follows (GB9b), and a
+/// prefix probe reads it as a clean break — so U+0600 ARABIC NUMBER SIGN and
+/// its half-dozen siblings, every one an invisible format character, walked
+/// straight through. The *suffix* probe is what catches those. Nothing
+/// legitimate ends in a Prepend character, so no real emoji is affected: the
+/// flags, keycaps, ZWJ sequences, skin-toned faces and subdivision flags in
+/// this file's acceptance tests all still pass.
+///
+/// Deliberately strict about the visible cases too. A lone skin-tone modifier
+/// (U+1F3FB…U+1F3FF) paints a colour swatch on most platforms and a lone
+/// spacing mark (U+0903 DEVANAGARI SIGN VISARGA and friends) draws as itself;
+/// both are refused. Each is a decoration for a character that is not there,
+/// and a mark chosen as "the beige square" would look like a rendering failure
+/// on the next device.
 bool _hasBaseCharacter(String cluster) =>
-    '$_graphemeProbe$cluster'.characters.length > 1;
+    '$_graphemeProbe$cluster'.characters.length > 1 &&
+    '$cluster$_graphemeProbe'.characters.length > 1;
 
 /// A base character with no special grapheme-break behaviour, for
-/// [_hasBaseCharacter] to prepend.
+/// [_hasBaseCharacter] to put on either side of a cluster.
 const String _graphemeProbe = 'a';
 
 /// The stored form of an emoji mark: trimmed, and null when it is not one.

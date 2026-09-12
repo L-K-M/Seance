@@ -183,14 +183,28 @@ void main() {
       // badge draws nothing. The same holds for every combining character: it
       // renders only as part of the character before it, and here there is
       // none.
+      // Escaped rather than written literally, like the tests above: an
+      // invisible literal is one editor "cleanup" away from being a different
+      // test, and a reviewer cannot see which character it is.
       for (final baseless in [
-        '‍', // zero-width joiner, the carve-out the loop cannot re-catch
-        '️', // variation selector-16 (emoji presentation)
-        '︎', // variation selector-15 (text presentation)
-        '́', // combining acute accent
-        '͏', // combining grapheme joiner
-        '⃣', // combining enclosing keycap, without its keycap
-        '︠', // combining ligature left half
+        '\u200D', // zero-width joiner, the carve-out the loop cannot re-catch
+        '\uFE0F', // variation selector-16 (emoji presentation)
+        '\uFE0E', // variation selector-15 (text presentation)
+        '\u0301', // combining acute accent
+        '\u034F', // combining grapheme joiner
+        '\u20E3', // combining enclosing keycap, without its keycap
+        '\uFE20', // combining ligature left half
+        // These attach to what *follows* (UAX #29 GB9b) rather than to
+        // what precedes, so a probe on one side only reads them as a clean
+        // break. Every one is an invisible format character.
+        '\u0600', // Arabic number sign
+        '\u0605', // Arabic number mark above
+        '\u070F', // Syriac abbreviation mark
+        '\u0890', // Arabic pound mark above
+        '\u{110BD}', // Kaithi number sign
+        // Visible on its own, and refused anyway: a spacing mark decorates
+        // a character that is not here.
+        '\u0903', // Devanagari sign visarga
       ]) {
         expect(
           normalizeServerEmoji(baseless),
