@@ -53,19 +53,10 @@ Future<ServerMark?> showServerMarkPicker(
 }) {
   return showDialog<ServerMark>(
     context: context,
-    // Lifted above the soft keyboard: a dialog route does not resize for
-    // viewInsets, and both the icon search and the emoji field are inside a
-    // bounded box, so on a phone the keyboard would cover the lower half of
-    // whichever tab is being typed into. Zero on desktop.
-    builder: (context) => Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
-      child: _MarkPickerDialog(
-        current: current,
-        accent: accent,
-        readImage: readImage ?? _pickImageBytes,
-      ),
+    builder: (_) => _MarkPickerDialog(
+      current: current,
+      accent: accent,
+      readImage: readImage ?? _pickImageBytes,
     ),
   );
 }
@@ -110,7 +101,10 @@ class _MarkPickerDialog extends StatelessWidget {
       contentPadding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
       content: SizedBox(
         // Bounded so the dialog is the same shape whichever tab is open and
-        // however many glyphs a later version adds.
+        // however many glyphs a later version adds. A fixed height is safe
+        // because `SizedBox` clamps its own request to the incoming
+        // constraints: measured clean from 390x420 up, and with the soft
+        // keyboard taking anything up to 520 of an 800-tall phone.
         width: 460,
         height: 520,
         child: DefaultTabController(
@@ -382,28 +376,42 @@ class _EmojiTabState extends State<_EmojiTab> {
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            '$_shortcutHint An emoji is drawn with the system\u2019s own emoji '
-            'font, so a device without one shows a box — the icon chosen under '
-            'Icons is what it falls back to there.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const Divider(height: 24),
+          // The prose scrolls with the grid rather than sitting above it. Kept
+          // out of the Column's fixed part because it wraps to three or four
+          // lines on a phone: pinned, it starved the Expanded below and the
+          // column overflowed (measured 16 pixels at 390x800 with the
+          // keyboard up). The field stays pinned, which is the part being
+          // typed into.
           Expanded(
             child: SingleChildScrollView(
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (final emoji in kCuratedServerEmoji)
-                    _MarkChoice(
-                      accent: widget.accent,
-                      mark: ServerEmojiMark(emoji, fallback: _fallback),
-                      label: emoji,
-                      selected: widget.current is ServerEmojiMark &&
-                          normalizeServerEmoji(_typed.text) == emoji,
-                    ),
+                  const SizedBox(height: 8),
+                  Text(
+                    // No leading space when the hint is empty, which is what
+                    // web reports.
+                    '${_shortcutHint.isEmpty ? '' : '$_shortcutHint '}'
+                    'An emoji is drawn with the system\u2019s own emoji font, '
+                    'so a device without one shows a box — the icon chosen '
+                    'under Icons is what it falls back to there.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const Divider(height: 24),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final emoji in kCuratedServerEmoji)
+                        _MarkChoice(
+                          accent: widget.accent,
+                          mark: ServerEmojiMark(emoji, fallback: _fallback),
+                          label: emoji,
+                          selected: widget.current is ServerEmojiMark &&
+                              normalizeServerEmoji(_typed.text) == emoji,
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -442,6 +450,9 @@ class _ImageTabState extends State<_ImageTab> {
     try {
       final source = await widget.readImage();
       if (source == null) return;
+      // The dialog can be dismissed while the platform picker covers the
+      // app; skip decoding an image nobody will be shown.
+      if (!mounted) return;
       final result = await encodeBadgeImage(
         source,
         maxBytes: kMaxServerIconImageBytes,

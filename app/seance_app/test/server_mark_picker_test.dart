@@ -354,6 +354,32 @@ void main() {
     });
   });
 
+  testWidgets('the dialog fits a phone with the keyboard up', (tester) async {
+    // Two defects lived here. `Dialog` already pads by
+    // MediaQuery.viewInsets, so padding for the keyboard again overflowed
+    // the column by 8 pixels; and the emoji tab pinned three lines of prose
+    // above its Expanded grid, starving it by another 16. Both were measured
+    // before the fix, on the geometry below.
+    tester.view.physicalSize = const Size(390, 800);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    addTearDown(tester.view.reset);
+
+    for (final mark in <ServerMark>[
+      const ServerGlyphMark(null),
+      ServerEmojiMark('\u{1F680}'),
+    ]) {
+      await open(tester, current: mark);
+      expect(
+        tester.takeException(),
+        isNull,
+        reason: 'no overflow with the keyboard up on $mark',
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await tester.pumpAndSettle();
+    }
+  });
+
   testWidgets('the previews carry the colour the server actually uses', (
     tester,
   ) async {

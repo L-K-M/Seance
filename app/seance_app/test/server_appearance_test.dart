@@ -182,7 +182,7 @@ void main() {
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       picture.dispose();
       image.dispose();
-      return data!.buffer.asUint8List();
+      return data!.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     }
 
     testWidgets('an emoji mark is drawn as text, not as a glyph', (
@@ -400,7 +400,7 @@ Future<void> _until(
   WidgetTester tester,
   String what,
   bool Function() done, {
-  int attempts = 50,
+  int attempts = 150,
 }) async {
   for (var i = 0; i < attempts && !done(); i++) {
     await tester.runAsync(

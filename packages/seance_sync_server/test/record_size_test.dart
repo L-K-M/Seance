@@ -16,6 +16,12 @@ void main() {
     // signature, an IHDR declaring the 256 px square the app stores at, then
     // incompressible filler. Incompressible is the honest case for a ceiling —
     // a real 256 px photograph measures around 53 KiB.
+    // The same layout pngHeader() builds in
+    // packages/seance_protocol/test/server_mark_test.dart (signature, chunk
+    // length 13, "IHDR", dimensions at fixed offsets). If the protocol's PNG
+    // validation tightens, this fixture has to move with it — otherwise
+    // encodeServerIconImage returns null here and the failure reads as "the
+    // cap must admit its own maximum", which is not what broke.
     const header = [
       0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
       0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, // chunk length 13, "IHDR"

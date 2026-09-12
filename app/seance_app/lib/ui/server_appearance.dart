@@ -100,7 +100,7 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.hub_outlined, 'Cluster', keywords: 'kubernetes k8s swarm nodes',
   ),
   ServerIcon.vm => const _Glyph(
-    Icons.memory, 'Virtual machine', keywords: 'vps kvm hypervisor guest',
+    Icons.memory, 'Virtual machine', keywords: 'vm vps kvm hypervisor guest',
   ),
   ServerIcon.desktop => const _Glyph(
     Icons.desktop_windows_outlined, 'Desktop', keywords: 'workstation pc',
@@ -297,7 +297,7 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.business_outlined, 'Office', keywords: 'company headquarters',
   ),
   ServerIcon.plant => const _Glyph(
-    Icons.factory_outlined, 'Factory', keywords: 'industrial works',
+    Icons.factory_outlined, 'Factory', keywords: 'plant industrial works',
   ),
   ServerIcon.cottage => const _Glyph(
     Icons.cottage_outlined, 'Cabin', keywords: 'cottage retreat',
@@ -311,10 +311,10 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     keywords: 'star starred favorite important',
   ),
   ServerIcon.favourite => const _Glyph(
-    Icons.favorite_outline, 'Loved', keywords: 'heart',
+    Icons.favorite_outline, 'Loved', keywords: 'heart favourite favorite',
   ),
   ServerIcon.bolt => const _Glyph(
-    Icons.bolt, 'Fast', keywords: 'quick lightning',
+    Icons.bolt, 'Fast', keywords: 'bolt quick lightning',
   ),
   ServerIcon.hot => const _Glyph(
     Icons.local_fire_department_outlined, 'Hot',
@@ -327,7 +327,7 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.visibility_outlined, 'Watched', keywords: 'observe eye',
   ),
   ServerIcon.caution => const _Glyph(
-    Icons.warning_amber_outlined, 'Careful', keywords: 'warning danger fragile',
+    Icons.warning_amber_outlined, 'Careful', keywords: 'caution warning danger fragile',
   ),
   ServerIcon.magic => const _Glyph(
     Icons.auto_awesome_outlined, 'Special', keywords: 'magic sparkle',
@@ -342,7 +342,7 @@ _Glyph _glyph(ServerIcon icon) => switch (icon) {
     Icons.anchor, 'Anchor', keywords: 'stable fixed harbour',
   ),
   ServerIcon.eco => const _Glyph(
-    Icons.eco_outlined, 'Green', keywords: 'leaf efficient',
+    Icons.eco_outlined, 'Green', keywords: 'eco leaf efficient',
   ),
 };
 
@@ -368,7 +368,10 @@ bool serverIconMatches(ServerIcon? icon, String query) {
   final terms = query.toLowerCase().split(RegExp(r'\s+'))
     ..removeWhere((term) => term.isEmpty);
   if (terms.isEmpty) return true;
-  if (icon == null) return terms.every('default'.contains);
+  // 'server' too: the default row draws the same glyph as ServerIcon.server,
+  // so hiding it from that search hides the reset option exactly when
+  // someone is browsing server-shaped icons.
+  if (icon == null) return terms.every('default server'.contains);
   final glyph = _glyph(icon);
   // Lower-cased here rather than relying on the table being written that way,
   // so one capitalised keyword cannot silently drop out of search.

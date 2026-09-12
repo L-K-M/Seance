@@ -762,6 +762,30 @@ void main() {
       );
     });
 
+    testWidgets('a drag that starts in the void and sweeps up takes the output',
+        (tester) async {
+      // The mirror of the case below: the *press* lands past every row, so the
+      // drag's start anchor is the clamped one and `to` lands before it. The
+      // reversed range has to normalize, or sweeping up from under the prompt
+      // selects nothing.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await drag(tester, cellCenter(tester, 30, 9), cellCenter(tester, 0, 0));
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'alpha\nbravo',
+        reason: 'the clamped start anchor is the far end of a reversed range',
+      );
+    });
+
     testWidgets('a drag out of the output ends where the output does',
         (tester) async {
       final terminal = Terminal();

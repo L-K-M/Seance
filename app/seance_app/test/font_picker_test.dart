@@ -104,6 +104,20 @@ void main() {
     );
   });
 
+  testWidgets('the family in force survives the fixed-pitch filter', (
+    tester,
+  ) async {
+    // The dialog starts filtered and the flag is the font's own, so a face
+    // that is fixed-pitch without declaring it — typed into the free-text
+    // field — would open the picker with nothing selected, reading as "your
+    // font is not installed".
+    await open(tester, current: 'Cantarell');
+    expect(find.text('Cantarell'), findsOneWidget);
+    expect(find.byIcon(Icons.check), findsOneWidget);
+    // Still filtered for everything else.
+    expect(find.text('Iosevka Term'), findsOneWidget);
+  });
+
   testWidgets('the built-in stack is its own choice', (tester) async {
     await open(tester, current: 'Hack');
     await tester.tap(find.text('Use built-in stack'));

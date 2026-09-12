@@ -102,7 +102,7 @@ would have overflowed on two dozen of them — fewer beside the rest of a dirty
 set — taking a 413 for the whole push rather than a refusal of any one record.
 That is closed: `batchForPush` (landed separately) splits a push to the
 server's advertised body and record limits, measured on the encoded body. A
-cap-sized config is a fortieth of the body budget, so an image record always
+cap-sized config is a twenty-fourth of the body budget, so an image record always
 fits a batch, and the sizing above now only has to clear the *per-record*
 limit.
 

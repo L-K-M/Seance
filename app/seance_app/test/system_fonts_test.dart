@@ -49,7 +49,11 @@ void main() {
       final bytes = encode(value);
       u16(records, platformId);
       u16(records, platformId == 1 ? 0 : 1);
-      u16(records, platformId == 1 ? 0 : languageId);
+      // 0x0409 is this builder's "English" marker, which Macintosh spells
+      // as 0; any other (localized) id has to survive the platform switch, or
+      // a future localized-Mac test would silently get bytes it did not ask
+      // for.
+      u16(records, platformId == 1 && languageId == 0x0409 ? 0 : languageId);
       u16(records, nameId);
       u16(records, bytes.length);
       u16(records, strings.length);
@@ -434,6 +438,49 @@ void main() {
       final fonts = SfntSystemFonts(roots: [directory]);
       final families = await fonts.families();
       expect(families.map((f) => f.name), ['Cantarell', 'Hack']);
+    });
+
+    test('the surviving spelling does not ride on creation order', () async {
+      // The same collision as above with the files written the other way
+      // round. Both passing is what proves the survivor comes from the
+      // spelling rule rather than from whichever order Directory.list yields.
+      await File('${directory.path}/b.ttf').writeAsBytes(
+        sfnt(family: 'JETBRAINS MONO', fixedPitchFlag: true),
+      );
+      await File('${directory.path}/a.ttf').writeAsBytes(
+        sfnt(family: 'JetBrains Mono'),
+      );
+      final families = await SfntSystemFonts(roots: [directory]).families();
+      expect(families.single.name, 'JetBrains Mono');
+    });
+
+    test('a face carrying only the typographic name is still listed',
+        () async {
+      // Wide-family and subsetted faces can ship nameID 16 without nameID 1;
+      // preferring 16 must not mean requiring 1.
+      final families = await read(
+        'a.ttf',
+        sfnt(family: null, typographicFamily: 'Source Han Sans'),
+      );
+      expect(families.single.name, 'Source Han Sans');
+    });
+
+    test('a FIFO named like a font does not hang the scan',
+        skip: Platform.isWindows ? 'mkfifo is POSIX-only' : null, () async {
+      // Directory.list reports a FIFO as a File, and opening one read-only
+      // blocks until a writer appears — dart:io passes no O_NONBLOCK, so the
+      // scan never returns and `families()` memoizes the hang. Measured
+      // before the fix: killed at 15 s with no result.
+      final fifo = '${directory.path}/evil.ttf';
+      final made = await Process.run('mkfifo', [fifo]);
+      if (made.exitCode != 0) return; // no mkfifo on this host
+      await File('${directory.path}/real.ttf').writeAsBytes(
+        sfnt(family: 'Hack'),
+      );
+      final families = await SfntSystemFonts(roots: [directory])
+          .families()
+          .timeout(const Duration(seconds: 10));
+      expect(families.map((f) => f.name), ['Hack']);
     });
 
     test('the walk stops on non-font files, not just parsed fonts', () async {

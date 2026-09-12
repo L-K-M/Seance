@@ -239,7 +239,8 @@ String? normalizeServerEmoji(String? emoji) {
         (unit >= 0x200E && unit <= 0x200F) || // LRM, RLM
         (unit >= 0x202A && unit <= 0x202E) || // embeddings and overrides
         (unit >= 0x2060 && unit <= 0x2064) || // word joiner, invisible ops
-        (unit >= 0x2066 && unit <= 0x2069) || // isolates
+        unit == 0x180E || // Mongolian vowel separator
+        (unit >= 0x2066 && unit <= 0x206F) || // isolates, deprecated Cf
         unit == 0xFEFF) {
       return null;
     }
@@ -257,7 +258,13 @@ String? normalizeServerIconImage(String? base64Png) {
   if (base64Png == null) return null;
   final trimmed = base64Png.trim();
   if (trimmed.isEmpty) return null;
-  return decodeServerIconImage(trimmed) == null ? null : trimmed;
+  // Validated without touching the cache. This runs on the *write* path —
+  // `stored` calls it on every `toJson` — and inserting there would charge the
+  // byte budget for images nothing is displaying, then clear the whole cache
+  // when it tripped, evicting the badges currently on screen and re-decoding
+  // every one of them on the next frame. Exactly the jank the cache exists to
+  // prevent, caused by a path that never renders.
+  return _validateIconImage(trimmed) == null ? null : trimmed;
 }
 
 /// Decoded image marks, keyed by the stored form they came from.
@@ -294,6 +301,22 @@ int _decodedIconImageBytes = 0;
 Uint8List? decodeServerIconImage(String base64Png) {
   final cached = _decodedIconImages[base64Png];
   if (cached != null) return cached;
+  final bytes = _validateIconImage(base64Png);
+  if (bytes == null) return null;
+  if (_decodedIconImages.length >= _decodedIconImageLimit ||
+      _decodedIconImageBytes + bytes.length > _decodedIconImageByteLimit) {
+    _decodedIconImages.clear();
+    _decodedIconImageBytes = 0;
+  }
+  _decodedIconImageBytes += bytes.length;
+  return _decodedIconImages[base64Png] = bytes.asUnmodifiableView();
+}
+
+/// Every rule a stored image must satisfy, with no cache involvement.
+///
+/// Split out so the write path can validate without charging the render
+/// cache — see [normalizeServerIconImage].
+Uint8List? _validateIconImage(String base64Png) {
   // A base64 length ceiling before decoding, so a megabyte of text is refused
   // without being expanded first.
   if (base64Png.length > (kMaxServerIconImageBytes + 2) ~/ 3 * 4 + 4) {
@@ -328,13 +351,7 @@ Uint8List? decodeServerIconImage(String base64Png) {
   final height = header.getUint32(_ihdrHeight);
   if (width == 0 || height == 0) return null;
   if (width > _maxIconImageSide || height > _maxIconImageSide) return null;
-  if (_decodedIconImages.length >= _decodedIconImageLimit ||
-      _decodedIconImageBytes + bytes.length > _decodedIconImageByteLimit) {
-    _decodedIconImages.clear();
-    _decodedIconImageBytes = 0;
-  }
-  _decodedIconImageBytes += bytes.length;
-  return _decodedIconImages[base64Png] = bytes.asUnmodifiableView();
+  return bytes;
 }
 
 /// Base64 for storing [png] as an image mark, or null when it is too big or

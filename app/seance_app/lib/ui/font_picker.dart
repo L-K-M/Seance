@@ -76,9 +76,18 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
 
   List<SystemFontFamily> _visible(List<SystemFontFamily> all) {
     final query = _search.text.trim().toLowerCase();
+    final current = widget.current.trim().toLowerCase();
     return [
       for (final family in all)
-        if ((!_monospaceOnly || family.monospaced) &&
+        // The family in force is never filtered out by the pitch chip. The
+        // dialog starts filtered, and the flag is the font's own — so a
+        // fixed-pitch face that does not declare itself one, typed into the
+        // free-text field, would open the picker with nothing selected and
+        // read as "your font is not installed".
+        if ((!_monospaceOnly ||
+                family.monospaced ||
+                (current.isNotEmpty &&
+                    family.name.toLowerCase() == current)) &&
             (query.isEmpty || family.name.toLowerCase().contains(query)))
           family,
     ];

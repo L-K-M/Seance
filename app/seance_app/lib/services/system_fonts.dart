@@ -75,9 +75,10 @@ class SfntSystemFonts implements SystemFonts {
 
   /// Stop after visiting this many filesystem entities, fonts or not.
   ///
-  /// [maxFiles] counts only what parses as a font, so on its own it does not
-  /// bound the walk: symlinks are followed, and a directory link out of the
-  /// font roots would be enumerated in full without ever incrementing it.
+  /// [maxFiles] counts only files that carry a font extension — not even
+  /// that they parsed — so on its own it does not bound the walk: symlinks
+  /// are followed, and a directory link out of the font roots would be
+  /// enumerated in full without ever incrementing it.
   static const int maxVisitedEntities = maxFiles * 50;
 
   // Resource-fork `.dfont` faces (macOS) and Type 1 `.pfa`/`.pfb` families are
@@ -114,9 +115,17 @@ class SfntSystemFonts implements SystemFonts {
     final home = env['HOME'] ?? '';
     if (Platform.isLinux) {
       final dataHome = env['XDG_DATA_HOME'];
+      // XDG_DATA_DIRS as well as the two conventional paths: on NixOS the
+      // system fonts live under /run/current-system/sw/share, and inside a
+      // Flatpak under /app/share — neither of which is /usr. Its spec default
+      // is the two paths listed first, so a host that does not set it is
+      // unchanged.
+      final dataDirs = env['XDG_DATA_DIRS'] ?? '';
       return _existing([
         '/usr/share/fonts',
         '/usr/local/share/fonts',
+        for (final dir in dataDirs.split(':'))
+          if (dir.isNotEmpty) '$dir/fonts',
         if (dataHome != null && dataHome.isNotEmpty) '$dataHome/fonts',
         if (home.isNotEmpty) '$home/.local/share/fonts',
         if (home.isNotEmpty) '$home/.fonts',
@@ -259,6 +268,16 @@ int _capitals(String value) {
 /// holds some file this build cannot read, and one of them must not cost the
 /// rest of the list.
 Future<List<SystemFontFamily>> readSfntFamilies(File file) async {
+  // Only regular files are opened. `Directory.list` reports a FIFO as a
+  // `File`, and opening one read-only blocks until a writer appears —
+  // dart:io passes no O_NONBLOCK, so `open` never returns. Measured: a
+  // `mkfifo ~/.fonts/evil.ttf` hangs the scan indefinitely, and since
+  // `families()` memoizes the future, every later read replays the hang and
+  // the picker is dead for the life of the process. That is past every
+  // budget this file sets, so it has to be refused before the open.
+  if (await FileSystemEntity.type(file.path) != FileSystemEntityType.file) {
+    return const [];
+  }
   RandomAccessFile? handle;
   try {
     handle = await file.open();
