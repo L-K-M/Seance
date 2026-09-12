@@ -108,6 +108,34 @@ class MasterKeyManager {
     }
   }
 
+  /// The master key the OS keystore actually holds right now, or null when it
+  /// holds none, cannot be read, or holds something undecodable.
+  ///
+  /// Unlike [probeKeystore] this never *creates* one, which is what makes it
+  /// usable as a witness: a failed [setKeystoreKey] needs to know which key
+  /// survived, and a probe that mints a fresh key when it finds none would
+  /// answer with a key nothing has ever sealed anything with. Every failure
+  /// reads as null — "cannot tell" — which callers must treat as the
+  /// conservative case rather than as "empty".
+  ///
+  /// Deliberately the one read here that reports *nothing* about keystore
+  /// health. It is called from inside a catch handling a keystore failure
+  /// that has already recorded its own diagnosis, and [_markAvailable] clears
+  /// [lastKeystoreError]: a witness that marked would erase the
+  /// `KeyringLocked` the write just recorded — the very thing the retry
+  /// affordance keys off — because a *read* happened to work a moment later.
+  /// Marking unavailable is no better: a row that will not base64-decode is a
+  /// data problem, not an outage, and would be reported to every other
+  /// consumer as one.
+  Future<List<int>?> readKeystoreKey() async {
+    try {
+      final existing = await _storage.read(key: _keyName);
+      return existing == null ? null : base64.decode(existing);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Whether a master key is stored. Tolerant like [getApiKey]: a keystore
   /// that throws reads as "no key", not as a crash.
   Future<bool> hasKeystoreKey() async {

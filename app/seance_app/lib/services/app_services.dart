@@ -258,6 +258,50 @@ class AppServices {
       // to put the file back rather than leave the two disagreeing.
       await masterKeys.setKeystoreKey(newKey);
     } catch (_) {
+      // A refused install is not the only way this throws. A keyring can
+      // accept the write and still fail on the way out, leaving the new key
+      // installed — and then putting the file back under the old key is the
+      // very disagreement this catch exists to prevent, only inverted: the
+      // next launch would read the new key out of the keystore and find a
+      // file sealed with the old one, which is the unreadable-vault state.
+      // So ask the keystore which key it actually holds rather than assuming
+      // the throw means nothing landed.
+      //
+      // Null covers both "holds none" and "could not be read" — a locked
+      // keyring cannot answer — and both take the rollback below.
+      //
+      // Not because a wrong rollback is the recoverable one. The two wrong
+      // choices are symmetric: roll back when the install *did* commit and
+      // the next launch reads the new key against a file sealed with the
+      // old; keep when it did *not* and it reads the old key against a file
+      // sealed with the new. Either leaves the vault unreadable, and
+      // retrying enrolment cannot repair either, because enrolment has to
+      // read the vault it is re-keying. What decides it is which case is
+      // likelier: a keyring too locked to answer a *read* almost certainly
+      // refused the *write* a moment earlier, so "it did not commit" is the
+      // better bet by a wide margin.
+      //
+      // The residual, stated rather than left to be rediscovered: a keyring
+      // that accepted the write and then locked before this read cannot
+      // testify, so the file goes back to the old key while the keystore
+      // holds the new one — the divergence this catch exists to prevent. It
+      // is what the code did unconditionally before there was a witness at
+      // all, so this narrows the window rather than opening it, and the
+      // rollback does not touch the keystore (there is nothing here to put
+      // back). Closing it needs the recovery journal on `FileVaultStore`,
+      // which stages both generations so the next launch can pick the one
+      // matching whichever key survived.
+      final installed = await masterKeys.readKeystoreKey();
+      if (installed != null && _sameKey(installed, newKey)) {
+        // The install committed. The file is already sealed with this key, so
+        // the two agree and there is nothing to put back. Adopt it here too,
+        // or this session would keep reading through a vault whose key the
+        // file no longer uses. The error still reaches the caller: enrolment
+        // did not finish, and the caller decides what to say about that.
+        vault = newVault;
+        vaultKey = newKey;
+        rethrow;
+      }
       try {
         await previousVault.putSecrets(secrets);
       } catch (error, stackTrace) {
@@ -284,6 +328,20 @@ class AppServices {
     }
     vault = newVault;
     vaultKey = newKey;
+  }
+
+  /// Whether two master keys are the same bytes.
+  ///
+  /// Not constant-time on purpose: both operands are this process's own keys,
+  /// compared to decide which of its own writes landed. There is no attacker
+  /// supplying either side, so there is no timing channel to close — and a
+  /// constant-time helper here would suggest otherwise to the next reader.
+  static bool _sameKey(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   Future<({List<int> authVerifier, List<int> vaultKey})> _deriveSyncKeys({
