@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/services/app_settings.dart';
 import 'package:seance_app/services/external_file_opener.dart';
+import 'package:seance_app/ui/server_list_density.dart';
 
 void main() {
   test('checkForUpdates defaults on and round-trips through JSON', () {
@@ -240,6 +241,55 @@ void main() {
     final wrongShape = AppSettings().toJson()
       ..['collapsedServerGroups'] = 'production';
     expect(AppSettings.fromJson(wrongShape).collapsedServerGroups, isEmpty);
+  });
+
+  test('pinned server ids round-trip and are stored sorted', () {
+    expect(AppSettings().pinnedServerIds, isEmpty);
+
+    final settings = AppSettings(pinnedServerIds: {'s3', 's1', 's2'});
+    final json = settings.toJson();
+    expect(json['pinnedServerIds'], ['s1', 's2', 's3']);
+    expect(AppSettings.fromJson(json).pinnedServerIds, {'s1', 's2', 's3'});
+  });
+
+  test('a missing or malformed pin list reads as empty', () {
+    final missing = AppSettings().toJson()..remove('pinnedServerIds');
+    expect(AppSettings.fromJson(missing).pinnedServerIds, isEmpty);
+
+    // Same tolerance as the folded sections: a hand-edited or downgraded file
+    // costs the pins it mangled, not the whole settings load.
+    final messy = AppSettings().toJson()
+      ..['pinnedServerIds'] = ['s1', 7, null, 's1'];
+    expect(AppSettings.fromJson(messy).pinnedServerIds, {'s1'});
+
+    final wrongShape = AppSettings().toJson()..['pinnedServerIds'] = 's1';
+    expect(AppSettings.fromJson(wrongShape).pinnedServerIds, isEmpty);
+  });
+
+  test('the server list density defaults comfortable and round-trips', () {
+    expect(AppSettings().serverListDensity, ServerListDensity.comfortable);
+
+    final compact = AppSettings(serverListDensity: ServerListDensity.compact);
+    expect(compact.toJson()['serverListDensity'], 'compact');
+    expect(
+      AppSettings.fromJson(compact.toJson()).serverListDensity,
+      ServerListDensity.compact,
+    );
+
+    // A density a later version added, or a hand-edited nonsense value, falls
+    // back to the default rather than failing the load.
+    final unknown = AppSettings().toJson()
+      ..['serverListDensity'] = 'microscopic';
+    expect(
+      AppSettings.fromJson(unknown).serverListDensity,
+      ServerListDensity.comfortable,
+    );
+
+    final missing = AppSettings().toJson()..remove('serverListDensity');
+    expect(
+      AppSettings.fromJson(missing).serverListDensity,
+      ServerListDensity.comfortable,
+    );
   });
 
   test('pane widths round-trip and default to unset', () {

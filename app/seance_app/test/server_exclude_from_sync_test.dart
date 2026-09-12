@@ -36,6 +36,8 @@ void main() {
               onDelete: () {},
               onDisconnect: () {},
               onReconnect: null,
+              pinned: false,
+              onTogglePin: () {},
             ),
           ),
         ),
