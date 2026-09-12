@@ -95,16 +95,16 @@ at the cap with every other field at its longest seals to 258 KiB, a quarter of
 what is allowed, which `record_size_test.dart` asserts against the server's real
 setting rather than against arithmetic.
 
-The other server-side limit, 8 MiB per *request*, is the one an image can
-reach today: `SyncEngine._pushOnce` still sends every dirty record in one push,
-and the blob is base64 on the wire, so a cap-sized config costs about 344 KiB
-of request body. Two dozen such servers dirty at once overflow the request — or
-fewer beside the rest of a dirty set, since one push carries every dirty record
-of every kind — and the server rejects the whole push with 413 rather than
-refusing any one record.
-Those records stay dirty, so every later sync re-sends the same oversized body
-and that device stops converging. The fix is to batch by size in `_pushOnce`;
-it is tracked separately.
+The other server-side limit, 8 MiB per *request*, was the one an image could
+have reached: the blob is base64 on the wire, so a cap-sized config costs about
+344 KiB of request body, and a push that carried every dirty record at once
+would have overflowed on two dozen of them — fewer beside the rest of a dirty
+set — taking a 413 for the whole push rather than a refusal of any one record.
+That is closed: `batchForPush` (landed separately) splits a push to the
+server's advertised body and record limits, measured on the encoded body. A
+cap-sized config is a fortieth of the body budget, so an image record always
+fits a batch, and the sizing above now only has to clear the *per-record*
+limit.
 
 Every import is re-encoded rather than trusted: cropped square (the badge draws
 edge to edge, and letterboxing reads as a broken image), scaled to at most 256
