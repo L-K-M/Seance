@@ -195,6 +195,14 @@ void main() {
     for (var i = 0; i < 5; i++) {
       await store.putLocal(record('r$i', blobBytes: 128));
     }
+    // A blob of *exactly* the cap, alongside one past it. Both sides compare
+    // strictly, so this one batches normally and the server takes it — and
+    // that agreement is what the record beside it depends on. Were either side
+    // to read the boundary the other way, an at-cap record would ride in a
+    // normal batch and its 413 would take that whole batch down: this bug
+    // again, at the one value no test would otherwise reach. The body cap has
+    // the same guard a few tests up, for the same reason.
+    await store.putLocal(record('exact', blobBytes: 4 * 1024));
     await store.putLocal(record('huge', blobBytes: 8 * 1024));
 
     await expectLater(
@@ -208,9 +216,9 @@ void main() {
     final onServer = await client.pull(since: 0);
     expect(
       onServer.records.map((r) => r.id).toSet(),
-      {for (var i = 0; i < 5; i++) 'r$i'},
-      reason: 'every record that fits the cap must reach the server; only the '
-          'one past it stays behind',
+      {for (var i = 0; i < 5; i++) 'r$i', 'exact'},
+      reason: 'every record that fits the cap must reach the server, the one '
+          'exactly at it included; only the one past it stays behind',
     );
     expect(
       (await store.dirtyRecords()).map((r) => r.id),
