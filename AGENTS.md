@@ -314,7 +314,7 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 706 Dart tests + 595 Flutter tests + 200 in the vendored xterm fork.
+- 706 Dart tests + 596 Flutter tests + 200 in the vendored xterm fork.
   `dart analyze` and the app's `flutter analyze` are clean; the vendored
   fork carries 11 upstream `info` lints and is deliberately not analyze-
   gated in CI (only its tests run).

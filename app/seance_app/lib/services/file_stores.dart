@@ -216,6 +216,7 @@ class FileVaultStore implements VaultStore {
   final File file;
   final Map<String, String> _blobs = {}; // id -> base64
   bool _loaded = false;
+  Future<void> _pending = Future<void>.value();
 
   FileVaultStore(this.file);
 
@@ -245,18 +246,30 @@ class FileVaultStore implements VaultStore {
   /// holding a value the caller was told was never stored, which the next
   /// successful write would then commit on its behalf. Restoring the snapshot
   /// keeps the two in step.
-  Future<void> _mutate(void Function() change) async {
-    await _load();
-    final previous = Map<String, String>.from(_blobs);
-    change();
-    try {
-      await _flush();
-    } catch (_) {
-      _blobs
-        ..clear()
-        ..addAll(previous);
-      rethrow;
-    }
+  ///
+  /// Mutations are queued rather than merely serialized by
+  /// [writeStringAtomically]: that queue orders the *writes*, while the
+  /// snapshot and the restore sit outside it. Two overlapping mutations would
+  /// otherwise let one that failed restore a snapshot taken before the other
+  /// committed, dropping an entry the caller was told was stored.
+  Future<void> _mutate(void Function() change) {
+    final run = _pending.then((_) async {
+      await _load();
+      final previous = Map<String, String>.from(_blobs);
+      change();
+      try {
+        await _flush();
+      } catch (_) {
+        _blobs
+          ..clear()
+          ..addAll(previous);
+        rethrow;
+      }
+    });
+    // The queue has to outlive a failed mutation, so swallow the error here
+    // and hand it to the caller through [run] alone.
+    _pending = run.then((_) {}, onError: (Object _, StackTrace __) {});
+    return run;
   }
 
   @override

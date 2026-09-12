@@ -134,8 +134,15 @@ abstract class VaultStore {
   /// Implementations must leave the stored state untouched when this throws.
   ///
   /// Entries not named in [blobs] are left alone rather than dropped: a vault
-  /// may hold a credential no current config references, and a re-key is not
-  /// the place to decide such an entry is garbage.
+  /// may hold a credential no current config references, and a batch write is
+  /// not the place to decide such an entry is garbage. Left alone is not the
+  /// same as left working, and re-keying inherits the difference: an entry no
+  /// batch names keeps the retired key and stops opening once the keystore
+  /// holds the new one. That predates batching — the loop this replaced
+  /// re-sealed exactly the same referenced set — and re-sealing every stored
+  /// id instead needs a decision this interface should not make, about an
+  /// orphan that no longer decrypts at all. Dropping them here would only
+  /// turn an unreadable credential into a deleted one.
   Future<void> putSecretBlobs(Map<String, Uint8List> blobs);
 
   Future<Uint8List?> getSecretBlob(String id);
