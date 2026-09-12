@@ -215,23 +215,40 @@ class FileTombstoneStore implements TombstoneStore {
 class FileVaultStore implements VaultStore {
   final File file;
   final Map<String, String> _blobs = {}; // id -> base64
-  bool _loaded = false;
+  Future<void>? _loading;
   Future<void> _pending = Future<void>.value();
 
   FileVaultStore(this.file);
 
+  /// Memoized, because the flag this replaced was only set after the reads:
+  /// two first-time callers both ran the body, and the one that finished last
+  /// repopulated the cache from the file as it was before the other's
+  /// mutation committed — putting back an entry that mutation had deleted,
+  /// for the next flush to persist.
   Future<void> _load() async {
-    if (_loaded) return;
-    if (await file.exists()) {
-      try {
-        final map = jsonDecode(await file.readAsString()) as Map;
-        map.forEach((k, v) => _blobs[k as String] = v as String);
-      } catch (_) {
-        _blobs.clear();
-        await quarantineCorruptFile(file);
-      }
+    final pending = _loading;
+    if (pending != null) return pending;
+    final started = _read();
+    _loading = started;
+    try {
+      await started;
+    } catch (_) {
+      // A load that failed outright is not cached: the next caller tries the
+      // file again rather than inheriting the failure for the whole session.
+      _loading = null;
+      rethrow;
     }
-    _loaded = true;
+  }
+
+  Future<void> _read() async {
+    if (!await file.exists()) return;
+    try {
+      final map = jsonDecode(await file.readAsString()) as Map;
+      map.forEach((k, v) => _blobs[k as String] = v as String);
+    } catch (_) {
+      _blobs.clear();
+      await quarantineCorruptFile(file);
+    }
   }
 
   Future<void> _flush() async {
@@ -256,8 +273,8 @@ class FileVaultStore implements VaultStore {
     final run = _pending.then((_) async {
       await _load();
       final previous = Map<String, String>.from(_blobs);
-      change();
       try {
+        change();
         await _flush();
       } catch (_) {
         _blobs
@@ -274,6 +291,11 @@ class FileVaultStore implements VaultStore {
 
   @override
   Future<Uint8List?> getSecretBlob(String id) async {
+    // Reads join the queue rather than racing it. Connecting to a server
+    // resolves its credential while an auto-sync round may be writing one,
+    // and a read landing between a mutation's change and its flush would
+    // otherwise report a value that flush is about to roll back.
+    await _pending;
     await _load();
     final b64 = _blobs[id];
     return b64 == null ? null : base64.decode(b64);
