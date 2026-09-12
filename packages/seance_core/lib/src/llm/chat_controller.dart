@@ -103,6 +103,7 @@ class ChatController {
   final int maxToolIterations;
 
   final List<LlmMessage> _history = [];
+  int _generation = 0;
 
   ChatController({
     required this.provider,
@@ -122,7 +123,15 @@ class ChatController {
 
   /// Send a user message. [terminalContext], if provided, is redacted and
   /// prepended as untrusted context for this turn only.
-  Future<ChatResult> send(String userText, {String? terminalContext}) async {
+  /// [onPaste] overrides the default stager for this turn, so a retained
+  /// conversation can target the session that originated each request.
+  Future<ChatResult> send(
+    String userText, {
+    String? terminalContext,
+    PasteStager? onPaste,
+  }) async {
+    final generation = _generation;
+    final stage = onPaste ?? this.onPaste;
     final sent = <SentContext>[];
     final searches = <String>[];
     final staged = <String>[];
@@ -142,15 +151,23 @@ class ChatController {
     // Redact the user's own message too, in case they pasted a secret.
     userContent = redactor.redact(userContent);
     sent.add(SentContext('user message', userContent));
-    _history.add(LlmMessage.user(userContent));
+    // Keep the conversation, but attach terminal output only to this turn's
+    // requests. Otherwise disabling context still resends earlier snapshots.
+    final userIndex = _history.length;
+    _history.add(LlmMessage.user(redactor.redact(userText)));
 
     var iterations = 0;
     while (true) {
       final toolsEnabled = iterations < maxToolIterations;
       final turn = await provider.chat(
-        messages: List.unmodifiable(_history),
+        messages: List.unmodifiable([
+          ..._history.take(userIndex),
+          LlmMessage.user(userContent),
+          ..._history.skip(userIndex + 1),
+        ]),
         tools: toolsEnabled ? ChatTools.all : const [],
       );
+      _checkGeneration(generation);
       final hasText = turn.text.trim().isNotEmpty;
       if (hasText) {
         _history.add(LlmMessage.assistant(turn.text));
@@ -196,6 +213,7 @@ class ChatController {
       // Dispatch each tool call and feed results back for the next iteration.
       final toolResults = <String>[];
       for (final call in turn.toolCalls) {
+        _checkGeneration(generation);
         switch (call.name) {
           case 'web_search':
             final query = (call.arguments['query'] as String? ?? '').trim();
@@ -203,13 +221,14 @@ class ChatController {
             searches.add(redactedQuery);
             sent.add(SentContext('web_search query', redactedQuery));
             final results = await _runSearch(redactedQuery);
+            _checkGeneration(generation);
             toolResults.add('web_search("$redactedQuery") =>\n'
                 '${jsonEncode(results.map((r) => r.toJson()).toList())}');
           case 'paste_to_prompt':
             final raw = call.arguments['command'] as String? ?? '';
             // Guaranteed newline-free — the paste can never execute.
             final safe = PasteSanitizer.sanitizeFirstLine(raw);
-            onPaste(safe);
+            stage(safe);
             staged.add(safe);
             toolResults.add('paste_to_prompt => staged "$safe" '
                 '(awaiting the user to review and run)');
@@ -217,6 +236,7 @@ class ChatController {
             toolResults.add('Unknown tool "${call.name}" ignored.');
         }
       }
+      _checkGeneration(generation);
       _history.add(LlmMessage.user('Tool results:\n${toolResults.join('\n')}'));
       iterations++;
     }
@@ -287,7 +307,18 @@ class ChatController {
     return clipSearchSnippets(await provider.search(query));
   }
 
-  void reset() => _history.clear();
+  void _checkGeneration(int generation) {
+    if (generation != _generation) {
+      throw StateError('The conversation was reset while this turn was running.');
+    }
+  }
+
+  /// Clear history and stop pending turns before their next tool or request.
+  /// An HTTP request already in flight may finish, but its result is discarded.
+  void reset() {
+    _generation++;
+    _history.clear();
+  }
 
   /// Exposes the running history length (for tests/telemetry).
   int get historyLength => _history.length;

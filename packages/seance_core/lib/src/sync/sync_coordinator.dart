@@ -88,6 +88,9 @@ class SyncCoordinator {
   });
 
   /// Encode current local state into the record store (as local edits).
+  ///
+  /// [Secret] has no edit timestamp of its own. Callers changing a local
+  /// credential must also advance a referencing [ServerConfig.updatedAt].
   Future<void> collectLocal() async {
     final servers = await configStore.listServers();
 
@@ -101,11 +104,17 @@ class SyncCoordinator {
     // one vault entry, and a credential a still-synced server holds must keep
     // reaching the devices that want it.
     final syncedSecretRefs = <String>{};
+    final secretUpdatedAt = <String, int>{};
     for (final s in servers) {
       (s.excludeFromSync ? excludedLocators : syncedLocators)
           .add(hostKeyLocator(s.host, s.port));
-      if (!s.excludeFromSync && s.secretRef != null) {
-        syncedSecretRefs.add(s.secretRef!);
+      final ref = s.secretRef;
+      if (ref != null) {
+        if (!s.excludeFromSync) syncedSecretRefs.add(ref);
+        final previous = secretUpdatedAt[ref];
+        if (previous == null || s.updatedAt > previous) {
+          secretUpdatedAt[ref] = s.updatedAt;
+        }
       }
     }
 
@@ -122,6 +131,7 @@ class SyncCoordinator {
       for (final s in snippetList) '$_snippetIdPrefix${s.id}',
     };
 
+    final publishedSecretRefs = <String>{};
     for (final server in servers) {
       if (server.excludeFromSync) {
         await _retract(server, syncedSecretRefs);
@@ -135,17 +145,23 @@ class SyncCoordinator {
         data: server.toJson(),
       )));
       if (syncSecrets && server.syncSecret && server.secretRef != null) {
-        final secret = await secretVault?.getSecret(server.secretRef!);
-        if (secret != null) {
-          await local.putLocal(await codec.encrypt(DecryptedRecord(
-            id: '$_secretIdPrefix${secret.id}',
-            kind: RecordKind.secret,
-            updatedAt: server.updatedAt,
-            deviceId: deviceId,
-            data: secret.toJson(),
-          )));
-        }
+        publishedSecretRefs.add(server.secretRef!);
       }
+    }
+    // Any owner can edit a shared credential, including an excluded server or
+    // one with credential sync off. Use the newest owner's stamp while still
+    // requiring an included owner to opt into publishing it. Otherwise an
+    // edit through a nonsyncing owner is undone by the next pull.
+    for (final ref in publishedSecretRefs) {
+      final secret = await secretVault?.getSecret(ref);
+      if (secret == null) continue;
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: '$_secretIdPrefix${secret.id}',
+        kind: RecordKind.secret,
+        updatedAt: secretUpdatedAt[ref]!,
+        deviceId: deviceId,
+        data: secret.toJson(),
+      )));
     }
     // Deletions the user made are remembered in [tombstoneStore], not in
     // configStore — the row is gone. Republish each as a dirty tombstone so the
@@ -522,7 +538,21 @@ class SyncCoordinator {
             final store = snippetStore;
             if (store == null) continue;
 
-            await store.putSnippet(Snippet.fromJson(dec.data));
+            final snippet = Snippet.fromJson(dec.data);
+            // LWW and tombstones name the envelope id; the store writes the
+            // payload id. They must identify the same snippet or this record
+            // can overwrite one whose newer edit or deletion already won.
+            if (dec.id != '$_snippetIdPrefix${snippet.id}') {
+              skip(
+                dec.id,
+                StateError(
+                  'snippet id ${snippet.id} does not match record id ${dec.id}',
+                ),
+                StackTrace.current,
+              );
+              continue;
+            }
+            await store.putSnippet(snippet);
           case RecordKind.assistantSettings:
             final store = assistantStore;
             if (store == null) continue;

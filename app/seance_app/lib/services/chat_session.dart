@@ -49,11 +49,15 @@ class ChatSession extends ChangeNotifier {
   /// conversation carries the old generation, so its reply is dropped instead
   /// of landing in the freshly cleared transcript.
   int _generation = 0;
+  bool _disposed = false;
 
   List<ChatEntry> get entries => List.unmodifiable(_entries);
   bool get sending => _sending;
   String? get error => _error;
   bool get isEmpty => _entries.isEmpty;
+
+  /// Whether asynchronous work still belongs to this live conversation.
+  bool isCurrentTurn(int turn) => !_disposed && turn == _generation;
 
   /// The live controller, or null when one has not been built yet or the
   /// provider settings have changed since it was.
@@ -82,7 +86,7 @@ class ChatSession extends ChangeNotifier {
   }
 
   void addReply(int turn, ChatResult result) {
-    if (turn != _generation) return;
+    if (!isCurrentTurn(turn)) return;
     _entries.add(
       ChatEntry(
         fromUser: false,
@@ -95,13 +99,13 @@ class ChatSession extends ChangeNotifier {
   }
 
   void failed(int turn, Object error) {
-    if (turn != _generation) return;
+    if (!isCurrentTurn(turn)) return;
     _error = error.toString();
     notifyListeners();
   }
 
   void finishSending(int turn) {
-    if (turn != _generation || !_sending) return;
+    if (!isCurrentTurn(turn) || !_sending) return;
     _sending = false;
     notifyListeners();
   }
@@ -118,5 +122,12 @@ class ChatSession extends ChangeNotifier {
     _sending = false;
     _controller?.reset();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _controller?.reset();
+    super.dispose();
   }
 }

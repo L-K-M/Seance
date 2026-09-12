@@ -19,7 +19,6 @@ class ChatSidebar extends StatefulWidget {
 class _ChatSidebarState extends State<ChatSidebar> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
-  TerminalSession? _pasteTarget;
   bool _includeContext = true;
 
   @override
@@ -29,13 +28,17 @@ class _ChatSidebarState extends State<ChatSidebar> {
     super.dispose();
   }
 
-  Future<ChatController> _ensureController(AppState state) async {
+  Future<ChatController> _ensureController(AppState state, int turn) async {
     // Rebuild if the provider settings changed since we last built (new key,
     // model, or base URL) — otherwise edits in Settings wouldn't take effect.
-    final existing = state.chat.controllerFor(state.llmConfigVersion);
+    final version = state.llmConfigVersion;
+    final existing = state.chat.controllerFor(version);
     if (existing != null) return existing;
     final provider = await state.services.buildLlmProvider();
     final search = await state.services.buildSearchProvider();
+    if (!state.chat.isCurrentTurn(turn) || version != state.llmConfigVersion) {
+      throw StateError('The assistant settings or conversation changed. Retry.');
+    }
     final controller = ChatController(
       provider: provider,
       searchProvider: search,
@@ -43,19 +46,10 @@ class _ChatSidebarState extends State<ChatSidebar> {
       redactor: SecretRedactor(
         enabled: state.services.settings.redactionEnabled,
       ),
-      onPaste: (command) {
-        // Place the (newline-free) command into the session that originated the
-        // current chat turn, not whichever tab happens to be active later.
-        final session = _pasteTarget;
-        if (session == null ||
-            !identical(state.sessionById(session.id), session) ||
-            !session.isConnected) {
-          return;
-        }
-        session.engine.injectInput(command);
-      },
+      // The target is supplied per turn; this controller outlives the sidebar.
+      onPaste: (_) {},
     );
-    state.chat.adoptController(controller, state.llmConfigVersion);
+    state.chat.adoptController(controller, version);
     return controller;
   }
 
@@ -69,19 +63,30 @@ class _ChatSidebarState extends State<ChatSidebar> {
 
     try {
       final targetSession = state.activeSession;
-      _pasteTarget = targetSession;
-      final controller = await _ensureController(state);
+      final controller = await _ensureController(state, turn);
+      if (!chat.isCurrentTurn(turn)) return;
       final context = _includeContext
           ? targetSession?.engine.recentText(maxLines: 200)
           : null;
       chat.addReply(
         turn,
-        await controller.send(text, terminalContext: context),
+        await controller.send(
+          text,
+          terminalContext: context,
+          onPaste: (command) {
+            if (!chat.isCurrentTurn(turn) ||
+                targetSession == null ||
+                !identical(state.sessionById(targetSession.id), targetSession) ||
+                !targetSession.isConnected) {
+              return;
+            }
+            targetSession.engine.injectInput(command);
+          },
+        ),
       );
     } catch (e) {
       chat.failed(turn, e);
     } finally {
-      _pasteTarget = null;
       chat.finishSending(turn);
       // The transcript outlives this widget by design, but the scroll
       // controller does not: the drawer may have closed during the await.

@@ -111,7 +111,7 @@ the latest code and rebuilds + recreates the stack in one step.
 Everything security- or correctness-critical is covered by tests that run in CI
 (`.github/workflows/ci.yml`):
 
-- **690 Dart tests** across the three packages — crypto round-trips and
+- **703 Dart tests** across the three packages — crypto round-trips and
   wrong-key/tamper rejection, verifier independence, recovery-code corruption
   detection, TOFU decisions, the danger linter, paste sanitization, secret
   redaction, LLM request/response handling and the chat tool loop, **two-device
@@ -314,7 +314,7 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 690 Dart tests + 583 Flutter tests + 170 in the vendored xterm fork.
+- 703 Dart tests + 592 Flutter tests + 200 in the vendored xterm fork.
   `dart analyze` and the app's `flutter analyze` are clean; the vendored
   fork carries 11 upstream `info` lints and is deliberately not analyze-
   gated in CI (only its tests run).

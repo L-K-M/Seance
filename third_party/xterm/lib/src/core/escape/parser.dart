@@ -250,7 +250,7 @@ class EscapeParser {
 
     // test whether the csi is a `CSI ? Ps ...` or `CSI Ps ...`
     final prefix = _queue.peek();
-    if (prefix >= Ascii.colon && prefix <= Ascii.questionMark) {
+    if (prefix >= Ascii.lessThan && prefix <= Ascii.questionMark) {
       _csi.prefix = prefix;
       _queue.consume();
     } else {
@@ -268,9 +268,11 @@ class EscapeParser {
       final char = _queue.consume();
 
       if (char == Ascii.semicolon) {
-        if (hasParam) {
-          _csi.params.add(param);
-        }
+        // [seance fork] Empty fields retain their positions and default to
+        // zero. Dropping a leading field changes CSI ;8r from bottom=8 to
+        // top=8, and similarly swaps cursor-position parameters.
+        _csi.params.add(param);
+        hasParam = true;
         param = 0;
         continue;
       }
@@ -389,9 +391,11 @@ class EscapeParser {
     var row = 1;
     var col = 1;
 
-    if (_csi.params.length == 2) {
-      row = _csi.params[0];
-      col = _csi.params[1];
+    if (_csi.params.isNotEmpty) {
+      row = _csi.params[0] == 0 ? 1 : _csi.params[0];
+    }
+    if (_csi.params.length > 1) {
+      col = _csi.params[1] == 0 ? 1 : _csi.params[1];
     }
 
     handler.setCursor(col - 1, row - 1);
@@ -674,9 +678,11 @@ class EscapeParser {
     if (_csi.params.length > 2) return;
 
     if (_csi.params.isNotEmpty) {
-      top = _csi.params[0];
+      top = _csi.params[0] == 0 ? 1 : _csi.params[0];
 
-      if (_csi.params.length == 2) {
+      // [seance fork] Zero and omitted DECSTBM parameters mean the default
+      // top/bottom edges, before converting to zero-based buffer positions.
+      if (_csi.params.length == 2 && _csi.params[1] != 0) {
         bottom = _csi.params[1] - 1;
       }
     }

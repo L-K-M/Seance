@@ -3,6 +3,10 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
+Review update (2026-09-12): fixed defects in shared-credential sync and
+enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
+See [the review findings and verification](review-2026-09-12.md).
+
 _Last updated: 2026-09-12. A single record past the server's per-record blob
 cap no longer stops the whole account's sync: that cap is advertised alongside
 the other two, and such a record is now pushed alone and last. An emoji mark

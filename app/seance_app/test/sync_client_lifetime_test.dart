@@ -52,6 +52,23 @@ void main() {
   for (final enrollment in _Enrollment.values) {
     for (final responseMode in _ResponseMode.values) {
       test('${enrollment.name} ${responseMode.name} closes its client', () async {
+        const sharedSecret = Secret(
+          id: 'shared',
+          kind: SecretKind.password,
+          value: 'shared-password',
+        );
+        await services.vault.putSecret(sharedSecret);
+        for (final id in ['first', 'second']) {
+          await services.configStore.putServer(ServerConfig(
+            id: id,
+            label: id,
+            host: '$id.test',
+            username: 'user',
+            secretRef: sharedSecret.id,
+            createdAt: 1,
+            updatedAt: 1,
+          ));
+        }
         final transport = _TrackedClient((request) async {
           if (request.url.path == '/v1/prelogin') {
             return http.Response(jsonEncode({
@@ -90,6 +107,13 @@ void main() {
           expect(await services.masterKeys.getApiKey('sync.token'), 'enrolled-token');
         }
         expect(transport.closes, 1);
+        expect((await services.vault.getSecret(sharedSecret.id))?.value,
+            sharedSecret.value);
+        final reopened = await AppServices.initialize();
+        addTearDown(() => reopened.probe.dispose());
+        expect((await reopened.vault.getSecret(sharedSecret.id))?.value,
+            sharedSecret.value,
+            reason: 'shared credentials must remain decryptable after restart');
       }, timeout: const Timeout(Duration(minutes: 2)));
     }
   }
