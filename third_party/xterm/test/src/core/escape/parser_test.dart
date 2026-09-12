@@ -13,6 +13,24 @@ void main() {
       parser.write('\x1b[8;24;80t');
       verify(parser.handler.resize(80, 24));
     });
+
+    test('keeps omitted leading CSI parameters in their positions', () {
+      final parser = EscapeParser(MockEscapeHandler());
+
+      parser.write('\x1b[;5H');
+      verify(parser.handler.setCursor(4, 0));
+      parser.write('\x1b[;8r');
+      verify(parser.handler.setMargins(0, 7));
+    });
+
+    test('normalizes zero and omitted margin defaults before dispatch', () {
+      final parser = EscapeParser(MockEscapeHandler());
+
+      parser.write('\x1b[0;0r');
+      verify(parser.handler.setMargins(0, null));
+      parser.write('\x1b[3;r');
+      verify(parser.handler.setMargins(2, null));
+    });
   });
 
   /// [seance fork] An escape sequence that never terminates used to be held on

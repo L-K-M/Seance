@@ -570,7 +570,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void setMargins(int top, [int? bottom]) {
-    _buffer.setVerticalMargins(top, bottom ?? viewHeight - 1);
+    final lastRow = viewHeight - 1;
+    final normalizedTop = top.clamp(0, lastRow);
+    final normalizedBottom = (bottom ?? lastRow).clamp(0, lastRow);
+    // [seance fork] An invalid or collapsed DECSTBM region must not alter
+    // either the previous scrolling region or the cursor position.
+    if (normalizedTop >= normalizedBottom) return;
+    _buffer.setVerticalMargins(normalizedTop, normalizedBottom);
     // [seance fork] DECSTBM homes the cursor in the current origin mode.
     _buffer.setCursor(0, 0);
   }

@@ -56,6 +56,29 @@ void main() {
       await writeStringAtomically(file, 'second');
       expect(await file.readAsString(), 'second');
     });
+
+    test('case-variant paths preserve write order and filesystem identity',
+        () async {
+      final file = File('${dir.path}/data.json');
+      final alias = File('${dir.path}/DATA.json');
+      await file.writeAsString('initial');
+      // Windows and ordinary macOS volumes alias these names; Linux usually
+      // keeps two files. The queue must protect either filesystem's behavior.
+      final aliasesSameFile = await alias.exists();
+      final snapshots = [
+        for (var i = 0; i < 16; i++) '$i:${'x' * (4096 + i)}',
+      ];
+
+      await Future.wait([
+        for (var i = 0; i < snapshots.length; i++)
+          writeStringAtomically(i.isEven ? file : alias, snapshots[i]),
+      ]);
+
+      expect(await file.readAsString(),
+          aliasesSameFile ? snapshots.last : snapshots[snapshots.length - 2]);
+      expect(await alias.readAsString(), snapshots.last);
+      expect(await dir.list().toList(), hasLength(aliasesSameFile ? 1 : 2));
+    });
   });
 
   group('quarantineCorruptFile', () {

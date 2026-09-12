@@ -28,12 +28,17 @@ enum AtomicFilePrivacy {
 /// see the old file or the new one, never a half-written one. The parent
 /// directory is created if needed. Pass [privacy] to restrict who may read the
 /// result; the default preserves the ordinary stores' behavior.
+/// Lexical and case variants share a write queue. Callers must use consistent
+/// paths for symlink aliases, which are not resolved here.
 Future<void> writeStringAtomically(File file, String contents,
     {AtomicFilePrivacy privacy = AtomicFilePrivacy.processDefault}) {
-  final path = file.absolute.uri.normalizePath().toFilePath();
+  final path = file.absolute.uri.normalizePath().toFilePath().toLowerCase();
   // Concurrent host-key approvals and history saves share this helper. Queue
   // snapshots by path so one write cannot rename another's temporary file or
   // replace a newer snapshot with an older one that finished writing later.
+  // Case folding handles Windows and case-insensitive macOS volumes. On a
+  // case-sensitive volume it only serializes extra writes; file paths stay
+  // unchanged, so differently cased files still receive their own contents.
   final previous = _pendingWrites[path] ?? Future<void>.value();
   final write = previous.then(
     (_) => _writeStringAtomically(file, contents, privacy),

@@ -88,6 +88,9 @@ class SyncCoordinator {
   });
 
   /// Encode current local state into the record store (as local edits).
+  ///
+  /// [Secret] has no edit timestamp of its own. Callers changing a local
+  /// credential must also advance a referencing [ServerConfig.updatedAt].
   Future<void> collectLocal() async {
     final servers = await configStore.listServers();
 
@@ -101,11 +104,17 @@ class SyncCoordinator {
     // one vault entry, and a credential a still-synced server holds must keep
     // reaching the devices that want it.
     final syncedSecretRefs = <String>{};
+    final secretUpdatedAt = <String, int>{};
     for (final s in servers) {
       (s.excludeFromSync ? excludedLocators : syncedLocators)
           .add(hostKeyLocator(s.host, s.port));
-      if (!s.excludeFromSync && s.secretRef != null) {
-        syncedSecretRefs.add(s.secretRef!);
+      final ref = s.secretRef;
+      if (ref != null) {
+        if (!s.excludeFromSync) syncedSecretRefs.add(ref);
+        final previous = secretUpdatedAt[ref];
+        if (previous == null || s.updatedAt > previous) {
+          secretUpdatedAt[ref] = s.updatedAt;
+        }
       }
     }
 
@@ -122,7 +131,7 @@ class SyncCoordinator {
       for (final s in snippetList) '$_snippetIdPrefix${s.id}',
     };
 
-    final secretUpdatedAt = <String, int>{};
+    final publishedSecretRefs = <String>{};
     for (final server in servers) {
       if (server.excludeFromSync) {
         await _retract(server, syncedSecretRefs);
@@ -136,23 +145,20 @@ class SyncCoordinator {
         data: server.toJson(),
       )));
       if (syncSecrets && server.syncSecret && server.secretRef != null) {
-        final ref = server.secretRef!;
-        final previous = secretUpdatedAt[ref];
-        if (previous == null || server.updatedAt > previous) {
-          secretUpdatedAt[ref] = server.updatedAt;
-        }
+        publishedSecretRefs.add(server.secretRef!);
       }
     }
-    // A shared credential has one record. Use the newest participating
-    // server's edit stamp so a later-listed, unchanged server cannot turn a
-    // credential rotation into a stale write that the next pull undoes.
-    for (final entry in secretUpdatedAt.entries) {
-      final secret = await secretVault?.getSecret(entry.key);
+    // Any owner can edit a shared credential, including an excluded server or
+    // one with credential sync off. Use the newest owner's stamp while still
+    // requiring an included owner to opt into publishing it. Otherwise an
+    // edit through a nonsyncing owner is undone by the next pull.
+    for (final ref in publishedSecretRefs) {
+      final secret = await secretVault?.getSecret(ref);
       if (secret == null) continue;
       await local.putLocal(await codec.encrypt(DecryptedRecord(
         id: '$_secretIdPrefix${secret.id}',
         kind: RecordKind.secret,
-        updatedAt: entry.value,
+        updatedAt: secretUpdatedAt[ref]!,
         deviceId: deviceId,
         data: secret.toJson(),
       )));

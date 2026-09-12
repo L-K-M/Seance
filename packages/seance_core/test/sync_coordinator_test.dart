@@ -204,8 +204,16 @@ void main() {
     expect((await cfgA.getServer('s1'))!.loginScript, isNull);
   });
 
-  for (final editedLabel in ['alpha', 'zulu']) {
-    test('a shared credential edit syncs when $editedLabel is edited', () async {
+  for (final scenario in [
+    (label: 'alpha', syncSecret: true, excluded: false),
+    (label: 'zulu', syncSecret: true, excluded: false),
+    (label: 'alpha', syncSecret: false, excluded: false),
+    (label: 'zulu', syncSecret: false, excluded: false),
+    (label: 'alpha', syncSecret: true, excluded: true),
+    (label: 'zulu', syncSecret: true, excluded: true),
+  ]) {
+    final editedLabel = scenario.label;
+    test('a shared credential edit syncs when $scenario is edited', () async {
       final api = FakeServer();
       final key = secureRandomBytes(32);
       final codec = RecordCodec(key);
@@ -214,8 +222,13 @@ void main() {
       final vaultA = SecretVault(InMemoryVaultStore(), key);
       final vaultB = SecretVault(InMemoryVaultStore(), key);
       for (final label in ['alpha', 'zulu']) {
-        await configsA.putServer(server(label, label, 10)
-            .copyWith(secretRef: 'shared', syncSecret: true));
+        final excluded = label == editedLabel && scenario.excluded;
+        await configsA.putServer(server(label, label, 10).copyWith(
+          secretRef: 'shared',
+          syncSecret: label != editedLabel || scenario.syncSecret,
+          excludeFromSync: excluded,
+          updatedAt: excluded ? 11 : 10,
+        ));
       }
       await vaultA.putSecret(const Secret(
         id: 'shared',
@@ -254,6 +267,44 @@ void main() {
       expect((await vaultA.getSecret('shared'))!.value, 'rotated');
       expect((await vaultB.getSecret('shared'))!.value, 'rotated');
       expect(api.stored('secret:shared')!.updatedAt, 20);
+    });
+  }
+
+  for (final syncSecrets in [false, true]) {
+    test('a shared credential needs an eligible owner (syncSecrets=$syncSecrets)',
+        () async {
+      final key = secureRandomBytes(32);
+      final configs = InMemoryConfigStore();
+      final vault = SecretVault(InMemoryVaultStore(), key);
+      await vault.putSecret(const Secret(
+        id: 'shared',
+        kind: SecretKind.password,
+        value: 'private',
+      ));
+      await configs.putServer(server('alpha', 'alpha', 10).copyWith(
+        secretRef: 'shared',
+        syncSecret: !syncSecrets,
+      ));
+      await configs.putServer(server('zulu', 'zulu', 10).copyWith(
+        secretRef: 'shared',
+        syncSecret: true,
+        excludeFromSync: true,
+        updatedAt: 20,
+      ));
+      final local = InMemoryLocalRecordStore();
+      final coordinator = SyncCoordinator(
+        configStore: configs,
+        hostKeyStore: InMemoryHostKeyStore(),
+        codec: RecordCodec(key),
+        local: local,
+        deviceId: 'A',
+        syncSecrets: syncSecrets,
+        secretVault: vault,
+      );
+
+      await coordinator.collectLocal();
+
+      expect(await local.getRecord('secret:shared'), isNull);
     });
   }
 

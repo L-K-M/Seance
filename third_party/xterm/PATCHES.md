@@ -299,6 +299,10 @@ what must be preserved.
     Setting DECOM or DECSTBM homes the cursor in its new coordinate space;
     reports are bounded to that space even after legacy cursor controls that
     still clamp movement to the viewport instead of the scrolling margins.
+    Invalid equal/inverted DECSTBM regions are ignored before homing. Zero or
+    omitted parameters restore the default edges; CSI parsing preserves empty
+    parameter positions, including a leading omitted top margin. CUP/HVP
+    normalize omitted and zero coordinates before applying the origin.
 
 ### App-layer notes (outside this package)
 
