@@ -111,7 +111,7 @@ the latest code and rebuilds + recreates the stack in one step.
 Everything security- or correctness-critical is covered by tests that run in CI
 (`.github/workflows/ci.yml`):
 
-- **706 Dart tests** across the three packages — crypto round-trips and
+- **727 Dart tests** across the three packages — crypto round-trips and
   wrong-key/tamper rejection, verifier independence, recovery-code corruption
   detection, TOFU decisions, the danger linter, paste sanitization, secret
   redaction, LLM request/response handling and the chat tool loop, **two-device
@@ -314,7 +314,7 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 706 Dart tests + 596 Flutter tests + 200 in the vendored xterm fork.
+- 727 Dart tests + 638 Flutter tests + 200 in the vendored xterm fork.
   `dart analyze` and the app's `flutter analyze` are clean; the vendored
   fork carries 11 upstream `info` lints and is deliberately not analyze-
   gated in CI (only its tests run).
@@ -443,6 +443,13 @@ Do not "simplify" these away — they are load-bearing:
 - `ConfigStore` / `VaultStore` / `HostKeyStore` — in-memory (tests) and JSON-file
   (app) impls; SQLite/drift is the documented future swap.
 - `SyncApi` (pull/push) — `HttpSyncClient` in prod, `FakeServer` in tests.
+- `VaultRekeyJournal` (`file_stores.dart`) — crash recovery for a vault re-key,
+  which changes the vault file and the OS keystore with no operation spanning
+  both. `FileVaultStore` stages both generations to a `vault.json.rekey`
+  sidecar before the keystore changes; `AppServices` settles against the key
+  the keystore actually holds, at startup and on every unlock. Staging never
+  writes `vault.json`, so a damaged or unmatched sidecar is moved aside rather
+  than being allowed to wedge the vault. In-memory stores need none of it.
 - `LlmProvider` — `AnthropicProvider` and `OpenAiCompatibleProvider` (the latter
   covers Ollama/LM Studio/etc. via `base_url`).
 - `SystemFonts` — `SfntSystemFonts` reads the host's font directories,
