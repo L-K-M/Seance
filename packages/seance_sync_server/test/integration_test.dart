@@ -16,6 +16,7 @@ void main() {
   Future<String> startServer({
     int maxBodyBytes = kDefaultMaxPushBodyBytes,
     int maxRecordsPerPush = kDefaultMaxRecordsPerPush,
+    int maxBlobBytes = kDefaultMaxBlobBytes,
   }) async {
     final server = SyncServer(
       storage: InMemoryStorage(),
@@ -26,6 +27,7 @@ void main() {
         port: 0,
         maxBodyBytes: maxBodyBytes,
         maxRecordsPerPush: maxRecordsPerPush,
+        maxBlobBytes: maxBlobBytes,
       ),
     );
     final running = await server.start();
@@ -174,6 +176,48 @@ void main() {
     expect(await store.dirtyRecords(), isEmpty);
     final onServer = await client.pull(since: 0);
     expect(onServer.records, hasLength(10));
+  });
+
+  test('one over-sized blob does not hold back the rest of the dirty set',
+      () async {
+    // The per-record blob cap is refused with the same 413 as an over-sized
+    // body, but it is refused for the *whole* push: one record past the cap
+    // takes every record batched beside it down with it, and since the batcher
+    // is deterministic the next round rebuilds the same doomed batch. The
+    // record past the cap can never be accepted — nothing local can shrink a
+    // sealed blob — so the account's sync stops until the user finds and
+    // deletes it. Batching the oversized record alone, and last, keeps the
+    // failure to the one record that caused it.
+    final baseUrl = await startServer(maxBlobBytes: 4 * 1024);
+    final client = await registerDevice(baseUrl, 'oversized');
+
+    final store = InMemoryLocalRecordStore();
+    for (var i = 0; i < 5; i++) {
+      await store.putLocal(record('r$i', blobBytes: 128));
+    }
+    await store.putLocal(record('huge', blobBytes: 8 * 1024));
+
+    await expectLater(
+      SyncEngine(store).sync(client),
+      throwsA(isA<ApiError>()
+          .having((e) => e.code, 'code', 'payload_too_large')),
+      reason: 'the record past the blob cap can never be accepted, so the '
+          'failure must still surface rather than be swallowed',
+    );
+
+    final onServer = await client.pull(since: 0);
+    expect(
+      onServer.records.map((r) => r.id).toSet(),
+      {for (var i = 0; i < 5; i++) 'r$i'},
+      reason: 'every record that fits the cap must reach the server; only the '
+          'one past it stays behind',
+    );
+    expect(
+      (await store.dirtyRecords()).map((r) => r.id),
+      ['huge'],
+      reason: 'and only that record stays dirty, so the next round retries it '
+          'alone instead of rebuilding a doomed batch',
+    );
   });
 
   test('server rejects a bad login verifier over HTTP', () async {

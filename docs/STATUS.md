@@ -3,7 +3,10 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-11. The terminal font can be picked from the fonts
+_Last updated: 2026-09-12. A single record past the server's per-record blob
+cap no longer stops the whole account's sync: that cap is advertised alongside
+the other two, and such a record is now pushed alone and last. Before that, the
+terminal font could be picked from the fonts
 actually installed on the host; a drag through the empty area under the shell
 prompt no longer paints a selection over it; and a server's mark can now be one
 of 77 built-in glyphs, an emoji, or an imported image. The "Add server" button
@@ -23,6 +26,27 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## One over-sized record no longer stops sync (2026-09-12)
+
+Push batching sizes a request against the server's advertised body and record
+limits, but the server enforces a third cap the advertisement left out: at most
+1 MiB (env-tunable) on a single record's sealed blob. That one is refused with a
+413 for the *whole* push, exactly like an over-sized body — so a record past it
+took every record batched beside it down with it, and because batching is
+deterministic the next round rebuilt the same doomed batch. One record the user
+could not even see stopped the account's sync outright, with an opaque 413
+naming a byte count.
+
+`PushLimits` now carries `maxBlobBytes`, the server advertises it in every pull
+response, and `batchForPush` treats a record past it the way it already treats
+one too large for any body: sent alone, and last. The record still fails — a
+sealed blob cannot be shrunk client-side, and the server stays the authority on
+its own limits — but the failure stays with it instead of holding back
+everything else. A regression test in the server package drives the real stack
+and asserts the other records reach the server while the failure still
+surfaces. A client talking to a server too old to advertise falls back to the
+shipped 1 MiB, which is what such a server enforces unless an operator tuned it.
 
 ## Font picker, server marks, and terminal selection (2026-09-11)
 
