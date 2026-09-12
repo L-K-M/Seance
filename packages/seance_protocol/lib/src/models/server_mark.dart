@@ -197,13 +197,54 @@ const int _ihdrDataLength = 13;
 /// directly. Generous enough that no plausible legitimate value trips it.
 const int _maxIconImageSide = 1024;
 
+/// Whether [cluster] carries a character of its own to draw, rather than being
+/// nothing but the marks and joiners that decorate one.
+///
+/// A combining character — a ZWJ, a variation selector, an accent, a tag —
+/// renders only as part of the character *before* it. Alone it is still one
+/// grapheme cluster under the length ceiling, so every rule in
+/// [normalizeServerEmoji] passes it, and the badge then draws nothing: the
+/// same empty badge U+200B and U+200C are refused for. U+200D cannot be caught
+/// by that list, because it is exactly the joiner a multi-part emoji is built
+/// from and has to stay legal *inside* a cluster.
+///
+/// Tested by asking the same grapheme engine, rather than against a table of
+/// combining ranges that would go stale with each Unicode revision: put a
+/// plain base character beside the cluster and see whether it absorbed the
+/// whole thing. If it did, the cluster had nothing of its own to break from.
+///
+/// Both sides, because the decorations attach in both directions. Extend, ZWJ
+/// and SpacingMark join to what precedes them (UAX #29 GB9/GB9a), which the
+/// *prefix* probe catches. `Prepend` joins to what follows (GB9b), and a
+/// prefix probe reads it as a clean break — so U+0600 ARABIC NUMBER SIGN and
+/// its half-dozen siblings, every one an invisible format character, walked
+/// straight through. The *suffix* probe is what catches those. Nothing
+/// legitimate ends in a Prepend character, so no real emoji is affected: the
+/// flags, keycaps, ZWJ sequences, skin-toned faces and subdivision flags in
+/// this file's acceptance tests all still pass.
+///
+/// Deliberately strict about the visible cases too. A lone skin-tone modifier
+/// (U+1F3FB…U+1F3FF) paints a colour swatch on most platforms and a lone
+/// spacing mark (U+0903 DEVANAGARI SIGN VISARGA and friends) draws as itself;
+/// both are refused. Each is a decoration for a character that is not there,
+/// and a mark chosen as "the beige square" would look like a rendering failure
+/// on the next device.
+bool _hasBaseCharacter(String cluster) =>
+    '$_graphemeProbe$cluster'.characters.length > 1 &&
+    '$cluster$_graphemeProbe'.characters.length > 1;
+
+/// A base character with no special grapheme-break behaviour, for
+/// [_hasBaseCharacter] to put on either side of a cluster.
+const String _graphemeProbe = 'a';
+
 /// The stored form of an emoji mark: trimmed, and null when it is not one.
 ///
 /// Exactly one grapheme cluster, because the badge has room for one character
 /// and a cluster is what a user means by "an emoji" — 👩🏽‍🚀 is four code points
-/// and one choice. The code-unit ceiling is a separate guard: a cluster can be
-/// extended with joiners indefinitely, and a record from elsewhere should not
-/// be able to park a kilobyte of them in a config.
+/// and one choice. That cluster also has to carry a base character of its own
+/// (see [_hasBaseCharacter]). The code-unit ceiling is a separate guard: a
+/// cluster can be extended with joiners indefinitely, and a record from
+/// elsewhere should not be able to park a kilobyte of them in a config.
 String? normalizeServerEmoji(String? emoji) {
   if (emoji == null) return null;
   final trimmed = emoji.trim();
@@ -218,6 +259,7 @@ String? normalizeServerEmoji(String? emoji) {
   // tag characters and must keep working.
   final first = trimmed.runes.first;
   if (first >= 0xE0000 && first <= 0xE0FFF) return null;
+  if (!_hasBaseCharacter(trimmed)) return null;
   // Control and invisible formatting characters are not marks, and a record
   // could carry one: the bidi controls in particular (the overrides and
   // isolates, and the plain LRM/RLM/ALM marks) would reorder the text around
