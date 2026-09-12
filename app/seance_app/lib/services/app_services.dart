@@ -220,12 +220,21 @@ class AppServices {
   /// configs so nothing is lost. Used by sync enrolment to adopt the shared,
   /// encryption-passphrase-derived key.
   Future<void> _rekeyVault(List<int> newKey) async {
+    final secretRefs = {
+      for (final cfg in await configStore.listServers())
+        if (cfg.secretRef != null) cfg.secretRef!,
+    };
+    final secrets = <Secret>[];
+    // Shared credentials must be read exactly once with the old key. Read all
+    // of them before writing so an unreadable credential cannot leave earlier
+    // entries encrypted with a key that has not been installed yet.
+    for (final ref in secretRefs) {
+      final secret = await vault.getSecret(ref);
+      if (secret != null) secrets.add(secret);
+    }
     final newVault = SecretVault(vault.store, newKey);
-    for (final cfg in await configStore.listServers()) {
-      if (cfg.secretRef != null) {
-        final secret = await vault.getSecret(cfg.secretRef!);
-        if (secret != null) await newVault.putSecret(secret);
-      }
+    for (final secret in secrets) {
+      await newVault.putSecret(secret);
     }
     vault = newVault;
     vaultKey = newKey;

@@ -122,6 +122,7 @@ class SyncCoordinator {
       for (final s in snippetList) '$_snippetIdPrefix${s.id}',
     };
 
+    final secretUpdatedAt = <String, int>{};
     for (final server in servers) {
       if (server.excludeFromSync) {
         await _retract(server, syncedSecretRefs);
@@ -135,17 +136,26 @@ class SyncCoordinator {
         data: server.toJson(),
       )));
       if (syncSecrets && server.syncSecret && server.secretRef != null) {
-        final secret = await secretVault?.getSecret(server.secretRef!);
-        if (secret != null) {
-          await local.putLocal(await codec.encrypt(DecryptedRecord(
-            id: '$_secretIdPrefix${secret.id}',
-            kind: RecordKind.secret,
-            updatedAt: server.updatedAt,
-            deviceId: deviceId,
-            data: secret.toJson(),
-          )));
+        final ref = server.secretRef!;
+        final previous = secretUpdatedAt[ref];
+        if (previous == null || server.updatedAt > previous) {
+          secretUpdatedAt[ref] = server.updatedAt;
         }
       }
+    }
+    // A shared credential has one record. Use the newest participating
+    // server's edit stamp so a later-listed, unchanged server cannot turn a
+    // credential rotation into a stale write that the next pull undoes.
+    for (final entry in secretUpdatedAt.entries) {
+      final secret = await secretVault?.getSecret(entry.key);
+      if (secret == null) continue;
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: '$_secretIdPrefix${secret.id}',
+        kind: RecordKind.secret,
+        updatedAt: entry.value,
+        deviceId: deviceId,
+        data: secret.toJson(),
+      )));
     }
     // Deletions the user made are remembered in [tombstoneStore], not in
     // configStore — the row is gone. Republish each as a dirty tombstone so the
@@ -522,7 +532,21 @@ class SyncCoordinator {
             final store = snippetStore;
             if (store == null) continue;
 
-            await store.putSnippet(Snippet.fromJson(dec.data));
+            final snippet = Snippet.fromJson(dec.data);
+            // LWW and tombstones name the envelope id; the store writes the
+            // payload id. They must identify the same snippet or this record
+            // can overwrite one whose newer edit or deletion already won.
+            if (dec.id != '$_snippetIdPrefix${snippet.id}') {
+              skip(
+                dec.id,
+                StateError(
+                  'snippet id ${snippet.id} does not match record id ${dec.id}',
+                ),
+                StackTrace.current,
+              );
+              continue;
+            }
+            await store.putSnippet(snippet);
           case RecordKind.assistantSettings:
             final store = assistantStore;
             if (store == null) continue;

@@ -127,6 +127,74 @@ void main() {
       expect(e.recentText(), 'a\uFFFDb\uFFFD');
     },
   );
+
+  test(
+    'recentText includes the last display column of the final row',
+    () async {
+      final e = XtermTerminalEngine();
+      addTearDown(e.dispose);
+      e.terminal.resize(6, 2);
+      e.feed(Uint8List.fromList(utf8.encode('first\r\n123456')));
+
+      expect(e.recentText(maxLines: 1), '123456');
+
+      e.feed(Uint8List.fromList(utf8.encode('\r1234界')));
+      expect(e.recentText(maxLines: 1), '1234界');
+    },
+  );
+
+  test(
+    'device replies preserve an empty prompt and the armed Ctrl key',
+    () async {
+      final e = XtermTerminalEngine();
+      addTearDown(e.dispose);
+      final output = <int>[];
+      final subscription = e.userInput.listen(output.addAll);
+      addTearDown(subscription.cancel);
+      e.toggleCtrl();
+      e.feed(
+        Uint8List.fromList(
+          utf8.encode(
+            '\x1b]1337;ShellIntegrationVersion=1;bash\x07'
+            '\x1b]133;A\x07\x1b[5n\x1b]133;B\x07',
+          ),
+        ),
+      );
+
+      await Future<void>.delayed(Duration.zero);
+      expect(utf8.decode(output), '\x1b[0n');
+      expect(e.ctrlArmed.value, isTrue);
+      expect(
+        e.shellIntegration.value.phase,
+        TerminalPromptPhase.acceptingInput,
+      );
+      expect(e.shellIntegration.value.inputSincePrompt, isFalse);
+      expect(
+        e.stageChangeDirectory('/srv/project'),
+        TerminalStageResult.staged,
+      );
+    },
+  );
+
+  test(
+    'late SSH output and a completed paste are harmless after disposal',
+    () async {
+      final e = XtermTerminalEngine();
+      await e.dispose();
+
+      expect(
+        () => e.feed(
+          Uint8List.fromList(
+            utf8.encode('\x1b]0;late title\x07\x1b[6nlate output'),
+          ),
+        ),
+        returnsNormally,
+      );
+      expect(() => e.terminal.paste('late clipboard text'), returnsNormally);
+      expect(e.recentText(), isEmpty);
+    },
+  );
+
   test('dispose is idempotent', () async {
     // With per-server tabs, closeTab/reconnect can dispose an engine that a
     // closing SshSession also disposes. A second dispose must not re-dispose

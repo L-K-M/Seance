@@ -3,6 +3,10 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
+Review update (2026-09-12): fixed eleven defects in shared-credential sync and
+enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
+See [the review findings and verification](review-2026-09-12.md).
+
 _Last updated: 2026-09-09. The TOFU host-key dialog's review content is
 now scrollable, so the changed-key warning and both fingerprints stay
 reachable and the buttons stay pinned in constrained layouts (ported back

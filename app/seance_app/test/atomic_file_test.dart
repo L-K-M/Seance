@@ -30,6 +30,32 @@ void main() {
       expect(await file.readAsString(), 'second');
       expect(await File('${file.path}.tmp').exists(), isFalse);
     });
+
+    test('overlapping writes preserve the last requested complete snapshot',
+        () async {
+      final file = File('${dir.path}/data.json');
+      final snapshots = [
+        for (var i = 0; i < 16; i++) '{"snapshot":"$i${'x' * (4096 + i)}"}',
+      ];
+      await Future.wait([
+        for (final snapshot in snapshots)
+          writeStringAtomically(File(file.path), snapshot),
+      ]);
+      expect(await file.readAsString(), snapshots.last);
+      expect(await dir.list().toList(), hasLength(1));
+    });
+
+    test('a failed write does not block later saves to the same path', () async {
+      final file = File('${dir.path}/data.json');
+      final blocked = Directory('${file.path}.tmp');
+      await blocked.create();
+      await expectLater(writeStringAtomically(file, 'first'),
+          throwsA(isA<FileSystemException>()));
+      await blocked.delete();
+
+      await writeStringAtomically(file, 'second');
+      expect(await file.readAsString(), 'second');
+    });
   });
 
   group('quarantineCorruptFile', () {
@@ -72,5 +98,25 @@ void main() {
       expect(servers, hasLength(1));
       expect(servers.single.host, 'example.com');
     });
+  });
+
+  test('concurrent host-key approvals persist every approved key', () async {
+    final file = File('${dir.path}/known_hosts.json');
+    final store = FileHostKeyStore(file);
+    final keys = [
+      for (var i = 0; i < 8; i++)
+        HostKey(
+          host: 'host$i.test',
+          port: 22,
+          type: 'ssh-ed25519',
+          fingerprintSha256: 'SHA256:key$i',
+          pinnedAt: i,
+        ),
+    ];
+    await Future.wait(keys.map(store.put));
+
+    final restored = await FileHostKeyStore(file).all();
+    expect(restored.map((key) => key.fingerprintSha256),
+        unorderedEquals(keys.map((key) => key.fingerprintSha256)));
   });
 }

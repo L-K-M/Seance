@@ -557,12 +557,22 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void sendCursorPosition() {
-    onOutput?.call(_emitter.cursorPosition(_buffer.cursorX, _buffer.cursorY));
+    // [seance fork] CPR uses the same origin as cursor positioning, which
+    // is the top scrolling margin when DECOM is enabled.
+    // Some buffer cursor controls still clamp to the viewport rather than
+    // the margins. Bound the reported coordinate even in that legacy state.
+    final row = originMode
+        ? (_buffer.cursorY - _buffer.marginTop)
+            .clamp(0, _buffer.marginBottom - _buffer.marginTop)
+        : _buffer.cursorY;
+    onOutput?.call(_emitter.cursorPosition(_buffer.cursorX, row));
   }
 
   @override
   void setMargins(int top, [int? bottom]) {
     _buffer.setVerticalMargins(top, bottom ?? viewHeight - 1);
+    // [seance fork] DECSTBM homes the cursor in the current origin mode.
+    _buffer.setCursor(0, 0);
   }
 
   @override
@@ -689,6 +699,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void setOriginMode(bool enabled) {
     _originMode = enabled;
+    // [seance fork] DECOM homes the cursor using the new origin.
+    _buffer.setCursor(0, 0);
   }
 
   @override

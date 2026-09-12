@@ -287,6 +287,19 @@ what must be preserved.
     inline images or large OSC 52 clipboard traffic ever matter here, and
     unnecessary until then.
 
+28. **Cursor-position reports use protocol coordinates**
+    (`core/escape/emitter.dart#cursorPosition`,
+    `terminal.dart#sendCursorPosition`; regressions:
+    `test/src/terminal_test.dart`): CPR replies to CSI 6 n now translate the
+    buffer's zero-based row and column to one-based coordinates. The old reply
+    reported the home position as `CSI 0;0 R` and shifted every queried
+    position up and left, breaking remote programs that use the report to
+    position prompts or restore the cursor. Reports also honor the scrolling
+    margin as the origin when DECOM is enabled, matching cursor positioning.
+    Setting DECOM or DECSTBM homes the cursor in its new coordinate space;
+    reports are bounded to that space even after legacy cursor controls that
+    still clamp movement to the viewport instead of the scrolling margins.
+
 ### App-layer notes (outside this package)
 
 - The app passes `shortcuts: {}` and instead routes ⌘C/⌘V/⌘A on
@@ -296,4 +309,3 @@ what must be preserved.
   (`XtermTerminalEngine.detectPlatform`). Leaving the default
   `TerminalTargetPlatform.unknown` re-introduces the Option-dead-key bug of
   patch 22 — `unknown` takes the non-Apple, alt-sends-Meta path.
-

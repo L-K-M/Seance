@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'file_permissions.dart';
 
+final _pendingWrites = <String, Future<void>>{};
+
 /// Durable, crash-safe helpers for the JSON-file stores.
 ///
 /// The stores used to write with a bare `file.writeAsString(...)`, which
@@ -27,7 +29,26 @@ enum AtomicFilePrivacy {
 /// directory is created if needed. Pass [privacy] to restrict who may read the
 /// result; the default preserves the ordinary stores' behavior.
 Future<void> writeStringAtomically(File file, String contents,
-    {AtomicFilePrivacy privacy = AtomicFilePrivacy.processDefault}) async {
+    {AtomicFilePrivacy privacy = AtomicFilePrivacy.processDefault}) {
+  final path = file.absolute.uri.normalizePath().toFilePath();
+  // Concurrent host-key approvals and history saves share this helper. Queue
+  // snapshots by path so one write cannot rename another's temporary file or
+  // replace a newer snapshot with an older one that finished writing later.
+  final previous = _pendingWrites[path] ?? Future<void>.value();
+  final write = previous.then(
+    (_) => _writeStringAtomically(file, contents, privacy),
+  );
+  late final Future<void> tail;
+  tail = write.then<void>((_) {}, onError: (Object _, StackTrace __) {})
+      .whenComplete(() {
+    if (identical(_pendingWrites[path], tail)) _pendingWrites.remove(path);
+  });
+  _pendingWrites[path] = tail;
+  return write;
+}
+
+Future<void> _writeStringAtomically(
+    File file, String contents, AtomicFilePrivacy privacy) async {
   await file.parent.create(recursive: true);
   final tmp = File('${file.path}.tmp');
   // Create the file empty first so a restricted write never materializes its
@@ -40,6 +61,7 @@ Future<void> writeStringAtomically(File file, String contents,
   try {
     await tmp.rename(file.path);
   } on FileSystemException {
+    if (!Platform.isWindows) rethrow;
     // Some Windows configurations refuse to rename over an existing file; fall
     // back to replace-then-rename. Slightly less atomic there, but still far
     // safer than an in-place truncating write, and POSIX takes the fast path.

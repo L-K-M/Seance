@@ -2,6 +2,67 @@ import 'package:test/test.dart';
 import 'package:xterm/core.dart';
 
 void main() {
+  test('cursor position reports use one-based rows and columns', () {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[6n');
+    terminal.write('\x1b[3;5H\x1b[6n');
+
+    expect(output, ['\x1b[1;1R', '\x1b[3;5R']);
+  });
+
+  test('cursor reports stay inside the viewport at the wrap boundary', () {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add)..resize(6, 2);
+
+    terminal.write('123456\x1b[6n');
+    terminal.write('7\x1b[6n');
+
+    expect(output, ['\x1b[1;6R', '\x1b[2;2R']);
+  });
+
+  test('cursor reports respect the origin within scrolling margins', () {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add)..resize(10, 10);
+
+    terminal.write('\x1b[3;8r\x1b[?6h\x1b[3;5H\x1b[6n');
+    terminal.write('\x1b[?6l\x1b[5;5H\x1b[6n');
+
+    expect(output, ['\x1b[3;5R', '\x1b[5;5R']);
+  });
+
+  test('changing origin mode homes the cursor within its new coordinates', () {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add)..resize(10, 10);
+
+    terminal.write('\x1b[3;8r\x1b[?6h\x1b[6n');
+    expect(terminal.buffer.cursorY, 2);
+    terminal.write('\x1b[3;5H\x1b[?6l\x1b[6n');
+    expect(terminal.buffer.cursorY, 0);
+
+    expect(output, ['\x1b[1;1R', '\x1b[1;1R']);
+  });
+
+  test('changing scrolling margins homes the cursor in origin mode', () {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add)..resize(10, 10);
+
+    terminal.write('\x1b[?6h\x1b[3;8r\x1b[6n');
+    expect(terminal.buffer.cursorY, 2);
+    expect(output, ['\x1b[1;1R']);
+  });
+
+  test('origin-relative reports stay valid after viewport cursor controls', () {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add)..resize(10, 10);
+
+    terminal.write('\x1b[3;8r\x1b[?6h\x1b[999A\x1b[6n');
+    terminal.write('\x1b[999B\x1b[6n');
+
+    expect(output, ['\x1b[1;1R', '\x1b[6;1R']);
+  });
+
   group('Terminal.inputHandler', () {
     test('can be set to null', () {
       final terminal = Terminal(inputHandler: null);

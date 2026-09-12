@@ -204,6 +204,59 @@ void main() {
     expect((await cfgA.getServer('s1'))!.loginScript, isNull);
   });
 
+  for (final editedLabel in ['alpha', 'zulu']) {
+    test('a shared credential edit syncs when $editedLabel is edited', () async {
+      final api = FakeServer();
+      final key = secureRandomBytes(32);
+      final codec = RecordCodec(key);
+      final configsA = InMemoryConfigStore();
+      final configsB = InMemoryConfigStore();
+      final vaultA = SecretVault(InMemoryVaultStore(), key);
+      final vaultB = SecretVault(InMemoryVaultStore(), key);
+      for (final label in ['alpha', 'zulu']) {
+        await configsA.putServer(server(label, label, 10)
+            .copyWith(secretRef: 'shared', syncSecret: true));
+      }
+      await vaultA.putSecret(const Secret(
+        id: 'shared',
+        kind: SecretKind.password,
+        value: 'original',
+      ));
+
+      SyncCoordinator coordinator(
+        ConfigStore configs,
+        SecretVault vault,
+        String device,
+      ) =>
+          SyncCoordinator(
+            configStore: configs,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: InMemoryLocalRecordStore(),
+            deviceId: device,
+            syncSecrets: true,
+            secretVault: vault,
+          );
+
+      await coordinator(configsA, vaultA, 'A').run(api);
+      await coordinator(configsB, vaultB, 'B').run(api);
+      await vaultA.putSecret(const Secret(
+        id: 'shared',
+        kind: SecretKind.password,
+        value: 'rotated',
+      ));
+      final edited = (await configsA.getServer(editedLabel))!;
+      await configsA.putServer(edited.copyWith(updatedAt: 20));
+
+      await coordinator(configsA, vaultA, 'A').run(api);
+      await coordinator(configsB, vaultB, 'B').run(api);
+
+      expect((await vaultA.getSecret('shared'))!.value, 'rotated');
+      expect((await vaultB.getSecret('shared'))!.value, 'rotated');
+      expect(api.stored('secret:shared')!.updatedAt, 20);
+    });
+  }
+
   test('snippets sync between two devices', () async {
     final srv = FakeServer();
     final codec = RecordCodec(secureRandomBytes(32));
@@ -233,6 +286,47 @@ void main() {
     expect(onB.single.body, 'tail -f {{file}}');
     expect(onB.single.placeholders, ['file']);
   });
+
+  for (final recordId in ['snippet:other', 'server-config-id']) {
+    test('a snippet under $recordId cannot overwrite another snippet', () async {
+      final codec = RecordCodec(secureRandomBytes(32));
+      final snippets = InMemorySnippetStore();
+      const current = Snippet(
+        id: 'saved',
+        title: 'Current snippet',
+        body: 'echo current',
+        createdAt: 1,
+        updatedAt: 20,
+      );
+      await snippets.putSnippet(current);
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: recordId,
+        kind: RecordKind.snippet,
+        updatedAt: 30,
+        deviceId: 'B',
+        data: const Snippet(
+          id: 'saved',
+          title: 'Old snippet',
+          body: 'echo old',
+          createdAt: 1,
+          updatedAt: 10,
+        ).toJson(),
+      )));
+      final coordinator = SyncCoordinator(
+        configStore: InMemoryConfigStore(),
+        hostKeyStore: InMemoryHostKeyStore(),
+        snippetStore: snippets,
+        codec: codec,
+        local: local,
+        deviceId: 'A',
+      );
+
+      await coordinator.applyToStores();
+
+      expect((await snippets.getSnippet('saved'))!.toJson(), current.toJson());
+    });
+  }
 
   test('bookmark records never create phantom server configs', () async {
     final server0 = FakeServer();

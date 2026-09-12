@@ -65,6 +65,7 @@ class XtermTerminalEngine implements TerminalEngine {
       StreamController<Uint8List>.broadcast();
   late final ByteConversionSink _terminalDecoder;
   TerminalSize _size;
+  bool _feedingOutput = false;
 
   /// Fired with each completed command line the user submits (Enter). Best
   /// effort — see [_pendingInput] — and used to suggest frequently-run
@@ -147,9 +148,15 @@ class XtermTerminalEngine implements TerminalEngine {
     ).startChunkedConversion(_TerminalOutputSink(terminal));
     // Keystrokes / paste / device replies produced by the terminal go to SSH.
     terminal.onOutput = (data) {
-      final out = _applyCtrl(data);
-      _markInputActivity();
-      _trackPending(out);
+      if (_disposed) return;
+      // xterm answers terminal queries synchronously during feed. These
+      // replies belong to the transport, so they must not consume a user's
+      // one-shot modifier or turn an empty shell prompt into pending input.
+      final out = _feedingOutput ? data : _applyCtrl(data);
+      if (!_feedingOutput) {
+        _markInputActivity();
+        _trackPending(out);
+      }
       _input.add(Uint8List.fromList(utf8.encode(out)));
     };
     terminal.onTitleChange = (title) => terminalTitle.value = title;
@@ -315,6 +322,7 @@ class XtermTerminalEngine implements TerminalEngine {
   /// assistant's paste-to-prompt tool. The remote shell echoes it back so it
   /// appears at the prompt; because it contains no newline it is never executed.
   void injectInput(String text) {
+    if (_disposed) return;
     _markInputActivity();
     _trackPending(text);
     _input.add(Uint8List.fromList(utf8.encode(text)));
@@ -324,6 +332,7 @@ class XtermTerminalEngine implements TerminalEngine {
   /// byte inputs such as Tab, Esc, and Ctrl-C. Unlike
   /// [injectInput] this is allowed to carry control bytes such as Enter.
   void sendKey(List<int> bytes) {
+    if (_disposed) return;
     _markInputActivity();
     _trackPending(utf8.decode(bytes, allowMalformed: true));
     _input.add(Uint8List.fromList(bytes));
@@ -331,6 +340,7 @@ class XtermTerminalEngine implements TerminalEngine {
 
   /// Send an arrow, Home, or End [key] using the active DECCKM mode.
   void sendCursorKey(TerminalCursorKey key) {
+    if (_disposed) return;
     final prefix = terminal.cursorKeysMode ? 0x4f : 0x5b; // SS3 or CSI
     // Cursor sequences are intentionally terminal controls, not command text.
     // Bypass pending-input tracking and leave one-shot Ctrl armed for typing.
@@ -340,6 +350,7 @@ class XtermTerminalEngine implements TerminalEngine {
 
   /// Stages a quoted `cd` at a verified empty prompt, without submitting it.
   TerminalStageResult stageChangeDirectory(String absolutePath) {
+    if (_disposed) return TerminalStageResult.promptNotReady;
     final state = shellIntegration.value;
     final shell = state.shell;
     if (shell == null) return TerminalStageResult.shellIntegrationRequired;
@@ -368,11 +379,24 @@ class XtermTerminalEngine implements TerminalEngine {
   }
 
   /// Toggle the one-shot Ctrl modifier (armed by the key row's Ctrl button).
-  void toggleCtrl() => ctrlArmed.value = !ctrlArmed.value;
+  void toggleCtrl() {
+    if (_disposed) return;
+    ctrlArmed.value = !ctrlArmed.value;
+  }
 
   @override
   void feed(Uint8List data) {
-    _terminalDecoder.add(data);
+    // A tab can close while its SSH handshake is still opening the shell.
+    // The pending connection is closed when it returns, but may emit data
+    // first; never revive a disposed terminal or notify its released views.
+    if (_disposed) return;
+    final wasFeedingOutput = _feedingOutput;
+    _feedingOutput = true;
+    try {
+      _terminalDecoder.add(data);
+    } finally {
+      _feedingOutput = wasFeedingOutput;
+    }
   }
 
   @override
@@ -411,7 +435,7 @@ class XtermTerminalEngine implements TerminalEngine {
         .getText(
           BufferRangeLine(
             CellOffset(0, start),
-            CellOffset(viewWidth - 1, height - 1),
+            CellOffset(viewWidth, height - 1),
           ),
         )
         .trimRight();
