@@ -56,15 +56,14 @@ class MainFlutterWindow: NSWindow {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.resolvesAliases = true
-        // allowedContentTypes needs macOS 11; the legacy property (silenced
-        // by this availability constraint) covers the 10.15 floor.
         // .applicationBundle (com.apple.application-bundle) is the exact
-        // equivalent of the legacy "app" extension filter.
-        if #available(macOS 11.0, *) {
-          panel.allowedContentTypes = [.applicationBundle]
-        } else {
-          panel.allowedFileTypes = ["app"]
-        }
+        // equivalent of the legacy `allowedFileTypes = ["app"]` filter, which
+        // macOS 12 deprecated. Unconditional: allowedContentTypes needs
+        // macOS 11, and this project's MACOSX_DEPLOYMENT_TARGET is 12.0
+        // (Runner.xcodeproj, every configuration — see AGENTS.md §3), so an
+        // availability check here is always true and its dead `else` branch
+        // would still be compiled, putting the deprecation warning back.
+        panel.allowedContentTypes = [.applicationBundle]
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.begin { response in
           guard response == .OK, let url = panel.url else {
