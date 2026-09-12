@@ -87,6 +87,23 @@ class SyncCoordinator {
     this.tombstoneStore,
   });
 
+  /// The credentials [servers] opt into publishing to the account.
+  ///
+  /// One rule in one place: [collectLocal] decides what to publish with it and
+  /// [_reviveSecrets] decides what is worth re-dating with it, and the two are
+  /// only correct while they agree. This used to be a predicate inside
+  /// `collectLocal`'s loop, leaning on the `continue` above it for the
+  /// excluded half — a shape the second caller could only copy, not share, so
+  /// adding a condition would have reached one and missed the other.
+  Set<String> _publishableSecretRefs(List<ServerConfig> servers) => {
+        if (syncSecrets)
+          for (final server in servers)
+            if (!server.excludeFromSync &&
+                server.syncSecret &&
+                server.secretRef != null)
+              server.secretRef!,
+      };
+
   /// Encode current local state into the record store (as local edits).
   ///
   /// Local credential edits must use [SecretVault.putLocalSecret] so their
@@ -124,7 +141,7 @@ class SyncCoordinator {
       for (final s in snippetList) '$_snippetIdPrefix${s.id}',
     };
 
-    final publishedSecretRefs = <String>{};
+    final publishedSecretRefs = _publishableSecretRefs(servers);
     for (final server in servers) {
       if (server.excludeFromSync) {
         await _retract(server, syncedSecretRefs);
@@ -137,9 +154,6 @@ class SyncCoordinator {
         deviceId: deviceId,
         data: server.toJson(),
       )));
-      if (syncSecrets && server.syncSecret && server.secretRef != null) {
-        publishedSecretRefs.add(server.secretRef!);
-      }
     }
     // Publish each opted-in credential at its own edit time. Legacy local
     // entries use zero until an actual edit or a remote version supplies a
@@ -332,6 +346,79 @@ class SyncCoordinator {
     )));
   }
 
+  /// Re-date a credential this device retracted and then opted back in to,
+  /// and report how many moved.
+  ///
+  /// The credential analogue of [_revive], and needed for the same reason: a
+  /// retraction is dated from the config that carried it, so re-including the
+  /// server leaves a tombstone the credential's own edit time — which the
+  /// switch did not touch — loses to. Without this the config comes back while
+  /// its credential stays withdrawn, and a device enrolling afterwards gets a
+  /// server it cannot log into.
+  ///
+  /// The bump is written to the vault as well as staged, which does move a
+  /// stamp the user did not earn by editing the material. Two reasons it has
+  /// to: the record's payload carries the same stamp as its envelope and a
+  /// peer *rejects* the pair when they disagree ([_applySecretRecords]), and a
+  /// vault left behind would republish the losing date every round. It is the
+  /// same fiction [_revive] applies to a re-included config, bounded the same
+  /// way — one millisecond past the retraction, a deterministic function of a
+  /// date already on the record, so it settles instead of bidding.
+  ///
+  /// [servers] is the list [applyToStores] already read, not a second read of
+  /// the same store: publishing eligibility must be the rule [collectLocal]
+  /// applies, and two reads could straddle a write and disagree with it.
+  ///
+  /// What that costs, accepted rather than left to be rediscovered: a peer's
+  /// config tombstone applied earlier in the same batch has already deleted a
+  /// server that is still in this list, so its credential can be revived and
+  /// published once as an orphan no config names. It is the same one-round
+  /// view [collectLocal] published under a moment earlier, it corrects itself
+  /// on the next round's read, and the alternative — re-reading the store
+  /// here — buys that at the price of the two rules disagreeing, which is the
+  /// failure this list exists to prevent.
+  Future<int> _reviveSecrets(
+    List<(String, int)> refs,
+    List<ServerConfig> servers,
+    void Function(String, Object, StackTrace) skip,
+  ) async {
+    final vault = secretVault;
+    if (refs.isEmpty || !syncSecrets || vault == null) return 0;
+    final published = _publishableSecretRefs(servers);
+    var bumpedCount = 0;
+    for (final (ref, retractedAt) in refs) {
+      // Still retracted as far as this device is concerned: the switch is off
+      // again, or off for every owner. Nothing to bring back.
+      if (!published.contains(ref)) continue;
+      // Fail-soft per credential, like [_revive]: a locked keyring on one
+      // entry must not throw out of `applyToStores` and discard the round.
+      try {
+        final secret = await vault.getSecret(ref);
+        // Gone, or already outranking its own retraction — [collectLocal]
+        // publishes a winning date on its own and needs no help. Counting it
+        // would spend a sync round on a batch that changed nothing.
+        if (secret == null || secret.updatedAt > retractedAt) continue;
+        final bumped = secret.copyWith(updatedAt: retractedAt + 1);
+        // Staged first, stored second, for the reason spelled out in
+        // [_revive]: a failed store write is retried identically next round,
+        // while a failed stage after a successful store write would leave the
+        // guard above dropping this credential forever.
+        await local.putLocal(await codec.encrypt(DecryptedRecord(
+          id: '$_secretIdPrefix$ref',
+          kind: RecordKind.secret,
+          updatedAt: bumped.updatedAt,
+          deviceId: deviceId,
+          data: bumped.toJson(),
+        )));
+        await vault.putSecret(bumped);
+        bumpedCount++;
+      } catch (error, stackTrace) {
+        skip('$_secretIdPrefix$ref', error, stackTrace);
+      }
+    }
+    return bumpedCount;
+  }
+
   /// Drop pending tombstones that are done, so [tombstoneStore] stays bounded.
   ///
   /// [collectLocal] republishes every entry each round (unless its id is a
@@ -402,6 +489,10 @@ class SyncCoordinator {
     // Servers this device re-included whose own retraction still outranks
     // them: see the tombstone branch below.
     final revived = <(ServerConfig, int)>[];
+    // Credentials of those servers, as `(ref, retracted at)`. A credential's
+    // own edit time does not move when the user merely flips the switch back,
+    // so unlike a config it cannot outrank its retraction on its own.
+    final revivedSecrets = <(String, int)>[];
     final skippedIds = <String>[];
     Object? firstError;
     StackTrace? firstStackTrace;
@@ -465,6 +556,27 @@ class SyncCoordinator {
               continue;
             }
             await configStore.deleteServer(dec.id);
+            continue;
+          }
+          // Our own retraction of a credential: the mirror of the config
+          // revival above, and the other half of it — re-including a server
+          // republishes its config, but the credential record stays withdrawn
+          // from the account behind a tombstone the credential's own stamp
+          // cannot beat. The vault still holds it (a `secret:` tombstone is
+          // never honoured against the vault — see the routing comment
+          // above), so this is about the copy peers can reach, not about this
+          // device's own.
+          //
+          // Only this device's own retraction, exactly as for a config and
+          // for the same reason: a peer's tombstone says a server *they*
+          // excluded shared this credential, which is not a decision this
+          // device can read as reversed. What that leaves is the documented
+          // orphan residual, not a credential this device loses.
+          if (dec.id.startsWith(_secretIdPrefix) && dec.deviceId == deviceId) {
+            revivedSecrets.add((
+              dec.id.substring(_secretIdPrefix.length),
+              dec.updatedAt,
+            ));
             continue;
           }
           // A `snippet:` tombstone IS applied, unlike `secret:`/`hostkey:`: a
@@ -608,8 +720,9 @@ class SyncCoordinator {
     // the log line, not after it: a tombstone that could not be minted or a
     // revival that could not be staged was landing in `skippedIds` a moment
     // after the only reader of `skippedIds` had already spoken.
-    final redated =
-        await rescheduleOutranked(outranked, skip) + await _revive(revived, skip);
+    final redated = await rescheduleOutranked(outranked, skip) +
+        await _revive(revived, skip) +
+        await _reviveSecrets(revivedSecrets, servers, skip);
     if (skippedIds.isNotEmpty) {
       developer.log(
         'Skipped synced records: ${skippedIds.join(', ')}',
@@ -758,6 +871,17 @@ class SyncCoordinator {
           );
           continue;
         }
+        // An older copy must not land on a newer local edit. Before a
+        // credential carried a version of its own, the record store's
+        // last-write-wins did this job: every referenced credential was
+        // published every round, so an older remote never reached here as a
+        // winner. Publishing is opt-in now, so a credential this device does
+        // not publish has no record of its own standing in front of it, and
+        // this floor is all that is left. Strictly newer, so a tie still
+        // resolves where it always did — in the record layer, which breaks it
+        // by device and seq; this only refuses what is plainly stale.
+        final existing = await vault.getSecret(secret.id);
+        if (existing != null && existing.updatedAt > dec.updatedAt) continue;
         // Legacy peers omit the payload stamp. Persist their envelope version
         // so subsequent local config edits never manufacture a newer one.
         await vault.putSecret(secret.copyWith(updatedAt: dec.updatedAt));

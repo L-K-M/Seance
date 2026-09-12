@@ -426,6 +426,52 @@ void main() {
     expect(api.latestSeq, settled, reason: 'a restore only advances once');
   });
 
+  test('a peer\'s credential retraction is not revived by this device',
+      () async {
+    final api = FakeServer();
+    final key = secureRandomBytes(32);
+    final codec = RecordCodec(key);
+    final configs = InMemoryConfigStore();
+    final vault = SecretVault(InMemoryVaultStore(), key);
+    await configs.putServer(server('s1', 'server', 10)
+        .copyWith(secretRef: 'secret', syncSecret: true));
+    await vault.putLocalSecret(const Secret(
+      id: 'secret',
+      kind: SecretKind.password,
+      value: 'password',
+    ), updatedAt: 10);
+    // Device B excluded its own server sharing this credential. That is not a
+    // decision this device can read as reversed, so the revival pass leaves
+    // it alone — the documented residual is an orphan credential, never a
+    // credential this device loses.
+    await api.push([
+      await codec.encrypt(DecryptedRecord(
+        id: 'secret:secret',
+        kind: RecordKind.secret,
+        updatedAt: 20,
+        deviceId: 'B',
+        deleted: true,
+      )),
+    ]);
+
+    await SyncCoordinator(
+      configStore: configs,
+      hostKeyStore: InMemoryHostKeyStore(),
+      codec: codec,
+      local: InMemoryLocalRecordStore(),
+      deviceId: 'A',
+      syncSecrets: true,
+      secretVault: vault,
+    ).run(api);
+
+    expect(api.stored('secret:secret')!.deleted, isTrue);
+    // The tombstone is never honoured against the vault, so the credential is
+    // still here: withdrawn from the account, not lost on this device.
+    expect((await vault.getSecret('secret'))!.value, 'password');
+    expect((await vault.getSecret('secret'))!.updatedAt, 10,
+        reason: 'a retraction this device did not make moves no stamp');
+  });
+
   for (final scenario in [
     (label: 'alpha', syncSecret: true, excluded: false),
     (label: 'zulu', syncSecret: true, excluded: false),
