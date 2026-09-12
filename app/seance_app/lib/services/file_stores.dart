@@ -306,7 +306,11 @@ class FileVaultStore implements VaultStore, VaultRekeyJournal {
   }
 
   Future<void> _flush() async {
-    await writeStringAtomically(file, jsonEncode(_blobs));
+    // Same secrets as the journal beside it, kept for longer: an unrelated
+    // local account should not be able to take a copy of the sealed blobs for
+    // an offline attempt, or alter them.
+    await writeStringAtomically(file, jsonEncode(_blobs),
+        privacy: AtomicFilePrivacy.ownerOnly);
   }
 
   /// The staged generations, or null when no re-key is pending.
@@ -318,8 +322,22 @@ class FileVaultStore implements VaultStore, VaultRekeyJournal {
   /// could not be cleared would fail every vault operation from here on.
   Future<Map<String, String>?> _readRekeyJournal() async {
     if (!await _rekeyFile.exists()) return null;
+    // The read sits outside the guard, so only *judging the content* can
+    // quarantine. Moving the journal aside because the read merely failed
+    // would throw away the only copy of the new generation over a lock or a
+    // permissions blip, and the stored vault holds just the old one — so
+    // there would be nothing left to settle when the keystore next offers the
+    // new key. An I/O failure propagates and is retried with the journal
+    // intact.
+    //
+    // Bytes, not `readAsString`: that one reports malformed UTF-8 as a
+    // `FileSystemException` too, which would make damaged content
+    // indistinguishable from a failed read and wedge the vault on exactly the
+    // journal this is supposed to discard. Decoding here puts it back on the
+    // corruption side, where a `FormatException` belongs.
+    final bytes = await _rekeyFile.readAsBytes();
     try {
-      final journal = jsonDecode(await _rekeyFile.readAsString());
+      final journal = jsonDecode(utf8.decode(bytes));
       if (journal is! Map || journal['version'] != 1) {
         throw const FormatException('Invalid vault recovery journal.');
       }

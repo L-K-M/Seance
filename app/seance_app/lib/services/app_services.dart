@@ -269,16 +269,18 @@ class AppServices {
   /// A discarded journal is the outcome worth logging: the vault survives, but
   /// a staged generation was dropped because no key on offer opened it, and
   /// nothing else would explain the credentials that went with it.
-  static Future<void> _settleRekey(
+  static Future<VaultRekeyOutcome> _settleRekey(
       VaultRekeyJournal journal, List<int> key) async {
     final outcome = await journal.settleRekey(key);
-    if (outcome != VaultRekeyOutcome.discarded) return;
-    developer.log(
-      'A staged vault re-key matched neither generation the OS keyring could '
-      'open; the journal was moved aside and the stored vault kept',
-      name: 'seance.app',
-      level: 1000,
-    );
+    if (outcome == VaultRekeyOutcome.discarded) {
+      developer.log(
+        'A staged vault re-key matched neither generation the OS keyring '
+        'could open; the journal was moved aside and the stored vault kept',
+        name: 'seance.app',
+        level: 1000,
+      );
+    }
+    return outcome;
   }
 
   /// True when the settings file could not be parsed at startup and was moved
@@ -308,6 +310,12 @@ class AppServices {
   /// whole map anyway, so an orphan credential keeps opening instead of
   /// quietly retiring with the key nothing holds any more.
   Future<void> _rekeyVault(List<int> newKey) async {
+    // An attempt that could not get a verdict out of the keyring left its
+    // journal staged rather than guess, and staging a second one over it is
+    // refused. This is the retry, and the keyring may be back by now: settle
+    // first, so the affordance the previous attempt counted on actually
+    // exists. A no-op when nothing is staged.
+    await _adoptInstalledKey();
     final currentKey = vaultKey;
     // Staging reads every entry to re-seal it, which a locked vault cannot do.
     // Enrolment waits for the keyring rather than stage a generation built
@@ -322,7 +330,7 @@ class AppServices {
       // file on the generation the installed key still opens.
       await masterKeys.setKeystoreKey(newKey);
     } catch (_) {
-      await _adoptInstalledKey(fallback: currentKey);
+      await _adoptInstalledKey();
       rethrow;
     }
     await _settleRekey(_rekeyJournal, newKey);
@@ -341,20 +349,40 @@ class AppServices {
   /// Settle the staged re-key against the key the OS keystore really holds,
   /// and adopt it, after the install failed.
   ///
-  /// Reading the keystore back beats assuming it kept [fallback]: a write that
-  /// stored the value and then threw would otherwise settle the vault on a
-  /// generation the keystore cannot open. [MasterKeyManager.readKeystoreKey],
-  /// never `probeKeystore`, because that one invents a key when it finds none
-  /// and a key neither generation matches is the one thing this must not
-  /// install.
+  /// Reads the keystore back rather than assuming the throw meant nothing
+  /// landed: a write that stores the value and then fails on the way out is
+  /// the case this exists for. [MasterKeyManager.readKeystoreKey], never
+  /// `probeKeystore`, because that one invents a key when it finds none and a
+  /// key neither generation matches is the one thing this must not install.
+  ///
+  /// Settles nothing unless the keystore can actually testify. A null read is
+  /// ambiguous — "holds none" and "locked, cannot answer" are the same answer
+  /// here — and settling on a guess is how this reopens the window it closes:
+  /// picking the old key finalizes the vault on that generation and clears the
+  /// journal, so a keyring that *had* committed the new key is left holding
+  /// one nothing on disk matches, with the other generation gone. Returning
+  /// instead costs nothing, because staging never wrote `vault.json`: the
+  /// stored vault and this session stay on the key that still opens it, and
+  /// the journal survives for the next launch to settle against whichever key
+  /// the keystore turns out to hold.
+  ///
+  /// Only an adopted outcome changes the key this session reads with, because
+  /// only that one moved the stored vault to the generation [installed] opens.
+  /// A discarded journal leaves the stored vault where it was, and so does a
+  /// journal that was never staged, so taking the key in either case would
+  /// wedge a session that can still read through the one it has.
   ///
   /// Only the caller's keystore error is worth reporting, so a failure here is
   /// logged and swallowed; it leaves the journal on disk, which is exactly
   /// what the next launch settles from.
-  Future<void> _adoptInstalledKey({required List<int> fallback}) async {
+  Future<void> _adoptInstalledKey() async {
     try {
-      final installed = await masterKeys.readKeystoreKey() ?? fallback;
-      await _settleRekey(_rekeyJournal, installed);
+      final installed = await masterKeys.readKeystoreKey();
+      if (installed == null) return;
+      if (await _settleRekey(_rekeyJournal, installed) !=
+          VaultRekeyOutcome.adopted) {
+        return;
+      }
       vault = SecretVault(vault.store, installed);
       vaultKey = installed;
     } catch (error, stackTrace) {
