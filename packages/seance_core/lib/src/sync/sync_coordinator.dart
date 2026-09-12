@@ -87,6 +87,23 @@ class SyncCoordinator {
     this.tombstoneStore,
   });
 
+  /// The credentials [servers] opt into publishing to the account.
+  ///
+  /// One rule in one place: [collectLocal] decides what to publish with it and
+  /// [_reviveSecrets] decides what is worth re-dating with it, and the two are
+  /// only correct while they agree. This used to be a predicate inside
+  /// `collectLocal`'s loop, leaning on the `continue` above it for the
+  /// excluded half — a shape the second caller could only copy, not share, so
+  /// adding a condition would have reached one and missed the other.
+  Set<String> _publishableSecretRefs(List<ServerConfig> servers) => {
+        if (syncSecrets)
+          for (final server in servers)
+            if (!server.excludeFromSync &&
+                server.syncSecret &&
+                server.secretRef != null)
+              server.secretRef!,
+      };
+
   /// Encode current local state into the record store (as local edits).
   ///
   /// Local credential edits must use [SecretVault.putLocalSecret] so their
@@ -124,7 +141,7 @@ class SyncCoordinator {
       for (final s in snippetList) '$_snippetIdPrefix${s.id}',
     };
 
-    final publishedSecretRefs = <String>{};
+    final publishedSecretRefs = _publishableSecretRefs(servers);
     for (final server in servers) {
       if (server.excludeFromSync) {
         await _retract(server, syncedSecretRefs);
@@ -137,9 +154,6 @@ class SyncCoordinator {
         deviceId: deviceId,
         data: server.toJson(),
       )));
-      if (syncSecrets && server.syncSecret && server.secretRef != null) {
-        publishedSecretRefs.add(server.secretRef!);
-      }
     }
     // Publish each opted-in credential at its own edit time. Legacy local
     // entries use zero until an actual edit or a remote version supplies a
@@ -354,6 +368,15 @@ class SyncCoordinator {
   /// [servers] is the list [applyToStores] already read, not a second read of
   /// the same store: publishing eligibility must be the rule [collectLocal]
   /// applies, and two reads could straddle a write and disagree with it.
+  ///
+  /// What that costs, accepted rather than left to be rediscovered: a peer's
+  /// config tombstone applied earlier in the same batch has already deleted a
+  /// server that is still in this list, so its credential can be revived and
+  /// published once as an orphan no config names. It is the same one-round
+  /// view [collectLocal] published under a moment earlier, it corrects itself
+  /// on the next round's read, and the alternative — re-reading the store
+  /// here — buys that at the price of the two rules disagreeing, which is the
+  /// failure this list exists to prevent.
   Future<int> _reviveSecrets(
     List<(String, int)> refs,
     List<ServerConfig> servers,
@@ -361,13 +384,7 @@ class SyncCoordinator {
   ) async {
     final vault = secretVault;
     if (refs.isEmpty || !syncSecrets || vault == null) return 0;
-    final published = <String>{
-      for (final server in servers)
-        if (!server.excludeFromSync &&
-            server.syncSecret &&
-            server.secretRef != null)
-          server.secretRef!,
-    };
+    final published = _publishableSecretRefs(servers);
     var bumpedCount = 0;
     for (final (ref, retractedAt) in refs) {
       // Still retracted as far as this device is concerned: the switch is off

@@ -272,6 +272,17 @@ class AppServices {
       // the conservative half: it is correct whenever the install did not
       // commit, and a wrong rollback is recoverable by retrying enrolment
       // while a wrong *keep* would not be.
+      //
+      // The residual, stated rather than left to be rediscovered: a keyring
+      // that accepted the write and then locked before this read cannot
+      // testify, so the file goes back to the old key while the keystore
+      // holds the new one — the divergence this catch exists to prevent. It
+      // is what the code did unconditionally before there was a witness at
+      // all, so this narrows the window rather than opening it, and the
+      // rollback does not touch the keystore (there is nothing here to put
+      // back). Closing it needs the recovery journal on `FileVaultStore`,
+      // which stages both generations so the next launch can pick the one
+      // matching whichever key survived.
       final installed = await masterKeys.readKeystoreKey();
       if (installed != null && _sameKey(installed, newKey)) {
         // The install committed. The file is already sealed with this key, so
