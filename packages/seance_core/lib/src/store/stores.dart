@@ -158,6 +158,7 @@ class SecretVault {
 
   const SecretVault(this.store, this.vaultKey);
 
+  /// Store an imported or re-encrypted credential without changing its version.
   Future<void> putSecret(Secret secret) async {
     final blob = await VaultCrypto.sealJson(vaultKey, secret.toJson());
     await store.putSecretBlob(secret.id, blob);
@@ -174,6 +175,27 @@ class SecretVault {
       blobs[secret.id] = await VaultCrypto.sealJson(vaultKey, secret.toJson());
     }
     await store.putSecretBlobs(blobs);
+  }
+
+  /// Save locally edited material with its own monotonic version. Re-saving
+  /// unchanged material preserves its stamp even when its server was edited.
+  /// [updatedAt] is the caller's edit time; a clock behind an adopted secret
+  /// still advances past that secret. Callers must serialize edits with sync.
+  Future<void> putLocalSecret(Secret secret, {required int updatedAt}) async {
+    if (updatedAt <= 0) {
+      throw ArgumentError.value(updatedAt, 'updatedAt', 'must be positive');
+    }
+    final existing = await getSecret(secret.id);
+    if (existing != null &&
+        existing.kind == secret.kind &&
+        existing.value == secret.value &&
+        existing.keyPassphrase == secret.keyPassphrase) {
+      return;
+    }
+    final stamp = existing != null && existing.updatedAt >= updatedAt
+        ? existing.updatedAt + 1
+        : updatedAt;
+    await putSecret(secret.copyWith(updatedAt: stamp));
   }
 
   Future<Secret?> getSecret(String id) async {

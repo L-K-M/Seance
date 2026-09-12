@@ -93,11 +93,13 @@ void main() {
     ('3;f', 2, 0),
     (';5f', 0, 4),
     ('0;0f', 0, 0),
+    ('H', 0, 0),
+    ('f', 0, 0),
   ]) {
     test('CUP and HVP defaults respect origin mode for $sequence', () {
       final output = <String>[];
       final terminal = Terminal(onOutput: output.add)..resize(10, 10);
-      terminal.write('\x1b[3;8r\x1b[?6h');
+      terminal.write('\x1b[3;8r\x1b[?6h\x1b[4;6H');
 
       terminal.write('\x1b[$sequence\x1b[6n');
 
@@ -105,6 +107,46 @@ void main() {
       expect(terminal.buffer.cursorX, column);
       expect(output, ['\x1b[${row + 1};${column + 1}R']);
     });
+  }
+
+  for (final home in ['H', 'f']) {
+    test('bare $home returns to absolute home outside origin mode', () {
+      final terminal = Terminal()..resize(10, 10);
+      terminal.write('\x1b[3;8r\x1b[5;6H');
+
+      terminal.write('\x1b[$home');
+
+      expect(terminal.buffer.cursorX, 0);
+      expect(terminal.buffer.cursorY, 0);
+    });
+  }
+
+  for (final entry in {
+    'P': ['abc', 'ef', 'ghi', 'jkl', 'mno'],
+    'X': ['abc', ' ef', 'ghi', 'jkl', 'mno'],
+    '@': ['abc', ' def', 'ghi', 'jkl', 'mno'],
+    'L': ['abc', '', 'def', 'ghi', 'jkl'],
+    'M': ['abc', 'ghi', 'jkl', 'mno', ''],
+    'S': ['def', 'ghi', 'jkl', 'mno', ''],
+    'T': ['', 'abc', 'def', 'ghi', 'jkl'],
+  }.entries) {
+    for (final parameters in ['0', ';', ';5']) {
+      test('CSI $parameters ${entry.key} uses a default count of one', () {
+        final terminal = Terminal()..resize(10, 5);
+        terminal.write('abc\r\ndef\r\nghi\r\njkl\r\nmno\x1b[2;1H');
+
+        terminal.write('\x1b[$parameters${entry.key}');
+
+        final lines = List.generate(5, (row) {
+          final line = terminal.buffer.lines[row];
+          return String.fromCharCodes(List.generate(10, (column) {
+            final codePoint = line.getCodePoint(column);
+            return codePoint == 0 ? 0x20 : codePoint;
+          })).trimRight();
+        });
+        expect(lines, entry.value);
+      });
+    }
   }
 
   for (final originMode in [false, true]) {

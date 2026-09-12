@@ -554,7 +554,9 @@ class AppState extends ChangeNotifier {
     Secret? secret,
     IdentityFileBookmark? identityFileBookmark,
   }) async {
-    if (secret != null) await services.vault.putSecret(secret);
+    if (secret != null) {
+      await services.vault.putLocalSecret(secret, updatedAt: config.updatedAt);
+    }
     await services.configStore.putServer(config);
     // Re-saving an id (re-creating one deleted while offline, or an import
     // restoring it) cancels any pending deletion for it, so a stale tombstone

@@ -18,18 +18,24 @@ void main() {
       final parser = EscapeParser(MockEscapeHandler());
 
       parser.write('\x1b[;5H');
-      verify(parser.handler.setCursor(4, 0));
       parser.write('\x1b[;8r');
-      verify(parser.handler.setMargins(0, 7));
+      verifyInOrder([
+        parser.handler.setCursor(4, 0),
+        parser.handler.setMargins(0, 7),
+      ]);
+      verifyNoMoreInteractions(parser.handler);
     });
 
     test('normalizes zero and omitted margin defaults before dispatch', () {
       final parser = EscapeParser(MockEscapeHandler());
 
       parser.write('\x1b[0;0r');
-      verify(parser.handler.setMargins(0, null));
       parser.write('\x1b[3;r');
-      verify(parser.handler.setMargins(2, null));
+      verifyInOrder([
+        parser.handler.setMargins(0, null),
+        parser.handler.setMargins(2, null),
+      ]);
+      verifyNoMoreInteractions(parser.handler);
     });
   });
 

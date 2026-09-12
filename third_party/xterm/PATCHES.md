@@ -351,6 +351,9 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
     omitted parameters restore the default edges; CSI parsing preserves empty
     parameter positions, including a leading omitted top margin. CUP/HVP
     normalize omitted and zero coordinates before applying the origin.
+    Empty fields now reach all CSI handlers as zero. Editing and scrolling
+    counts treat zero as one, matching REP and cursor movement; this also
+    prevents a zero-length ECH from reading before the start of a line.
 
 ### App-layer notes (outside this package)
 

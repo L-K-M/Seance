@@ -89,8 +89,8 @@ class SyncCoordinator {
 
   /// Encode current local state into the record store (as local edits).
   ///
-  /// [Secret] has no edit timestamp of its own. Callers changing a local
-  /// credential must also advance a referencing [ServerConfig.updatedAt].
+  /// Local credential edits must use [SecretVault.putLocalSecret] so their
+  /// versions advance independently of unrelated server configuration edits.
   Future<void> collectLocal() async {
     final servers = await configStore.listServers();
 
@@ -104,18 +104,11 @@ class SyncCoordinator {
     // one vault entry, and a credential a still-synced server holds must keep
     // reaching the devices that want it.
     final syncedSecretRefs = <String>{};
-    final secretUpdatedAt = <String, int>{};
     for (final s in servers) {
       (s.excludeFromSync ? excludedLocators : syncedLocators)
           .add(hostKeyLocator(s.host, s.port));
       final ref = s.secretRef;
-      if (ref != null) {
-        if (!s.excludeFromSync) syncedSecretRefs.add(ref);
-        final previous = secretUpdatedAt[ref];
-        if (previous == null || s.updatedAt > previous) {
-          secretUpdatedAt[ref] = s.updatedAt;
-        }
-      }
+      if (ref != null && !s.excludeFromSync) syncedSecretRefs.add(ref);
     }
 
     // Record ids of domain objects that still exist this round. A pending
@@ -148,17 +141,18 @@ class SyncCoordinator {
         publishedSecretRefs.add(server.secretRef!);
       }
     }
-    // Any owner can edit a shared credential, including an excluded server or
-    // one with credential sync off. Use the newest owner's stamp while still
-    // requiring an included owner to opt into publishing it. Otherwise an
-    // edit through a nonsyncing owner is undone by the next pull.
+    // Publish each opted-in credential at its own edit time. Legacy local
+    // entries use zero until an actual edit or a remote version supplies a
+    // stamp, so an unrelated server rename cannot promote stale material.
+    // Older clients still borrow server timestamps and need upgrading for
+    // this protection to hold on every device.
     for (final ref in publishedSecretRefs) {
       final secret = await secretVault?.getSecret(ref);
       if (secret == null) continue;
       await local.putLocal(await codec.encrypt(DecryptedRecord(
         id: '$_secretIdPrefix${secret.id}',
         kind: RecordKind.secret,
-        updatedAt: secretUpdatedAt[ref]!,
+        updatedAt: secret.updatedAt,
         deviceId: deviceId,
         data: secret.toJson(),
       )));
@@ -755,7 +749,18 @@ class SyncCoordinator {
           );
           continue;
         }
-        await vault.putSecret(secret);
+        if (dec.data.containsKey('updatedAt') &&
+            secret.updatedAt != dec.updatedAt) {
+          skip(
+            dec.id,
+            StateError('secret timestamp does not match its record'),
+            StackTrace.current,
+          );
+          continue;
+        }
+        // Legacy peers omit the payload stamp. Persist their envelope version
+        // so subsequent local config edits never manufacture a newer one.
+        await vault.putSecret(secret.copyWith(updatedAt: dec.updatedAt));
       } catch (error, stackTrace) {
         skip(dec.id, error, stackTrace);
       }

@@ -45,6 +45,40 @@ void main() {
         updatedAt: 1,
       );
 
+  test('server saves advance credential versions only for credential edits',
+      () async {
+    const secret = Secret(
+      id: 'credential',
+      kind: SecretKind.password,
+      value: 'original-password',
+    );
+    final config = server('a').copyWith(
+      secretRef: secret.id,
+      updatedAt: 100,
+    );
+    await state.saveServer(config, secret: secret);
+    expect((await services.vault.getSecret(secret.id))!.updatedAt, 100);
+
+    // The editor supplies credential material on an ordinary server rename
+    // too. That save must not make an offline password look newly edited.
+    await state.saveServer(
+      config.copyWith(label: 'renamed', updatedAt: 200),
+      secret: secret,
+    );
+    expect((await services.vault.getSecret(secret.id))!.updatedAt, 100);
+
+    // A clock moving backwards must not hide a real credential change.
+    await state.saveServer(
+      config.copyWith(updatedAt: 90),
+      secret: secret.copyWith(value: 'rotated-password'),
+    );
+    final reopened = await AppServices.initialize();
+    addTearDown(() => reopened.probe.dispose());
+    final saved = (await reopened.vault.getSecret(secret.id))!;
+    expect(saved.value, 'rotated-password');
+    expect(saved.updatedAt, 101);
+  });
+
   test('a queued call from inside a running action is refused', () async {
     // The deadlock is an action awaiting a mutation queued behind itself,
     // forever and silently. The guard cannot tell an awaited call from a

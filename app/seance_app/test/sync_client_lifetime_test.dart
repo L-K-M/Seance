@@ -36,6 +36,7 @@ class _SelectiveKeystore extends FlutterSecureStorage {
   static const _masterKeyName = 'seance.vault.masterKey.v1';
   final Map<String, String> _map = {};
   bool refuseMasterKey = false;
+  bool commitMasterKeyBeforeFailure = false;
 
   @override
   Future<String?> read({
@@ -61,6 +62,7 @@ class _SelectiveKeystore extends FlutterSecureStorage {
     WindowsOptions? wOptions,
   }) async {
     if (refuseMasterKey && key == _masterKeyName) {
+      if (commitMasterKeyBeforeFailure && value != null) _map[key] = value;
       throw PlatformException(code: 'KeyringLocked', message: 'KeyringLocked');
     }
     if (value == null) {
@@ -241,7 +243,8 @@ void main() {
     expect(transport.closes, 1);
   });
 
-  test('a re-key the keystore refuses leaves every credential readable',
+  for (final committedBeforeFailure in [false, true]) {
+  test('a refused re-key preserves credentials (committed=$committedBeforeFailure)',
       () async {
     final keystore = _SelectiveKeystore();
     final own = await AppServices.initialize(
@@ -284,6 +287,7 @@ void main() {
     // The vault file re-seals fine; the keyring refuses the one write that
     // would make the new key survive a restart.
     keystore.refuseMasterKey = true;
+    keystore.commitMasterKeyBeforeFailure = committedBeforeFailure;
     await expectLater(
       http.runWithClient(
         () => own.registerSync(
@@ -307,5 +311,6 @@ void main() {
       expect((await reopened.vault.getSecret(secret.id))!.value, secret.value);
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
+  }
 
 }

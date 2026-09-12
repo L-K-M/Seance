@@ -891,6 +891,7 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       amount = _csi.params[0];
+      if (amount == 0) amount = 1;
     }
 
     handler.insertLines(amount);
@@ -904,6 +905,7 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       amount = _csi.params[0];
+      if (amount == 0) amount = 1;
     }
 
     handler.deleteLines(amount);
@@ -917,6 +919,7 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       amount = _csi.params[0];
+      if (amount == 0) amount = 1;
     }
 
     handler.deleteChars(amount);
@@ -930,6 +933,7 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       amount = _csi.params[0];
+      if (amount == 0) amount = 1;
     }
 
     handler.scrollUp(amount);
@@ -943,6 +947,7 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       amount = _csi.params[0];
+      if (amount == 0) amount = 1;
     }
 
     handler.scrollDown(amount);
@@ -956,6 +961,7 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       amount = _csi.params[0];
+      if (amount == 0) amount = 1;
     }
 
     handler.eraseChars(amount);
@@ -973,6 +979,7 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       amount = _csi.params[0];
+      if (amount == 0) amount = 1;
     }
 
     handler.insertBlankChars(amount);

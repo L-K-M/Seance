@@ -3,6 +3,7 @@ import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:seance_core/seance_core.dart';
 
 import 'atomic_file.dart';
@@ -217,8 +218,24 @@ class FileVaultStore implements VaultStore {
   final Map<String, String> _blobs = {}; // id -> base64
   Future<void>? _loading;
   Future<void> _pending = Future<void>.value();
+  Map<String, String>? _rekeySnapshots;
+  bool _rekeySelected = false;
 
   FileVaultStore(this.file);
+
+  File get _rekeyFile => File('${file.path}.rekey');
+
+  static String _keyId(List<int> key) => sha256.convert(key).toString();
+
+  static Map<String, String> _stringMap(Object? value) {
+    if (value is! Map) throw const FormatException('Expected a vault map.');
+    return value.map((key, value) {
+      if (key is! String || value is! String) {
+        throw const FormatException('Invalid vault map entry.');
+      }
+      return MapEntry(key, value);
+    });
+  }
 
   /// Memoized, because the flag this replaced was only set after the reads:
   /// two first-time callers both ran the body, and the one that finished last
@@ -241,6 +258,16 @@ class FileVaultStore implements VaultStore {
   }
 
   Future<void> _read() async {
+    if (await _rekeyFile.exists()) {
+      // This may be the only snapshot matching the installed key. A malformed
+      // journal must never follow the ordinary quarantine-and-empty path.
+      final journal = jsonDecode(await _rekeyFile.readAsString());
+      if (journal is! Map || journal['version'] != 1) {
+        throw const FormatException('Invalid vault recovery journal.');
+      }
+      _rekeySnapshots = _stringMap(journal['snapshots']);
+      return;
+    }
     if (!await file.exists()) return;
     try {
       final map = jsonDecode(await file.readAsString()) as Map;
@@ -288,6 +315,7 @@ class FileVaultStore implements VaultStore {
   /// successful write would then commit on its behalf. Restoring the snapshot
   /// keeps the two in step.
   Future<void> _mutate(void Function() change) => _serialize(() async {
+        _requireNoRekey();
         final previous = Map<String, String>.from(_blobs);
         try {
           change();
@@ -305,6 +333,9 @@ class FileVaultStore implements VaultStore {
         // Connecting to a server resolves its credential while an auto-sync
         // round may be writing one, so a read outside the queue could report
         // a value the mutation's flush is about to roll back.
+        if (_rekeySnapshots != null && !_rekeySelected) {
+          throw StateError('Unlock the keyring to recover the pending vault change.');
+        }
         final b64 = _blobs[id];
         return b64 == null ? null : base64.decode(b64);
       });
@@ -322,6 +353,91 @@ class FileVaultStore implements VaultStore {
 
   @override
   Future<void> deleteSecret(String id) => _mutate(() => _blobs.remove(id));
+
+  void _requireNoRekey() {
+    if (_rekeySnapshots != null) {
+      throw StateError('Finish vault recovery before changing credentials.');
+    }
+  }
+
+  Future<bool> hasPendingRekey() =>
+      _serialize(() async => _rekeySnapshots != null);
+
+  /// Stage both complete generations before changing the OS key. Each snapshot
+  /// authenticates its whole map and enrollment intent, including empty vaults.
+  /// The sidecar is written only to a fresh path and never replaced in place;
+  /// even Windows' replace fallback cannot delete the only recovery snapshot.
+  Future<void> stageRekey({
+    required List<int> currentKey,
+    required List<int> newKey,
+    required Map<String, dynamic> enrollment,
+  }) => _serialize(() async {
+    _requireNoRekey();
+    if (await _rekeyFile.exists()) {
+      throw StateError('A pending vault recovery must be completed first.');
+    }
+    final next = <String, String>{};
+    for (final entry in _blobs.entries) {
+      // Preserve raw JSON, including orphan entries and version metadata.
+      final plaintext = await VaultCrypto.openJson(
+        currentKey, base64.decode(entry.value));
+      next[entry.key] = base64.encode(await VaultCrypto.sealJson(newKey, plaintext));
+    }
+    final snapshots = <String, String>{
+      _keyId(currentKey): base64.encode(await VaultCrypto.sealJson(currentKey, {
+        'blobs': _blobs,
+        'enrollment': null,
+      })),
+      _keyId(newKey): base64.encode(await VaultCrypto.sealJson(newKey, {
+        'blobs': next,
+        'enrollment': enrollment,
+      })),
+    };
+    await writeStringAtomically(_rekeyFile,
+        jsonEncode({'version': 1, 'snapshots': snapshots}),
+        privacy: AtomicFilePrivacy.ownerOnly);
+    _rekeySnapshots = snapshots;
+    _rekeySelected = true; // The old key/map remain usable until key selection.
+  });
+
+  /// Select the authenticated snapshot matching the key actually in the OS
+  /// keyring. Unknown keys and damaged data leave the recovery file untouched.
+  /// A non-null result is the enrollment to finish after adopting the new key.
+  Future<Map<String, dynamic>?> selectRekeySnapshot(List<int> key) =>
+      _serialize(() async {
+    final snapshots = _rekeySnapshots;
+    if (snapshots == null) return null;
+    final sealed = snapshots[_keyId(key)];
+    if (sealed == null) {
+      throw StateError('The keyring key does not match the pending vault recovery.');
+    }
+    final snapshot = await VaultCrypto.openJson(key, base64.decode(sealed));
+    final blobs = _stringMap(snapshot['blobs']);
+    for (final blob in blobs.values) {
+      await VaultCrypto.openJson(key, base64.decode(blob));
+    }
+    final enrollment = snapshot['enrollment'];
+    if (enrollment != null && enrollment is! Map<String, dynamic>) {
+      throw const FormatException('Invalid vault recovery enrollment.');
+    }
+    _blobs
+      ..clear()
+      ..addAll(blobs);
+    _rekeySelected = true;
+    return enrollment as Map<String, dynamic>?;
+  });
+
+  /// Remove recovery material only after the selected vault and its enrollment
+  /// have committed. A failed primary write or cleanup leaves a retryable
+  /// sidecar; ordinary mutations remain blocked until this succeeds.
+  Future<void> finishRekey() => _serialize(() async {
+    if (_rekeySnapshots == null) return;
+    if (!_rekeySelected) throw StateError('Select the recovery key first.');
+    await _flush();
+    if (await _rekeyFile.exists()) await _rekeyFile.delete();
+    _rekeySnapshots = null;
+    _rekeySelected = false;
+  });
 }
 
 /// JSON-file [HostKeyStore] for pinned TOFU keys.
