@@ -111,7 +111,17 @@ A push resolves LWW, allocates sequences and commits all accepted records in one
 storage transaction. Entries run in list order, including repeated ids; empty
 batches return the current watermark. An LWW rejection is a per-record result,
 not a batch failure. Existing request limits apply before storage: by default,
-1,000 records, 1 MiB per blob and 8 MiB per request body.
+1,000 records, 1 MiB per blob and 8 MiB per request body. Because those two
+push limits are env-tunable, every pull response advertises them under
+`limits` (`maxBodyBytes`, `maxRecordsPerPush`) so a client can split a large
+push into requests this deployment accepts instead of having one oversized
+request rejected whole, every round. A client that sees no `limits` — talking
+to a server older than the field — falls back to the defaults above, which
+match that server only if it also ran with them: an older deployment with
+tuned-down caps keeps rejecting oversized pushes until it is upgraded.
+Invalid values for these three caps — unlike this server's other settings —
+abort startup with an error naming the variable, rather than silently falling
+back to the default; an unset or empty variable still means "use the default".
 A database failure rolls back the batch and its sequence changes. A lost HTTP
 reply can still follow a successful commit; clients must reconcile by pulling.
 
