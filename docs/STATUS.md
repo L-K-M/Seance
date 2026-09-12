@@ -65,7 +65,7 @@ journal that is damaged, stray, or matched by neither key is moved aside and
 the stored vault stands. The machinery that shipped unwired in 6f3d7f3 made the
 sidecar authoritative instead. It failed every read while one existed and no
 code path could clear it, so a sidecar arriving by any route (a restored
-backup, a half-shipped build) would have wedged the vault permanently. Twenty
+backup, a half-shipped build) would have wedged the vault permanently. Nineteen
 tests cover it: both crash sides at the store and through `AppServices`, the
 locked-keyring hold, the unmatched and damaged journals, an orphan entry the
 current key cannot open, refused mutations while staged, and that the sidecar
@@ -87,9 +87,10 @@ the same type a locked file raises. The read takes bytes and decodes them, so
 I/O failures propagate and are retried with the journal intact while damage
 still quarantines. The vault file itself is now written owner-only, like the
 journal beside it and the identity audit log; it held the same sealed blobs for
-longer under default permissions. Opening tightens an existing vault too, since
-one that is only ever read would otherwise keep the mode it was created with
-and the oldest installs would be the ones the change missed.
+longer under default permissions. Opening tightens an existing vault too, with a
+twentieth test locking that in, since one that is only ever read would
+otherwise keep the mode it was created with and the oldest installs would be
+the ones the change missed.
 
 Two things fell out. Re-keying now re-seals every stored entry rather than only
 the credentials current configs reference, because staging rewrites the whole
