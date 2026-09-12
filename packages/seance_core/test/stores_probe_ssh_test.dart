@@ -13,6 +13,37 @@ class _FakeProber implements Prober {
       byHost[host] ?? ProbeStatus.unknown;
 }
 
+/// Counts how the vault was written and can refuse a batch, so a test can tell
+/// a single durable write from a loop and see what a failed one leaves behind.
+class _CountingVaultStore implements VaultStore {
+  final Map<String, Uint8List> _blobs = {};
+  int singleWrites = 0;
+  int batches = 0;
+  bool failNextBatch = false;
+
+  @override
+  Future<Uint8List?> getSecretBlob(String id) async => _blobs[id];
+
+  @override
+  Future<void> putSecretBlob(String id, Uint8List blob) async {
+    singleWrites++;
+    _blobs[id] = blob;
+  }
+
+  @override
+  Future<void> putSecretBlobs(Map<String, Uint8List> blobs) async {
+    batches++;
+    if (failNextBatch) {
+      failNextBatch = false;
+      throw StateError('vault write failed');
+    }
+    _blobs.addAll(blobs);
+  }
+
+  @override
+  Future<void> deleteSecret(String id) async => _blobs.remove(id);
+}
+
 ServerConfig server(String id, String host) => ServerConfig(
       id: id,
       label: id,
@@ -47,6 +78,67 @@ void main() {
           .putSecret(Secret(id: 's', kind: SecretKind.password, value: 'x'));
       final wrong = SecretVault(store, secureRandomBytes(32));
       expect(() => wrong.getSecret('s'), throwsA(anything));
+    });
+
+    test('putSecrets seals every secret and stores them in one call', () async {
+      final vaultKey = secureRandomBytes(32);
+      final store = _CountingVaultStore();
+      final secrets = [
+        for (final id in ['a', 'b', 'c'])
+          Secret(id: id, kind: SecretKind.password, value: 'value-$id'),
+      ];
+
+      await SecretVault(store, vaultKey).putSecrets(secrets);
+
+      // One batch, not one write per credential — a mixed-key vault is only
+      // reachable when re-keying can stop between two of them.
+      expect(store.batches, 1);
+      expect(store.singleWrites, 0);
+      final vault = SecretVault(store, vaultKey);
+      for (final secret in secrets) {
+        expect((await vault.getSecret(secret.id))!.value, secret.value);
+      }
+    });
+
+    test('a batch that cannot be stored leaves the vault untouched', () async {
+      final oldKey = secureRandomBytes(32);
+      final newKey = secureRandomBytes(32);
+      final store = _CountingVaultStore();
+      final secrets = [
+        for (final id in ['a', 'b', 'c'])
+          Secret(id: id, kind: SecretKind.password, value: 'value-$id'),
+      ];
+      await SecretVault(store, oldKey).putSecrets(secrets);
+
+      store.failNextBatch = true;
+      await expectLater(
+        SecretVault(store, newKey).putSecrets(secrets),
+        throwsA(isA<StateError>()),
+      );
+
+      // Every entry still opens with the key that is still installed. A loop
+      // would have left the ones written before the failure sealed under a key
+      // no caller holds.
+      final vault = SecretVault(store, oldKey);
+      for (final secret in secrets) {
+        expect((await vault.getSecret(secret.id))!.value, secret.value);
+      }
+    });
+
+    test('putSecretBlobs leaves entries it does not name alone', () async {
+      final vaultKey = secureRandomBytes(32);
+      final store = InMemoryVaultStore();
+      final vault = SecretVault(store, vaultKey);
+      await vault.putSecret(
+          Secret(id: 'orphan', kind: SecretKind.password, value: 'kept'));
+
+      await vault.putSecrets(
+          [Secret(id: 'named', kind: SecretKind.password, value: 'fresh')]);
+
+      // A vault can hold a credential no current config references; re-keying
+      // is not the place to decide it is garbage.
+      expect((await vault.getSecret('orphan'))!.value, 'kept');
+      expect((await vault.getSecret('named'))!.value, 'fresh');
     });
   });
 

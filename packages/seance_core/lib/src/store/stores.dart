@@ -123,6 +123,21 @@ abstract class AssistantSettingsStore {
 /// sees plaintext — [SecretVault] seals before storing and opens after reading.
 abstract class VaultStore {
   Future<void> putSecretBlob(String id, Uint8List blob);
+
+  /// Store every entry of [blobs] in one durable step, or none of them.
+  ///
+  /// Re-keying seals each referenced credential under a new key, and a
+  /// per-entry loop over [putSecretBlob] is not equivalent: an implementation
+  /// that persists the whole vault per call (the JSON-file one does) leaves it
+  /// holding a mix of two keys when a write partway through fails, and the key
+  /// the later entries were sealed with is one no caller has installed yet.
+  /// Implementations must leave the stored state untouched when this throws.
+  ///
+  /// Entries not named in [blobs] are left alone rather than dropped: a vault
+  /// may hold a credential no current config references, and a re-key is not
+  /// the place to decide such an entry is garbage.
+  Future<void> putSecretBlobs(Map<String, Uint8List> blobs);
+
   Future<Uint8List?> getSecretBlob(String id);
   Future<void> deleteSecret(String id);
 }
@@ -139,6 +154,19 @@ class SecretVault {
   Future<void> putSecret(Secret secret) async {
     final blob = await VaultCrypto.sealJson(vaultKey, secret.toJson());
     await store.putSecretBlob(secret.id, blob);
+  }
+
+  /// Seal [secrets] under this vault's key and store them in one step.
+  ///
+  /// Sealing happens before anything is written, so a failure to seal cannot
+  /// leave a partial batch behind either. See [VaultStore.putSecretBlobs] for
+  /// why re-keying needs this rather than a loop over [putSecret].
+  Future<void> putSecrets(Iterable<Secret> secrets) async {
+    final blobs = <String, Uint8List>{};
+    for (final secret in secrets) {
+      blobs[secret.id] = await VaultCrypto.sealJson(vaultKey, secret.toJson());
+    }
+    await store.putSecretBlobs(blobs);
   }
 
   Future<Secret?> getSecret(String id) async {
@@ -218,6 +246,10 @@ class InMemoryVaultStore implements VaultStore {
   @override
   Future<void> putSecretBlob(String id, Uint8List blob) async =>
       _blobs[id] = blob;
+
+  @override
+  Future<void> putSecretBlobs(Map<String, Uint8List> blobs) async =>
+      _blobs.addAll(blobs);
 
   @override
   Future<void> deleteSecret(String id) async => _blobs.remove(id);

@@ -237,6 +237,28 @@ class FileVaultStore implements VaultStore {
     await writeStringAtomically(file, jsonEncode(_blobs));
   }
 
+  /// Apply [change] to the cache and persist it, or leave both as they were.
+  ///
+  /// The whole map is rewritten on every mutation, so the file alone is
+  /// already all-or-nothing — [writeStringAtomically] ends in a rename. The
+  /// cache is not: mutating it before the flush means a failed write leaves it
+  /// holding a value the caller was told was never stored, which the next
+  /// successful write would then commit on its behalf. Restoring the snapshot
+  /// keeps the two in step.
+  Future<void> _mutate(void Function() change) async {
+    await _load();
+    final previous = Map<String, String>.from(_blobs);
+    change();
+    try {
+      await _flush();
+    } catch (_) {
+      _blobs
+        ..clear()
+        ..addAll(previous);
+      rethrow;
+    }
+  }
+
   @override
   Future<Uint8List?> getSecretBlob(String id) async {
     await _load();
@@ -245,18 +267,18 @@ class FileVaultStore implements VaultStore {
   }
 
   @override
-  Future<void> putSecretBlob(String id, Uint8List blob) async {
-    await _load();
-    _blobs[id] = base64.encode(blob);
-    await _flush();
-  }
+  Future<void> putSecretBlob(String id, Uint8List blob) =>
+      _mutate(() => _blobs[id] = base64.encode(blob));
 
   @override
-  Future<void> deleteSecret(String id) async {
-    await _load();
-    _blobs.remove(id);
-    await _flush();
-  }
+  Future<void> putSecretBlobs(Map<String, Uint8List> blobs) => _mutate(() {
+        for (final entry in blobs.entries) {
+          _blobs[entry.key] = base64.encode(entry.value);
+        }
+      });
+
+  @override
+  Future<void> deleteSecret(String id) => _mutate(() => _blobs.remove(id));
 }
 
 /// JSON-file [HostKeyStore] for pinned TOFU keys.

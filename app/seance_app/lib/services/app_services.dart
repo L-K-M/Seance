@@ -59,6 +59,10 @@ class LockedSecretVault extends SecretVault {
 
   @override
   Future<void> putSecret(Secret secret) async => throw const VaultLockedException();
+
+  @override
+  Future<void> putSecrets(Iterable<Secret> secrets) async =>
+      throw const VaultLockedException();
 }
 
 /// Wires together the seance_core services with the app's file-backed stores
@@ -233,9 +237,11 @@ class AppServices {
       if (secret != null) secrets.add(secret);
     }
     final newVault = SecretVault(vault.store, newKey);
-    for (final secret in secrets) {
-      await newVault.putSecret(secret);
-    }
+    // One write, not one per credential. The vault file is rewritten whole on
+    // every entry, so a loop left it holding a mix of both keys when a write
+    // partway through failed — and the key the rest were sealed with is not
+    // installed until below, so a restart could not open them again.
+    await newVault.putSecrets(secrets);
     vault = newVault;
     vaultKey = newKey;
     await masterKeys.setKeystoreKey(newKey);
