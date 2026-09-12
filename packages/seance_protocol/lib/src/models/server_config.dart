@@ -1,3 +1,5 @@
+import 'server_mark.dart';
+
 /// How a server authenticates. `agent` means "don't store anything — sign via
 /// an ssh-agent", which is the lowest-risk mode and the encouraged default.
 enum AuthMethod { password, privateKey, agent }
@@ -32,32 +34,6 @@ enum ServerColor {
   slate,
 }
 
-/// A server's icon, again as a name from a closed set.
-///
-/// Beyond the sync argument above, Flutter's `--tree-shake-icons` build step
-/// only keeps glyphs it can see referenced by a *const* `IconData`. Storing an
-/// arbitrary codepoint and rendering `Icon(IconData(stored))` compiles fine and
-/// then ships a release build with blank squares where the icons were. A name
-/// mapped to a const `IconData` in the app keeps the whole feature tree-shakable.
-enum ServerIcon {
-  server,
-  cloud,
-  database,
-  web,
-  terminal,
-  shield,
-  home,
-  work,
-  lab,
-  device,
-  router,
-  mail,
-  container,
-  rocket,
-  star,
-  bug,
-}
-
 /// Decode a [ServerColor] name, or null when absent *or unrecognized*.
 ///
 /// Unlike [_authFromName] this deliberately has no fallback value: a newer
@@ -69,16 +45,6 @@ ServerColor? _colorFromName(String? name) {
   if (name == null) return null;
   for (final c in ServerColor.values) {
     if (c.name == name) return c;
-  }
-  return null;
-}
-
-/// Decode a [ServerIcon] name, or null when absent or unrecognized. See
-/// [_colorFromName] for why there is no fallback.
-ServerIcon? _iconFromName(String? name) {
-  if (name == null) return null;
-  for (final i in ServerIcon.values) {
-    if (i.name == name) return i;
   }
   return null;
 }
@@ -132,9 +98,34 @@ class ServerConfig {
   /// and it costs a color rather than a credential.
   final ServerColor? color;
 
-  /// An icon for this server, or null for the default. See [color] for the
-  /// unrecognized-value behavior, which is identical.
+  /// A built-in glyph for this server, or null for the default. See [color]
+  /// for the unrecognized-value behavior, which is identical.
+  ///
+  /// Also the stand-in for the two richer marks below: a server marked with an
+  /// emoji or an image keeps a glyph here, so a build that predates those
+  /// fields — or a device that cannot render what it was given — draws
+  /// something chosen rather than the default. [mark] resolves the three.
   final ServerIcon? icon;
+
+  /// A single emoji to draw instead of [icon], or null.
+  ///
+  /// Text, so it needs no asset and costs a record a handful of bytes. What it
+  /// costs instead is certainty: an emoji renders through whatever the host's
+  /// system font covers, and a Linux install without a colour emoji font
+  /// shows a box — which is why [icon] is kept alongside it.
+  final String? iconEmoji;
+
+  /// A PNG to draw instead of [iconEmoji] or [icon], base64-encoded, or null.
+  ///
+  /// The bytes live in this record rather than in one of their own. That keeps
+  /// them impossible to orphan (an image cannot outlive, or arrive without,
+  /// the server it marks), needs no new `RecordKind` and no collection step,
+  /// and means a device either has the whole appearance of a server or none of
+  /// it. The cost is a bigger config record, bounded by
+  /// [kMaxServerIconImageBytes] — the app re-encodes every import to badge
+  /// size, and a value from elsewhere that fails that bound is dropped on
+  /// read rather than drawn or re-published.
+  final String? iconImage;
 
   /// A command to run on the remote host once the shell opens, or null for
   /// none.
@@ -188,6 +179,16 @@ class ServerConfig {
   final int createdAt;
   final int updatedAt;
 
+  /// What to draw on this server's badge, resolved from [iconImage],
+  /// [iconEmoji] and [icon] in that order of preference. Callers draw this
+  /// rather than reading the three fields, which is what keeps the precedence
+  /// in one place.
+  ServerMark get mark => ServerMark.resolve(
+        icon: icon,
+        emoji: iconEmoji,
+        image: iconImage,
+      );
+
   const ServerConfig({
     required this.id,
     required this.label,
@@ -202,6 +203,8 @@ class ServerConfig {
     this.group,
     this.color,
     this.icon,
+    this.iconEmoji,
+    this.iconImage,
     this.loginScript,
     this.excludeFromSync = false,
     required this.createdAt,
@@ -227,6 +230,10 @@ class ServerConfig {
     bool clearColor = false,
     ServerIcon? icon,
     bool clearIcon = false,
+    String? iconEmoji,
+    bool clearIconEmoji = false,
+    String? iconImage,
+    bool clearIconImage = false,
     String? loginScript,
     bool clearLoginScript = false,
     bool? excludeFromSync,
@@ -267,6 +274,24 @@ class ServerConfig {
       group: clearGroup ? null : normalizeServerGroup(group ?? this.group),
       color: clearColor ? null : (color ?? this.color),
       icon: clearIcon ? null : (icon ?? this.icon),
+      // Normalized here as well as in fromJson, for the same reason the group
+      // is: the two ways a value can be replaced have to agree, and a const
+      // constructor cannot normalize.
+      iconEmoji: clearIconEmoji
+          ? null
+          : normalizeServerEmoji(iconEmoji ?? this.iconEmoji),
+      // Only a *new* image is re-validated. What this config already holds is
+      // *assumed* normalized — true for anything from `fromJson` or an earlier
+      // `copyWith`, but the const constructor is a third entry point that
+      // cannot normalize, so this is a convention rather than an invariant.
+      // Re-checking on every edit would decode base64 again for a rename, a
+      // colour or a sync toggle; `toJson` is the re-validating backstop, and
+      // `ServerMark.resolve` validates what is drawn.
+      iconImage: clearIconImage
+          ? null
+          : (iconImage != null
+              ? normalizeServerIconImage(iconImage)
+              : this.iconImage),
       loginScript: clearLoginScript
           ? null
           : normalizeLoginScript(loginScript ?? this.loginScript),
@@ -276,7 +301,12 @@ class ServerConfig {
     );
   }
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson() {
+    // Validated once and reused: the image check decodes base64, and this runs
+    // on every save and every sync round.
+    final emoji = normalizeServerEmoji(iconEmoji);
+    final image = normalizeServerIconImage(iconImage);
+    return {
         'id': id,
         'label': label,
         'host': host,
@@ -290,6 +320,11 @@ class ServerConfig {
         if (group != null) 'group': group,
         if (color != null) 'color': color!.name,
         if (icon != null) 'icon': icon!.name,
+        // Written only when they survive validation, so a value this build
+        // refuses to draw is never re-published as though it had been
+        // accepted. `fromJson` applies the same rule on the way in.
+        if (emoji != null) 'iconEmoji': emoji,
+        if (image != null) 'iconImage': image,
         if (loginScript != null) 'loginScript': loginScript,
         // Written unconditionally, like `syncSecret` and unlike the optional
         // presentation fields above: the two sync-policy booleans are a pair
@@ -299,6 +334,7 @@ class ServerConfig {
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
+  }
 
   factory ServerConfig.fromJson(Map<String, dynamic> json) => ServerConfig(
         id: json['id'] as String,
@@ -316,7 +352,25 @@ class ServerConfig {
         // put a nameless section in the list on the device that read it.
         group: normalizeServerGroup(json['group'] as String?),
         color: _colorFromName(json['color'] as String?),
-        icon: _iconFromName(json['icon'] as String?),
+        // Type-tested like the two fields below rather than cast: a record
+        // carrying a number here would otherwise throw out of fromJson and
+        // take the whole server entry with it, which is the degradation the
+        // sibling fields exist to avoid.
+        icon: json['icon'] is String
+            ? serverIconFromName(json['icon'] as String)
+            : null,
+        // A mark from a newer build, or from a device whose idea of an emoji
+        // this one does not share, degrades to the glyph beside it rather
+        // than poisoning the whole record. Tested for type rather than cast:
+        // a record carrying a number or a list here would otherwise throw out
+        // of `fromJson` and take the whole server entry with it, which is
+        // exactly the failure the degradation is meant to rule out.
+        iconEmoji: json['iconEmoji'] is String
+            ? normalizeServerEmoji(json['iconEmoji'] as String)
+            : null,
+        iconImage: json['iconImage'] is String
+            ? normalizeServerIconImage(json['iconImage'] as String)
+            : null,
         loginScript: normalizeLoginScript(json['loginScript'] as String?),
         excludeFromSync: json['excludeFromSync'] as bool? ?? false,
         createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,

@@ -121,7 +121,15 @@ void main() {
       syncSecret: syncSecret,
       group: 'Production',
       color: ServerColor.red,
+      // All three mark fields carry a non-default value, because the
+      // whole-record comparison below only catches a dropped field once the
+      // fixture sets one (see its own comment).
       icon: ServerIcon.rocket,
+      iconEmoji: '\u{1F433}',
+      // A PNG signature plus an IHDR declaring 8x8: the protocol refuses a
+      // header without usable dimensions, and a refused value would make
+      // this comparison pass by dropping the image on both sides.
+      iconImage: 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAI',
       loginScript: 'tmux attach',
       excludeFromSync: excludeFromSync,
       createdAt: 100,
@@ -129,8 +137,9 @@ void main() {
     );
 
     test('takes a new identity and carries the rest over', () {
+      final original = source(secretRef: 'sec-old');
       final copy = duplicateServerConfig(
-        source(secretRef: 'sec-old'),
+        original,
         id: 'fresh',
         label: 'web copy',
         secretRef: 'sec-new',
@@ -154,6 +163,16 @@ void main() {
       expect(copy.jumpHostId, 'bastion');
       expect(copy.group, 'Production');
       expect(copy.color, ServerColor.red);
+      // The mark as a whole, not just the glyph: a copy that lost the emoji
+      // or the imported image would read as a different server at a glance.
+      expect(copy.mark, original.mark);
+      // The raw fields too: `mark` resolves a precedence (image over emoji
+      // over glyph), so with all three set the comparison above cannot see a
+      // copy that dropped the shadowed one.
+      expect(copy.iconEmoji, original.iconEmoji);
+      expect(copy.iconImage, original.iconImage);
+      expect(original.iconEmoji, isNotNull, reason: 'fixture must be valid');
+      expect(original.iconImage, isNotNull, reason: 'fixture must be valid');
       expect(copy.icon, ServerIcon.rocket);
       expect(copy.loginScript, 'tmux attach');
     });

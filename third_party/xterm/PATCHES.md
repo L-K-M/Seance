@@ -287,7 +287,55 @@ what must be preserved.
     inline images or large OSC 52 clipboard traffic ever matter here, and
     unnecessary until then.
 
-28. **Cursor-position reports use protocol coordinates**
+### Selection is bounded by the content
+
+Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
+
+28. **Selection gestures clamp to the end of the content**
+    (`core/buffer/buffer.dart#contentEnd`, `ui/render.dart#_clampToContent`/
+    `#_selectionCellOffset`): dragging through the blank area under the shell
+    prompt painted a selection band across it and copied one newline per row
+    crossed. Nothing was out of bounds — a `Buffer` is built with one
+    `BufferLine` per viewport row and gains one per newline, so every row below
+    the prompt is a real, addressable line, and `getCellOffset` clamps to
+    `lines.length - 1` rather than to anything about content. A sweep through
+    the void therefore produced a perfectly valid multi-row range over cells
+    that hold nothing.
+
+    `Buffer.contentEnd` now reports one cell past the last cell in the buffer
+    that holds anything (null for a buffer nothing has been written to), and
+    every selection path in `RenderTerminal` routes its pixel→cell conversion
+    through `_selectionCellOffset`, which pulls the result back to it:
+    `selectWord`, `selectCharacters`, `selectCharactersTo`, `selectWordTo`,
+    `selectLine`, `selectLineTo`, `createAnchorAt` (the drag origin and the
+    shift-click base), `createWordAnchorsAt` and `createLineAnchorsAt`. The
+    end-inclusive +1 of the character paths is re-clamped after the bump, or it
+    would reach one cell past the content it was just pulled back to.
+
+    Consequences, all intended: a drag that never leaves the void starts and
+    ends on the same cell, so it paints nothing and copies nothing; a drag that
+    starts in output and runs off the bottom ends where the output does; a drag
+    rightward past the end of the last line stops at its last cell instead of
+    at the viewport edge; and a triple-click in the void selects the last line
+    of output rather than a blank row. A blank row *between* two rows of output
+    is inside the content and stays selectable — its newline is part of what is
+    being copied — and trailing blanks to the right of a short line mid-
+    selection are still painted, which every terminal does and which
+    `BufferLine.getText` already drops from the copy.
+
+    `getCellOffset` itself is deliberately unchanged: `mouseEvent`, link
+    hit-testing and the secondary-tap callbacks go through it, and a remote app
+    that owns the mouse has to be told the row the pointer is really on, void or
+    not. `contentEnd` is scanned from the end, so the common case stops within a
+    screen height. The worst case is not bounded by `viewHeight`: a program
+    printing nothing but newlines pushes blank lines into the scrollback like
+    any other output, and the scan then covers every line (measured 4 us
+    ordinarily against 2.1 ms over 9000 blank lines). It runs per selection
+    pointer event, so cache it if a drag ever shows up in a profile.
+
+### Cursor reports and scrolling margins
+
+29. **Cursor-position reports use protocol coordinates**
     (`core/escape/emitter.dart#cursorPosition`,
     `terminal.dart#sendCursorPosition`; regressions:
     `test/src/terminal_test.dart`): CPR replies to CSI 6 n now translate the

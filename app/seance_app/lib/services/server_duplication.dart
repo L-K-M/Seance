@@ -90,7 +90,12 @@ ServerConfig duplicateServerConfig(
   syncSecret: source.syncSecret,
   group: source.group,
   color: source.color,
+  // All three mark fields, not just the glyph: they are one choice to the
+  // user, and a copy that lost the emoji or the imported image would look
+  // like a different server at a glance — which is the whole point of a mark.
   icon: source.icon,
+  iconEmoji: source.iconEmoji,
+  iconImage: source.iconImage,
   loginScript: source.loginScript,
   excludeFromSync: source.excludeFromSync,
   // A copy is new, not as old as what it was copied from: `createdAt` is what

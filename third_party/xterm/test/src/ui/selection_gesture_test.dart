@@ -20,6 +20,9 @@ import 'package:xterm/xterm.dart';
 ///    line — select-all (anchored at row 0) broke as soon as output streamed.
 /// 6. While scrolled up, a full scrollback's trim made content crawl under a
 ///    stationary viewport.
+/// 7. Dragging through the blank rows under the shell prompt painted a
+///    selection band over them and copied their newlines — the buffer keeps a
+///    real line per row, so nothing stopped a gesture there.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -702,6 +705,270 @@ void main() {
         'alpha bravo charlie',
         reason: 'the drag must stay glued to its row across the trim',
       );
+    });
+  });
+
+  /// [seance fork] The void past the end of the content. A terminal buffer is
+  /// created with one blank [BufferLine] per viewport row, so a drag below the
+  /// last line of output lands on real, addressable rows: pre-fix it painted a
+  /// band across them and copied a newline for each. Selection gestures now
+  /// clamp to [Buffer.contentEnd]; mouse reporting and links deliberately do
+  /// not, which `mouse_report_test.dart` and `link_gesture_test.dart` pin.
+  group('void past the content', () {
+    /// Drags from [from] to [to] with a plain primary press, then settles the
+    /// gesture timers.
+    Future<void> drag(
+      WidgetTester tester,
+      Offset from,
+      Offset to,
+    ) async {
+      final gesture = await tester.startGesture(
+        from,
+        kind: PointerDeviceKind.mouse,
+      );
+      await gesture.moveTo(to);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('a drag that never leaves the void selects nothing',
+        (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo\r\ncharlie');
+      await tester.pump();
+
+      // Three rows hold text; drag across rows well below them, the way the
+      // pointer lands when you sweep the empty area under a shell prompt.
+      await drag(
+        tester,
+        cellCenter(tester, 30, 8),
+        cellCenter(tester, 4, 10),
+      );
+
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        isEmpty,
+        reason: 'pre-fix this copied one newline per blank row crossed',
+      );
+      expect(
+        selection.begin,
+        selection.end,
+        reason: 'an empty range paints no band over the void',
+      );
+    });
+
+    testWidgets('a drag that starts in the void and sweeps up takes the output',
+        (tester) async {
+      // The mirror of the case below: the *press* lands past every row, so the
+      // drag's start anchor is the clamped one and `to` lands before it. The
+      // reversed range has to normalize, or sweeping up from under the prompt
+      // selects nothing.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await drag(tester, cellCenter(tester, 30, 9), cellCenter(tester, 0, 0));
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'alpha\nbravo',
+        reason: 'the clamped start anchor is the far end of a reversed range',
+      );
+    });
+
+    testWidgets('a drag out of the output ends where the output does',
+        (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      // From the first character, down past the end of the buffer's content.
+      await drag(
+        tester,
+        cellCenter(tester, 0, 0),
+        cellCenter(tester, 30, 12),
+      );
+
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'alpha\nbravo',
+        reason: 'pre-fix every blank row below "bravo" added a newline',
+      );
+      expect(selection.end.y, 1, reason: 'the last row holding text');
+      expect(selection.end.x, 5, reason: 'one past the "o" of "bravo"');
+    });
+
+    testWidgets('a drag past the end of the last line stops at its last cell',
+        (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha');
+      await tester.pump();
+
+      // Rightward along the only row of text, well past its end. The copied
+      // text was always 'alpha' (blank cells contribute nothing); what was
+      // wrong is the *band*, which ran to the edge of the terminal.
+      await drag(
+        tester,
+        cellCenter(tester, 0, 0),
+        cellCenter(tester, 40, 0),
+      );
+
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(terminal.buffer.getText(selection!), 'alpha');
+      expect(
+        selection.end.x,
+        5,
+        reason: 'pre-fix the range ran to the right edge of the viewport',
+      );
+    });
+
+    testWidgets('triple-clicking the void takes the last line of output',
+        (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await multiClick(tester, cellCenter(tester, 6, 9), 3);
+
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'bravo',
+        reason: 'pre-fix a blank row was selected, copying nothing',
+      );
+      expect(selection.begin.y, 1);
+    });
+
+    testWidgets('double-clicking the void selects no blank cells',
+        (tester) async {
+      // The word paths are the only clamped callers that hand contentEnd —
+      // one cell *past* the last written cell — to getWordBoundary, so what
+      // that returns at the end of content is load-bearing and was unpinned.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await multiClick(tester, cellCenter(tester, 6, 9), 2);
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'bravo',
+        reason: 'pre-fix a word of blank cells was taken, copying nothing',
+      );
+      expect(selection.begin.y, 1, reason: 'the last row holding text');
+    });
+
+    /// [clicks] taps at [at], then holds one more press there and drags it to
+    /// [to] — so the drag runs as the (clicks+1)-th click of the chain, which
+    /// is what puts it on the line or word *continuation* path.
+    Future<void> holdDragFrom(
+      WidgetTester tester,
+      int clicks,
+      Offset at,
+      Offset to,
+    ) async {
+      for (var i = 0; i < clicks; i++) {
+        await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final gesture = await tester.startGesture(at,
+          kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveTo(to);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('a held line drag into the void keeps the line it started on',
+        (tester) async {
+      // dragLineSelection's clamped `to`, which nothing else here exercised:
+      // the group otherwise only pins presses and plain character drags.
+      // Verified to have teeth — unclamped this copies 'bravo\n', absorbing a
+      // blank row.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await holdDragFrom(
+        tester, 2, cellCenter(tester, 1, 1), cellCenter(tester, 20, 10));
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'bravo',
+        reason: 'dragging the band into the void must absorb no blank rows',
+      );
+    });
+
+    testWidgets('a held word drag into the void keeps the word it started on',
+        (tester) async {
+      // The same gesture on the word path. This pins the observable contract
+      // rather than the clamp: getWordBoundary returns null for a void cell,
+      // so selectWordTo returns early and the initial word stands whether or
+      // not `to` was clamped. Kept because the contract is what users see.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await holdDragFrom(
+        tester, 1, cellCenter(tester, 1, 1), cellCenter(tester, 20, 10));
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(terminal.buffer.getText(selection!), 'bravo');
+    });
+
+    testWidgets('an untouched terminal cannot be selected into', (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+
+      // Nothing has ever been written: Buffer.contentEnd is null and every
+      // gesture has to collapse rather than index a line that holds nothing.
+      await drag(
+        tester,
+        cellCenter(tester, 2, 2),
+        cellCenter(tester, 20, 7),
+      );
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(terminal.buffer.getText(selection!), isEmpty);
+      expect(selection.begin, selection.end);
     });
   });
 }

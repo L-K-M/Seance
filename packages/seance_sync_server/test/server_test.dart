@@ -155,7 +155,10 @@ void main() {
       final settings = ServerSettings.fromEnvironment(
           const {'SEANCE_MAX_BLOB_BYTES': '2048'});
       expect(settings.maxBlobBytes, 2048);
-      expect(settings.pushLimits, const PushLimits());
+      // Advertised along with the other two: a client that does not know this
+      // deployment's blob cap batches a record past it beside records that
+      // would have been accepted, and the 413 takes all of them.
+      expect(settings.pushLimits, const PushLimits(maxBlobBytes: 2048));
     });
   });
 
