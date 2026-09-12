@@ -45,8 +45,11 @@ sealed blob cannot be shrunk client-side, and the server stays the authority on
 its own limits — but the failure stays with it instead of holding back
 everything else. A regression test in the server package drives the real stack
 and asserts the other records reach the server while the failure still
-surfaces. A client talking to a server too old to advertise falls back to the
-shipped 1 MiB, which is what such a server enforces unless an operator tuned it.
+surfaces. A client falls back to the shipped 1 MiB in two cases, not one: when
+the server sends no limits at all, and when it sends the two older ones without
+this — which is every deployment predating the field. So a server with
+`SEANCE_MAX_BLOB_BYTES` tuned below 1 MiB has to be upgraded too before its
+clients can isolate anything; untuned, the default is what it enforces anyway.
 
 ## Font picker, server marks, and terminal selection (2026-09-11)
 

@@ -121,10 +121,15 @@ compliance at all, and it is refused with a 413 for the *whole* push — so a
 client that does not know the cap batches such a record beside records the
 server would have taken and loses all of them, identically every round. Knowing
 it, the client sends that record alone and last, and the failure stays with the
-one record that caused it. A client that sees no `limits` — talking to a server
-older than the field — falls back to the defaults above, which match that
-server only if it also ran with them: an older deployment with tuned-down caps
-keeps rejecting oversized pushes until it is upgraded.
+one record that caused it. Falling back has two shapes, and the second is the
+easy one to miss: a client that sees no `limits` at all is talking to a server
+older than the field, but a client whose server advertises only `maxBodyBytes`
+and `maxRecordsPerPush` — every deployment predating `maxBlobBytes` — falls
+back for the blob cap alone, since an absent field takes its default. Either
+way the defaults match that server only if it also ran with them. So a
+deployment with `SEANCE_MAX_BLOB_BYTES` tuned below 1 MiB keeps losing whole
+pushes until the *server* is upgraded too: a new client cannot learn a cap the
+old one never sends, and upgrading only the clients does not unstick it.
 Invalid values for these three caps — unlike this server's other settings —
 abort startup with an error naming the variable, rather than silently falling
 back to the default; an unset or empty variable still means "use the default".
