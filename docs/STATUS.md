@@ -5,7 +5,9 @@ Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
 _Last updated: 2026-09-12. A single record past the server's per-record blob
 cap no longer stops the whole account's sync: that cap is advertised alongside
-the other two, and such a record is now pushed alone and last. Before that, the
+the other two, and such a record is now pushed alone and last. An emoji mark
+must also carry a character of its own — a lone joiner or combining mark was
+accepted and painted an empty badge. Before that, the
 terminal font could be picked from the fonts
 actually installed on the host; a drag through the empty area under the shell
 prompt no longer paints a selection over it; and a server's mark can now be one
@@ -50,6 +52,51 @@ the server sends no limits at all, and when it sends the two older ones without
 this — which is every deployment predating the field. So a server with
 `SEANCE_MAX_BLOB_BYTES` tuned below 1 MiB has to be upgraded too before its
 clients can isolate anything; untuned, the default is what it enforces anyway.
+
+## An emoji mark has to draw something (2026-09-12)
+
+`normalizeServerEmoji` refuses the invisible characters one at a time — the
+zero-width space, the zero-width non-joiner, the bidi controls, the Hangul
+fillers, plane 14 — because each of them alone is a valid grapheme cluster that
+paints an empty badge. Three kinds got through anyway:
+
+* **U+200D, the zero-width joiner.** Deliberately absent from that list, since
+  it is what holds a multi-part emoji together — so it could never be caught
+  there, and a mark that was nothing but a joiner drew nothing.
+* **Variation selectors** (U+FE0E/U+FE0F), which select a presentation for the
+  character before them and have none here.
+* **Combining marks** — an accent, the combining grapheme joiner, an enclosing
+  keycap without its keycap.
+
+A fourth kind hides behind the same property but in the other direction:
+`Grapheme_Cluster_Break=Prepend` characters — U+0600 ARABIC NUMBER SIGN and its
+siblings, all invisible format characters — attach to what *follows* them
+(UAX #29 GB9b) rather than to what precedes.
+
+All of them share one property: the cluster has no base character, only the
+decorations that attach to one. That is now the rule, asked of the same
+grapheme engine rather than of a table of combining ranges that would go stale
+each Unicode revision — put a plain base character on each side of the cluster
+and see whether either one absorbed the whole thing. Both sides, because GB9/
+GB9a join backward and GB9b joins forward, and a probe on one side alone reads
+the other direction as a clean break. A subdivision flag, a ZWJ sequence, a
+keycap and a skin-toned emoji all keep working, which the existing tests pin;
+the visible-but-baseless cases — a lone skin-tone modifier, a lone spacing mark
+— are refused too, deliberately, since "the beige square" reads as a rendering
+failure on the next device.
+
+Where the rule stops is pinned too, rather than left to be rediscovered. A
+cluster needs a base; it is not required to be *only* that base, so an
+invisible character glued to a real one (U+0600 attaching forward onto an
+emoji, a plane-14 tag character attaching backward) still passes — both draw
+the emoji, so neither is the empty badge this refuses. The tag half could not
+be closed wholesale anyway: a subdivision flag is a base followed by exactly
+those characters. What would actually be reordered or hidden — the bidi
+controls, the zero-width characters, the Hangul fillers — is refused wherever
+it sits, because that loop reads every code unit rather than the first.
+
+The picker's curated grid is now pinned against the normalizer as well: an
+entry it refused would have been a tile that silently did nothing when tapped.
 
 ## Font picker, server marks, and terminal selection (2026-09-11)
 

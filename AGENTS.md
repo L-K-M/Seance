@@ -111,7 +111,7 @@ the latest code and rebuilds + recreates the stack in one step.
 Everything security- or correctness-critical is covered by tests that run in CI
 (`.github/workflows/ci.yml`):
 
-- **688 Dart tests** across the three packages — crypto round-trips and
+- **690 Dart tests** across the three packages — crypto round-trips and
   wrong-key/tamper rejection, verifier independence, recovery-code corruption
   detection, TOFU decisions, the danger linter, paste sanitization, secret
   redaction, LLM request/response handling and the chat tool loop, **two-device
@@ -246,6 +246,19 @@ embedded in `packages/seance_sync_server/lib/src/favicon.dart` (regeneration
 recipe in its header). Bundle ids are `com.lkm.seance_app` (Android) /
 `com.lkm.seanceApp` (Apple).
 
+The macOS floor is **12.0**, not the 10.15 the Flutter template once
+generated. It is `MACOSX_DEPLOYMENT_TARGET` in
+`macos/Runner.xcodeproj/project.pbxproj`, set in all three configurations and
+maintained **by hand** — nothing in the SDK rewrites an existing project's
+target, and this app has no Podfile to carry a `platform :osx` line either
+(plugins come through Swift Package Manager). What it has to keep up with is
+the SDK's own macOS minimum, which reached 12.0; raising it is what an
+`unsupported deployment target` build failure after a Flutter upgrade is
+asking for. Anything guarded by `#available(macOS 11.0, *)` or
+`#available(macOS 12.0, *)` in the runner is therefore dead weight — the check
+is always true and the dead branch is still compiled, which is how a deprecated
+API that was deliberately replaced gets its warning back.
+
 **Sync server as a native binary (works without Docker):**
 
 ```bash
@@ -301,7 +314,7 @@ compiles the app for android/linux/macos/ios/windows on their native runners
 
 ## 4. How things were verified (so you can re-verify)
 
-- 688 Dart tests + 581 Flutter tests + 170 in the vendored xterm fork.
+- 690 Dart tests + 583 Flutter tests + 170 in the vendored xterm fork.
   `dart analyze` and the app's `flutter analyze` are clean; the vendored
   fork carries 11 upstream `info` lints and is deliberately not analyze-
   gated in CI (only its tests run).
