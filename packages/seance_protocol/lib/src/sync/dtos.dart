@@ -199,7 +199,8 @@ class PushLimits {
       other.maxBlobBytes == maxBlobBytes;
 
   @override
-  int get hashCode => Object.hash(maxBodyBytes, maxRecordsPerPush, maxBlobBytes);
+  int get hashCode =>
+      Object.hash(maxBodyBytes, maxRecordsPerPush, maxBlobBytes);
 
   @override
   String toString() =>
