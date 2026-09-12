@@ -149,6 +149,27 @@ void main() {
       }
     });
 
+    test('refuses unpaired surrogates', () {
+      // Ill-formed UTF-16: one grapheme cluster, under the length ceiling,
+      // and tofu wherever it is drawn.
+      expect(normalizeServerEmoji('\uD800'), isNull);
+      expect(normalizeServerEmoji('\uDBFF'), isNull);
+      expect(normalizeServerEmoji('\uDC00'), isNull);
+      expect(normalizeServerEmoji('\uDFFF'), isNull);
+    });
+
+    test('refuses the blank-rendering Hangul fillers', () {
+      // Each is one cluster that draws nothing; U+3164 is the well-known
+      // invisible-username character.
+      for (final filler in ['\u115F', '\u1160', '\u3164', '\uFFA0']) {
+        expect(
+          normalizeServerEmoji(filler),
+          isNull,
+          reason: 'U+${filler.codeUnitAt(0).toRadixString(16)}',
+        );
+      }
+    });
+
     test('keeps the joiners and modifiers real emoji are built from', () {
       // The filter above must not catch these: U+200D holds a multi-part
       // emoji together, and the rest are how the common ones are spelled.
@@ -217,6 +238,14 @@ void main() {
       );
     });
 
+    test('resolve accepts exactly what the normalizer accepts', () {
+      // base64Decode throws on whitespace, so a padded value the normalizer
+      // trims and accepts must not be dropped by resolve instead.
+      final padded = '  ${encodeServerIconImage(png)!}\n';
+      expect(normalizeServerIconImage(padded), isNotNull);
+      expect(ServerMark.resolve(image: padded), isA<ServerImageMark>());
+    });
+
     test('refuses a PNG that does not lead with IHDR', () {
       // The dimension guard reads fixed offsets, which only address the
       // dimensions when IHDR really is the first chunk. A file leading with
@@ -280,6 +309,24 @@ void main() {
       final json = config(icon: ServerIcon.rocket).toJson()
         ..['icon'] = 'holodeck';
       expect(ServerConfig.fromJson(json).mark, const ServerGlyphMark(null));
+    });
+
+    test('separately built marks with the same content are equal', () {
+      // The editor shows its "use the default mark" button on
+      // `_mark != _defaultMark`, so identity comparison there would show it
+      // for a server that already has no mark.
+      expect(const ServerGlyphMark(null), ServerGlyphMark(serverIconFromName(
+        'nothing-by-this-name',
+      )));
+      expect(ServerMark.resolve(), const ServerGlyphMark(null));
+      expect(
+        ServerEmojiMark('\u{1F433}', fallback: ServerIcon.cloud),
+        ServerEmojiMark('\u{1F433}', fallback: ServerIcon.cloud),
+      );
+      expect(
+        ServerImageMark(Uint8List.fromList(png), fallback: ServerIcon.web),
+        ServerImageMark(Uint8List.fromList(png), fallback: ServerIcon.web),
+      );
     });
 
     test('a mark field of the wrong type costs the field, not the server', () {

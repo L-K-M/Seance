@@ -594,16 +594,23 @@ class ServerBadge extends StatelessWidget {
         // flag) is wider than the badge, and the ClipRRect above would slice
         // it through the middle. Shrinking keeps the whole glyph. A single
         // emoji is narrower than the box and is left at its natural size.
-        return FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Text(
-            emoji,
-            // Sized against the glyph it replaces rather than the badge, so an
-            // emoji and an icon sit at the same visual weight. No colour: an
-            // emoji carries its own, and tinting it would either do nothing or
-            // ruin it.
-            style: TextStyle(fontSize: size * 0.56, height: 1.1),
-            textAlign: TextAlign.center,
+        // Labelled like the other two branches. Left to the Text, the node
+        // would be the bare emoji, which each screen reader renders its own
+        // way and which says nothing about which server this is.
+        return Semantics(
+          label: semanticsLabel ?? emoji,
+          excludeSemantics: true,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              emoji,
+              // Sized against the glyph it replaces rather than the badge, so
+              // an emoji and an icon sit at the same visual weight. No colour:
+              // an emoji carries its own, and tinting it would either do
+              // nothing or ruin it.
+              style: TextStyle(fontSize: size * 0.56, height: 1.1),
+              textAlign: TextAlign.center,
+            ),
           ),
         );
       case ServerGlyphMark(:final icon):
@@ -621,8 +628,9 @@ class ServerBadge extends StatelessWidget {
     color: accent?.onContainer ?? scheme.onSurfaceVariant,
     // The badge identifies the server at a glance; without this it is an
     // unlabelled image to a screen reader, in the one widget whose entire job
-    // is telling servers apart.
-    semanticLabel: serverIconLabel(icon),
+    // is telling servers apart. The caller's label wins where there is one —
+    // the glyph name describes the drawing, not which server it stands for.
+    semanticLabel: semanticsLabel ?? serverIconLabel(icon),
   );
 }
 

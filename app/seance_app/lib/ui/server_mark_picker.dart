@@ -53,10 +53,19 @@ Future<ServerMark?> showServerMarkPicker(
 }) {
   return showDialog<ServerMark>(
     context: context,
-    builder: (_) => _MarkPickerDialog(
-      current: current,
-      accent: accent,
-      readImage: readImage ?? _pickImageBytes,
+    // Lifted above the soft keyboard: a dialog route does not resize for
+    // viewInsets, and both the icon search and the emoji field are inside a
+    // bounded box, so on a phone the keyboard would cover the lower half of
+    // whichever tab is being typed into. Zero on desktop.
+    builder: (context) => Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: _MarkPickerDialog(
+        current: current,
+        accent: accent,
+        readImage: readImage ?? _pickImageBytes,
+      ),
     ),
   );
 }

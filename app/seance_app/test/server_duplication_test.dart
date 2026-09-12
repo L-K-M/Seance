@@ -166,6 +166,12 @@ void main() {
       // The mark as a whole, not just the glyph: a copy that lost the emoji
       // or the imported image would read as a different server at a glance.
       expect(copy.mark, original.mark);
+      // The raw fields too: `mark` resolves a precedence (image over emoji
+      // over glyph), so with all three set the comparison above cannot see a
+      // copy that dropped the shadowed one.
+      expect(copy.iconEmoji, original.iconEmoji);
+      expect(copy.iconImage, original.iconImage);
+      expect(original.iconImage, isNotNull, reason: 'fixture must be valid');
       expect(copy.icon, ServerIcon.rocket);
       expect(copy.loginScript, 'tmux attach');
     });

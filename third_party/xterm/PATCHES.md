@@ -327,9 +327,11 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
     hit-testing and the secondary-tap callbacks go through it, and a remote app
     that owns the mouse has to be told the row the pointer is really on, void or
     not. `contentEnd` is scanned from the end, so the common case stops within a
-    screen height; an all-blank buffer is the worst case and is bounded by
-    `viewHeight`, since blank rows only accumulate from the initial fill or an
-    erase.
+    screen height. The worst case is not bounded by `viewHeight`: a program
+    printing nothing but newlines pushes blank lines into the scrollback like
+    any other output, and the scan then covers every line (measured 4 us
+    ordinarily against 2.1 ms over 9000 blank lines). It runs per selection
+    pointer event, so cache it if a drag ever shows up in a profile.
 
 ### App-layer notes (outside this package)
 

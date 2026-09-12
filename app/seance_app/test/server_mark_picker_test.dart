@@ -216,6 +216,19 @@ void main() {
     });
   });
 
+  /// Switches to the image tab and presses Choose, with the tap itself inside
+  /// [WidgetTester.runAsync]: encoding runs through the engine's codec, which
+  /// only completes on the real event loop, and work started in the fake-async
+  /// zone would simply hang (AGENTS.md §5). Centralized so a new image test
+  /// cannot get the wrapping wrong.
+  Future<void> chooseImage(WidgetTester tester) async {
+    await tester.tap(find.text('Image'));
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
+    );
+  }
+
   group('image', () {
     testWidgets('an imported file becomes a mark the protocol will carry', (
       tester,
@@ -226,16 +239,7 @@ void main() {
         current: const ServerGlyphMark(ServerIcon.web),
         readImage: () async => bytes,
       );
-      await tester.tap(find.text('Image'));
-      await tester.pumpAndSettle();
-      // The tap itself goes inside runAsync: encoding an image runs through
-      // the engine's codec, which only completes on the real event loop — the
-      // work started in a widget test's fake-async zone would simply hang.
-      // Polled to an outcome rather than slept for a fixed budget, so a loaded
-      // machine makes the test slower instead of making it fail.
-      await tester.runAsync(
-        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
-      );
+      await chooseImage(tester);
       // Frames rather than pumpAndSettle: the preview the encode produced is
       // an Image whose own resolution never settles here.
       await pumpUntil(tester, () => picked.isNotEmpty);
@@ -246,8 +250,11 @@ void main() {
       // Re-encoded rather than passed through, so what the record stores is
       // bounded whatever was picked.
       expect(mark.stored.image, isNotNull);
+      // Decoded first: the cap is a byte budget and the stored form is
+      // base64, which is about 4/3 the size. Comparing the string length
+      // would be testing a stricter limit than production enforces.
       expect(
-        mark.stored.image!.length,
+        base64Decode(mark.stored.image!).length,
         lessThan(kMaxServerIconImageBytes),
       );
     });
@@ -260,11 +267,7 @@ void main() {
       // a source that has to shrink can show that it did.
       final bytes = await samplePngBytes(tester, side: 1024);
       await open(tester, readImage: () async => bytes);
-      await tester.tap(find.text('Image'));
-      await tester.pumpAndSettle();
-      await tester.runAsync(
-        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
-      );
+      await chooseImage(tester);
       await pumpUntil(tester, () => picked.isNotEmpty);
 
       final stored = picked.single!.stored.image;
@@ -274,7 +277,7 @@ void main() {
         lessThan(bytes.length),
         reason: 'a pass-through would store the source unchanged',
       );
-      expect(stored.length, lessThan(kMaxServerIconImageBytes));
+      expect(base64Decode(stored).length, lessThan(kMaxServerIconImageBytes));
     });
 
     testWidgets('a file that is not an image is reported, not stored', (
@@ -284,11 +287,7 @@ void main() {
         tester,
         readImage: () async => Uint8List.fromList(List.filled(512, 0x41)),
       );
-      await tester.tap(find.text('Image'));
-      await tester.pumpAndSettle();
-      await tester.runAsync(
-        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
-      );
+      await chooseImage(tester);
       await pumpUntil(
         tester,
         () => tester.any(find.textContaining('could not be read as an image')),
@@ -306,11 +305,7 @@ void main() {
         tester,
         readImage: () async => throw const FileSystemException('gone'),
       );
-      await tester.tap(find.text('Image'));
-      await tester.pumpAndSettle();
-      await tester.runAsync(
-        () => tester.tap(find.widgetWithText(FilledButton, 'Choose image…')),
-      );
+      await chooseImage(tester);
       await pumpUntil(
         tester,
         () => tester.any(find.textContaining('could not be opened')),
@@ -333,6 +328,9 @@ void main() {
       await open(tester, readImage: () async => null);
       await tester.tap(find.text('Image'));
       await tester.pumpAndSettle();
+      // Deliberately not `chooseImage`: a cancelled picker returns before any
+      // codec work starts, so this one path needs no real event loop and can
+      // settle normally.
       await tester.tap(find.widgetWithText(FilledButton, 'Choose image…'));
       await tester.pumpAndSettle();
       expect(picked, isEmpty);

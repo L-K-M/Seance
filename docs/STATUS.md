@@ -84,8 +84,10 @@ config record, bounded at 192 KiB of image payload (the re-encoded PNG,
 measured before sealing) and stored at 256 px square.
 
 Both numbers are measured rather than guessed. The side is set by the largest
-badge the app draws, the 64-pixel preview in the mark picker, which is 192
-physical pixels on a 3× display. The byte cap is set so realistic content never
+badge the app draws, the 64-pixel preview in the mark picker: 192 physical
+pixels at 3x and 256 at 4x, and 256 is what is stored, so the top of the
+density range is covered rather than the middle. The byte cap is set so
+realistic content never
 trips the step-down: a PNG at 256 px measures about 1 KiB for a flat logo, 53
 KiB for a photograph and 154 KiB for pure noise. What bounds it is the sync
 server's 1 MiB per-record limit, measured on the decoded sealed blob — a config

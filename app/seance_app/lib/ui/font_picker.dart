@@ -133,7 +133,11 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
                   // rather than swallowed whole, or "no fonts found" and "the
                   // scan threw" would look identical while debugging.
                   if (snapshot.hasError) {
-                    debugPrint('Font scan failed: ${snapshot.error}');
+                    // With the trace: the point of logging here is to tell
+                    // "no fonts found" from "the scan threw", and a bare
+                    // FileSystemException does not say where.
+                    debugPrint('Font scan failed: ${snapshot.error}\n'
+                        '${snapshot.stackTrace ?? ''}');
                   }
                   final all = snapshot.data ?? const <SystemFontFamily>[];
                   return _FontList(

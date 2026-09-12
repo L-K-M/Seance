@@ -69,10 +69,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _checkForUpdates;
   late bool _keepSessionsAlive;
   late EditorRegistry _editorRegistry;
-  /// Read once: scanning the host's fonts is a directory walk, and the
-  /// service caches its result for exactly this reason.
-  late final SystemFonts _systemFonts =
-      widget.systemFonts ?? hostSystemFonts();
+  /// A getter, not a `late final` field: the service caches its directory
+  /// walk, so reading this per build is free, and a field initialized once
+  /// would pin the test seam to whatever the first widget instance carried.
+  SystemFonts get _systemFonts => widget.systemFonts ?? hostSystemFonts();
 
   late double _terminalFontSize;
   late TerminalPalette _terminalPalette;

@@ -29,11 +29,13 @@ const int kBadgeImageSide = 256;
 /// alternative to stepping down is refusing the import.
 const List<int> _sideAttempts = [kBadgeImageSide, 192, 128, 96];
 
-/// Largest source file accepted, before it is read.
+/// Largest source accepted, measured on the bytes as handed over.
 ///
-/// A first, cheap gate. It does *not* bound what decoding will allocate —
-/// that is [kMaxBadgeSourcePixels]'s job — because a file's compressed size
-/// says almost nothing about its pixel count.
+/// A first, cheap gate, and only that: this function receives a `Uint8List`,
+/// so the file has already been read by the time it applies. It does *not*
+/// bound what decoding will allocate either — that is
+/// [kMaxBadgeSourcePixels]'s job — because a file's compressed size says
+/// almost nothing about its pixel count.
 const int kMaxBadgeSourceBytes = 24 * 1024 * 1024;
 
 /// Largest decoded image accepted, in pixels: 4096² is 16.7 MP, about 67 MB
@@ -100,12 +102,18 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
     try {
       final descriptor = await ui.ImageDescriptor.encoded(buffer);
       try {
-        // Each side is bounded before the product is taken. Not reachable
-        // through a PNG — its dimensions are capped at 2^31-1, whose square
-        // still fits int64, and the engine rejects a header declaring more
-        // than that before this runs (measured: `encoded` throws "Invalid
-        // image data" for a 0xFFFFFFFF square). It costs one comparison to
-        // stop the guard this file calls load-bearing from depending on that.
+        // The budget is the product; the per-side comparisons only keep it
+        // from overflowing, by holding each factor below the budget so their
+        // product cannot exceed its square. They reject nothing the budget
+        // would have allowed — a side above 16.7 million pixels is already
+        // past it on its own — so ordinary wide sources still pass: a
+        // 6000x1000 panorama is 6 MP and accepted.
+        //
+        // Not reachable through a PNG in any case: its dimensions cap at
+        // 2^31-1, whose square still fits int64, and the engine rejects a
+        // larger header before this runs (measured: `encoded` throws
+        // "Invalid image data" for a 0xFFFFFFFF square). One comparison to
+        // stop the guard this file calls load-bearing depending on that.
         if (descriptor.width > kMaxBadgeSourcePixels ||
             descriptor.height > kMaxBadgeSourcePixels ||
             descriptor.width * descriptor.height > kMaxBadgeSourcePixels) {

@@ -73,6 +73,17 @@ class SfntSystemFonts implements SystemFonts {
   /// of magnitude past a heavily loaded designer's machine.
   static const int maxFiles = 4000;
 
+  /// Stop after visiting this many filesystem entities, fonts or not.
+  ///
+  /// [maxFiles] counts only what parses as a font, so on its own it does not
+  /// bound the walk: symlinks are followed, and a directory link out of the
+  /// font roots would be enumerated in full without ever incrementing it.
+  static const int maxVisitedEntities = maxFiles * 50;
+
+  // Resource-fork `.dfont` faces (macOS) and Type 1 `.pfa`/`.pfb` families are
+  // out by design: neither is an sfnt container, so nothing here can read
+  // them. The free-text field still accepts their names, which the OS font
+  // manager resolves.
   static const _extensions = {'.ttf', '.otf', '.ttc', '.otc'};
 
   /// Upper bound on a declared `name` table length. See [_readFace].
@@ -82,8 +93,13 @@ class SfntSystemFonts implements SystemFonts {
   final List<Directory> _roots;
   Future<List<SystemFontFamily>>? _cached;
 
-  SfntSystemFonts({List<Directory>? roots})
-      : _roots = roots ?? _platformRoots();
+  /// [visitBudget] overrides [maxVisitedEntities]; only a test needs to, to
+  /// drive the bound without laying down two hundred thousand files.
+  SfntSystemFonts({List<Directory>? roots, int? visitBudget})
+      : _roots = roots ?? _platformRoots(),
+        _visitBudget = visitBudget ?? maxVisitedEntities;
+
+  final int _visitBudget;
 
   @override
   bool get isSupported => _roots.isNotEmpty;
@@ -155,6 +171,13 @@ class SfntSystemFonts implements SystemFonts {
     // files already seen.
     final seen = <String>{};
     var files = 0;
+    // Every entity the walk yields, not just the fonts it parses. `files`
+    // alone does not bound the traversal: a *directory* symlink in a font
+    // root — a `ln -s` to $HOME, a link into a package store — makes the walk
+    // enumerate that whole tree while `files` stays near zero, so the budget
+    // below would never trip. Generous, because a real font directory holds
+    // plenty of metric and licence files beside the faces.
+    var visited = 0;
     for (final root in _roots) {
       await for (final entity in root.list(
         // Followed, because a font installed as a symlink is not exotic: a
@@ -165,7 +188,7 @@ class SfntSystemFonts implements SystemFonts {
         recursive: true,
         followLinks: true,
       ).handleError((_) {}, test: (e) => e is FileSystemException)) {
-        if (files >= maxFiles) break;
+        if (files >= maxFiles || ++visited > _visitBudget) break;
         if (entity is! File) continue;
         final dot = entity.path.lastIndexOf('.');
         if (dot < 0) continue;
@@ -361,7 +384,12 @@ String? _familyName(ByteData name) {
     final languageId = name.getUint16(record + 4);
     // A Windows "symbol" record is not UTF-16BE text; decoding it as such
     // yields mojibake.
-    if (platformId == 3 && encodingId == 0) continue;
+    // Windows records are UTF-16BE only at encoding 1. Encoding 0 is symbol,
+    // 2 to 6 are legacy codepages (ShiftJIS, Big5, PRC, CNS, Wansung) and 10
+    // is UCS-4 — read as UTF-16BE every one of them is mojibake. Surveyed
+    // this host's 109 real faces: all 148 of their Windows family records are
+    // encoding 1, so nothing legitimate is lost by requiring it.
+    if (platformId == 3 && encodingId != 1) continue;
     final length = name.getUint16(record + 8);
     final offset = storage + name.getUint16(record + 10);
     if (length == 0 || offset + length > name.lengthInBytes) continue;

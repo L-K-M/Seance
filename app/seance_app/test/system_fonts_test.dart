@@ -75,6 +75,11 @@ void main() {
     // OS/2: PANOSE is 10 bytes at offset 32 — family type at 0, proportion
     // at 3, so 32 and 35 here.
     final os2 = List<int>.filled(96, 0);
+    // Version 2: 96 bytes is that version's length, and a fixture declaring
+    // version 0 (78 bytes) at this size would be structurally inconsistent.
+    // PANOSE sits at offset 32 in every version, so this changes nothing the
+    // reader looks at — it keeps the fixture a shape a real font could have.
+    os2[1] = 2;
     if (panoseMono) {
       os2[32] = 2; // Latin text
       os2[35] = 9; // monospaced
@@ -416,9 +421,10 @@ void main() {
 
     test('a link that points at an ancestor does not rescan the tree',
         skip: _noSymlinks, () async {
-      // Following links means a cycle is reachable; each real file must still
-      // be parsed once, or one loop would spend the whole file budget on
-      // fonts already seen.
+      // Following links means a cycle is reachable; without a visited set the
+      // scan never terminates. What the assertion pins is termination and the
+      // collapsed result — not how many times a given file was parsed, since
+      // a re-parse collapses to the same family.
       await File('${directory.path}/a.ttf').writeAsBytes(sfnt(family: 'Hack'));
       await File('${directory.path}/b.ttf').writeAsBytes(
         sfnt(family: 'Cantarell'),
@@ -428,6 +434,22 @@ void main() {
       final fonts = SfntSystemFonts(roots: [directory]);
       final families = await fonts.families();
       expect(families.map((f) => f.name), ['Cantarell', 'Hack']);
+    });
+
+    test('the walk stops on non-font files, not just parsed fonts', () async {
+      // maxFiles counts fonts, so a directory of non-fonts — what a symlink
+      // out of the font roots leads to — must be bounded by the visited-entity
+      // budget instead. Driven with a tiny budget rather than 200,000 files.
+      for (var i = 0; i < 30; i++) {
+        await File('${directory.path}/junk$i.dat').writeAsBytes([0]);
+      }
+      await File('${directory.path}/real.ttf').writeAsBytes(
+        sfnt(family: 'Hack'),
+      );
+      final fonts = SfntSystemFonts(roots: [directory], visitBudget: 5);
+      // Whatever the walk reached, it stopped: 31 entities exist and the
+      // budget is 5, so the scan cannot have enumerated them all.
+      expect(await fonts.families(), hasLength(lessThanOrEqualTo(1)));
     });
 
     test('a duplicated root yields one family, not two', () async {

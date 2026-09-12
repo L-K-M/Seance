@@ -28,7 +28,14 @@ sealed class ServerMark {
     String? image,
   }) {
     if (image != null) {
-      final png = decodeServerIconImage(image);
+      // Through the normalizer rather than straight to the decoder: the
+      // normalizer trims and `base64Decode` throws on whitespace, so a padded
+      // value this accepts on the way in would be dropped here. `resolve` is
+      // public and documented as the inverse of `stored`, so the two paths
+      // have to agree on what is valid.
+      final normalized = normalizeServerIconImage(image);
+      final png =
+          normalized == null ? null : decodeServerIconImage(normalized);
       if (png != null) return ServerImageMark(png, fallback: icon);
     }
     final normalized = normalizeServerEmoji(emoji);
@@ -99,6 +106,13 @@ class ServerEmojiMark extends ServerMark {
 
 /// An imported image, as the bytes of a PNG.
 class ServerImageMark extends ServerMark {
+  /// A validated PNG within [kMaxServerIconImageBytes], and immutable.
+  ///
+  /// A const constructor cannot normalize, so the invariant rests on the
+  /// caller: [ServerMark.resolve] is the supported way to build one of these
+  /// and hands over the decoder cache's unmodifiable view. Bytes that are
+  /// mutated later break `==`; bytes past the ceiling render here and then
+  /// vanish on save, because [stored] refuses them.
   final Uint8List png;
   @override
   final ServerIcon? fallback;
@@ -200,11 +214,27 @@ String? normalizeServerEmoji(String? emoji) {
   // wherever the badge's label is rendered, and the zero-width ones would
   // render an empty badge. U+200D is deliberately absent — it is the joiner
   // that holds a multi-part emoji together.
-  for (final unit in trimmed.codeUnits) {
+  final units = trimmed.codeUnits;
+  for (var i = 0; i < units.length; i++) {
+    final unit = units[i];
+    // An unpaired surrogate is ill-formed UTF-16: one grapheme cluster by the
+    // cluster rule, under the length ceiling, and rendered as tofu on every
+    // platform. A well-formed pair is how every emoji outside the BMP is
+    // spelled, so the low half is stepped over rather than rejected.
+    if (unit >= 0xD800 && unit <= 0xDFFF) {
+      final next = i + 1 < units.length ? units[i + 1] : 0;
+      if (unit > 0xDBFF || next < 0xDC00 || next > 0xDFFF) return null;
+      i++;
+      continue;
+    }
     if (unit < 0x20 ||
         (unit >= 0x7F && unit <= 0x9F) ||
         unit == 0x00AD || // soft hyphen
         unit == 0x061C || // Arabic letter mark
+        unit == 0x115F || // Hangul choseong filler
+        unit == 0x1160 || // Hangul jungseong filler
+        unit == 0x3164 || // Hangul filler, the invisible-username character
+        unit == 0xFFA0 || // halfwidth Hangul filler
         unit == 0x200B || // zero-width space
         (unit >= 0x200E && unit <= 0x200F) || // LRM, RLM
         (unit >= 0x202A && unit <= 0x202E) || // embeddings and overrides
