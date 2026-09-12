@@ -150,6 +150,15 @@ void main() {
         () => vault.getSecret('any'),
         throwsA(isA<VaultLockedException>()),
       );
+      // The forgiving read has to stay refused here, and nothing but this
+      // pins it: the base class returns null for an entry it cannot open, so
+      // dropping the override would compile, pass everything else, and let a
+      // sync round read a locked vault as an empty one — then overwrite the
+      // entries it could not see.
+      await expectLater(
+        () => vault.readableSecret('any'),
+        throwsA(isA<VaultLockedException>()),
+      );
       await expectLater(
         () => vault.putSecret(
           Secret(id: 's1', kind: SecretKind.password, value: 'x'),

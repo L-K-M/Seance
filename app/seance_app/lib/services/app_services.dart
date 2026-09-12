@@ -58,6 +58,14 @@ class LockedSecretVault extends SecretVault {
   @override
   Future<Secret?> getSecret(String id) async => throw const VaultLockedException();
 
+  /// Throws too, rather than inheriting the "unreadable reads as absent" base.
+  /// Nothing here is damaged — there is no key to try — and a caller that took
+  /// the silent null would read a locked vault as an empty one and overwrite
+  /// the entries it cannot currently see.
+  @override
+  Future<Secret?> readableSecret(String id) async =>
+      throw const VaultLockedException();
+
   @override
   Future<void> putSecret(Secret secret) async => throw const VaultLockedException();
 
