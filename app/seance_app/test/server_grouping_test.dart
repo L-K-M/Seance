@@ -172,6 +172,27 @@ void main() {
       expect(keys.toSet(), hasLength(3));
     });
 
+    test('no spelling of a group name can reach the shortlist\'s key', () {
+      // [kPinnedKey] is collision-free only because [normalizeServerGroup]
+      // trims, which is an invariant in another function with nothing tying
+      // it to this constant. If trimming ever stopped, a user-typed group
+      // would start folding the pinned section away with it.
+      for (final spelling in [
+        'Pinned',
+        'pinned',
+        ' pinned',
+        'pinned ',
+        '  Pinned  ',
+        kPinnedKey,
+      ]) {
+        final section = groupServers(
+          [_server('a', group: spelling)],
+        ).single;
+        expect(section.key, isNot(kPinnedKey));
+        expect(section.key, isNot(kUngroupedKey));
+      }
+    });
+
     test('the shortlist folds away like any other section', () {
       final rows = serverListRows(
         sections: groupServers(

@@ -125,6 +125,14 @@ void main() {
         findsNothing,
         reason: 'the address line is what the compact row trades away',
       );
+      // Traded away, not lost: the pointer half of that promise. The screen
+      // reader half is the test below; between them they cover what the row
+      // claims to do with the address rather than only that it is gone.
+      expect(
+        find.byTooltip('deploy@alpha.example.com:22'),
+        findsOneWidget,
+        reason: 'the compact row keeps the address as a pointer tooltip',
+      );
     });
 
     testWidgets('a compact row still tells a screen reader the address', (
