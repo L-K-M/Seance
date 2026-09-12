@@ -161,7 +161,17 @@ class SyncCoordinator {
     // Older clients still borrow server timestamps and need upgrading for
     // this protection to hold on every device.
     for (final ref in publishedSecretRefs) {
-      final secret = await secretVault?.getSecret(ref);
+      // [SecretVault.readableSecret] again, and here it is what makes the
+      // repair in [_applySecretRecords] reachable at all: this runs before the
+      // round's pull, so an entry that will not open would throw out of
+      // `collectLocal` and take the whole round with it — every server, every
+      // pin, on every future round — leaving the record that could have fixed
+      // it forever unpulled. There is nothing publishable in a credential that
+      // cannot be opened, so skip it and let the pull heal it. A store that
+      // cannot be read still throws, as everywhere else: a round built on a
+      // vault nobody could look at would retract nothing and publish nothing,
+      // which is not the same as having nothing to say.
+      final secret = await secretVault?.readableSecret(ref);
       if (secret == null) continue;
       await local.putLocal(await codec.encrypt(DecryptedRecord(
         id: '$_secretIdPrefix${secret.id}',
@@ -880,28 +890,22 @@ class SyncCoordinator {
         // this floor is all that is left. Strictly newer, so a tie still
         // resolves where it always did — in the record layer, which breaks it
         // by device and seq; this only refuses what is plainly stale.
-        // An entry that will not decrypt is absent for this purpose, not
-        // something to protect. The floor above exists to keep a newer local
-        // edit, and an entry with no readable version has none to keep — while
-        // the record being weighed against it is the only thing that can
-        // repair the damage. Letting the read throw instead sends the record
-        // to `skip`, which leaves the vault holding a credential the user
-        // cannot use and sync unable to replace it, on this round and every
-        // round after. Before a credential carried a version at all this path
-        // simply overwrote, so failing closed here would be a new way to lose
-        // one.
+        // [SecretVault.readableSecret], not `getSecret`: an entry that will
+        // not open is absent for this purpose, not something to protect. The
+        // floor above exists to keep a newer local edit, and an entry with no
+        // readable version has none to keep — while the record being weighed
+        // against it is the only thing that can repair the damage. Letting the
+        // read throw instead sends the record to `skip`, which leaves the
+        // vault holding a credential the user cannot use and sync unable to
+        // replace it, this round and every round after. Before a credential
+        // carried a version at all this path simply overwrote, so failing
+        // closed here would be a new way to lose one.
         //
-        // Narrow on purpose: the vault's own failures (a MAC that will not
-        // verify, malformed JSON, a store that cannot be read) are all
-        // exceptions, so anything deriving from `Error` is a bug in this
-        // process and still reaches the per-record handler as one rather than
-        // being read as "absent".
-        Secret? existing;
-        try {
-          existing = await vault.getSecret(secret.id);
-        } on Exception {
-          // Left null: an unreadable entry is the absent case above.
-        }
+        // A store that cannot be *read* still throws and still reaches the
+        // per-record handler, which is the distinction that method exists to
+        // keep: treating "I could not look" as "nothing there" would let a
+        // transient fault overwrite material that was never unreadable.
+        final existing = await vault.readableSecret(secret.id);
         if (existing != null && existing.updatedAt > dec.updatedAt) continue;
         // Legacy peers omit the payload stamp. Persist their envelope version
         // so subsequent local config edits never manufacture a newer one.

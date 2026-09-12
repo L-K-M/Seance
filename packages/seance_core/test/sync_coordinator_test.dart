@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
@@ -45,6 +47,32 @@ class FakeServer implements SyncApi {
     }
     return PushResponse(results: results, latestSeq: _seq);
   }
+}
+
+/// A vault store whose reads can be made to fail while its contents stay
+/// intact — a locked file, a transient I/O error: the entry is fine, the look
+/// is not.
+class _UnreadableVaultStore implements VaultStore {
+  final VaultStore inner;
+  bool failReads = false;
+  _UnreadableVaultStore(this.inner);
+
+  @override
+  Future<Uint8List?> getSecretBlob(String id) async {
+    if (failReads) throw const FileSystemException('vault unreadable');
+    return inner.getSecretBlob(id);
+  }
+
+  @override
+  Future<void> putSecretBlob(String id, Uint8List blob) =>
+      inner.putSecretBlob(id, blob);
+
+  @override
+  Future<void> putSecretBlobs(Map<String, Uint8List> blobs) =>
+      inner.putSecretBlobs(blobs);
+
+  @override
+  Future<void> deleteSecret(String id) => inner.deleteSecret(id);
 }
 
 ServerConfig server(String id, String label, int updatedAt) => ServerConfig(
@@ -351,7 +379,10 @@ void main() {
       value: 'unreadable',
       updatedAt: 99,
     ));
-    await expectLater(vault.getSecret('secret'), throwsA(anything));
+    // Pinned to the type the heal relies on: were this ever an `Error`, the
+    // guard would stop catching it and the failure should read as "the heal
+    // path no longer covers this", not as a puzzling unreadable vault.
+    await expectLater(vault.getSecret('secret'), throwsA(isA<Exception>()));
     final local = InMemoryLocalRecordStore();
     await local.putRemote(await codec.encrypt(const DecryptedRecord(
       id: 'secret:secret',
@@ -387,6 +418,107 @@ void main() {
     // sealed stamp would decrypt fine and then refuse every later update below
     // 99 — the same stranding, one step removed.
     expect(healed.updatedAt, 10);
+  });
+
+  test('a damaged entry on a published credential is healed, not fatal',
+      () async {
+    final api = FakeServer();
+    final key = secureRandomBytes(32);
+    final codec = RecordCodec(key);
+    final configs = InMemoryConfigStore();
+    final vaultStore = InMemoryVaultStore();
+    final vault = SecretVault(vaultStore, key);
+    await configs.putServer(server('s1', 'server', 10)
+        .copyWith(secretRef: 'secret', syncSecret: true));
+    // Damaged, and named by a server this device publishes — so `collectLocal`
+    // reaches it before the pull that carries the repair.
+    await SecretVault(vaultStore, secureRandomBytes(32)).putSecret(const Secret(
+      id: 'secret',
+      kind: SecretKind.password,
+      value: 'unreadable',
+      updatedAt: 5,
+    ));
+    await api.push([
+      await codec.encrypt(const DecryptedRecord(
+        id: 'secret:secret',
+        kind: RecordKind.secret,
+        updatedAt: 10,
+        deviceId: 'B',
+        data: {
+          'id': 'secret',
+          'kind': 'password',
+          'value': 'current',
+          'updatedAt': 10,
+        },
+      )),
+    ]);
+
+    // The round completes rather than throwing out of `collectLocal`, which
+    // would have taken every server and pin with it and left the record that
+    // repairs this one forever unpulled.
+    await SyncCoordinator(
+      configStore: configs,
+      hostKeyStore: InMemoryHostKeyStore(),
+      codec: codec,
+      local: InMemoryLocalRecordStore(),
+      deviceId: 'A',
+      syncSecrets: true,
+      secretVault: vault,
+    ).run(api);
+
+    final healed = await vault.getSecret('secret');
+    expect(healed!.value, 'current');
+    expect(healed.updatedAt, 10);
+    // The config still reached the account: one damaged credential must not
+    // cost the round the rest of its work.
+    expect(api.stored('s1'), isNotNull);
+  });
+
+  test('a store that cannot be read never counts as an absent credential',
+      () async {
+    final key = secureRandomBytes(32);
+    final codec = RecordCodec(key);
+    final store = _UnreadableVaultStore(InMemoryVaultStore());
+    final vault = SecretVault(store, key);
+    await vault.putSecret(const Secret(
+      id: 'secret',
+      kind: SecretKind.password,
+      value: 'newer local edit',
+      updatedAt: 99,
+    ));
+    final local = InMemoryLocalRecordStore();
+    await local.putRemote(await codec.encrypt(const DecryptedRecord(
+      id: 'secret:secret',
+      kind: RecordKind.secret,
+      updatedAt: 10,
+      deviceId: 'B',
+      data: {
+        'id': 'secret',
+        'kind': 'password',
+        'value': 'stale',
+        'updatedAt': 10,
+      },
+    )));
+    final coordinator = SyncCoordinator(
+      configStore: InMemoryConfigStore(),
+      hostKeyStore: InMemoryHostKeyStore(),
+      codec: codec,
+      local: local,
+      deviceId: 'A',
+      syncSecrets: true,
+      secretVault: vault,
+    );
+
+    store.failReads = true;
+    await coordinator.applyToStores();
+    store.failReads = false;
+
+    // The entry was never unreadable, only unlooked-at. Reading the failure as
+    // "nothing there" would let this older record overwrite it, and the vault
+    // is the only copy — strictly worse than the stranding the heal prevents.
+    final kept = await vault.getSecret('secret');
+    expect(kept!.value, 'newer local edit');
+    expect(kept.updatedAt, 99);
   });
 
   test('opting out of credential publishing preserves a newer local edit',
