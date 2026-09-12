@@ -15,6 +15,7 @@ import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
 import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
+import 'ui/server_list_density.dart';
 import 'ui/session_label.dart';
 import 'ui/terminal_appearance.dart';
 
@@ -554,7 +555,9 @@ class AppState extends ChangeNotifier {
     Secret? secret,
     IdentityFileBookmark? identityFileBookmark,
   }) async {
-    if (secret != null) await services.vault.putSecret(secret);
+    if (secret != null) {
+      await services.vault.putLocalSecret(secret, updatedAt: config.updatedAt);
+    }
     await services.configStore.putServer(config);
     // Re-saving an id (re-creating one deleted while offline, or an import
     // restoring it) cancels any pending deletion for it, so a stale tombstone
@@ -804,7 +807,15 @@ class AppState extends ChangeNotifier {
       // failure the reorder was written to prevent, just moved from the vault
       // to the bookmark. Reversed, the worst it leaves is a grant filed under
       // an id nothing names.
-      if (services.settings.identityFileBookmarks.remove(id) != null) {
+      // The pin goes with the grant: both are device-local entries keyed by
+      // this server's id, and one save covers both — writing the settings
+      // file twice for one delete would be waste. Order does not matter for
+      // the pin the way it does for the grant: a lingering pin shows nothing
+      // and grants nothing, it just names a row that no longer exists.
+      final droppedGrant =
+          services.settings.identityFileBookmarks.remove(id) != null;
+      final droppedPin = services.settings.pinnedServerIds.remove(id);
+      if (droppedGrant || droppedPin) {
         // Fail-soft like the vault delete below, and for the same reason: a
         // throw here skips the list refresh and leaves the UI showing a
         // server the store no longer has. The grant is already gone from
@@ -814,8 +825,8 @@ class AppState extends ChangeNotifier {
           await services.saveSettings();
         } catch (error, stackTrace) {
           developer.log(
-            'Could not persist the identity file grant removal for the '
-            'deleted server $id',
+            'Could not persist the device-local entries (identity file '
+            'grant, list pin) for the deleted server $id',
             name: 'seance.app',
             level: 900,
             error: error,
@@ -892,6 +903,39 @@ class AppState extends ChangeNotifier {
     final collapsed = services.settings.collapsedServerGroups;
     // remove() reports whether it was there, so this is one lookup, not two.
     if (!collapsed.remove(key)) collapsed.add(key);
+    notifyListeners();
+    await services.saveSettings();
+  }
+
+  /// Servers pinned to the top of the list, by id — an unmodifiable view over
+  /// the settings for the same reasons as [collapsedServerGroups].
+  ///
+  /// Device-local: see [AppSettings.pinnedServerIds] for why pins never sync.
+  Set<String> get pinnedServerIds =>
+      UnmodifiableSetView(services.settings.pinnedServerIds);
+
+  bool isServerPinned(String id) =>
+      services.settings.pinnedServerIds.contains(id);
+
+  /// Pin a server to the top of the list, or unpin it.
+  ///
+  /// Takes an id rather than a config: the pin outlives any one snapshot of
+  /// the row, and a config pulled from sync mid-tap would pin the same server
+  /// just as well.
+  Future<void> toggleServerPin(String id) async {
+    final pinned = services.settings.pinnedServerIds;
+    if (!pinned.remove(id)) pinned.add(id);
+    notifyListeners();
+    await services.saveSettings();
+  }
+
+  /// How tightly the server list packs its rows.
+  ServerListDensity get serverListDensity =>
+      services.settings.serverListDensity;
+
+  Future<void> setServerListDensity(ServerListDensity density) async {
+    if (services.settings.serverListDensity == density) return;
+    services.settings.serverListDensity = density;
     notifyListeners();
     await services.saveSettings();
   }

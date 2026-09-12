@@ -204,6 +204,378 @@ void main() {
     expect((await cfgA.getServer('s1'))!.loginScript, isNull);
   });
 
+  test('an offline server rename cannot overwrite a peer credential edit',
+      () async {
+    final api = FakeServer();
+    final key = secureRandomBytes(32);
+    final configsA = InMemoryConfigStore();
+    final configsB = InMemoryConfigStore();
+    final vaultA = SecretVault(InMemoryVaultStore(), key);
+    final vaultB = SecretVault(InMemoryVaultStore(), key);
+    for (final label in ['alpha', 'zulu']) {
+      await configsA.putServer(server(label, label, 10)
+          .copyWith(secretRef: 'shared', syncSecret: true));
+    }
+    await vaultA.putLocalSecret(const Secret(
+      id: 'shared',
+      kind: SecretKind.password,
+      value: 'original',
+    ), updatedAt: 10);
+    SyncCoordinator coordinator(ConfigStore configs, SecretVault vault,
+            String device) =>
+        SyncCoordinator(
+          configStore: configs,
+          hostKeyStore: InMemoryHostKeyStore(),
+          codec: RecordCodec(key),
+          local: InMemoryLocalRecordStore(),
+          deviceId: device,
+          syncSecrets: true,
+          secretVault: vault,
+        );
+    await coordinator(configsA, vaultA, 'A').run(api);
+    await coordinator(configsB, vaultB, 'B').run(api);
+
+    await vaultB.putLocalSecret(const Secret(
+      id: 'shared',
+      kind: SecretKind.password,
+      value: 'rotated',
+    ), updatedAt: 20);
+    final editedB = (await configsB.getServer('alpha'))!;
+    await configsB.putServer(editedB.copyWith(updatedAt: 20));
+    await coordinator(configsB, vaultB, 'B').run(api);
+
+    final staleA = (await configsA.getServer('zulu'))!;
+    await configsA.putServer(staleA.copyWith(label: 'renamed', updatedAt: 30));
+    await coordinator(configsA, vaultA, 'A').run(api);
+    await coordinator(configsB, vaultB, 'B').run(api);
+
+    expect((await vaultA.getSecret('shared'))!.value, 'rotated');
+    expect((await vaultB.getSecret('shared'))!.value, 'rotated');
+    expect((await configsB.getServer('zulu'))!.label, 'renamed');
+  });
+
+  test('a legacy secret adopts and persists the remote credential version',
+      () async {
+    final api = FakeServer();
+    final key = secureRandomBytes(32);
+    final codec = RecordCodec(key);
+    final configs = InMemoryConfigStore();
+    final vaultStore = InMemoryVaultStore();
+    final vault = SecretVault(vaultStore, key);
+    await configs.putServer(server('s1', 'renamed while offline', 30)
+        .copyWith(secretRef: 'legacy', syncSecret: true));
+    await vault.putSecret(const Secret(
+      id: 'legacy',
+      kind: SecretKind.password,
+      value: 'stale',
+    ));
+    await api.push([
+      await codec.encrypt(const DecryptedRecord(
+        id: 'secret:legacy',
+        kind: RecordKind.secret,
+        updatedAt: 20,
+        deviceId: 'B',
+        data: {'id': 'legacy', 'kind': 'password', 'value': 'current'},
+      )),
+    ]);
+    final coordinator = SyncCoordinator(
+      configStore: configs,
+      hostKeyStore: InMemoryHostKeyStore(),
+      codec: codec,
+      local: InMemoryLocalRecordStore(),
+      deviceId: 'A',
+      syncSecrets: true,
+      secretVault: vault,
+    );
+
+    await coordinator.run(api);
+
+    final reopened = SecretVault(vaultStore, key);
+    final restored = (await reopened.getSecret('legacy'))!;
+    expect(restored.value, 'current');
+    expect(restored.updatedAt, 20);
+    // The encrypted vault now carries the observed credential version, even
+    // though the peer's legacy payload did not contain one.
+    await reopened.putLocalSecret(restored, updatedAt: 40);
+    expect((await reopened.getSecret('legacy'))!.updatedAt, 20);
+  });
+
+  for (final envelopeStamp in [5, 30]) {
+    test('a credential rejects envelope timestamp $envelopeStamp '
+        'that disagrees with its sealed version', () async {
+      final key = secureRandomBytes(32);
+      final codec = RecordCodec(key);
+      final vault = SecretVault(InMemoryVaultStore(), key);
+      const original = Secret(
+        id: 'secret',
+        kind: SecretKind.password,
+        value: 'current',
+        updatedAt: 10,
+      );
+      await vault.putSecret(original);
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: 'secret:secret',
+        kind: RecordKind.secret,
+        updatedAt: envelopeStamp,
+        deviceId: 'B',
+        data: original.copyWith(value: 'incoming', updatedAt: 20).toJson(),
+      )));
+      final coordinator = SyncCoordinator(
+        configStore: InMemoryConfigStore(),
+        hostKeyStore: InMemoryHostKeyStore(),
+        codec: codec,
+        local: local,
+        deviceId: 'A',
+        syncSecrets: true,
+        secretVault: vault,
+      );
+
+      await coordinator.applyToStores();
+
+      expect((await vault.getSecret('secret'))!.toJson(), original.toJson());
+    });
+  }
+
+  test('opting out of credential publishing preserves a newer local edit',
+      () async {
+    final api = FakeServer();
+    final key = secureRandomBytes(32);
+    final codec = RecordCodec(key);
+    final configs = InMemoryConfigStore();
+    final vault = SecretVault(InMemoryVaultStore(), key);
+    await configs.putServer(server('s1', 'server', 30)
+        .copyWith(secretRef: 'secret', syncSecret: false));
+    const current = Secret(
+      id: 'secret',
+      kind: SecretKind.password,
+      value: 'current',
+      updatedAt: 20,
+    );
+    await vault.putSecret(current);
+    await api.push([
+      await codec.encrypt(DecryptedRecord(
+        id: 'secret:secret',
+        kind: RecordKind.secret,
+        updatedAt: 10,
+        deviceId: 'B',
+        data: current.copyWith(value: 'stale', updatedAt: 10).toJson(),
+      )),
+    ]);
+    final coordinator = SyncCoordinator(
+      configStore: configs,
+      hostKeyStore: InMemoryHostKeyStore(),
+      codec: codec,
+      local: InMemoryLocalRecordStore(),
+      deviceId: 'A',
+      syncSecrets: true,
+      secretVault: vault,
+    );
+
+    await coordinator.run(api);
+
+    expect((await vault.getSecret('secret'))!.toJson(), current.toJson());
+    expect(api.stored('secret:secret')!.updatedAt, 10,
+        reason: 'receiving must not opt this device back into publishing');
+  });
+
+  test('reincluding a server restores its unchanged credential for new peers',
+      () async {
+    final api = FakeServer();
+    final key = secureRandomBytes(32);
+    final configsA = InMemoryConfigStore();
+    final configsB = InMemoryConfigStore();
+    final vaultA = SecretVault(InMemoryVaultStore(), key);
+    final vaultB = SecretVault(InMemoryVaultStore(), key);
+    final original = server('s1', 'server', 10)
+        .copyWith(secretRef: 'secret', syncSecret: true);
+    await configsA.putServer(original);
+    await vaultA.putLocalSecret(const Secret(
+      id: 'secret',
+      kind: SecretKind.password,
+      value: 'password',
+    ), updatedAt: 10);
+    SyncCoordinator coordinator(ConfigStore configs, SecretVault vault,
+            String device) =>
+        SyncCoordinator(
+          configStore: configs,
+          hostKeyStore: InMemoryHostKeyStore(),
+          codec: RecordCodec(key),
+          local: InMemoryLocalRecordStore(),
+          deviceId: device,
+          syncSecrets: true,
+          secretVault: vault,
+        );
+    await coordinator(configsA, vaultA, 'A').run(api);
+    final excluded = original.copyWith(excludeFromSync: true, updatedAt: 20);
+    await configsA.putServer(excluded);
+    await coordinator(configsA, vaultA, 'A').run(api);
+    expect(api.stored('secret:secret')!.deleted, isTrue);
+
+    await configsA.putServer(excluded.copyWith(
+      excludeFromSync: false,
+      updatedAt: 30,
+    ));
+    await coordinator(configsA, vaultA, 'A').run(api);
+    await coordinator(configsB, vaultB, 'B').run(api);
+
+    expect((await vaultB.getSecret('secret'))?.value, 'password');
+    expect(api.stored('secret:secret')!.deleted, isFalse);
+    final settled = api.latestSeq;
+    await coordinator(configsA, vaultA, 'A').run(api);
+    expect(api.latestSeq, settled, reason: 'a restore only advances once');
+  });
+
+  test('a peer\'s credential retraction is not revived by this device',
+      () async {
+    final api = FakeServer();
+    final key = secureRandomBytes(32);
+    final codec = RecordCodec(key);
+    final configs = InMemoryConfigStore();
+    final vault = SecretVault(InMemoryVaultStore(), key);
+    await configs.putServer(server('s1', 'server', 10)
+        .copyWith(secretRef: 'secret', syncSecret: true));
+    await vault.putLocalSecret(const Secret(
+      id: 'secret',
+      kind: SecretKind.password,
+      value: 'password',
+    ), updatedAt: 10);
+    // Device B excluded its own server sharing this credential. That is not a
+    // decision this device can read as reversed, so the revival pass leaves
+    // it alone — the documented residual is an orphan credential, never a
+    // credential this device loses.
+    await api.push([
+      await codec.encrypt(DecryptedRecord(
+        id: 'secret:secret',
+        kind: RecordKind.secret,
+        updatedAt: 20,
+        deviceId: 'B',
+        deleted: true,
+      )),
+    ]);
+
+    await SyncCoordinator(
+      configStore: configs,
+      hostKeyStore: InMemoryHostKeyStore(),
+      codec: codec,
+      local: InMemoryLocalRecordStore(),
+      deviceId: 'A',
+      syncSecrets: true,
+      secretVault: vault,
+    ).run(api);
+
+    expect(api.stored('secret:secret')!.deleted, isTrue);
+    // The tombstone is never honoured against the vault, so the credential is
+    // still here: withdrawn from the account, not lost on this device.
+    expect((await vault.getSecret('secret'))!.value, 'password');
+    expect((await vault.getSecret('secret'))!.updatedAt, 10,
+        reason: 'a retraction this device did not make moves no stamp');
+  });
+
+  for (final scenario in [
+    (label: 'alpha', syncSecret: true, excluded: false),
+    (label: 'zulu', syncSecret: true, excluded: false),
+    (label: 'alpha', syncSecret: false, excluded: false),
+    (label: 'zulu', syncSecret: false, excluded: false),
+    (label: 'alpha', syncSecret: true, excluded: true),
+    (label: 'zulu', syncSecret: true, excluded: true),
+  ]) {
+    final editedLabel = scenario.label;
+    test('a shared credential edit syncs when $scenario is edited', () async {
+      final api = FakeServer();
+      final key = secureRandomBytes(32);
+      final codec = RecordCodec(key);
+      final configsA = InMemoryConfigStore();
+      final configsB = InMemoryConfigStore();
+      final vaultA = SecretVault(InMemoryVaultStore(), key);
+      final vaultB = SecretVault(InMemoryVaultStore(), key);
+      for (final label in ['alpha', 'zulu']) {
+        final excluded = label == editedLabel && scenario.excluded;
+        await configsA.putServer(server(label, label, 10).copyWith(
+          secretRef: 'shared',
+          syncSecret: label != editedLabel || scenario.syncSecret,
+          excludeFromSync: excluded,
+          updatedAt: excluded ? 11 : 10,
+        ));
+      }
+      await vaultA.putLocalSecret(const Secret(
+        id: 'shared',
+        kind: SecretKind.password,
+        value: 'original',
+      ), updatedAt: 10);
+
+      SyncCoordinator coordinator(
+        ConfigStore configs,
+        SecretVault vault,
+        String device,
+      ) =>
+          SyncCoordinator(
+            configStore: configs,
+            hostKeyStore: InMemoryHostKeyStore(),
+            codec: codec,
+            local: InMemoryLocalRecordStore(),
+            deviceId: device,
+            syncSecrets: true,
+            secretVault: vault,
+          );
+
+      await coordinator(configsA, vaultA, 'A').run(api);
+      await coordinator(configsB, vaultB, 'B').run(api);
+      await vaultA.putLocalSecret(const Secret(
+        id: 'shared',
+        kind: SecretKind.password,
+        value: 'rotated',
+      ), updatedAt: 20);
+      final edited = (await configsA.getServer(editedLabel))!;
+      await configsA.putServer(edited.copyWith(updatedAt: 20));
+
+      await coordinator(configsA, vaultA, 'A').run(api);
+      await coordinator(configsB, vaultB, 'B').run(api);
+
+      expect((await vaultA.getSecret('shared'))!.value, 'rotated');
+      expect((await vaultB.getSecret('shared'))!.value, 'rotated');
+      expect(api.stored('secret:shared')!.updatedAt, 20);
+    });
+  }
+
+  for (final syncSecrets in [false, true]) {
+    test('a shared credential needs an eligible owner (syncSecrets=$syncSecrets)',
+        () async {
+      final key = secureRandomBytes(32);
+      final configs = InMemoryConfigStore();
+      final vault = SecretVault(InMemoryVaultStore(), key);
+      await vault.putSecret(const Secret(
+        id: 'shared',
+        kind: SecretKind.password,
+        value: 'private',
+      ));
+      await configs.putServer(server('alpha', 'alpha', 10).copyWith(
+        secretRef: 'shared',
+        syncSecret: !syncSecrets,
+      ));
+      await configs.putServer(server('zulu', 'zulu', 10).copyWith(
+        secretRef: 'shared',
+        syncSecret: true,
+        excludeFromSync: true,
+        updatedAt: 20,
+      ));
+      final local = InMemoryLocalRecordStore();
+      final coordinator = SyncCoordinator(
+        configStore: configs,
+        hostKeyStore: InMemoryHostKeyStore(),
+        codec: RecordCodec(key),
+        local: local,
+        deviceId: 'A',
+        syncSecrets: syncSecrets,
+        secretVault: vault,
+      );
+
+      await coordinator.collectLocal();
+
+      expect(await local.getRecord('secret:shared'), isNull);
+    });
+  }
+
   test('snippets sync between two devices', () async {
     final srv = FakeServer();
     final codec = RecordCodec(secureRandomBytes(32));
@@ -233,6 +605,47 @@ void main() {
     expect(onB.single.body, 'tail -f {{file}}');
     expect(onB.single.placeholders, ['file']);
   });
+
+  for (final recordId in ['snippet:other', 'server-config-id']) {
+    test('a snippet under $recordId cannot overwrite another snippet', () async {
+      final codec = RecordCodec(secureRandomBytes(32));
+      final snippets = InMemorySnippetStore();
+      const current = Snippet(
+        id: 'saved',
+        title: 'Current snippet',
+        body: 'echo current',
+        createdAt: 1,
+        updatedAt: 20,
+      );
+      await snippets.putSnippet(current);
+      final local = InMemoryLocalRecordStore();
+      await local.putRemote(await codec.encrypt(DecryptedRecord(
+        id: recordId,
+        kind: RecordKind.snippet,
+        updatedAt: 30,
+        deviceId: 'B',
+        data: const Snippet(
+          id: 'saved',
+          title: 'Old snippet',
+          body: 'echo old',
+          createdAt: 1,
+          updatedAt: 10,
+        ).toJson(),
+      )));
+      final coordinator = SyncCoordinator(
+        configStore: InMemoryConfigStore(),
+        hostKeyStore: InMemoryHostKeyStore(),
+        snippetStore: snippets,
+        codec: codec,
+        local: local,
+        deviceId: 'A',
+      );
+
+      await coordinator.applyToStores();
+
+      expect((await snippets.getSnippet('saved'))!.toJson(), current.toJson());
+    });
+  }
 
   test('bookmark records never create phantom server configs', () async {
     final server0 = FakeServer();

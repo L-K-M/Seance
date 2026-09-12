@@ -13,6 +13,7 @@ void main() {
       kind: SecretKind.privateKey,
       value: 'PEM',
       keyPassphrase: 'phrase',
+      updatedAt: 42,
     );
     final rekeyed = original.copyWith(id: 'copy');
     expect(rekeyed.id, 'copy');
@@ -20,6 +21,7 @@ void main() {
     // field the fixture sets. Pin that for the nullable one, which is the
     // field a serializer is most likely to omit.
     expect(original.toJson(), containsPair('keyPassphrase', 'phrase'));
+    expect(original.toJson(), containsPair('updatedAt', 42));
     expect({...rekeyed.toJson(), 'id': original.id}, original.toJson());
     // Directly too, which survives a serializer omission: a field dropped from
     // both `toJson` and `copyWith` would be absent from each side of the map
@@ -28,6 +30,8 @@ void main() {
     expect(rekeyed.kind, original.kind);
     expect(rekeyed.value, original.value);
     expect(rekeyed.keyPassphrase, original.keyPassphrase);
+    expect(rekeyed.updatedAt, original.updatedAt);
+    expect(Secret.fromJson(original.toJson()).updatedAt, 42);
     // And the other half of the contract: a parameter that is passed has to
     // *replace*. Every assertion above is about what `copyWith` carries, so a
     // body that ignored its argument (`value: this.value`) would pass them
@@ -42,6 +46,17 @@ void main() {
     expect(original.copyWith(kind: otherKind).kind, otherKind);
     expect(original.copyWith(keyPassphrase: 'rekeyed').keyPassphrase,
         'rekeyed');
+    expect(original.copyWith(updatedAt: 43).updatedAt, 43);
+  });
+
+  test('legacy credentials have an unknown edit timestamp', () {
+    final secret = Secret.fromJson({
+      'id': 'legacy',
+      'kind': 'password',
+      'value': 'password',
+    });
+    expect(secret.updatedAt, 0);
+    expect(secret.toJson(), isNot(contains('updatedAt')));
   });
 
   group('model JSON round-trips', () {

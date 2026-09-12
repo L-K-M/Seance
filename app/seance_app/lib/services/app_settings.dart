@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
 
+import '../ui/server_list_density.dart';
 import '../ui/terminal_appearance.dart';
 import 'atomic_file.dart';
 import 'external_file_opener.dart';
@@ -175,6 +176,28 @@ class AppSettings {
   /// does sync.
   Set<String> collapsedServerGroups;
 
+  /// Servers the user has pinned to the top of the list, by
+  /// [ServerConfig.id].
+  ///
+  /// Device-local and deliberately not synced: a pin says "this is what I
+  /// reach for *here*", which is rarely the same answer on a phone as on the
+  /// desk it is in front of. It also keeps the feature free of the sync
+  /// layer — nothing is published, so there is no record to retract, no
+  /// conflict to resolve, and no way for one device's shortlist to reorder
+  /// another's list behind the user's back.
+  ///
+  /// Ids that no longer name a server are harmless — the list only ever asks
+  /// whether a server it is *already showing* is in here. A delete on this
+  /// device prunes its own entry; a server that disappears through sync does
+  /// not pass that path, so its id stays behind. Deliberately not swept
+  /// against the server list either, because "absent" and "not pulled yet"
+  /// look identical mid-round, and sweeping would drop the pin of a server
+  /// that is about to come back.
+  Set<String> pinnedServerIds;
+
+  /// Whether the server list draws two-line rows or one-line ones.
+  ServerListDensity serverListDensity;
+
   /// Widths of the wide layout's server-list and utility panes, from the last
   /// drag of their resize handles. Device-local like everything else here:
   /// the right pane split is a property of the window in front of you. Null
@@ -222,6 +245,8 @@ class AppSettings {
     Map<String, bool>? remoteShowHidden,
     Map<String, IdentityFileBookmark>? identityFileBookmarks,
     Set<String>? collapsedServerGroups,
+    Set<String>? pinnedServerIds,
+    this.serverListDensity = ServerListDensity.comfortable,
     this.paneListWidth,
     this.paneUtilityWidth,
     Set<String>? unwrittenAssistantKeyRefs,
@@ -236,6 +261,7 @@ class AppSettings {
        remoteShowHidden = remoteShowHidden ?? {},
        identityFileBookmarks = identityFileBookmarks ?? {},
        collapsedServerGroups = collapsedServerGroups ?? {},
+       pinnedServerIds = pinnedServerIds ?? {},
        unwrittenAssistantKeyRefs = unwrittenAssistantKeyRefs ?? {},
        heldAssistantKeyRefs = heldAssistantKeyRefs ?? {};
 
@@ -275,6 +301,10 @@ class AppSettings {
     // file is rewritten on every save, and a set's iteration order would
     // otherwise make each one look like a change.
     'collapsedServerGroups': collapsedServerGroups.toList()..sort(),
+    // Sorted like the set above it, and for the same reason. The order here
+    // is not the display order: pinned rows keep the list's own ordering.
+    'pinnedServerIds': pinnedServerIds.toList()..sort(),
+    'serverListDensity': serverListDensity.name,
     if (paneListWidth != null) 'paneListWidth': paneListWidth,
     if (paneUtilityWidth != null) 'paneUtilityWidth': paneUtilityWidth,
     'terminalFontSize': terminalFontSize,
@@ -316,6 +346,11 @@ class AppSettings {
     remoteShowHidden: _boolMap(json['remoteShowHidden']),
     identityFileBookmarks: _identityBookmarkMap(json['identityFileBookmarks']),
     collapsedServerGroups: _stringSet(json['collapsedServerGroups']),
+    pinnedServerIds: _stringSet(json['pinnedServerIds']),
+    serverListDensity: ServerListDensity.values.firstWhere(
+      (d) => d.name == json['serverListDensity'],
+      orElse: () => ServerListDensity.comfortable,
+    ),
     paneListWidth: _paneWidth(json['paneListWidth']),
     paneUtilityWidth: _paneWidth(json['paneUtilityWidth']),
     // Clamped on read: a hand-edited or downgraded settings file must never be

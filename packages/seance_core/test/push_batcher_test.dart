@@ -93,6 +93,64 @@ void main() {
       expect(batches.last.single.id, 'huge');
     });
 
+    test('a record past the blob cap is sent alone and last', () {
+      // A blob past the cap fits the body budget comfortably, so nothing about
+      // the body arithmetic separates it — and the server answers it with a
+      // 413 for the whole push. Batched beside records that would have been
+      // accepted, it takes every one of them down, identically every round.
+      final records = [
+        rec('small-1'),
+        rec('fat', blobBytes: 4096),
+        rec('small-2'),
+      ];
+      const limits = PushLimits(maxBodyBytes: 1 << 20, maxBlobBytes: 1024);
+
+      final batches = batchForPush(records, limits);
+
+      expect(idsOf(batches), ['small-1', 'small-2', 'fat']);
+      expect(batches.last.single.id, 'fat');
+    });
+
+    test('the blob cap is measured on the blob, not the encoded record', () {
+      // base64 costs a third more than the bytes it encodes, and the envelope
+      // around it costs more again — measuring the encoded record would refuse
+      // blobs the server accepts and split batches that did not need it.
+      final record = rec('exact', blobBytes: 1024);
+      const limits = PushLimits(maxBlobBytes: 1024);
+
+      expect(record.encodedJsonBytes(), greaterThan(1024),
+          reason: 'the encoded record is the larger number, so a batcher '
+              'comparing it would reject this record');
+      final batches = batchForPush([record, rec('after')], limits);
+      expect(batches.map((b) => b.map((r) => r.id).toList()),
+          [['exact', 'after']],
+          reason: 'a blob of exactly the cap is accepted, so it batches '
+              'normally rather than being isolated last');
+    });
+
+    test('several records past a cap each travel alone, still last', () {
+      // "Alone" is per record, not per tail: one combined trailing batch would
+      // let a single 413 take several records down together, which is a
+      // smaller version of the failure this isolation exists to contain. The
+      // two tests above prove only the singular case, so the loop that appends
+      // them could be "optimized" into a grouping one without failing a thing.
+      final records = [
+        rec('small'),
+        rec('fat', blobBytes: 4096),
+        rec('huge', blobBytes: 8192),
+      ];
+      const limits = PushLimits(maxBodyBytes: 1 << 20, maxBlobBytes: 1024);
+
+      final batches = batchForPush(records, limits);
+
+      expect(batches, hasLength(3));
+      expect(idsOf(batches), ['small', 'fat', 'huge'],
+          reason: 'the compliant record goes first, the doomed ones after it '
+              'in the order they were dirtied');
+      expect(batches[1].single.id, 'fat');
+      expect(batches[2].single.id, 'huge');
+    });
+
     test('absurd limits still place every record in some batch', () {
       // A misconfigured deployment must not produce an empty batch (a request
       // carrying nothing, forever) or silently swallow a record.

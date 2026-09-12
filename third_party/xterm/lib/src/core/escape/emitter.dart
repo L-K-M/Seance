@@ -20,7 +20,9 @@ class EscapeEmitter {
   }
 
   String cursorPosition(int x, int y) {
-    return '\x1b[$y;${x}R';
+    // [seance fork] Buffer coordinates are zero-based; CPR uses one-based
+    // rows and columns, matching the coordinates accepted by CUP.
+    return '\x1b[${y + 1};${x + 1}R';
   }
 
   String bracketedPaste(String text) {

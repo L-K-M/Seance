@@ -26,12 +26,13 @@ class ServerSettings {
   final int maxRecordsPerPush;
   final int maxBlobBytes;
 
-  /// The two push caps as the client sees them. Advertised in every pull
-  /// response so a client can split a large dirty set into pushes this
-  /// deployment accepts instead of guessing at env-tuned values.
+  /// The push caps as the client sees them. Advertised in every pull response
+  /// so a client can split a large dirty set into pushes this deployment
+  /// accepts instead of guessing at env-tuned values.
   PushLimits get pushLimits => PushLimits(
         maxBodyBytes: maxBodyBytes,
         maxRecordsPerPush: maxRecordsPerPush,
+        maxBlobBytes: maxBlobBytes,
       );
 
   const ServerSettings({
@@ -43,7 +44,7 @@ class ServerSettings {
     this.loginWindow = const Duration(minutes: 1),
     this.maxBodyBytes = kDefaultMaxPushBodyBytes,
     this.maxRecordsPerPush = kDefaultMaxRecordsPerPush,
-    this.maxBlobBytes = 1024 * 1024,
+    this.maxBlobBytes = kDefaultMaxBlobBytes,
   });
 
   factory ServerSettings.fromEnvironment(Map<String, String> env) {
@@ -88,7 +89,8 @@ class ServerSettings {
           positiveLimit('SEANCE_MAX_BODY_BYTES', kDefaultMaxPushBodyBytes),
       maxRecordsPerPush: positiveLimit(
           'SEANCE_MAX_RECORDS_PER_PUSH', kDefaultMaxRecordsPerPush),
-      maxBlobBytes: positiveLimit('SEANCE_MAX_BLOB_BYTES', 1024 * 1024),
+      maxBlobBytes:
+          positiveLimit('SEANCE_MAX_BLOB_BYTES', kDefaultMaxBlobBytes),
     );
   }
 

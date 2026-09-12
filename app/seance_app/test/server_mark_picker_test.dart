@@ -403,6 +403,29 @@ void main() {
     expect(badges.map((badge) => badge.color).toSet(), {ServerColor.amber});
   });
 
+  test('every curated emoji is one the protocol will store', () {
+    // The grid offers these; `_commit` drops anything the protocol refuses, so
+    // a curated entry the normalizer rejects is a tile that silently does
+    // nothing when tapped. Pinned here because the normalizer's rules — one
+    // grapheme cluster, a base character of its own, no invisible formatting —
+    // live in another package and tighten over time.
+    for (final emoji in kCuratedServerEmoji) {
+      expect(
+        normalizeServerEmoji(emoji),
+        emoji,
+        reason: emoji.runes
+            .map((r) => 'U+${r.toRadixString(16).toUpperCase()}')
+            .join(' '),
+      );
+    }
+  });
+
+  test('the curated grid has no duplicates', () {
+    // Two tiles drawing the same emoji read as a rendering bug, and the
+    // selected-tile highlight would light both.
+    expect(kCuratedServerEmoji.toSet(), hasLength(kCuratedServerEmoji.length));
+  });
+
   testWidgets('cancelling changes nothing', (tester) async {
     await open(tester, current: const ServerGlyphMark(ServerIcon.lab));
     await tester.tap(find.widgetWithText(TextButton, 'Cancel'));

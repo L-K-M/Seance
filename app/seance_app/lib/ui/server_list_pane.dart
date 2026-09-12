@@ -14,6 +14,7 @@ import 'server_appearance.dart';
 import 'server_editor.dart';
 import 'server_filter.dart';
 import 'server_grouping.dart';
+import 'server_list_density.dart';
 import 'settings_screen.dart';
 import 'top_toast.dart';
 
@@ -74,13 +75,36 @@ class _ServerListPaneState extends State<ServerListPane> {
   /// Matches are recomputed here rather than captured from the build that
   /// wired this up: typing and submitting inside one frame would otherwise act
   /// on a list one keystroke out of date.
+  ///
+  /// "First" is the first row the user can *see*, which is why this goes
+  /// through the same sectioning the list renders rather than taking the head
+  /// of the filtered list: pinning floats a match to the top and grouping
+  /// sorts sections by name, so store order is not what the eye reads. A live
+  /// query overrides every collapsed section (see [_serverList]), so no row
+  /// counted here is folded away.
   void _openFirstMatch() {
     if (_query.isEmpty) return;
-    final matches = filterServers(AppScope.of(context).servers, _query);
-    if (matches.isEmpty) return;
+    final state = AppScope.of(context);
+    final rows = serverListRows(
+      sections: _sections(state, filterServers(state.servers, _query)),
+      collapsedKeys: const {},
+    );
+    final first = rows.whereType<ServerRow>().firstOrNull;
+    if (first == null) return;
     _searchFocus.unfocus();
-    widget.onOpen(matches.first);
+    widget.onOpen(first.server);
   }
+
+  /// The sections the list is drawn from.
+  ///
+  /// One definition, because "the first row" has to mean the same thing to
+  /// [_openFirstMatch] as to the eye reading [_serverList] — and pinning is
+  /// exactly what makes those two orders differ from the store's. Stated
+  /// twice, they were held in step by a comment.
+  List<ServerGroupSection> _sections(
+    AppState state,
+    List<ServerConfig> servers,
+  ) => groupServers(servers, pinnedIds: state.pinnedServerIds);
 
   @override
   Widget build(BuildContext context) {
@@ -95,6 +119,10 @@ class _ServerListPaneState extends State<ServerListPane> {
               state: state,
               onTap: () => _openSettings(context, SettingsTab.sync),
             ),
+          ),
+          ListenableBuilder(
+            listenable: state,
+            builder: (context, _) => _DensityMenu(state: state),
           ),
           IconButton(
             tooltip: 'Import ~/.ssh/config',
@@ -212,7 +240,7 @@ class _ServerListPaneState extends State<ServerListPane> {
     List<ServerConfig> servers,
   ) {
     final rows = serverListRows(
-      sections: groupServers(servers),
+      sections: _sections(state, servers),
       // A live query overrides every collapsed section. Otherwise the filter
       // would report "3 of 12" and show one row, with the other two folded
       // away behind a header the user never opened — which reads as the filter
@@ -260,6 +288,9 @@ class _ServerListPaneState extends State<ServerListPane> {
     final reachability = state.statuses[server.id] ?? ProbeStatus.unknown;
     final tabs = state.sessionsForServer(server.id);
     return ServerTile(
+      density: state.serverListDensity,
+      pinned: state.isServerPinned(server.id),
+      onTogglePin: () => state.toggleServerPin(server.id),
       // Stable identity so a background sync replacing the list
       // reconciles each tile to its server instead of by position.
       key: ValueKey(server.id),
@@ -572,6 +603,14 @@ class ServerTile extends StatelessWidget {
   /// reconnect otherwise lives in the pane.
   final VoidCallback? onReconnect;
 
+  /// Whether this server sits in the pinned section at the top of the list.
+  /// Only the menu reads it: the section's own header is what says *which*
+  /// rows are pinned, so a badge on every row would say it twice.
+  final bool pinned;
+  final VoidCallback onTogglePin;
+
+  final ServerListDensity density;
+
   const ServerTile({
     super.key,
     required this.server,
@@ -586,18 +625,43 @@ class ServerTile extends StatelessWidget {
     required this.onDelete,
     required this.onDisconnect,
     required this.onReconnect,
+    required this.pinned,
+    required this.onTogglePin,
+    this.density = ServerListDensity.comfortable,
   });
+
+  /// The badge on a compact row, shrunk to what a one-line row can hold
+  /// without setting the row's height itself.
+  static const double _compactAvatarSize = 22;
 
   @override
   Widget build(BuildContext context) {
     final connected = connection == TerminalStatus.connected;
     final hasSession = tabCount > 0;
+    final compact = density == ServerListDensity.compact;
+    final address = '${server.username}@${server.host}:${server.port}';
     return ListTile(
       selected: selected,
+      // `dense` shrinks the type; `visualDensity` shrinks the padding around
+      // it. Both, plus dropping the second line, is what halves the row —
+      // either alone leaves a row that is barely tighter than the default.
+      dense: compact,
+      visualDensity: compact ? VisualDensity.compact : null,
+      contentPadding: compact
+          ? const EdgeInsets.symmetric(horizontal: 12)
+          : null,
+      // ListTile reserves 40 for the leading slot by default, which a 22px
+      // badge would rattle around in.
+      minLeadingWidth: compact ? _compactAvatarSize : null,
+      horizontalTitleGap: compact ? 8 : null,
       leading: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          ServerAvatar(server: server, connection: connection),
+          ServerAvatar(
+            server: server,
+            connection: connection,
+            size: compact ? _compactAvatarSize : null,
+          ),
           if (tabCount > 1)
             Padding(
               padding: const EdgeInsets.only(left: 4),
@@ -608,12 +672,25 @@ class ServerTile extends StatelessWidget {
             ),
         ],
       ),
-      title: MiddleEllipsisText(server.label),
-      subtitle: Text(
-        '${server.username}@${server.host}:${server.port}',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
+      title: compact
+          // The address has nowhere to go on a one-line row, so it becomes a
+          // tooltip for a pointer and part of the row's spoken label for a
+          // screen reader — which would otherwise simply lose it. The tooltip
+          // stays out of semantics for the reason [_ExcludedFromSyncMark]
+          // spells out: a merged row keeps one tooltip and drops the rest.
+          ? Tooltip(
+              message: address,
+              excludeFromSemantics: true,
+              child: Semantics(
+                label: '${server.label}, $address',
+                excludeSemantics: true,
+                child: MiddleEllipsisText(server.label),
+              ),
+            )
+          : MiddleEllipsisText(server.label),
+      subtitle: compact
+          ? null
+          : Text(address, maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: onTap,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -625,6 +702,8 @@ class ServerTile extends StatelessWidget {
               switch (v) {
                 case 'newTab':
                   onNewTab();
+                case 'pin':
+                  onTogglePin();
                 case 'edit':
                   onEdit();
                 case 'duplicate':
@@ -649,6 +728,10 @@ class ServerTile extends StatelessWidget {
                   value: 'reconnect',
                   child: Text('Reconnect'),
                 ),
+              PopupMenuItem(
+                value: 'pin',
+                child: Text(pinned ? 'Unpin' : 'Pin to top'),
+              ),
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
               const PopupMenuItem(
                 value: 'duplicate',
@@ -659,6 +742,40 @@ class ServerTile extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// The app bar's view control: how tightly the list packs its rows.
+///
+/// A menu rather than a straight toggle so the current choice is readable
+/// without counting pixels, and so a third density could be added without
+/// turning a two-state button into a three-state one.
+class _DensityMenu extends StatelessWidget {
+  final AppState state;
+  const _DensityMenu({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final current = state.serverListDensity;
+    return PopupMenuButton<ServerListDensity>(
+      tooltip: 'Server list density',
+      // A switch rather than a ternary because the doc above promises a third
+      // density is addable: a ternary would draw it with the comfortable icon
+      // while its own menu row said otherwise, and nothing would complain.
+      icon: Icon(switch (current) {
+        ServerListDensity.comfortable => Icons.density_medium,
+        ServerListDensity.compact => Icons.density_small,
+      }),
+      onSelected: state.setServerListDensity,
+      itemBuilder: (_) => [
+        for (final density in ServerListDensity.values)
+          CheckedPopupMenuItem(
+            value: density,
+            checked: density == current,
+            child: Text(density.label),
+          ),
+      ],
     );
   }
 }

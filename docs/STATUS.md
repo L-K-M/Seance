@@ -3,7 +3,20 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-11. The terminal font can be picked from the fonts
+Review update (2026-09-12): fixed defects in shared-credential sync and
+enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
+See [the review findings and verification](review-2026-09-12.md).
+
+_Last updated: 2026-09-12. The server list now offers a compact row and
+pinning: the app bar's density switch trades the address line for a row that
+is 40 px instead of 72, and a pinned server sits in its own section at the top
+(device-local, never synced). Before that, a single record past the server's
+per-record blob
+cap no longer stopped the whole account's sync: that cap is advertised alongside
+the other two, and such a record is now pushed alone and last. An emoji mark
+must also carry a character of its own — a lone joiner or combining mark was
+accepted and painted an empty badge. Before that, the
+terminal font could be picked from the fonts
 actually installed on the host; a drag through the empty area under the shell
 prompt no longer paints a selection over it; and a server's mark can now be one
 of 77 built-in glyphs, an emoji, or an imported image. The "Add server" button
@@ -23,6 +36,107 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Two view options for the server list (2026-09-12)
+
+The left pane's list gained the two things a list of a few dozen servers
+starts to want.
+
+**Density.** A switch in the pane's app bar chooses between the two-line row
+the list has always drawn and a one-line compact row — 40 px against 72, so
+roughly twice as many servers fit a screen. The `user@host:port` line is what
+the compact row trades away; it becomes a tooltip for a pointer and part of the
+row's spoken label for a screen reader rather than being lost, and the badge
+and its status dot scale down with the row.
+
+**Pinning.** A row's menu pins it into a `Pinned` section at the top, built out
+of the same sectioning the groups already use — so the shortlist folds away,
+counts its members and renders like any other section. A pinned server leaves
+its group rather than appearing twice, and that group's count reports what is
+actually left in it.
+
+**Filtering.** Enter now opens the first row the user can *see* rather than the
+head of the filtered list. Grouping already sorted sections by name, so store
+order was never quite what the eye read; pinning would have widened the gap.
+
+Both are device-local settings, alongside the folded sections and the pane
+widths. Pins deliberately do not sync and there is no switch to make them: a
+pin says "this is what I reach for *here*", which is rarely the same answer on
+a phone as at the desk, and keeping it out of the record layer means there is
+nothing to publish, retract or resolve — one device's shortlist can never
+reorder another's list. The obvious follow-up, if that turns out to be wanted,
+is an opt-in `pinnedServers` record modelled on the assistant's (off by
+default), which is why the pin lives in settings rather than on `ServerConfig`,
+where it would have synced unconditionally.
+
+## One over-sized record no longer stops sync (2026-09-12)
+
+Push batching sizes a request against the server's advertised body and record
+limits, but the server enforces a third cap the advertisement left out: at most
+1 MiB (env-tunable) on a single record's sealed blob. That one is refused with a
+413 for the *whole* push, exactly like an over-sized body — so a record past it
+took every record batched beside it down with it, and because batching is
+deterministic the next round rebuilt the same doomed batch. One record the user
+could not even see stopped the account's sync outright, with an opaque 413
+naming a byte count.
+
+`PushLimits` now carries `maxBlobBytes`, the server advertises it in every pull
+response, and `batchForPush` treats a record past it the way it already treats
+one too large for any body: sent alone, and last. The record still fails — a
+sealed blob cannot be shrunk client-side, and the server stays the authority on
+its own limits — but the failure stays with it instead of holding back
+everything else. A regression test in the server package drives the real stack
+and asserts the other records reach the server while the failure still
+surfaces. A client falls back to the shipped 1 MiB in two cases, not one: when
+the server sends no limits at all, and when it sends the two older ones without
+this — which is every deployment predating the field. So a server with
+`SEANCE_MAX_BLOB_BYTES` tuned below 1 MiB has to be upgraded too before its
+clients can isolate anything; untuned, the default is what it enforces anyway.
+
+## An emoji mark has to draw something (2026-09-12)
+
+`normalizeServerEmoji` refuses the invisible characters one at a time — the
+zero-width space, the zero-width non-joiner, the bidi controls, the Hangul
+fillers, plane 14 — because each of them alone is a valid grapheme cluster that
+paints an empty badge. Three kinds got through anyway:
+
+* **U+200D, the zero-width joiner.** Deliberately absent from that list, since
+  it is what holds a multi-part emoji together — so it could never be caught
+  there, and a mark that was nothing but a joiner drew nothing.
+* **Variation selectors** (U+FE0E/U+FE0F), which select a presentation for the
+  character before them and have none here.
+* **Combining marks** — an accent, the combining grapheme joiner, an enclosing
+  keycap without its keycap.
+
+A fourth kind hides behind the same property but in the other direction:
+`Grapheme_Cluster_Break=Prepend` characters — U+0600 ARABIC NUMBER SIGN and its
+siblings, all invisible format characters — attach to what *follows* them
+(UAX #29 GB9b) rather than to what precedes.
+
+All of them share one property: the cluster has no base character, only the
+decorations that attach to one. That is now the rule, asked of the same
+grapheme engine rather than of a table of combining ranges that would go stale
+each Unicode revision — put a plain base character on each side of the cluster
+and see whether either one absorbed the whole thing. Both sides, because GB9/
+GB9a join backward and GB9b joins forward, and a probe on one side alone reads
+the other direction as a clean break. A subdivision flag, a ZWJ sequence, a
+keycap and a skin-toned emoji all keep working, which the existing tests pin;
+the visible-but-baseless cases — a lone skin-tone modifier, a lone spacing mark
+— are refused too, deliberately, since "the beige square" reads as a rendering
+failure on the next device.
+
+Where the rule stops is pinned too, rather than left to be rediscovered. A
+cluster needs a base; it is not required to be *only* that base, so an
+invisible character glued to a real one (U+0600 attaching forward onto an
+emoji, a plane-14 tag character attaching backward) still passes — both draw
+the emoji, so neither is the empty badge this refuses. The tag half could not
+be closed wholesale anyway: a subdivision flag is a base followed by exactly
+those characters. What would actually be reordered or hidden — the bidi
+controls, the zero-width characters, the Hangul fillers — is refused wherever
+it sits, because that loop reads every code unit rather than the first.
+
+The picker's curated grid is now pinned against the normalizer as well: an
+entry it refused would have been a tile that silently did nothing when tapped.
 
 ## Font picker, server marks, and terminal selection (2026-09-11)
 

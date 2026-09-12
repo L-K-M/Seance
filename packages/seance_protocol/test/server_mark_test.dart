@@ -176,6 +176,46 @@ void main() {
       expect(normalizeServerEmoji('\u200C'), isNull);
     });
 
+    test('refuses a cluster that is nothing but a joiner or a mark', () {
+      // The character-by-character rules above cannot reach these. U+200D is
+      // deliberately allowed, because it is what holds a multi-part emoji
+      // together — but alone it is a cluster with nothing to join and the
+      // badge draws nothing. The same holds for every combining character: it
+      // renders only as part of the character before it, and here there is
+      // none.
+      // Escaped rather than written literally, like the tests above: an
+      // invisible literal is one editor "cleanup" away from being a different
+      // test, and a reviewer cannot see which character it is.
+      for (final baseless in [
+        '\u200D', // zero-width joiner, the carve-out the loop cannot re-catch
+        '\uFE0F', // variation selector-16 (emoji presentation)
+        '\uFE0E', // variation selector-15 (text presentation)
+        '\u0301', // combining acute accent
+        '\u034F', // combining grapheme joiner
+        '\u20E3', // combining enclosing keycap, without its keycap
+        '\uFE20', // combining ligature left half
+        // These attach to what *follows* (UAX #29 GB9b) rather than to
+        // what precedes, so a probe on one side only reads them as a clean
+        // break. Every one is an invisible format character.
+        '\u0600', // Arabic number sign
+        '\u0605', // Arabic number mark above
+        '\u070F', // Syriac abbreviation mark
+        '\u0890', // Arabic pound mark above
+        '\u{110BD}', // Kaithi number sign
+        // Visible on their own, and refused anyway: each decorates a
+        // character that is not here.
+        '\u{1F3FB}', // emoji modifier, a lone skin-tone swatch
+        '\u{1F3FF}', // the same at the other end of the scale
+        '\u0903', // Devanagari sign visarga
+      ]) {
+        expect(
+          normalizeServerEmoji(baseless),
+          isNull,
+          reason: 'U+${baseless.runes.first.toRadixString(16)}',
+        );
+      }
+    });
+
     test('refuses a lone plane-14 formatting character', () {
       // The whole block is invisible formatting and the code-unit loop cannot
       // see it: every value there is a surrogate pair, and the loop compares
@@ -188,6 +228,28 @@ void main() {
       ]) {
         expect(normalizeServerEmoji(formatting), isNull);
       }
+    });
+
+    test('an invisible character riding on a real base is allowed', () {
+      // Where this rule stops, stated rather than left to be rediscovered.
+      // A cluster needs a base; it is not required to be *only* that base, so
+      // an invisible character glued to a real one still passes. U+0600
+      // attaches forward onto the emoji (UAX #29 GB9b) and plane-14 tag
+      // characters attach backward, and both leave a cluster that draws the
+      // emoji — so neither is the empty badge this file refuses.
+      //
+      // Deliberately not widened to a scan for every invisible character in
+      // the cluster: the tag half cannot be, since a subdivision flag is a
+      // base followed by exactly those characters (the test below), so
+      // refusing them wholesale would take the flags with them. What would
+      // actually be reordered or hidden — the bidi controls, the zero-width
+      // characters, the Hangul fillers — is already refused wherever it sits,
+      // because that loop reads every code unit rather than the first.
+      expect(normalizeServerEmoji('\u0600\u{1F600}'), '\u0600\u{1F600}');
+      expect(normalizeServerEmoji('\u{1F9E1}\u{E0030}'), '\u{1F9E1}\u{E0030}');
+      // The ones that matter stay refused in that same position.
+      expect(normalizeServerEmoji('\u{1F600}\u202E'), isNull);
+      expect(normalizeServerEmoji('\u{1F600}\u200B'), isNull);
     });
 
     test('keeps a subdivision flag, whose tail is tag characters', () {

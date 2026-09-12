@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -59,6 +60,10 @@ class LockedSecretVault extends SecretVault {
 
   @override
   Future<void> putSecret(Secret secret) async => throw const VaultLockedException();
+
+  @override
+  Future<void> putSecrets(Iterable<Secret> secrets) async =>
+      throw const VaultLockedException();
 }
 
 /// Wires together the seance_core services with the app's file-backed stores
@@ -129,11 +134,16 @@ class AppServices {
     required this.settings,
   });
 
-  static Future<AppServices> initialize() async {
+  /// [masterKeyManager] is for tests that need the OS keystore to misbehave
+  /// (a locked keyring refusing the re-key's install, say); production passes
+  /// nothing and gets the real one.
+  static Future<AppServices> initialize({
+    @visibleForTesting MasterKeyManager? masterKeyManager,
+  }) async {
     final dir = await getApplicationSupportDirectory();
     String p(String name) => '${dir.path}/$name';
 
-    final masterKeys = MasterKeyManager();
+    final masterKeys = masterKeyManager ?? MasterKeyManager();
     // May be null when the OS keystore is locked or unavailable (locked login
     // keyring on auto-login systems, no Secret Service daemon on minimal
     // desktops): the app then starts with a locked vault — secrets unreadable
@@ -220,16 +230,118 @@ class AppServices {
   /// configs so nothing is lost. Used by sync enrolment to adopt the shared,
   /// encryption-passphrase-derived key.
   Future<void> _rekeyVault(List<int> newKey) async {
+    final secretRefs = {
+      for (final cfg in await configStore.listServers())
+        if (cfg.secretRef != null) cfg.secretRef!,
+    };
+    final secrets = <Secret>[];
+    // Shared credentials must be read exactly once with the old key. Read all
+    // of them before writing so an unreadable credential cannot leave earlier
+    // entries encrypted with a key that has not been installed yet.
+    for (final ref in secretRefs) {
+      final secret = await vault.getSecret(ref);
+      if (secret != null) secrets.add(secret);
+    }
+    final previousVault = vault;
     final newVault = SecretVault(vault.store, newKey);
-    for (final cfg in await configStore.listServers()) {
-      if (cfg.secretRef != null) {
-        final secret = await vault.getSecret(cfg.secretRef!);
-        if (secret != null) await newVault.putSecret(secret);
+    // One write, not one per credential. The vault file is rewritten whole on
+    // every entry, so a loop left it holding a mix of both keys when a write
+    // partway through failed — and the key the rest were sealed with is not
+    // installed until below, so a restart could not open them again.
+    await newVault.putSecrets(secrets);
+    try {
+      // The keystore is the only place the new key survives a restart, and it
+      // can refuse outright — a locked keyring throws here, which is why the
+      // rest of this class treats it as a state to recover from rather than a
+      // crash. Until it holds the new key, the file that is now sealed with
+      // that key is unreadable by the next launch, so a refused install has
+      // to put the file back rather than leave the two disagreeing.
+      await masterKeys.setKeystoreKey(newKey);
+    } catch (_) {
+      // A refused install is not the only way this throws. A keyring can
+      // accept the write and still fail on the way out, leaving the new key
+      // installed — and then putting the file back under the old key is the
+      // very disagreement this catch exists to prevent, only inverted: the
+      // next launch would read the new key out of the keystore and find a
+      // file sealed with the old one, which is the unreadable-vault state.
+      // So ask the keystore which key it actually holds rather than assuming
+      // the throw means nothing landed.
+      //
+      // Null covers both "holds none" and "could not be read" — a locked
+      // keyring cannot answer — and both take the rollback below.
+      //
+      // Not because a wrong rollback is the recoverable one. The two wrong
+      // choices are symmetric: roll back when the install *did* commit and
+      // the next launch reads the new key against a file sealed with the
+      // old; keep when it did *not* and it reads the old key against a file
+      // sealed with the new. Either leaves the vault unreadable, and
+      // retrying enrolment cannot repair either, because enrolment has to
+      // read the vault it is re-keying. What decides it is which case is
+      // likelier: a keyring too locked to answer a *read* almost certainly
+      // refused the *write* a moment earlier, so "it did not commit" is the
+      // better bet by a wide margin.
+      //
+      // The residual, stated rather than left to be rediscovered: a keyring
+      // that accepted the write and then locked before this read cannot
+      // testify, so the file goes back to the old key while the keystore
+      // holds the new one — the divergence this catch exists to prevent. It
+      // is what the code did unconditionally before there was a witness at
+      // all, so this narrows the window rather than opening it, and the
+      // rollback does not touch the keystore (there is nothing here to put
+      // back). Closing it needs the recovery journal on `FileVaultStore`,
+      // which stages both generations so the next launch can pick the one
+      // matching whichever key survived.
+      final installed = await masterKeys.readKeystoreKey();
+      if (installed != null && _sameKey(installed, newKey)) {
+        // The install committed. The file is already sealed with this key, so
+        // the two agree and there is nothing to put back. Adopt it here too,
+        // or this session would keep reading through a vault whose key the
+        // file no longer uses. The error still reaches the caller: enrolment
+        // did not finish, and the caller decides what to say about that.
+        vault = newVault;
+        vaultKey = newKey;
+        rethrow;
       }
+      try {
+        await previousVault.putSecrets(secrets);
+      } catch (error, stackTrace) {
+        // Only the keystore error reaches the caller, and on its own it reads
+        // as an ordinary locked keyring rather than the one state where the
+        // vault is left disagreeing with the keystore. Log the write that was
+        // supposed to prevent that, or a field report cannot explain it.
+        developer.log(
+          'Vault re-key rollback failed; the vault file stays sealed with a '
+          'key the OS keystore does not hold',
+          name: 'seance.app',
+          level: 1000,
+          error: error,
+          stackTrace: stackTrace,
+        );
+        // Both writes failed, so the file keeps a key the keystore does not
+        // hold. Stay on that key here: the credentials remain readable for
+        // this session, and a retried enrolment re-attempts the install from
+        // a vault whose file and in-memory key still agree.
+        vault = newVault;
+        vaultKey = newKey;
+      }
+      rethrow;
     }
     vault = newVault;
     vaultKey = newKey;
-    await masterKeys.setKeystoreKey(newKey);
+  }
+
+  /// Whether two master keys are the same bytes.
+  ///
+  /// Not constant-time on purpose: both operands are this process's own keys,
+  /// compared to decide which of its own writes landed. There is no attacker
+  /// supplying either side, so there is no timing channel to close — and a
+  /// constant-time helper here would suggest otherwise to the next reader.
+  static bool _sameKey(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   Future<({List<int> authVerifier, List<int> vaultKey})> _deriveSyncKeys({

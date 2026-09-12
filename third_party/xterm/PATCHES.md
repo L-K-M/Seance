@@ -333,6 +333,28 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
     ordinarily against 2.1 ms over 9000 blank lines). It runs per selection
     pointer event, so cache it if a drag ever shows up in a profile.
 
+### Cursor reports and scrolling margins
+
+29. **Cursor-position reports use protocol coordinates**
+    (`core/escape/emitter.dart#cursorPosition`,
+    `terminal.dart#sendCursorPosition`; regressions:
+    `test/src/terminal_test.dart`): CPR replies to CSI 6 n now translate the
+    buffer's zero-based row and column to one-based coordinates. The old reply
+    reported the home position as `CSI 0;0 R` and shifted every queried
+    position up and left, breaking remote programs that use the report to
+    position prompts or restore the cursor. Reports also honor the scrolling
+    margin as the origin when DECOM is enabled, matching cursor positioning.
+    Setting DECOM or DECSTBM homes the cursor in its new coordinate space;
+    reports are bounded to that space even after legacy cursor controls that
+    still clamp movement to the viewport instead of the scrolling margins.
+    Invalid equal/inverted DECSTBM regions are ignored before homing. Zero or
+    omitted parameters restore the default edges; CSI parsing preserves empty
+    parameter positions, including a leading omitted top margin. CUP/HVP
+    normalize omitted and zero coordinates before applying the origin.
+    Empty fields now reach all CSI handlers as zero. Editing and scrolling
+    counts treat zero as one, matching REP and cursor movement; this also
+    prevents a zero-length ECH from reading before the start of a line.
+
 ### App-layer notes (outside this package)
 
 - The app passes `shortcuts: {}` and instead routes ⌘C/⌘V/⌘A on
@@ -342,4 +364,3 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
   (`XtermTerminalEngine.detectPlatform`). Leaving the default
   `TerminalTargetPlatform.unknown` re-introduces the Option-dead-key bug of
   patch 22 — `unknown` takes the non-Apple, alt-sends-Meta path.
-

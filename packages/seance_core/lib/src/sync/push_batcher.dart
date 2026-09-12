@@ -10,13 +10,17 @@ import 'package:seance_protocol/seance_protocol.dart';
 /// one starts. Both bounds matter — record sizes span orders of magnitude, so
 /// neither a byte budget nor a record count alone bounds the other.
 ///
-/// A record that alone exceeds the body budget cannot be batched into
-/// compliance. It is still sent, alone and last: the server is the authority on
-/// its own limits (the client may be working from defaults, or from an
-/// advertisement an operator has since raised), so refusing to send would risk
-/// permanently withholding a record the server would have taken, while dropping
-/// it silently would lose data. Last, so its near-certain rejection costs only
-/// itself and not the records that do fit.
+/// A record the server will refuse whatever it is batched with cannot be
+/// batched into compliance: one that alone exceeds the body budget, and one
+/// whose sealed blob exceeds [PushLimits.maxBlobBytes]. Both are answered with
+/// a 413 for the *whole* push, so each is sent alone and last. Sent, because
+/// the server is the authority on its own limits (the client may be working
+/// from defaults, or from an advertisement an operator has since raised), so
+/// refusing to send would risk permanently withholding a record the server
+/// would have taken, while dropping it silently would lose data. Alone and
+/// last, so its near-certain rejection costs only itself and not the records
+/// that do fit — otherwise one record past a cap stops the whole account's
+/// sync, identically every round, since the batching is deterministic.
 List<List<EncryptedRecord>> batchForPush(
   List<EncryptedRecord> records,
   PushLimits limits,
@@ -32,7 +36,11 @@ List<List<EncryptedRecord>> batchForPush(
       recordCount: 1,
       recordBytes: recordBytes,
     );
-    if (bodyAlone > limits.maxBodyBytes) {
+    // The blob cap is measured on the *decoded* blob, which is what the server
+    // measures — not on the record's encoded size, which carries the base64
+    // expansion and the envelope around it.
+    if (bodyAlone > limits.maxBodyBytes ||
+        record.blob.length > limits.maxBlobBytes) {
       unbatchable.add(record);
       continue;
     }
