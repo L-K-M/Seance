@@ -223,12 +223,20 @@ class SecretVault {
   /// transient read failure turns into an overwrite of material that was never
   /// unreadable — with the vault the only copy, that is worse than the
   /// stranding this exists to prevent.
+  ///
+  /// What the guard can forgive is bounded by what is inside it: opening a
+  /// blob already in hand, which fails only for a MAC that will not verify or
+  /// a payload that will not parse. [vaultKey] is non-nullable, so there is no
+  /// "no key yet" state for it to mistake for damage. A subclass that has no
+  /// key — the app's locked vault — must override this rather than rely on
+  /// that, because it answers "I could not look" and this method has no way to
+  /// tell that from an entry nobody can open.
   Future<Secret?> readableSecret(String id) async {
     final blob = await store.getSecretBlob(id);
     if (blob == null) return null;
     try {
       return Secret.fromJson(await VaultCrypto.openJson(vaultKey, blob));
-    } on Exception catch (error) {
+    } on Exception catch (error, stackTrace) {
       // The one place that knows an entry is damaged, and damage rarely stops
       // at one: whatever the caller does next, a reader chasing "why is this
       // credential different now" should not have to infer this from silence.
@@ -237,6 +245,10 @@ class SecretVault {
         name: _vaultLoggerName,
         level: _warningLogLevel,
         error: error,
+        // Which caller hit it, which is the part that is not fixed: the same
+        // damaged entry reads very differently from a publish than from the
+        // apply pass that is about to repair it.
+        stackTrace: stackTrace,
       );
       return null;
     }
