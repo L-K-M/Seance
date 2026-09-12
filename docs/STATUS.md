@@ -33,6 +33,52 @@ be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
 
+## The vault re-key survives a crash (2026-09-12)
+
+Sync enrolment re-keys the vault, which means changing two stores no single
+operation spans: the vault file and the OS keystore. The file was re-sealed
+under the new key first and the keystore told about it second, so a process
+that died in between left the two disagreeing: a vault sealed with a key
+nothing holds. That is not a state the app could talk its way out of either:
+every credential read throws rather than returning null, and retrying the
+enrolment throws in the same place, because re-keying starts by reading the
+very credentials that no longer open. The only repair was deleting
+`vault.json` by hand.
+
+`FileVaultStore` now implements a `VaultRekeyJournal`. `stageRekey` writes both
+complete generations to a `vault.json.rekey` sidecar, each sealed under the key
+it belongs to, *before* the keystore is touched; `settleRekey` then adopts
+whichever generation the key actually installed can open, commits it to
+`vault.json` and clears the sidecar. `AppServices` settles at startup and again
+whenever `unlockVaultFromKeystore` finds the keyring back, so a crash anywhere
+in the window resolves on the next launch instead of stranding the vault. A
+keyring that is locked settles nothing and leaves the vault locked with the
+journal intact, which is the existing retry affordance rather than a new state.
+
+Staging never writes `vault.json`, which is what makes the sidecar safe: while
+one exists the stored vault still holds a complete, openable generation, so a
+journal that is damaged, stray, or matched by neither key is moved aside and
+the stored vault stands. The machinery that shipped unwired in 6f3d7f3 made the
+sidecar authoritative instead. It failed every read while one existed and no
+code path could clear it, so a sidecar arriving by any route (a restored
+backup, a half-shipped build) would have wedged the vault permanently. Ten
+tests cover it: both crash sides at the store and through `AppServices`, the
+locked-keyring hold, the unmatched and damaged journals, an orphan entry the
+current key cannot open, refused mutations while staged, and that the sidecar
+holds no plaintext.
+
+Two things fell out. Re-keying now re-seals every stored entry rather than only
+the credentials current configs reference, because staging rewrites the whole
+map anyway, which closes most of known limitation 4 without the
+`VaultStore.listIds` it asked for. And `_rekeyVault` no longer rolls the vault
+file back when the keystore refuses the new key: there is nothing to roll back,
+since staging left the file on the generation the installed key still opens. It
+reads the keystore back rather than assuming (a write that stores the value and
+then throws is the case that motivated the reconcile), through a new
+`readKeystoreKey` that does not create a key the way `probeKeystore` does:
+inventing a random key there would match neither staged generation and seal the
+vault shut.
+
 ## One over-sized record no longer stops sync (2026-09-12)
 
 Push batching sizes a request against the server's advertised body and record
@@ -515,10 +561,14 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
    (e.g. a pass-through redactor when disabled).
 
 ### Known limitations to revisit
-4. **Sync re-key UX.** Enrolling in sync re-keys the vault to the
-   encryption-passphrase-derived key and re-encrypts only secrets referenced by
-   *current* configs. Document/enforce "set up sync before storing lots of
-   secrets", or generalize re-encryption (needs a `VaultStore.listIds`).
+4. **Sync re-key leaves unreadable entries unreadable.** Enrolling in sync
+   re-keys the vault to the encryption-passphrase-derived key. Every stored
+   entry is re-sealed now, not just the ones current configs reference, and the
+   re-key is crash-safe (see the dated entry above), but an entry the *current*
+   key cannot open is carried over byte for byte rather than failing the
+   enrolment, so an orphan from an earlier lost re-key stays orphaned. Deciding
+   such an entry is garbage and dropping it needs a UI that can show the user
+   what is being discarded.
 5. **UTF-8 across packets.** `XtermTerminalEngine.feed` uses lenient UTF-8
    decode; a multibyte sequence split across SSH packets can mangle a glyph.
    A byte-accumulating decoder (or the libghostty engine) fixes it.

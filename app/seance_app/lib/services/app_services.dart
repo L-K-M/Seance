@@ -77,6 +77,11 @@ class AppServices {
   final TombstoneStore tombstoneStore;
   // Mutable so sync enrolment can re-key the vault to the shared encryption key.
   SecretVault vault;
+  /// Crash recovery for [_rekeyVault]. This is the same object as
+  /// [SecretVault.store] behind [vault]; it is held separately because
+  /// surviving a crash is a property of the file-backed store, not something
+  /// every [VaultStore] can offer.
+  final VaultRekeyJournal _rekeyJournal;
   final HostKeyStore hostKeyStore;
   final TofuVerifier tofu;
   final ProbeService probe;
@@ -132,6 +137,7 @@ class AppServices {
     required this.identityAudit,
     required this.vaultKey,
     required this.settings,
+    required this._rekeyJournal,
   });
 
   /// [masterKeyManager] is for tests that need the OS keystore to misbehave
@@ -149,7 +155,7 @@ class AppServices {
     // desktops): the app then starts with a locked vault — secrets unreadable
     // and unwritable with a clear error, retry offered in the UI — instead of
     // crashing before the shell exists.
-    final vaultKey = await masterKeys.probeKeystore();
+    var vaultKey = await masterKeys.probeKeystore();
 
     final configStore = FileConfigStore(File(p('servers.json')));
     final snippetStore = FileSnippetStore(File(p('snippets.json')));
@@ -176,6 +182,29 @@ class AppServices {
     }
     if (settingsChanged) await settingsStore.save(settings);
 
+    // A re-key stages both vault generations before it changes the OS
+    // keystore, so a process that died between the two left them disagreeing.
+    // Settle that against the key the keystore actually holds, before anything
+    // can read a secret. A settle that fails starts the vault locked, which
+    // the retry affordance already covers, rather than opening it on a
+    // generation this key cannot read.
+    final probed = vaultKey;
+    if (probed != null) {
+      try {
+        await _settleRekey(vaultStore, probed);
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not settle a pending vault re-key; starting with a locked '
+          'vault so the next unlock can try again',
+          name: 'seance.app',
+          level: 1000,
+          error: error,
+          stackTrace: stackTrace,
+        );
+        vaultKey = null;
+      }
+    }
+
     return AppServices._(
       configStore: configStore,
       snippetStore: snippetStore,
@@ -195,6 +224,7 @@ class AppServices {
       identityAudit: IdentityAuditLog(File(p('identity_reads.jsonl'))),
       vaultKey: vaultKey,
       settings: settings,
+      rekeyJournal: vaultStore,
     );
   }
 
@@ -205,9 +235,42 @@ class AppServices {
     if (vaultKey != null) return true;
     final key = await masterKeys.probeKeystore();
     if (key == null) return false;
+    // A keystore that is back is also the first chance to finish a re-key the
+    // last run left staged, and it has to happen before the key is adopted:
+    // the generation the vault opens with has to be the one this key seals.
+    try {
+      await _settleRekey(_rekeyJournal, key);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Could not settle a pending vault re-key; the vault stays locked and '
+        'the next unlock tries again',
+        name: 'seance.app',
+        level: 1000,
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
+    }
     vault = SecretVault(vault.store, key);
     vaultKey = key;
     return true;
+  }
+
+  /// Settle a staged re-key against [key], the one the OS keystore holds.
+  ///
+  /// A discarded journal is the outcome worth logging: the vault survives, but
+  /// a staged generation was dropped because no key on offer opened it, and
+  /// nothing else would explain the credentials that went with it.
+  static Future<void> _settleRekey(
+      VaultRekeyJournal journal, List<int> key) async {
+    final outcome = await journal.settleRekey(key);
+    if (outcome != VaultRekeyOutcome.discarded) return;
+    developer.log(
+      'A staged vault re-key matched neither generation the OS keyring could '
+      'open; the journal was moved aside and the stored vault kept',
+      name: 'seance.app',
+      level: 1000,
+    );
   }
 
   /// True when the settings file could not be parsed at startup and was moved
@@ -226,64 +289,76 @@ class AppServices {
   bool get isSyncConfigured =>
       settings.syncBaseUrl != null && settings.syncBaseUrl!.isNotEmpty;
 
-  /// Re-key the vault to [newKey], re-encrypting secrets referenced by current
-  /// configs so nothing is lost. Used by sync enrolment to adopt the shared,
-  /// encryption-passphrase-derived key.
+  /// Re-key the vault to [newKey], the shared key sync enrolment derives from
+  /// the encryption passphrase, so the OS keystore and the vault file agree on
+  /// it afterwards.
+  ///
+  /// Both stores have to change and no operation spans them; the staged
+  /// journal is what makes the gap between them survivable, including a crash
+  /// (see [VaultRekeyJournal]). Staging re-seals every stored entry rather
+  /// than only the ones current configs reference, because it rewrites the
+  /// whole map anyway, so an orphan credential keeps opening instead of
+  /// quietly retiring with the key nothing holds any more.
   Future<void> _rekeyVault(List<int> newKey) async {
-    final secretRefs = {
-      for (final cfg in await configStore.listServers())
-        if (cfg.secretRef != null) cfg.secretRef!,
-    };
-    final secrets = <Secret>[];
-    // Shared credentials must be read exactly once with the old key. Read all
-    // of them before writing so an unreadable credential cannot leave earlier
-    // entries encrypted with a key that has not been installed yet.
-    for (final ref in secretRefs) {
-      final secret = await vault.getSecret(ref);
-      if (secret != null) secrets.add(secret);
-    }
-    final previousVault = vault;
-    final newVault = SecretVault(vault.store, newKey);
-    // One write, not one per credential. The vault file is rewritten whole on
-    // every entry, so a loop left it holding a mix of both keys when a write
-    // partway through failed — and the key the rest were sealed with is not
-    // installed until below, so a restart could not open them again.
-    await newVault.putSecrets(secrets);
+    final currentKey = vaultKey;
+    // Staging reads every entry to re-seal it, which a locked vault cannot do.
+    // Enrolment waits for the keyring rather than stage a generation built
+    // from a vault it could not read.
+    if (currentKey == null) throw const VaultLockedException();
+    await _rekeyJournal.stageRekey(currentKey: currentKey, newKey: newKey);
     try {
       // The keystore is the only place the new key survives a restart, and it
-      // can refuse outright — a locked keyring throws here, which is why the
-      // rest of this class treats it as a state to recover from rather than a
-      // crash. Until it holds the new key, the file that is now sealed with
-      // that key is unreadable by the next launch, so a refused install has
-      // to put the file back rather than leave the two disagreeing.
+      // can refuse outright: a locked keyring throws here, which is why the
+      // rest of this class treats that as a state to recover from rather than
+      // a crash. Nothing needs rolling back if it does: staging left the vault
+      // file on the generation the installed key still opens.
       await masterKeys.setKeystoreKey(newKey);
     } catch (_) {
-      try {
-        await previousVault.putSecrets(secrets);
-      } catch (error, stackTrace) {
-        // Only the keystore error reaches the caller, and on its own it reads
-        // as an ordinary locked keyring rather than the one state where the
-        // vault is left disagreeing with the keystore. Log the write that was
-        // supposed to prevent that, or a field report cannot explain it.
-        developer.log(
-          'Vault re-key rollback failed; the vault file stays sealed with a '
-          'key the OS keystore does not hold',
-          name: 'seance.app',
-          level: 1000,
-          error: error,
-          stackTrace: stackTrace,
-        );
-        // Both writes failed, so the file keeps a key the keystore does not
-        // hold. Stay on that key here: the credentials remain readable for
-        // this session, and a retried enrolment re-attempts the install from
-        // a vault whose file and in-memory key still agree.
-        vault = newVault;
-        vaultKey = newKey;
-      }
+      await _adoptInstalledKey(fallback: currentKey);
       rethrow;
     }
-    vault = newVault;
+    await _settleRekey(_rekeyJournal, newKey);
+    vault = SecretVault(vault.store, newKey);
     vaultKey = newKey;
+  }
+
+  /// Drive a vault re-key directly.
+  ///
+  /// Enrolment reaches [_rekeyVault] through [registerSync]/[loginSync], which
+  /// need a live sync server; what this has to get right is the order of the
+  /// two local stores it changes, which no server is party to.
+  @visibleForTesting
+  Future<void> rekeyVaultForTesting(List<int> newKey) => _rekeyVault(newKey);
+
+  /// Settle the staged re-key against the key the OS keystore really holds,
+  /// and adopt it, after the install failed.
+  ///
+  /// Reading the keystore back beats assuming it kept [fallback]: a write that
+  /// stored the value and then threw would otherwise settle the vault on a
+  /// generation the keystore cannot open. [MasterKeyManager.readKeystoreKey],
+  /// never `probeKeystore`, because that one invents a key when it finds none
+  /// and a key neither generation matches is the one thing this must not
+  /// install.
+  ///
+  /// Only the caller's keystore error is worth reporting, so a failure here is
+  /// logged and swallowed; it leaves the journal on disk, which is exactly
+  /// what the next launch settles from.
+  Future<void> _adoptInstalledKey({required List<int> fallback}) async {
+    try {
+      final installed = await masterKeys.readKeystoreKey() ?? fallback;
+      await _settleRekey(_rekeyJournal, installed);
+      vault = SecretVault(vault.store, installed);
+      vaultKey = installed;
+    } catch (error, stackTrace) {
+      developer.log(
+        'Vault re-key could not be settled after the OS keyring refused the '
+        'new key; the staged journal stays for the next launch',
+        name: 'seance.app',
+        level: 1000,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   Future<({List<int> authVerifier, List<int> vaultKey})> _deriveSyncKeys({

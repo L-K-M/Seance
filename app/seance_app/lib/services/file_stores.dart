@@ -211,15 +211,51 @@ class FileTombstoneStore implements TombstoneStore {
   }
 }
 
+/// What settling a staged re-key did with the journal it found.
+enum VaultRekeyOutcome {
+  /// Nothing was staged; the stored vault was already the only generation.
+  none,
+
+  /// A staged generation matched the installed key and is now the vault.
+  adopted,
+
+  /// The installed key opened neither staged generation, so the journal was
+  /// moved aside and the stored vault stands.
+  discarded,
+}
+
+/// Crash recovery for a vault re-key, which has to change two stores that no
+/// single operation spans: the vault file and the OS keystore. Between the two
+/// writes one of them is wrong, and a process that dies there leaves a vault
+/// sealed with a key nothing holds: unreadable, and not repairable by retrying
+/// the enrolment, because that path starts by reading the very credentials
+/// that no longer open.
+///
+/// [stageRekey] persists both generations before the keystore changes, so
+/// whichever key the keystore ends up holding, [settleRekey] can still find
+/// the matching one. Only a store that outlives the process needs this: an
+/// in-memory vault dies with the keystore write that failed.
+abstract interface class VaultRekeyJournal {
+  /// Record both generations of the vault, the current one and the one sealed
+  /// under [newKey], before the OS keystore is asked to adopt [newKey].
+  Future<void> stageRekey({
+    required List<int> currentKey,
+    required List<int> newKey,
+  });
+
+  /// Resolve a staged re-key against [key], the one the OS keystore actually
+  /// holds, and clear the journal. Always resolves: see [VaultRekeyOutcome].
+  Future<VaultRekeyOutcome> settleRekey(List<int> key);
+}
+
 /// JSON-file [VaultStore] holding only opaque, already-encrypted blobs
 /// (base64). [SecretVault] seals/opens; this just persists bytes.
-class FileVaultStore implements VaultStore {
+class FileVaultStore implements VaultStore, VaultRekeyJournal {
   final File file;
   final Map<String, String> _blobs = {}; // id -> base64
   Future<void>? _loading;
   Future<void> _pending = Future<void>.value();
   Map<String, String>? _rekeySnapshots;
-  bool _rekeySelected = false;
 
   FileVaultStore(this.file);
 
@@ -258,16 +294,7 @@ class FileVaultStore implements VaultStore {
   }
 
   Future<void> _read() async {
-    if (await _rekeyFile.exists()) {
-      // This may be the only snapshot matching the installed key. A malformed
-      // journal must never follow the ordinary quarantine-and-empty path.
-      final journal = jsonDecode(await _rekeyFile.readAsString());
-      if (journal is! Map || journal['version'] != 1) {
-        throw const FormatException('Invalid vault recovery journal.');
-      }
-      _rekeySnapshots = _stringMap(journal['snapshots']);
-      return;
-    }
+    _rekeySnapshots = await _readRekeyJournal();
     if (!await file.exists()) return;
     try {
       final map = jsonDecode(await file.readAsString()) as Map;
@@ -280,6 +307,27 @@ class FileVaultStore implements VaultStore {
 
   Future<void> _flush() async {
     await writeStringAtomically(file, jsonEncode(_blobs));
+  }
+
+  /// The staged generations, or null when no re-key is pending.
+  ///
+  /// [stageRekey] never writes [file], so while a journal exists the stored
+  /// vault still holds a complete generation. That is what makes a damaged
+  /// journal safe to move aside instead of fatal: unlike the vault file it is
+  /// never the only copy of anything, and a journal that could not be read and
+  /// could not be cleared would fail every vault operation from here on.
+  Future<Map<String, String>?> _readRekeyJournal() async {
+    if (!await _rekeyFile.exists()) return null;
+    try {
+      final journal = jsonDecode(await _rekeyFile.readAsString());
+      if (journal is! Map || journal['version'] != 1) {
+        throw const FormatException('Invalid vault recovery journal.');
+      }
+      return _stringMap(journal['snapshots']);
+    } catch (_) {
+      await quarantineCorruptFile(_rekeyFile);
+      return null;
+    }
   }
 
   /// Run [body] with the cache loaded and no other operation in flight.
@@ -333,9 +381,12 @@ class FileVaultStore implements VaultStore {
         // Connecting to a server resolves its credential while an auto-sync
         // round may be writing one, so a read outside the queue could report
         // a value the mutation's flush is about to roll back.
-        if (_rekeySnapshots != null && !_rekeySelected) {
-          throw StateError('Unlock the keyring to recover the pending vault change.');
-        }
+        //
+        // A pending journal does not block this. The cache holds the stored
+        // generation, which is the one the keystore still opens until the
+        // re-key gets past its keystore write; past that, [settleRekey] has
+        // swapped in the generation that matches. Refusing to read here would
+        // only turn a recoverable state into a locked vault.
         final b64 = _blobs[id];
         return b64 == null ? null : base64.decode(b64);
       });
@@ -354,23 +405,46 @@ class FileVaultStore implements VaultStore {
   @override
   Future<void> deleteSecret(String id) => _mutate(() => _blobs.remove(id));
 
+  /// A staged re-key owns the vault until it is settled: a mutation now would
+  /// persist the stored generation, which [settleRekey] may then replace with
+  /// the staged one, silently undoing the write. Startup settles before
+  /// anything can call this, so the window is the one where the keystore is
+  /// unavailable and the vault is locked regardless.
   void _requireNoRekey() {
     if (_rekeySnapshots != null) {
       throw StateError('Finish vault recovery before changing credentials.');
     }
   }
 
-  Future<bool> hasPendingRekey() =>
-      _serialize(() async => _rekeySnapshots != null);
+  /// Re-seal one stored blob under [newKey].
+  ///
+  /// An entry the current key cannot open is carried over byte for byte rather
+  /// than failing the re-key. Such an entry is already unreadable (an orphan
+  /// from an earlier interrupted re-key, say), so keeping it as it is loses
+  /// nothing, while refusing would make enrolment impossible on exactly the
+  /// vaults that most need this journal.
+  Future<String> _reseal(
+      String stored, List<int> currentKey, List<int> newKey) async {
+    final Map<String, dynamic> plaintext;
+    try {
+      plaintext = await VaultCrypto.openJson(currentKey, base64.decode(stored));
+    } catch (_) {
+      return stored;
+    }
+    return base64.encode(await VaultCrypto.sealJson(newKey, plaintext));
+  }
 
-  /// Stage both complete generations before changing the OS key. Each snapshot
-  /// authenticates its whole map and enrollment intent, including empty vaults.
-  /// The sidecar is written only to a fresh path and never replaced in place;
-  /// even Windows' replace fallback cannot delete the only recovery snapshot.
+  /// Stage both complete generations before the OS keystore changes. Each
+  /// snapshot is sealed under the key it belongs to, so the key that opens one
+  /// is proof it is that key's generation, and an empty vault stages too.
+  ///
+  /// The sidecar is only ever written to a fresh path, never replaced in
+  /// place: a second re-key while one is pending would drop the generations
+  /// the first one is the only record of.
+  @override
   Future<void> stageRekey({
     required List<int> currentKey,
     required List<int> newKey,
-    required Map<String, dynamic> enrollment,
   }) => _serialize(() async {
     _requireNoRekey();
     if (await _rekeyFile.exists()) {
@@ -378,65 +452,54 @@ class FileVaultStore implements VaultStore {
     }
     final next = <String, String>{};
     for (final entry in _blobs.entries) {
-      // Preserve raw JSON, including orphan entries and version metadata.
-      final plaintext = await VaultCrypto.openJson(
-        currentKey, base64.decode(entry.value));
-      next[entry.key] = base64.encode(await VaultCrypto.sealJson(newKey, plaintext));
+      next[entry.key] = await _reseal(entry.value, currentKey, newKey);
     }
     final snapshots = <String, String>{
-      _keyId(currentKey): base64.encode(await VaultCrypto.sealJson(currentKey, {
-        'blobs': _blobs,
-        'enrollment': null,
-      })),
-      _keyId(newKey): base64.encode(await VaultCrypto.sealJson(newKey, {
-        'blobs': next,
-        'enrollment': enrollment,
-      })),
+      // Preserve the raw map, orphan entries and version metadata included.
+      _keyId(currentKey):
+          base64.encode(await VaultCrypto.sealJson(currentKey, {'blobs': _blobs})),
+      _keyId(newKey):
+          base64.encode(await VaultCrypto.sealJson(newKey, {'blobs': next})),
     };
     await writeStringAtomically(_rekeyFile,
         jsonEncode({'version': 1, 'snapshots': snapshots}),
         privacy: AtomicFilePrivacy.ownerOnly);
     _rekeySnapshots = snapshots;
-    _rekeySelected = true; // The old key/map remain usable until key selection.
   });
 
-  /// Select the authenticated snapshot matching the key actually in the OS
-  /// keyring. Unknown keys and damaged data leave the recovery file untouched.
-  /// A non-null result is the enrollment to finish after adopting the new key.
-  Future<Map<String, dynamic>?> selectRekeySnapshot(List<int> key) =>
-      _serialize(() async {
+  /// Adopt whichever staged generation [key] opens, then clear the journal.
+  ///
+  /// A journal this key matches neither half of is moved aside rather than
+  /// kept. Neither generation is recoverable without a key that opens it, and
+  /// a journal that stays is one that blocks every mutation forever, which is
+  /// what a stray sidecar from a restored backup or a half-shipped build would
+  /// otherwise do. The stored vault is untouched either way.
+  @override
+  Future<VaultRekeyOutcome> settleRekey(List<int> key) => _serialize(() async {
     final snapshots = _rekeySnapshots;
-    if (snapshots == null) return null;
-    final sealed = snapshots[_keyId(key)];
-    if (sealed == null) {
-      throw StateError('The keyring key does not match the pending vault recovery.');
-    }
-    final snapshot = await VaultCrypto.openJson(key, base64.decode(sealed));
-    final blobs = _stringMap(snapshot['blobs']);
-    for (final blob in blobs.values) {
-      await VaultCrypto.openJson(key, base64.decode(blob));
-    }
-    final enrollment = snapshot['enrollment'];
-    if (enrollment != null && enrollment is! Map<String, dynamic>) {
-      throw const FormatException('Invalid vault recovery enrollment.');
+    if (snapshots == null) return VaultRekeyOutcome.none;
+    final Map<String, String> blobs;
+    try {
+      final sealed = snapshots[_keyId(key)];
+      if (sealed == null) throw const FormatException('No matching snapshot.');
+      blobs = _stringMap(
+          (await VaultCrypto.openJson(key, base64.decode(sealed)))['blobs']);
+    } catch (_) {
+      await quarantineCorruptFile(_rekeyFile);
+      _rekeySnapshots = null;
+      return VaultRekeyOutcome.discarded;
     }
     _blobs
       ..clear()
       ..addAll(blobs);
-    _rekeySelected = true;
-    return enrollment as Map<String, dynamic>?;
-  });
-
-  /// Remove recovery material only after the selected vault and its enrollment
-  /// have committed. A failed primary write or cleanup leaves a retryable
-  /// sidecar; ordinary mutations remain blocked until this succeeds.
-  Future<void> finishRekey() => _serialize(() async {
-    if (_rekeySnapshots == null) return;
-    if (!_rekeySelected) throw StateError('Select the recovery key first.');
+    // The cache is not restored if the flush fails: it now holds the
+    // generation [key] opens, which is the one this session has to read with.
+    // The journal stays on disk for the next launch to settle again, and lands
+    // on the same generation because the installed key has not changed.
     await _flush();
     if (await _rekeyFile.exists()) await _rekeyFile.delete();
     _rekeySnapshots = null;
-    _rekeySelected = false;
+    return VaultRekeyOutcome.adopted;
   });
 }
 

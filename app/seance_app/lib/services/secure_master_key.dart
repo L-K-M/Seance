@@ -108,6 +108,24 @@ class MasterKeyManager {
     }
   }
 
+  /// Read the stored master key without creating one.
+  ///
+  /// [probeKeystore] is the bootstrap path and makes a key when it finds none,
+  /// which is exactly wrong when reconciling a re-key: a fresh random key
+  /// there would match neither staged generation and seal the vault shut. Null
+  /// means "no key stored" or "keystore unavailable"; [keystoreStatus] tells
+  /// the two apart.
+  Future<List<int>?> readKeystoreKey() async {
+    try {
+      final existing = await _storage.read(key: _keyName);
+      _markAvailable();
+      return existing == null ? null : base64.decode(existing);
+    } catch (e) {
+      _markUnavailable(e);
+      return null;
+    }
+  }
+
   /// Whether a master key is stored. Tolerant like [getApiKey]: a keystore
   /// that throws reads as "no key", not as a crash.
   Future<bool> hasKeystoreKey() async {
