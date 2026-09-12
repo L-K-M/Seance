@@ -85,6 +85,131 @@ void main() {
     });
   });
 
+  group('pinning', () {
+    test('pinned servers lead, in the list\'s own order', () {
+      final sections = groupServers(
+        [_server('a'), _server('b'), _server('c')],
+        pinnedIds: {'c', 'a'},
+      );
+      expect(sections.first.key, kPinnedKey);
+      expect(sections.first.header, kPinnedLabel);
+      // 'a' before 'c' — the shortlist keeps the list's order, not the order
+      // the two were pinned in.
+      expect(sections.first.servers.map((s) => s.label), ['a', 'c']);
+      expect(sections.last.servers.map((s) => s.label), ['b']);
+    });
+
+    test('the leftovers are headed even when nothing is grouped', () {
+      final sections = groupServers(
+        [_server('a'), _server('b')],
+        pinnedIds: {'a'},
+      );
+      // Without a header of its own the remainder would read as more of the
+      // pinned section.
+      expect(sections.map((s) => s.header), [kPinnedLabel, kUnpinnedLabel]);
+    });
+
+    test('a pinned server leaves its group rather than appearing twice', () {
+      final sections = groupServers(
+        [
+          _server('web', group: 'Production'),
+          _server('db', group: 'Production'),
+        ],
+        pinnedIds: {'web'},
+      );
+      expect(_shape(sections), [
+        [null, ['web']],
+        ['Production', ['db']],
+      ]);
+      // The group's count is what is left in it, so folding it away never
+      // claims to hide a row that is sitting at the top of the list.
+      expect(sections.last.servers, hasLength(1));
+    });
+
+    test('the ungrouped leftovers keep their own name beside real groups', () {
+      final sections = groupServers(
+        [
+          _server('web', group: 'Production'),
+          _server('loose'),
+          _server('pinned-one'),
+        ],
+        pinnedIds: {'pinned-one'},
+      );
+      expect(sections.map((s) => s.header), [
+        kPinnedLabel,
+        'Production',
+        kUngroupedLabel,
+      ]);
+    });
+
+    test('pinning everything leaves no empty remainder behind', () {
+      final sections = groupServers(
+        [_server('a'), _server('b')],
+        pinnedIds: {'a', 'b'},
+      );
+      expect(sections, hasLength(1));
+      expect(sections.single.key, kPinnedKey);
+    });
+
+    test('an id that names no server pins nothing', () {
+      final sections = groupServers(
+        [_server('a')],
+        pinnedIds: {'deleted-elsewhere'},
+      );
+      // Exactly the anonymous, headerless list an unpinned one renders as.
+      expect(sections, hasLength(1));
+      expect(sections.single.header, isNull);
+    });
+
+    test('a group literally named "Pinned" cannot claim the shortlist', () {
+      final sections = groupServers(
+        [_server('a', group: 'Pinned'), _server('b'), _server('c')],
+        pinnedIds: {'b'},
+      );
+      final keys = sections.map((s) => s.key).toList();
+      expect(keys, [kPinnedKey, serverGroupKey('Pinned'), kUngroupedKey]);
+      // Distinct keys are what keep folding one from folding the other.
+      expect(keys.toSet(), hasLength(3));
+    });
+
+    test('no spelling of a group name can reach the shortlist\'s key', () {
+      // [kPinnedKey] is collision-free only because [normalizeServerGroup]
+      // trims, which is an invariant in another function with nothing tying
+      // it to this constant. If trimming ever stopped, a user-typed group
+      // would start folding the pinned section away with it.
+      for (final spelling in [
+        'Pinned',
+        'pinned',
+        ' pinned',
+        'pinned ',
+        '  Pinned  ',
+        kPinnedKey,
+      ]) {
+        final section = groupServers(
+          [_server('a', group: spelling)],
+        ).single;
+        expect(section.key, isNot(kPinnedKey));
+        expect(section.key, isNot(kUngroupedKey));
+      }
+    });
+
+    test('the shortlist folds away like any other section', () {
+      final rows = serverListRows(
+        sections: groupServers(
+          [_server('a'), _server('b')],
+          pinnedIds: {'a'},
+        ),
+        collapsedKeys: {kPinnedKey},
+      );
+      expect(rows.whereType<ServerRow>().map((r) => r.server.label), ['b']);
+      // The header stays — it is the only way back.
+      final header = rows.whereType<ServerGroupHeaderRow>().first;
+      expect(header.name, kPinnedLabel);
+      expect(header.collapsed, isTrue);
+      expect(header.count, 1);
+    });
+  });
+
   group('serverListRows', () {
     List<ServerListRow> rowsFor(
       List<ServerConfig> servers, {

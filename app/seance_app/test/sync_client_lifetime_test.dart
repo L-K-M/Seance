@@ -301,6 +301,14 @@ void main() {
       throwsA(isA<KeystoreException>()),
     );
 
+    // The keyring's own diagnosis has to survive the failure. Deciding which
+    // key survived means reading the keystore from inside this catch, and a
+    // read that reported health would mark it *available* again — clearing
+    // the `KeyringLocked` the refused write just recorded, which is what the
+    // bootstrap toast's retry affordance keys off.
+    expect(own.masterKeys.keystoreStatus, KeystoreStatus.unavailable);
+    expect(own.masterKeys.lastKeystoreError, contains('KeyringLocked'));
+
     // The keystore still holds the original key, so that is the key the file
     // has to be readable with. Leaving it under the uninstalled one would put
     // every credential out of reach of the next launch.

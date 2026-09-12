@@ -7,8 +7,12 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-12. A single record past the server's per-record blob
-cap no longer stops the whole account's sync: that cap is advertised alongside
+_Last updated: 2026-09-12. The server list now offers a compact row and
+pinning: the app bar's density switch trades the address line for a row that
+is 40 px instead of 72, and a pinned server sits in its own section at the top
+(device-local, never synced). Before that, a single record past the server's
+per-record blob
+cap no longer stopped the whole account's sync: that cap is advertised alongside
 the other two, and such a record is now pushed alone and last. An emoji mark
 must also carry a character of its own — a lone joiner or combining mark was
 accepted and painted an empty badge. Before that, the
@@ -61,7 +65,7 @@ journal that is damaged, stray, or matched by neither key is moved aside and
 the stored vault stands. The machinery that shipped unwired in 6f3d7f3 made the
 sidecar authoritative instead. It failed every read while one existed and no
 code path could clear it, so a sidecar arriving by any route (a restored
-backup, a half-shipped build) would have wedged the vault permanently. Ten
+backup, a half-shipped build) would have wedged the vault permanently. Thirteen
 tests cover it: both crash sides at the store and through `AppServices`, the
 locked-keyring hold, the unmatched and damaged journals, an orphan entry the
 current key cannot open, refused mutations while staged, and that the sidecar
@@ -72,12 +76,47 @@ the credentials current configs reference, because staging rewrites the whole
 map anyway, which closes most of known limitation 4 without the
 `VaultStore.listIds` it asked for. And `_rekeyVault` no longer rolls the vault
 file back when the keystore refuses the new key: there is nothing to roll back,
-since staging left the file on the generation the installed key still opens. It
-reads the keystore back rather than assuming (a write that stores the value and
-then throws is the case that motivated the reconcile), through a new
-`readKeystoreKey` that does not create a key the way `probeKeystore` does:
-inventing a random key there would match neither staged generation and seal the
-vault shut.
+since staging left the file on the generation the installed key still opens.
+That replaces the witnessed rollback #98 added: it read the keystore back to
+decide which of two equally-unreadable states to leave behind, and documented
+the residual it could not close — a keyring that accepted the write and then
+locked cannot testify. Staging removes the choice, because both generations
+are on disk and the next launch settles on whichever key survived. It still
+reads the keystore back through `readKeystoreKey`, never `probeKeystore`,
+which invents a key when it finds none: a random key there would match neither
+staged generation and seal the vault shut.
+
+## Two view options for the server list (2026-09-12)
+
+The left pane's list gained the two things a list of a few dozen servers
+starts to want.
+
+**Density.** A switch in the pane's app bar chooses between the two-line row
+the list has always drawn and a one-line compact row — 40 px against 72, so
+roughly twice as many servers fit a screen. The `user@host:port` line is what
+the compact row trades away; it becomes a tooltip for a pointer and part of the
+row's spoken label for a screen reader rather than being lost, and the badge
+and its status dot scale down with the row.
+
+**Pinning.** A row's menu pins it into a `Pinned` section at the top, built out
+of the same sectioning the groups already use — so the shortlist folds away,
+counts its members and renders like any other section. A pinned server leaves
+its group rather than appearing twice, and that group's count reports what is
+actually left in it.
+
+**Filtering.** Enter now opens the first row the user can *see* rather than the
+head of the filtered list. Grouping already sorted sections by name, so store
+order was never quite what the eye read; pinning would have widened the gap.
+
+Both are device-local settings, alongside the folded sections and the pane
+widths. Pins deliberately do not sync and there is no switch to make them: a
+pin says "this is what I reach for *here*", which is rarely the same answer on
+a phone as at the desk, and keeping it out of the record layer means there is
+nothing to publish, retract or resolve — one device's shortlist can never
+reorder another's list. The obvious follow-up, if that turns out to be wanted,
+is an opt-in `pinnedServers` record modelled on the assistant's (off by
+default), which is why the pin lives in settings rather than on `ServerConfig`,
+where it would have synced unconditionally.
 
 ## One over-sized record no longer stops sync (2026-09-12)
 
