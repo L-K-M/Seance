@@ -187,8 +187,12 @@ class AppSettings {
   /// another's list behind the user's back.
   ///
   /// Ids that no longer name a server are harmless — the list only ever asks
-  /// whether a server it is *already showing* is in here — but a delete
-  /// prunes its own entry so the set does not grow forever.
+  /// whether a server it is *already showing* is in here. A delete on this
+  /// device prunes its own entry; a server that disappears through sync does
+  /// not pass that path, so its id stays behind. Deliberately not swept
+  /// against the server list either, because "absent" and "not pulled yet"
+  /// look identical mid-round, and sweeping would drop the pin of a server
+  /// that is about to come back.
   Set<String> pinnedServerIds;
 
   /// Whether the server list draws two-line rows or one-line ones.

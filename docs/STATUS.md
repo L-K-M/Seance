@@ -53,9 +53,11 @@ and its status dot scale down with the row.
 of the same sectioning the groups already use — so the shortlist folds away,
 counts its members and renders like any other section. A pinned server leaves
 its group rather than appearing twice, and that group's count reports what is
-actually left in it. Filtering now also opens the first row the user can *see*
-on Enter rather than the head of the filtered list; grouping already sorted
-sections by name, so store order was never quite what the eye read.
+actually left in it.
+
+**Filtering.** Enter now opens the first row the user can *see* rather than the
+head of the filtered list. Grouping already sorted sections by name, so store
+order was never quite what the eye read; pinning would have widened the gap.
 
 Both are device-local settings, alongside the folded sections and the pane
 widths. Pins deliberately do not sync and there is no switch to make them: a

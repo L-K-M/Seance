@@ -86,10 +86,7 @@ class _ServerListPaneState extends State<ServerListPane> {
     if (_query.isEmpty) return;
     final state = AppScope.of(context);
     final rows = serverListRows(
-      sections: groupServers(
-        filterServers(state.servers, _query),
-        pinnedIds: state.pinnedServerIds,
-      ),
+      sections: _sections(state, filterServers(state.servers, _query)),
       collapsedKeys: const {},
     );
     final first = rows.whereType<ServerRow>().firstOrNull;
@@ -97,6 +94,17 @@ class _ServerListPaneState extends State<ServerListPane> {
     _searchFocus.unfocus();
     widget.onOpen(first.server);
   }
+
+  /// The sections the list is drawn from.
+  ///
+  /// One definition, because "the first row" has to mean the same thing to
+  /// [_openFirstMatch] as to the eye reading [_serverList] — and pinning is
+  /// exactly what makes those two orders differ from the store's. Stated
+  /// twice, they were held in step by a comment.
+  List<ServerGroupSection> _sections(
+    AppState state,
+    List<ServerConfig> servers,
+  ) => groupServers(servers, pinnedIds: state.pinnedServerIds);
 
   @override
   Widget build(BuildContext context) {
@@ -232,7 +240,7 @@ class _ServerListPaneState extends State<ServerListPane> {
     List<ServerConfig> servers,
   ) {
     final rows = serverListRows(
-      sections: groupServers(servers, pinnedIds: state.pinnedServerIds),
+      sections: _sections(state, servers),
       // A live query overrides every collapsed section. Otherwise the filter
       // would report "3 of 12" and show one row, with the other two folded
       // away behind a header the user never opened — which reads as the filter
@@ -752,11 +760,13 @@ class _DensityMenu extends StatelessWidget {
     final current = state.serverListDensity;
     return PopupMenuButton<ServerListDensity>(
       tooltip: 'Server list density',
-      icon: Icon(
-        current == ServerListDensity.compact
-            ? Icons.density_small
-            : Icons.density_medium,
-      ),
+      // A switch rather than a ternary because the doc above promises a third
+      // density is addable: a ternary would draw it with the comfortable icon
+      // while its own menu row said otherwise, and nothing would complain.
+      icon: Icon(switch (current) {
+        ServerListDensity.comfortable => Icons.density_medium,
+        ServerListDensity.compact => Icons.density_small,
+      }),
       onSelected: state.setServerListDensity,
       itemBuilder: (_) => [
         for (final density in ServerListDensity.values)
