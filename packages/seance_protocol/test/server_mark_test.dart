@@ -202,8 +202,10 @@ void main() {
         '\u070F', // Syriac abbreviation mark
         '\u0890', // Arabic pound mark above
         '\u{110BD}', // Kaithi number sign
-        // Visible on its own, and refused anyway: a spacing mark decorates
-        // a character that is not here.
+        // Visible on their own, and refused anyway: each decorates a
+        // character that is not here.
+        '\u{1F3FB}', // emoji modifier, a lone skin-tone swatch
+        '\u{1F3FF}', // the same at the other end of the scale
         '\u0903', // Devanagari sign visarga
       ]) {
         expect(
@@ -226,6 +228,28 @@ void main() {
       ]) {
         expect(normalizeServerEmoji(formatting), isNull);
       }
+    });
+
+    test('an invisible character riding on a real base is allowed', () {
+      // Where this rule stops, stated rather than left to be rediscovered.
+      // A cluster needs a base; it is not required to be *only* that base, so
+      // an invisible character glued to a real one still passes. U+0600
+      // attaches forward onto the emoji (UAX #29 GB9b) and plane-14 tag
+      // characters attach backward, and both leave a cluster that draws the
+      // emoji — so neither is the empty badge this file refuses.
+      //
+      // Deliberately not widened to a scan for every invisible character in
+      // the cluster: the tag half cannot be, since a subdivision flag is a
+      // base followed by exactly those characters (the test below), so
+      // refusing them wholesale would take the flags with them. What would
+      // actually be reordered or hidden — the bidi controls, the zero-width
+      // characters, the Hangul fillers — is already refused wherever it sits,
+      // because that loop reads every code unit rather than the first.
+      expect(normalizeServerEmoji('\u0600\u{1F600}'), '\u0600\u{1F600}');
+      expect(normalizeServerEmoji('\u{1F9E1}\u{E0030}'), '\u{1F9E1}\u{E0030}');
+      // The ones that matter stay refused in that same position.
+      expect(normalizeServerEmoji('\u{1F600}\u202E'), isNull);
+      expect(normalizeServerEmoji('\u{1F600}\u200B'), isNull);
     });
 
     test('keeps a subdivision flag, whose tail is tag characters', () {

@@ -58,6 +58,16 @@ the visible-but-baseless cases — a lone skin-tone modifier, a lone spacing mar
 — are refused too, deliberately, since "the beige square" reads as a rendering
 failure on the next device.
 
+Where the rule stops is pinned too, rather than left to be rediscovered. A
+cluster needs a base; it is not required to be *only* that base, so an
+invisible character glued to a real one (U+0600 attaching forward onto an
+emoji, a plane-14 tag character attaching backward) still passes — both draw
+the emoji, so neither is the empty badge this refuses. The tag half could not
+be closed wholesale anyway: a subdivision flag is a base followed by exactly
+those characters. What would actually be reordered or hidden — the bidi
+controls, the zero-width characters, the Hangul fillers — is refused wherever
+it sits, because that loop reads every code unit rather than the first.
+
 The picker's curated grid is now pinned against the normalizer as well: an
 entry it refused would have been a tile that silently did nothing when tapped.
 
