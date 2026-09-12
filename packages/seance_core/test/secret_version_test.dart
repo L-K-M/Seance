@@ -61,4 +61,28 @@ void main() {
 
     expect((await rekeyed.getSecret('secret'))!.toJson(), secret.toJson());
   });
+
+  group('readableSecret', () {
+    // At the vault rather than only through a sync round: all three answers
+    // matter to the caller, and a change here should fail pointing at the
+    // vault instead of surfacing as a puzzling coordinator failure.
+    test('absent reads as null', () async {
+      expect(await vault.readableSecret('missing'), isNull);
+    });
+
+    test('an entry that will not open reads as null', () async {
+      await SecretVault(store, secureRandomBytes(32))
+          .putSecret(original.copyWith(value: 'sealed under another key'));
+
+      await expectLater(vault.getSecret('secret'), throwsA(isA<Exception>()));
+      expect(await vault.readableSecret('secret'), isNull);
+    });
+
+    test('a healthy entry reads through unchanged', () async {
+      await vault.putLocalSecret(original, updatedAt: 10);
+
+      final read = await vault.readableSecret('secret');
+      expect(read!.toJson(), (await vault.getSecret('secret'))!.toJson());
+    });
+  });
 }

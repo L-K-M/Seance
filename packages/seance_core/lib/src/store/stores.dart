@@ -1,8 +1,12 @@
+import 'dart:developer' as developer;
 import 'dart:typed_data';
 
 import 'package:seance_protocol/seance_protocol.dart';
 
 import '../hostkey/tofu.dart';
+
+const int _warningLogLevel = 900;
+const String _vaultLoggerName = 'seance.vault';
 
 /// Persists non-secret server configuration. Backed by SQLite in the app.
 abstract class ConfigStore {
@@ -203,6 +207,51 @@ class SecretVault {
     if (blob == null) return null;
     final json = await VaultCrypto.openJson(vaultKey, blob);
     return Secret.fromJson(json);
+  }
+
+  /// [getSecret], except that an entry which is present but cannot be opened
+  /// reads as absent instead of throwing.
+  ///
+  /// For callers whose next move on "nothing here" is to write the entry, so a
+  /// damaged one is repaired rather than made permanent. [getSecret] is still
+  /// the right call for anyone who would *use* the credential: silently
+  /// reporting none is only safe when the answer leads to a write.
+  ///
+  /// Only the opening is forgiven, and the store read is deliberately outside
+  /// the guard. "This entry is damaged" and "I could not look" are different
+  /// answers, and collapsing the second into "nothing there" is how a
+  /// transient read failure turns into an overwrite of material that was never
+  /// unreadable — with the vault the only copy, that is worse than the
+  /// stranding this exists to prevent.
+  ///
+  /// What the guard can forgive is bounded by what is inside it: opening a
+  /// blob already in hand, which fails only for a MAC that will not verify or
+  /// a payload that will not parse. [vaultKey] is non-nullable, so there is no
+  /// "no key yet" state for it to mistake for damage. A subclass that has no
+  /// key — the app's locked vault — must override this rather than rely on
+  /// that, because it answers "I could not look" and this method has no way to
+  /// tell that from an entry nobody can open.
+  Future<Secret?> readableSecret(String id) async {
+    final blob = await store.getSecretBlob(id);
+    if (blob == null) return null;
+    try {
+      return Secret.fromJson(await VaultCrypto.openJson(vaultKey, blob));
+    } on Exception catch (error, stackTrace) {
+      // The one place that knows an entry is damaged, and damage rarely stops
+      // at one: whatever the caller does next, a reader chasing "why is this
+      // credential different now" should not have to infer this from silence.
+      developer.log(
+        'Vault entry $id could not be opened and reads as absent',
+        name: _vaultLoggerName,
+        level: _warningLogLevel,
+        error: error,
+        // Which caller hit it, which is the part that is not fixed: the same
+        // damaged entry reads very differently from a publish than from the
+        // apply pass that is about to repair it.
+        stackTrace: stackTrace,
+      );
+      return null;
+    }
   }
 
   Future<void> deleteSecret(String id) => store.deleteSecret(id);
