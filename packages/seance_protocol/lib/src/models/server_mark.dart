@@ -208,6 +208,15 @@ String? normalizeServerEmoji(String? emoji) {
   final trimmed = emoji.trim();
   if (trimmed.isEmpty || trimmed.length > 64) return null;
   if (trimmed.characters.length != 1) return null;
+  // Plane 15 holds nothing but formatting: the language tag, the tag
+  // characters behind subdivision flags, and the variation selectors
+  // supplement. Every one has grapheme class Extend, so alone it is a single
+  // cluster of two code units and the loop below — which compares UTF-16 code
+  // *units*, all of them BMP — cannot see it. Only the cluster's first code
+  // point is tested, because a subdivision flag is a visible base followed by
+  // tag characters and must keep working.
+  final first = trimmed.runes.first;
+  if (first >= 0xE0000 && first <= 0xE0FFF) return null;
   // Control and invisible formatting characters are not marks, and a record
   // could carry one: the bidi controls in particular (the overrides and
   // isolates, and the plain LRM/RLM/ALM marks) would reorder the text around
@@ -236,6 +245,7 @@ String? normalizeServerEmoji(String? emoji) {
         unit == 0x3164 || // Hangul filler, the invisible-username character
         unit == 0xFFA0 || // halfwidth Hangul filler
         unit == 0x200B || // zero-width space
+        unit == 0x200C || // zero-width non-joiner
         (unit >= 0x200E && unit <= 0x200F) || // LRM, RLM
         (unit >= 0x202A && unit <= 0x202E) || // embeddings and overrides
         (unit >= 0x2060 && unit <= 0x2064) || // word joiner, invisible ops

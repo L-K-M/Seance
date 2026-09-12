@@ -180,6 +180,11 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
       if (side == crop && side <= _sideAttempts.last) break;
     }
     return (image: null, failure: BadgeImageFailure.incompressible);
+  } on Exception {
+    // Mirrors the decode phase. Without this an engine failure in `_render`
+    // would be thrown past a caller that is pattern-matching the record, so
+    // the import would crash instead of showing a message.
+    return (image: null, failure: BadgeImageFailure.undecodable);
   } finally {
     decoded.dispose();
   }

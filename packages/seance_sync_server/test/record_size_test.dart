@@ -14,8 +14,8 @@ void main() {
   test('a maximum-size badge image fits the per-record limit', () async {
     // A PNG-shaped payload of exactly the size the protocol allows: the
     // signature, an IHDR declaring the 256 px square the app stores at, then
-    // incompressible filler. Incompressible is the honest case for a ceiling —
-    // a real 256 px photograph measures around 53 KiB.
+    // filler. A real 256 px photograph measures around 53 KiB, so this is the
+    // pathological end of the range the cap has to admit.
     // The same layout pngHeader() builds in
     // packages/seance_protocol/test/server_mark_test.dart (signature, chunk
     // length 13, "IHDR", dimensions at fixed offsets). If the protocol's PNG
@@ -32,8 +32,14 @@ void main() {
     // From the header's own length: filler that started at a stale literal
     // would either overwrite it or leave a run of compressible zeros, which
     // would quietly make this measurement optimistic.
+    // Middle bits rather than the low byte: the low byte of an odd multiple
+    // repeats exactly every 256 bytes. Nothing between here and the sealed
+    // blob compresses — measured, periodic, aperiodic and all-zero filler all
+    // seal to the same 262,144 bytes — so the entropy does not change what
+    // this asserts. It is aperiodic anyway, so the fixture matches its label
+    // and stays honest if a compressing step is ever added.
     for (var i = header.length; i < image.length; i++) {
-      image[i] = (i * 2654435761) & 0xFF;
+      image[i] = ((i * 2654435761) >> 16) & 0xFF;
     }
     final stored = encodeServerIconImage(image);
     expect(stored, isNotNull, reason: 'the cap must admit its own maximum');

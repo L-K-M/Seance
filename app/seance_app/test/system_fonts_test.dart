@@ -436,7 +436,10 @@ void main() {
       await Link('${directory.path}/loop').create(directory.path);
 
       final fonts = SfntSystemFonts(roots: [directory]);
-      final families = await fonts.families();
+      // Bounded like the FIFO test: this guards the same class of failure, and
+      // a regression should fail here rather than hang on the runner default.
+      final families =
+          await fonts.families().timeout(const Duration(seconds: 10));
       expect(families.map((f) => f.name), ['Cantarell', 'Hack']);
     });
 
@@ -473,7 +476,12 @@ void main() {
       // before the fix: killed at 15 s with no result.
       final fifo = '${directory.path}/evil.ttf';
       final made = await Process.run('mkfifo', [fifo]);
-      if (made.exitCode != 0) return; // no mkfifo on this host
+      if (made.exitCode != 0) {
+        // A bare return would record this as a pass, so a whole CI fleet
+        // could look like it verified the guard without ever running it.
+        markTestSkipped('mkfifo unavailable: ${made.stderr}');
+        return;
+      }
       await File('${directory.path}/real.ttf').writeAsBytes(
         sfnt(family: 'Hack'),
       );
@@ -490,13 +498,21 @@ void main() {
       for (var i = 0; i < 30; i++) {
         await File('${directory.path}/junk$i.dat').writeAsBytes([0]);
       }
-      await File('${directory.path}/real.ttf').writeAsBytes(
-        sfnt(family: 'Hack'),
-      );
+      // Ten fonts against a budget of five, so the budget's effect is
+      // observable: a walk that ignored it would report all ten families,
+      // whatever order the directory lists them in. With one font the count
+      // was 1 either way and the assertion could not fail.
+      for (var i = 0; i < 10; i++) {
+        await File('${directory.path}/f$i.ttf').writeAsBytes(
+          sfnt(family: 'Family $i'),
+        );
+      }
       final fonts = SfntSystemFonts(roots: [directory], visitBudget: 5);
-      // Whatever the walk reached, it stopped: 31 entities exist and the
-      // budget is 5, so the scan cannot have enumerated them all.
-      expect(await fonts.families(), hasLength(lessThanOrEqualTo(1)));
+      expect(
+        await fonts.families(),
+        hasLength(lessThan(10)),
+        reason: 'a five-entity budget cannot reach ten font files',
+      );
     });
 
     test('a duplicated root yields one family, not two', () async {

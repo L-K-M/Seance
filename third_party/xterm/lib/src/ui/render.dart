@@ -438,12 +438,28 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   /// [seance fork] Selects the full logical line at pixel [from], following
   /// soft-wrap continuations in both directions — the triple-click gesture.
-  void selectLine(Offset from) {
+
+  /// [seance fork] The logical-line rows a selection gesture at pixel
+  /// [offset] resolves to, or null when the buffer holds nothing to select.
+  ///
+  /// One source of truth for [selectLine], [dragLineSelection] and
+  /// [createLineAnchorsAt]. They have to agree: the gesture handler decides
+  /// whether to fall back to a character drag from `createLineAnchorsAt`'s
+  /// null, so a condition added to one and not the others would leave the
+  /// gesture path falling back while a direct `selectLine` still painted a
+  /// full-width band over the void.
+  (int, int)? _clampedLineRows(Offset offset) {
     // Nothing written yet: [_clampToContent] collapses every gesture to the
     // origin, and expanding that into a full-width row band is exactly the
     // band over the void this clamping exists to remove.
-    if (_terminal.buffer.contentEnd == null) return;
-    final (first, last) = _logicalLineRows(_selectionCellOffset(from).y);
+    if (_terminal.buffer.contentEnd == null) return null;
+    return _logicalLineRows(_selectionCellOffset(offset).y);
+  }
+
+  void selectLine(Offset from) {
+    final rows = _clampedLineRows(from);
+    if (rows == null) return;
+    final (first, last) = rows;
     _controller.setSelection(
       _terminal.buffer.createAnchor(0, first),
       _terminal.buffer.createAnchor(_terminal.viewWidth, last),
@@ -461,9 +477,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         !_terminal.buffer.ownsAnchor(lineEnd)) {
       return;
     }
-    // Same reason as [selectLine].
-    if (_terminal.buffer.contentEnd == null) return;
-    final (first, last) = _logicalLineRows(_selectionCellOffset(to).y);
+    final rows = _clampedLineRows(to);
+    if (rows == null) return;
+    final (first, last) = rows;
     final toRange = BufferRangeLine(
       CellOffset(0, first),
       CellOffset(_terminal.viewWidth, last),
@@ -503,8 +519,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// caller falls back to a character drag rather than anchoring a band over
   /// the void. The caller must dispose them.
   (CellAnchor, CellAnchor)? createLineAnchorsAt(Offset offset) {
-    if (_terminal.buffer.contentEnd == null) return null;
-    final (first, last) = _logicalLineRows(_selectionCellOffset(offset).y);
+    final rows = _clampedLineRows(offset);
+    if (rows == null) return null;
+    final (first, last) = rows;
     return (
       _terminal.buffer.createAnchor(0, first),
       _terminal.buffer.createAnchor(_terminal.viewWidth, last),

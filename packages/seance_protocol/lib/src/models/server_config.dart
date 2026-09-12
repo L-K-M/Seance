@@ -280,10 +280,13 @@ class ServerConfig {
       iconEmoji: clearIconEmoji
           ? null
           : normalizeServerEmoji(iconEmoji ?? this.iconEmoji),
-      // Only a *new* image is re-validated: what this config already holds
-      // came through `fromJson` or an earlier `copyWith` and is therefore
-      // already normalized, and re-checking it decodes its base64 again on
-      // every unrelated edit (a rename, a colour, a sync toggle).
+      // Only a *new* image is re-validated. What this config already holds is
+      // *assumed* normalized — true for anything from `fromJson` or an earlier
+      // `copyWith`, but the const constructor is a third entry point that
+      // cannot normalize, so this is a convention rather than an invariant.
+      // Re-checking on every edit would decode base64 again for a rename, a
+      // colour or a sync toggle; `toJson` is the re-validating backstop, and
+      // `ServerMark.resolve` validates what is drawn.
       iconImage: clearIconImage
           ? null
           : (iconImage != null

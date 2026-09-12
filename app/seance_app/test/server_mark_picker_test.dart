@@ -255,7 +255,7 @@ void main() {
       // would be testing a stricter limit than production enforces.
       expect(
         base64Decode(mark.stored.image!).length,
-        lessThan(kMaxServerIconImageBytes),
+        lessThanOrEqualTo(kMaxServerIconImageBytes),
       );
     });
 
@@ -277,7 +277,7 @@ void main() {
         lessThan(bytes.length),
         reason: 'a pass-through would store the source unchanged',
       );
-      expect(base64Decode(stored).length, lessThan(kMaxServerIconImageBytes));
+      expect(base64Decode(stored).length, lessThanOrEqualTo(kMaxServerIconImageBytes));
     });
 
     testWidgets('a file that is not an image is reported, not stored', (
@@ -365,18 +365,26 @@ void main() {
     tester.view.viewInsets = const FakeViewPadding(bottom: 300);
     addTearDown(tester.view.reset);
 
-    for (final mark in <ServerMark>[
-      const ServerGlyphMark(null),
-      ServerEmojiMark('\u{1F680}'),
+    final bytes = await samplePngBytes(tester);
+    for (final (mark, settles) in <(ServerMark, bool)>[
+      (const ServerGlyphMark(null), true),
+      (ServerEmojiMark('\u{1F680}'), true),
+      // The tallest layout of the three, and the one the two defects lived
+      // nearest to. It holds a live Image, so it never settles here.
+      (ServerImageMark(bytes, fallback: ServerIcon.web), false),
     ]) {
-      await open(tester, current: mark);
+      await open(tester, current: mark, settle: settles);
       expect(
         tester.takeException(),
         isNull,
         reason: 'no overflow with the keyboard up on $mark',
       );
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
-      await tester.pumpAndSettle();
+      if (settles) {
+        await tester.pumpAndSettle();
+      } else {
+        await tester.pump(const Duration(milliseconds: 400));
+      }
     }
   });
 

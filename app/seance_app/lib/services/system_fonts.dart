@@ -85,6 +85,10 @@ class SfntSystemFonts implements SystemFonts {
   // out by design: neither is an sfnt container, so nothing here can read
   // them. The free-text field still accepts their names, which the OS font
   // manager resolves.
+  /// Longest a single font file may take to read before the scan gives up on
+  /// it. Generous for a few header reads off local disk.
+  static const Duration _readTimeout = Duration(seconds: 5);
+
   static const _extensions = {'.ttf', '.otf', '.ttc', '.otc'};
 
   /// Upper bound on a declared `name` table length. See [_readFace].
@@ -139,6 +143,10 @@ class SfntSystemFonts implements SystemFonts {
       ]);
     }
     if (Platform.isWindows) {
+      // Fonts registered under the CurrentVersion\Fonts registry keys can
+      // point anywhere on disk, and some installers do that rather than
+      // copying into either directory below. Those are not discovered; the
+      // free-text field still accepts their names.
       final windir = env['WINDIR'] ?? r'C:\Windows';
       final localAppData = env['LOCALAPPDATA'];
       return _existing([
@@ -154,7 +162,13 @@ class SfntSystemFonts implements SystemFonts {
 
   static List<Directory> _existing(List<String> paths) {
     final dirs = <Directory>[];
+    // Deduplicated: XDG_DATA_DIRS carries /usr/share on most desktops, which
+    // names /usr/share/fonts a second time. The scan skips files it has
+    // already parsed, but it would still *enumerate* the tree twice and spend
+    // half the visit budget getting nowhere.
+    final seen = <String>{};
     for (final path in paths) {
+      if (!seen.add(path)) continue;
       final dir = Directory(path);
       // A missing or unreadable root is normal (no ~/.fonts, a locked-down
       // /Library), so it is skipped rather than reported.
@@ -220,7 +234,12 @@ class SfntSystemFonts implements SystemFonts {
         // picker empty until the app restarted.
         List<SystemFontFamily> faces;
         try {
-          faces = await readSfntFamilies(entity);
+          // Bounded per file. The regular-file check inside cannot close the
+          // gap between the type test and the open, and a font on a stale
+          // network mount blocks just as long — either way an unbounded await
+          // wedges the memoized scan for the life of the process. A
+          // TimeoutException is an Exception, so the handler below covers it.
+          faces = await readSfntFamilies(entity).timeout(_readTimeout);
         } on Exception {
           continue;
         }

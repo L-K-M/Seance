@@ -170,6 +170,35 @@ void main() {
       }
     });
 
+    test('refuses the zero-width non-joiner', () {
+      // Invisible, one cluster, and no RGI sequence uses it — they join with
+      // U+200D, which stays allowed.
+      expect(normalizeServerEmoji('\u200C'), isNull);
+    });
+
+    test('refuses a lone plane-15 formatting character', () {
+      // The whole block is invisible formatting and the code-unit loop cannot
+      // see it: every value there is a surrogate pair, and the loop compares
+      // BMP units.
+      for (final formatting in [
+        '\u{E0001}', // language tag
+        '\u{E0041}', // tag character 'A'
+        '\u{E007F}', // cancel tag
+        '\u{E0100}', // variation selector-17
+      ]) {
+        expect(normalizeServerEmoji(formatting), isNull);
+      }
+    });
+
+    test('keeps a subdivision flag, whose tail is tag characters', () {
+      // The same block, but after a visible base — so the rule has to look at
+      // the cluster's first code point only.
+      const england = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}'
+          '\u{E006E}\u{E0067}\u{E007F}';
+      expect(england.characters.length, 1);
+      expect(normalizeServerEmoji(england), england);
+    });
+
     test('keeps the joiners and modifiers real emoji are built from', () {
       // The filter above must not catch these: U+200D holds a multi-part
       // emoji together, and the rest are how the common ones are spelled.

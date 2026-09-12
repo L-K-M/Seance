@@ -92,7 +92,9 @@ class _Glyph {
 }
 
 _Glyph _glyph(ServerIcon icon) => switch (icon) {
-  ServerIcon.server => const _Glyph(Icons.dns_outlined, 'Server'),
+  ServerIcon.server => const _Glyph(
+    Icons.dns_outlined, 'Server', keywords: 'dns host machine node',
+  ),
   ServerIcon.cloud => const _Glyph(
     Icons.cloud_outlined, 'Cloud', keywords: 'vps provider',
   ),

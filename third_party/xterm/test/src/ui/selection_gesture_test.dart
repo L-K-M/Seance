@@ -883,6 +883,74 @@ void main() {
       expect(selection.begin.y, 1, reason: 'the last row holding text');
     });
 
+    /// [clicks] taps at [at], then holds one more press there and drags it to
+    /// [to] — so the drag runs as the (clicks+1)-th click of the chain, which
+    /// is what puts it on the line or word *continuation* path.
+    Future<void> holdDragFrom(
+      WidgetTester tester,
+      int clicks,
+      Offset at,
+      Offset to,
+    ) async {
+      for (var i = 0; i < clicks; i++) {
+        await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final gesture = await tester.startGesture(at,
+          kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveTo(to);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('a held line drag into the void keeps the line it started on',
+        (tester) async {
+      // dragLineSelection's clamped `to`, which nothing else here exercised:
+      // the group otherwise only pins presses and plain character drags.
+      // Verified to have teeth — unclamped this copies 'bravo\n', absorbing a
+      // blank row.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await holdDragFrom(
+        tester, 2, cellCenter(tester, 1, 1), cellCenter(tester, 20, 10));
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(
+        terminal.buffer.getText(selection!),
+        'bravo',
+        reason: 'dragging the band into the void must absorb no blank rows',
+      );
+    });
+
+    testWidgets('a held word drag into the void keeps the word it started on',
+        (tester) async {
+      // The same gesture on the word path. This pins the observable contract
+      // rather than the clamp: getWordBoundary returns null for a void cell,
+      // so selectWordTo returns early and the initial word stands whether or
+      // not `to` was clamped. Kept because the contract is what users see.
+      final terminal = Terminal();
+      final controller = TerminalController();
+      await pumpTerminal(tester, terminal, controller);
+      terminal.write('alpha\r\nbravo');
+      await tester.pump();
+
+      await holdDragFrom(
+        tester, 1, cellCenter(tester, 1, 1), cellCenter(tester, 20, 10));
+
+      expect(tester.takeException(), isNull);
+      final selection = controller.selection;
+      expect(selection, isNotNull);
+      expect(terminal.buffer.getText(selection!), 'bravo');
+    });
+
     testWidgets('an untouched terminal cannot be selected into', (tester) async {
       final terminal = Terminal();
       final controller = TerminalController();

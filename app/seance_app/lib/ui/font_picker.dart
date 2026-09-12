@@ -66,7 +66,17 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
   /// wrong, which is why it can be turned off rather than being the only view.
   bool _monospaceOnly = true;
 
-  late final Future<List<SystemFontFamily>> _families = widget.fonts.families();
+  /// The scan, with its failure logged once.
+  ///
+  /// The log belongs on the future rather than in the builder: the builder
+  /// re-runs on every keystroke in the filter field, which would re-dump the
+  /// whole stack trace per character for the life of the dialog.
+  late final Future<List<SystemFontFamily>> _families = widget.fonts
+      .families()
+      .catchError((Object error, StackTrace trace) {
+    debugPrint('Font scan failed: $error\n$trace');
+    return const <SystemFontFamily>[];
+  });
 
   @override
   void dispose() {
@@ -139,15 +149,9 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
                   // this build may not understand; a failure is "nothing to
                   // offer", not an error worth a dialog of its own, since the
                   // field behind this one still takes a typed name. Logged
-                  // rather than swallowed whole, or "no fonts found" and "the
-                  // scan threw" would look identical while debugging.
-                  if (snapshot.hasError) {
-                    // With the trace: the point of logging here is to tell
-                    // "no fonts found" from "the scan threw", and a bare
-                    // FileSystemException does not say where.
-                    debugPrint('Font scan failed: ${snapshot.error}\n'
-                        '${snapshot.stackTrace ?? ''}');
-                  }
+                  // rather than swallowed whole (on the future above, so it
+                  // fires once), or "no fonts found" and "the scan threw"
+                  // would look identical while debugging.
                   final all = snapshot.data ?? const <SystemFontFamily>[];
                   return _FontList(
                     families: _visible(all),
@@ -215,7 +219,10 @@ class _FontList extends StatelessWidget {
         final family = families[i];
         // Case-insensitively, like the scan's dedupe key and the sort: a user
         // who typed "menlo" into the field should still see Menlo ticked.
-        final selected = family.name.toLowerCase() == current.toLowerCase();
+        // Trimmed on both sides, like the filter's own match: a typed name
+        // with stray whitespace would otherwise be listed without its tick.
+        final selected =
+            family.name.toLowerCase() == current.trim().toLowerCase();
         return ListTile(
           dense: true,
           selected: selected,

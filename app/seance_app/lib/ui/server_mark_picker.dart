@@ -466,11 +466,14 @@ class _ImageTabState extends State<_ImageTab> {
       Navigator.of(context).pop(
         ServerImageMark(image.png, fallback: widget.current.fallback),
       );
-    } on Exception {
+    } on Exception catch (error) {
       // The platform picker throws for a document provider that went away, a
       // permission the user revoked, and several other cases. Without this the
       // spinner would clear and nothing else would happen, while the error
-      // surfaced only in the console.
+      // surfaced only in the console. Bound and logged, because otherwise a
+      // platform-picker crash, a revoked permission and the no-bytes case all
+      // read identically and there is nothing to debug a report with.
+      debugPrint('server mark image import failed: $error');
       if (mounted) {
         setState(() => _error = 'That file could not be opened. Try another.');
       }
