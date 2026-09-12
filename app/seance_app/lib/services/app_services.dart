@@ -268,10 +268,18 @@ class AppServices {
       // the throw means nothing landed.
       //
       // Null covers both "holds none" and "could not be read" — a locked
-      // keyring cannot answer — and both take the rollback below, which is
-      // the conservative half: it is correct whenever the install did not
-      // commit, and a wrong rollback is recoverable by retrying enrolment
-      // while a wrong *keep* would not be.
+      // keyring cannot answer — and both take the rollback below.
+      //
+      // Not because a wrong rollback is the recoverable one. The two wrong
+      // choices are symmetric: roll back when the install *did* commit and
+      // the next launch reads the new key against a file sealed with the
+      // old; keep when it did *not* and it reads the old key against a file
+      // sealed with the new. Either leaves the vault unreadable, and
+      // retrying enrolment cannot repair either, because enrolment has to
+      // read the vault it is re-keying. What decides it is which case is
+      // likelier: a keyring too locked to answer a *read* almost certainly
+      // refused the *write* a moment earlier, so "it did not commit" is the
+      // better bet by a wide margin.
       //
       // The residual, stated rather than left to be rediscovered: a keyring
       // that accepted the write and then locked before this read cannot
