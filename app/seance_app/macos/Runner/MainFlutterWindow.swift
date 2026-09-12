@@ -59,10 +59,10 @@ class MainFlutterWindow: NSWindow {
         // .applicationBundle (com.apple.application-bundle) is the exact
         // equivalent of the legacy `allowedFileTypes = ["app"]` filter, which
         // macOS 12 deprecated. Unconditional: allowedContentTypes needs
-        // macOS 11 and this target's floor is 12.0 (MACOSX_DEPLOYMENT_TARGET,
-        // set by the Flutter SDK's own minimum), so an availability check here
-        // is always true — and its dead `else` branch would still be compiled,
-        // putting the deprecation warning back.
+        // macOS 11, and this project's MACOSX_DEPLOYMENT_TARGET is 12.0
+        // (Runner.xcodeproj, every configuration — see AGENTS.md §3), so an
+        // availability check here is always true and its dead `else` branch
+        // would still be compiled, putting the deprecation warning back.
         panel.allowedContentTypes = [.applicationBundle]
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.begin { response in
