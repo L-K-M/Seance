@@ -176,6 +176,30 @@ void main() {
       expect(normalizeServerEmoji('\u200C'), isNull);
     });
 
+    test('refuses a cluster that is nothing but a joiner or a mark', () {
+      // The character-by-character rules above cannot reach these. U+200D is
+      // deliberately allowed, because it is what holds a multi-part emoji
+      // together — but alone it is a cluster with nothing to join and the
+      // badge draws nothing. The same holds for every combining character: it
+      // renders only as part of the character before it, and here there is
+      // none.
+      for (final baseless in [
+        '‍', // zero-width joiner, the carve-out the loop cannot re-catch
+        '️', // variation selector-16 (emoji presentation)
+        '︎', // variation selector-15 (text presentation)
+        '́', // combining acute accent
+        '͏', // combining grapheme joiner
+        '⃣', // combining enclosing keycap, without its keycap
+        '︠', // combining ligature left half
+      ]) {
+        expect(
+          normalizeServerEmoji(baseless),
+          isNull,
+          reason: 'U+${baseless.runes.first.toRadixString(16)}',
+        );
+      }
+    });
+
     test('refuses a lone plane-14 formatting character', () {
       // The whole block is invisible formatting and the code-unit loop cannot
       // see it: every value there is a surrogate pair, and the loop compares

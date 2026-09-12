@@ -197,13 +197,42 @@ const int _ihdrDataLength = 13;
 /// directly. Generous enough that no plausible legitimate value trips it.
 const int _maxIconImageSide = 1024;
 
+/// Whether [cluster] carries a character of its own to draw, rather than being
+/// nothing but the marks and joiners that decorate one.
+///
+/// A combining character — a ZWJ, a variation selector, an accent, a tag —
+/// renders only as part of the character *before* it. Alone it is still one
+/// grapheme cluster under the length ceiling, so every rule in
+/// [normalizeServerEmoji] passes it, and the badge then draws nothing: the
+/// same empty badge U+200B and U+200C are refused for. U+200D cannot be caught
+/// by that list, because it is exactly the joiner a multi-part emoji is built
+/// from and has to stay legal *inside* a cluster.
+///
+/// Tested by asking the same grapheme engine, rather than against a table of
+/// combining ranges that would go stale with each Unicode revision: prepend a
+/// plain base character and see whether it absorbed the whole cluster. If it
+/// did, the cluster was all Extend/ZWJ/SpacingMark and had no base of its own.
+///
+/// Deliberately strict about one visible case: a lone skin-tone modifier
+/// (U+1F3FB…U+1F3FF) paints a colour swatch on most platforms, and is refused
+/// here anyway. It is a modifier for the character before it, and a mark
+/// chosen as "the beige square" would look like a rendering failure on the
+/// next device.
+bool _hasBaseCharacter(String cluster) =>
+    '$_graphemeProbe$cluster'.characters.length > 1;
+
+/// A base character with no special grapheme-break behaviour, for
+/// [_hasBaseCharacter] to prepend.
+const String _graphemeProbe = 'a';
+
 /// The stored form of an emoji mark: trimmed, and null when it is not one.
 ///
 /// Exactly one grapheme cluster, because the badge has room for one character
 /// and a cluster is what a user means by "an emoji" — 👩🏽‍🚀 is four code points
-/// and one choice. The code-unit ceiling is a separate guard: a cluster can be
-/// extended with joiners indefinitely, and a record from elsewhere should not
-/// be able to park a kilobyte of them in a config.
+/// and one choice. That cluster also has to carry a base character of its own
+/// (see [_hasBaseCharacter]). The code-unit ceiling is a separate guard: a
+/// cluster can be extended with joiners indefinitely, and a record from
+/// elsewhere should not be able to park a kilobyte of them in a config.
 String? normalizeServerEmoji(String? emoji) {
   if (emoji == null) return null;
   final trimmed = emoji.trim();
@@ -218,6 +247,7 @@ String? normalizeServerEmoji(String? emoji) {
   // tag characters and must keep working.
   final first = trimmed.runes.first;
   if (first >= 0xE0000 && first <= 0xE0FFF) return null;
+  if (!_hasBaseCharacter(trimmed)) return null;
   // Control and invisible formatting characters are not marks, and a record
   // could carry one: the bidi controls in particular (the overrides and
   // isolates, and the plain LRM/RLM/ALM marks) would reorder the text around

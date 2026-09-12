@@ -3,7 +3,9 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-11. The terminal font can be picked from the fonts
+_Last updated: 2026-09-12. An emoji mark must now carry a character of its
+own: a lone joiner or combining mark was accepted and painted an empty badge.
+Before that, the terminal font can be picked from the fonts
 actually installed on the host; a drag through the empty area under the shell
 prompt no longer paints a selection over it; and a server's mark can now be one
 of 77 built-in glyphs, an emoji, or an imported image. The "Add server" button
@@ -23,6 +25,33 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## An emoji mark has to draw something (2026-09-12)
+
+`normalizeServerEmoji` refuses the invisible characters one at a time — the
+zero-width space, the zero-width non-joiner, the bidi controls, the Hangul
+fillers, plane 14 — because each of them alone is a valid grapheme cluster that
+paints an empty badge. Three kinds got through anyway:
+
+* **U+200D, the zero-width joiner.** Deliberately absent from that list, since
+  it is what holds a multi-part emoji together — so it could never be caught
+  there, and a mark that was nothing but a joiner drew nothing.
+* **Variation selectors** (U+FE0E/U+FE0F), which select a presentation for the
+  character before them and have none here.
+* **Combining marks** — an accent, the combining grapheme joiner, an enclosing
+  keycap without its keycap.
+
+All of them share one property: the cluster has no base character, only the
+decorations that attach to one. That is now the rule, asked of the same
+grapheme engine rather than of a table of combining ranges that would go stale
+each Unicode revision — prepend a plain base character and see whether it
+absorbed the whole cluster. A subdivision flag, a ZWJ sequence, a keycap and a
+skin-toned emoji all keep working, which the existing tests pin; a lone
+skin-tone modifier is refused too, deliberately, since "the beige square" reads
+as a rendering failure on the next device.
+
+The picker's curated grid is now pinned against the normalizer as well: an
+entry it refused would have been a tile that silently did nothing when tapped.
 
 ## Font picker, server marks, and terminal selection (2026-09-11)
 
