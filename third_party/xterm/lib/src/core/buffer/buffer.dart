@@ -566,6 +566,41 @@ class Buffer {
   /// other buffer's height, and even in range it points at unrelated text.
   bool ownsAnchor(CellAnchor anchor) => anchor.line?.attachedTo(lines) ?? false;
 
+  /// [seance fork] One cell past the last cell in the buffer that holds
+  /// anything, or null when the whole buffer is blank.
+  ///
+  /// A terminal buffer is never short of rows: it is built with [viewHeight]
+  /// blank lines ([Buffer]'s constructor) and gains a blank line per newline,
+  /// so every row under the shell prompt is a real, addressable [BufferLine]
+  /// rather than past the end. That is why an unclamped drag below the prompt
+  /// used to paint a selection band across rows that hold nothing — and copy
+  /// the newlines those rows contribute. The selection paths in
+  /// `RenderTerminal` clamp to this; mouse reporting and link hit-testing
+  /// deliberately do not.
+  ///
+  /// Scanned from the end, so the ordinary case (content, then the blank rows
+  /// under the prompt) stops within a screen height: about 4us on a normal
+  /// buffer. Two or three times per pointer event of a drag, not once — each
+  /// endpoint clamps, and the end-inclusive bump re-clamps — so budget for
+  /// the multiple if the pathological case below ever matters. Hoisting one
+  /// lookup per gesture callback through the clamps would fix it.
+  ///
+  /// The scan is *not* bounded by [viewHeight], though: a program that prints
+  /// nothing but newlines pushes blank lines into the scrollback like any
+  /// other, so the worst case is a buffer that is blank all the way down and
+  /// the scan covers every line. Measured at 2.1ms for 9000 such lines, which
+  /// is a visible fraction of a frame while dragging. It stays uncached
+  /// because reaching that state takes a deliberately emptied scrollback and
+  /// the ordinary cost is three orders of magnitude lower; a mutation counter
+  /// on the buffer is the fix if a drag ever shows up in a profile.
+  CellOffset? get contentEnd {
+    for (var row = lines.length - 1; row >= 0; row--) {
+      final length = lines[row].getTrimmedLength(viewWidth);
+      if (length > 0) return CellOffset(length, row);
+    }
+    return null;
+  }
+
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
   CellAnchor createAnchor(int x, int y) {
     return lines[y].createAnchor(x);

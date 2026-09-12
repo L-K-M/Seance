@@ -295,11 +295,18 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _dragStartAnchor = renderTerminal.createAnchorAt(details.localPosition);
       renderTerminal.selectCharacters(details.localPosition);
     } else if (mouse && tapCount >= 3) {
-      // Unlike a word, a line always exists under the pointer.
       final anchors = renderTerminal.createLineAnchorsAt(details.localPosition);
-      _dragLineBegin = anchors.$1;
-      _dragLineEnd = anchors.$2;
-      renderTerminal.selectLine(details.localPosition);
+      if (anchors != null) {
+        _dragLineBegin = anchors.$1;
+        _dragLineEnd = anchors.$2;
+        renderTerminal.selectLine(details.localPosition);
+      } else {
+        // A line exists under the pointer wherever there is content at all;
+        // this is the untouched-buffer case, where anchoring a full-width band
+        // would paint over the void. Falls back like the word path does.
+        _dragStartAnchor = renderTerminal.createAnchorAt(details.localPosition);
+        renderTerminal.selectCharacters(details.localPosition);
+      }
     } else {
       final anchors = renderTerminal.createWordAnchorsAt(details.localPosition);
       if (anchors != null) {
