@@ -104,11 +104,14 @@ const int kDefaultMaxPushBodyBytes = 8 * 1024 * 1024;
 /// The shipped server's cap on records in one push. Fallback, as above.
 const int kDefaultMaxRecordsPerPush = 1000;
 
-/// What a single push may contain. Both caps are enforced server-side and both
-/// are env-tunable per deployment, so the server advertises its own values in
-/// every [PullResponse] and the client sizes its batches to them. The defaults
-/// only apply to a server too old to advertise, which is why they are the
-/// values that server shipped with.
+/// The shipped server's cap on one record's sealed blob. Fallback, as above.
+const int kDefaultMaxBlobBytes = 1024 * 1024;
+
+/// What a single push may contain. Every cap is enforced server-side and every
+/// one is env-tunable per deployment, so the server advertises its own values
+/// in every [PullResponse] and the client sizes its batches to them. The
+/// defaults only apply to a server too old to advertise, which is why they are
+/// the values that server shipped with.
 class PushLimits {
   /// Largest accepted request body, in bytes. Exceeding it is refused before
   /// any record is read, so the whole push fails — batching is what keeps a
@@ -118,14 +121,22 @@ class PushLimits {
   /// Most records accepted in one push.
   final int maxRecordsPerPush;
 
+  /// Largest accepted sealed blob on a single record, in bytes. Refused with
+  /// the same 413 as an over-sized body, and — like it — for the *whole* push,
+  /// so a record past this cap has to travel alone or it takes the records
+  /// batched beside it down with it.
+  final int maxBlobBytes;
+
   const PushLimits({
     this.maxBodyBytes = kDefaultMaxPushBodyBytes,
     this.maxRecordsPerPush = kDefaultMaxRecordsPerPush,
+    this.maxBlobBytes = kDefaultMaxBlobBytes,
   });
 
   Map<String, dynamic> toJson() => {
         'maxBodyBytes': maxBodyBytes,
         'maxRecordsPerPush': maxRecordsPerPush,
+        'maxBlobBytes': maxBlobBytes,
       };
 
   /// Strict decoder, for data this process produced — a present field that is
@@ -136,6 +147,8 @@ class PushLimits {
             (json['maxBodyBytes'] as num?)?.toInt() ?? kDefaultMaxPushBodyBytes,
         maxRecordsPerPush: (json['maxRecordsPerPush'] as num?)?.toInt() ??
             kDefaultMaxRecordsPerPush,
+        maxBlobBytes:
+            (json['maxBlobBytes'] as num?)?.toInt() ?? kDefaultMaxBlobBytes,
       );
 
   /// The largest integer a JSON number is still exact at. `jsonDecode` returns
@@ -160,14 +173,18 @@ class PushLimits {
   /// Decode an advertisement that may be anything at all, or null when it is
   /// not a usable one. Absent fields fall back to the shipped defaults; a
   /// field that is present but unusable voids the whole advertisement, since
-  /// a server that got one wrong has not earned trust in the other.
+  /// a server that got one wrong has not earned trust in the others.
   ///
   /// Lives here, beside the fields, so a caller does not have to restate their
   /// names and types to validate them — and so adding a limit cannot leave a
   /// caller's hand-rolled guard behind.
   static PushLimits? tryFromJson(Object? value) {
     if (value is! Map) return null;
-    for (final key in const ['maxBodyBytes', 'maxRecordsPerPush']) {
+    for (final key in const [
+      'maxBodyBytes',
+      'maxRecordsPerPush',
+      'maxBlobBytes',
+    ]) {
       final field = value[key];
       if (field != null && !_isUsableLimit(field)) return null;
     }
@@ -178,15 +195,18 @@ class PushLimits {
   bool operator ==(Object other) =>
       other is PushLimits &&
       other.maxBodyBytes == maxBodyBytes &&
-      other.maxRecordsPerPush == maxRecordsPerPush;
+      other.maxRecordsPerPush == maxRecordsPerPush &&
+      other.maxBlobBytes == maxBlobBytes;
 
   @override
-  int get hashCode => Object.hash(maxBodyBytes, maxRecordsPerPush);
+  int get hashCode =>
+      Object.hash(maxBodyBytes, maxRecordsPerPush, maxBlobBytes);
 
   @override
   String toString() =>
       'PushLimits(maxBodyBytes: $maxBodyBytes, '
-      'maxRecordsPerPush: $maxRecordsPerPush)';
+      'maxRecordsPerPush: $maxRecordsPerPush, '
+      'maxBlobBytes: $maxBlobBytes)';
 }
 
 /// `GET /v1/sync?since=<seq>` — pull records newer than the client's

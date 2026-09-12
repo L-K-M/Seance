@@ -3,9 +3,12 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-_Last updated: 2026-09-12. An emoji mark must now carry a character of its
-own: a lone joiner or combining mark was accepted and painted an empty badge.
-Before that, the terminal font can be picked from the fonts
+_Last updated: 2026-09-12. A single record past the server's per-record blob
+cap no longer stops the whole account's sync: that cap is advertised alongside
+the other two, and such a record is now pushed alone and last. An emoji mark
+must also carry a character of its own — a lone joiner or combining mark was
+accepted and painted an empty badge. Before that, the
+terminal font could be picked from the fonts
 actually installed on the host; a drag through the empty area under the shell
 prompt no longer paints a selection over it; and a server's mark can now be one
 of 77 built-in glyphs, an emoji, or an imported image. The "Add server" button
@@ -25,6 +28,30 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## One over-sized record no longer stops sync (2026-09-12)
+
+Push batching sizes a request against the server's advertised body and record
+limits, but the server enforces a third cap the advertisement left out: at most
+1 MiB (env-tunable) on a single record's sealed blob. That one is refused with a
+413 for the *whole* push, exactly like an over-sized body — so a record past it
+took every record batched beside it down with it, and because batching is
+deterministic the next round rebuilt the same doomed batch. One record the user
+could not even see stopped the account's sync outright, with an opaque 413
+naming a byte count.
+
+`PushLimits` now carries `maxBlobBytes`, the server advertises it in every pull
+response, and `batchForPush` treats a record past it the way it already treats
+one too large for any body: sent alone, and last. The record still fails — a
+sealed blob cannot be shrunk client-side, and the server stays the authority on
+its own limits — but the failure stays with it instead of holding back
+everything else. A regression test in the server package drives the real stack
+and asserts the other records reach the server while the failure still
+surfaces. A client falls back to the shipped 1 MiB in two cases, not one: when
+the server sends no limits at all, and when it sends the two older ones without
+this — which is every deployment predating the field. So a server with
+`SEANCE_MAX_BLOB_BYTES` tuned below 1 MiB has to be upgraded too before its
+clients can isolate anything; untuned, the default is what it enforces anyway.
 
 ## An emoji mark has to draw something (2026-09-12)
 

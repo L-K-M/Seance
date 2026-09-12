@@ -134,10 +134,15 @@ void main() {
       const limits = PushLimits();
       expect(limits.maxBodyBytes, 8 * 1024 * 1024);
       expect(limits.maxRecordsPerPush, 1000);
+      expect(limits.maxBlobBytes, 1024 * 1024);
     });
 
     test('round-trips through JSON', () {
-      const limits = PushLimits(maxBodyBytes: 1234, maxRecordsPerPush: 7);
+      const limits = PushLimits(
+        maxBodyBytes: 1234,
+        maxRecordsPerPush: 7,
+        maxBlobBytes: 567,
+      );
       expect(PushLimits.fromJson(limits.toJson()), limits);
     });
 
@@ -152,7 +157,11 @@ void main() {
     });
 
     test('a pull response carries the limits when the server advertises', () {
-      const limits = PushLimits(maxBodyBytes: 4096, maxRecordsPerPush: 5);
+      const limits = PushLimits(
+        maxBodyBytes: 4096,
+        maxRecordsPerPush: 5,
+        maxBlobBytes: 512,
+      );
       final decoded = PullResponse.fromJson(
           PullResponse(records: const [], latestSeq: 3, limits: limits)
               .toJson());
@@ -190,6 +199,11 @@ void main() {
         // zero cap on the way to an int.
         {'maxRecordsPerPush': 0.5},
         {'maxBodyBytes': 0.9},
+        // The blob cap is validated like its siblings: a client that trusted a
+        // bad one would isolate every record, or none.
+        {'maxBlobBytes': '1MB'},
+        {'maxBlobBytes': 0},
+        {'maxBodyBytes': 4096, 'maxBlobBytes': -1},
       ]) {
         final decoded = PullResponse.fromJson({
           'records': <Object>[],

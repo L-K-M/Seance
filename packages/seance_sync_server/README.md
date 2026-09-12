@@ -111,14 +111,25 @@ A push resolves LWW, allocates sequences and commits all accepted records in one
 storage transaction. Entries run in list order, including repeated ids; empty
 batches return the current watermark. An LWW rejection is a per-record result,
 not a batch failure. Existing request limits apply before storage: by default,
-1,000 records, 1 MiB per blob and 8 MiB per request body. Because those two
-push limits are env-tunable, every pull response advertises them under
-`limits` (`maxBodyBytes`, `maxRecordsPerPush`) so a client can split a large
-push into requests this deployment accepts instead of having one oversized
-request rejected whole, every round. A client that sees no `limits` — talking
-to a server older than the field — falls back to the defaults above, which
-match that server only if it also ran with them: an older deployment with
-tuned-down caps keeps rejecting oversized pushes until it is upgraded.
+1,000 records, 1 MiB per blob and 8 MiB per request body. All three are
+env-tunable, so every pull response advertises them under `limits`
+(`maxBodyBytes`, `maxRecordsPerPush`, `maxBlobBytes`) and a client can split a
+large push into requests this deployment accepts instead of having one
+oversized request rejected whole, every round. The blob cap is advertised for
+a different reason than the other two: a record past it cannot be batched into
+compliance at all, and it is refused with a 413 for the *whole* push — so a
+client that does not know the cap batches such a record beside records the
+server would have taken and loses all of them, identically every round. Knowing
+it, the client sends that record alone and last, and the failure stays with the
+one record that caused it. Falling back has two shapes, and the second is the
+easy one to miss: a client that sees no `limits` at all is talking to a server
+older than the field, but a client whose server advertises only `maxBodyBytes`
+and `maxRecordsPerPush` — every deployment predating `maxBlobBytes` — falls
+back for the blob cap alone, since an absent field takes its default. Either
+way the defaults match that server only if it also ran with them. So a
+deployment with `SEANCE_MAX_BLOB_BYTES` tuned below 1 MiB keeps losing whole
+pushes until the *server* is upgraded too: a new client cannot learn a cap the
+old one never sends, and upgrading only the clients does not unstick it.
 Invalid values for these three caps — unlike this server's other settings —
 abort startup with an error naming the variable, rather than silently falling
 back to the default; an unset or empty variable still means "use the default".
