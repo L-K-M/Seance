@@ -58,9 +58,8 @@ void main() {
       tester.widget<ListTile>(find.byType(ListTile));
 
   /// The title's effective style, as the text under it is drawn.
-  TextStyle titleStyle(WidgetTester tester) => DefaultTextStyle.of(
-    tester.element(find.text('box')),
-  ).style;
+  TextStyle titleStyle(WidgetTester tester) =>
+      DefaultTextStyle.of(tester.element(find.text('box'))).style;
 
   for (final density in ServerListDensity.values) {
     group(density.label, () {
@@ -68,8 +67,9 @@ void main() {
         tester,
       ) async {
         await pump(tester, density: density, selected: true);
-        final scheme = Theme.of(tester.element(find.byType(ListTile)))
-            .colorScheme;
+        final scheme = Theme.of(
+          tester.element(find.byType(ListTile)),
+        ).colorScheme;
         final selected = tile(tester);
         // Three signals, because a tinted title alone is what the eye is
         // worst at picking out of a list of tinted badges.

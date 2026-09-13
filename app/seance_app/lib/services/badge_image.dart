@@ -128,10 +128,10 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
     // through. The engine's codecs do not read SVG, so without this step the
     // descriptor below would report it as not an image.
     final raster = await _rasterizeSvg(source);
-    if (raster == null) {
-      return (image: null, failure: BadgeImageFailure.undecodable);
+    if (raster.png == null) {
+      return (image: null, failure: raster.failure);
     }
-    source = raster;
+    source = raster.png!;
   }
   final ui.Image decoded;
   try {
@@ -278,8 +278,14 @@ bool looksLikeSvg(Uint8List source) {
 }
 
 /// [source] drawn to a PNG, with its short edge at twice [kBadgeImageSide] and
-/// its long edge at most [kMaxSvgRasterSide], or null when it will not parse.
-Future<Uint8List?> _rasterizeSvg(Uint8List source) async {
+/// its long edge at most [kMaxSvgRasterSide]. Reports [BadgeImageFailure.undecodable]
+/// when it will not parse and [BadgeImageFailure.encodeFailed] when it parsed
+/// but could not be drawn — the same distinction the bitmap path makes, and
+/// for the same reason: a file that was fine should not be reported as
+/// broken.
+Future<({Uint8List? png, BadgeImageFailure? failure})> _rasterizeSvg(
+  Uint8List source,
+) async {
   final loader = SvgBytesLoader(source);
   final PictureInfo info;
   try {
@@ -290,7 +296,7 @@ Future<Uint8List?> _rasterizeSvg(Uint8List source) async {
     // in a format it lacks — as `UnsupportedError` and `UnimplementedError`,
     // which are Errors, and a file the user picked must never take the app
     // down whatever the parser thinks of it.
-    return null;
+    return (png: null, failure: BadgeImageFailure.undecodable);
   } finally {
     // The loader caches what it compiles, keyed by the bytes, for the widget
     // that draws SVGs repeatedly. This one is drawn once and then stored as
@@ -299,7 +305,9 @@ Future<Uint8List?> _rasterizeSvg(Uint8List source) async {
   }
   try {
     final size = info.size;
-    if (!size.isFinite || size.width <= 0 || size.height <= 0) return null;
+    if (!size.isFinite || size.width <= 0 || size.height <= 0) {
+      return (png: null, failure: BadgeImageFailure.undecodable);
+    }
     final scale = math.min(
       kBadgeImageSide * 2 / size.shortestSide,
       kMaxSvgRasterSide / size.longestSide,
@@ -315,14 +323,25 @@ Future<Uint8List?> _rasterizeSvg(Uint8List source) async {
       final image = await picture.toImage(width, height);
       try {
         final data = await image.toByteData(format: ui.ImageByteFormat.png);
-        if (data == null) return null;
-        return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+        if (data == null) {
+          return (png: null, failure: BadgeImageFailure.encodeFailed);
+        }
+        return (
+          png: data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+          failure: null,
+        );
       } finally {
         image.dispose();
       }
     } finally {
       picture.dispose();
     }
+  } catch (error) {
+    // The drawing can fail after a clean parse — `toImage` on a renderer
+    // without raster support, a drawing too large for the GPU — and this
+    // guard is the same promise as the one above: whatever a picked file
+    // does, the answer is a message, not a crash.
+    return (png: null, failure: BadgeImageFailure.encodeFailed);
   } finally {
     info.picture.dispose();
   }

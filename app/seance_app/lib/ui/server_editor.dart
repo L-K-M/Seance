@@ -387,13 +387,27 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// Save. Answered false rather than swallowing the key, so the event goes
   /// on to whatever owned it before this existed. [anywhere] is the modified
   /// chord, which saves even from the script box.
+  ///
+  /// Gated on [_busy] alone, like the Save button: a connection test in
+  /// flight does not block saving (see the button for why), so Return does
+  /// not either.
+  ///
+  /// An input method mid-composition is the third owner of Return. The
+  /// desktop engines hand a key to the framework first and to the input
+  /// method only if the framework declined, so while a Japanese or Chinese
+  /// composition is open the key has to be declined here for Return to
+  /// commit the text rather than save around it.
   bool _returnSaves({required bool anywhere}) {
     if (_busy) return false;
     if (anywhere) return true;
     final focus = FocusManager.instance.primaryFocus?.context;
     if (focus == null) return true;
     final editable = focus.findAncestorWidgetOfExactType<EditableText>();
-    if (editable != null && editable.maxLines != 1) return false;
+    if (editable != null) {
+      if (editable.maxLines != 1) return false;
+      final composing = editable.controller.value.composing;
+      if (composing.isValid && !composing.isCollapsed) return false;
+    }
     return Actions.maybeFind<ActivateIntent>(focus) == null;
   }
 
@@ -1155,8 +1169,6 @@ class _ColorSwatch extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
 
-  static const double _size = 34;
-
   const _ColorSwatch({
     required this.tint,
     required this.selected,
@@ -1169,32 +1181,45 @@ class _ColorSwatch extends StatelessWidget {
     final accent = serverAccent(context, tint);
     final fill = accent?.container ?? scheme.surfaceContainerHighest;
     final foreground = accent?.onContainer ?? scheme.onSurfaceVariant;
-    return Tooltip(
-      message: serverColorLabel(tint.named),
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: Container(
-          width: _size,
-          height: _size,
-          decoration: BoxDecoration(
-            color: fill,
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: selected ? scheme.primary : scheme.outlineVariant,
-              width: selected ? 2.5 : 1,
+    // Declared selected, like the mark picker's tiles: the ring and the tick
+    // are visual, and a screen reader is otherwise told eleven equal
+    // buttons.
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: Tooltip(
+        message: serverColorLabel(tint.named),
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: Container(
+            width: _swatchSize,
+            height: _swatchSize,
+            decoration: BoxDecoration(
+              color: fill,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.outlineVariant,
+                width: selected ? _selectedSwatchBorder : 1,
+              ),
             ),
+            // A tick rather than a ring alone: at 34px on a phone the ring
+            // is easy to miss, and the swatches differ only by hue.
+            child: selected
+                ? Icon(Icons.check, size: _swatchIconSize, color: foreground)
+                : null,
           ),
-          // A tick rather than a ring alone: at 34px on a phone the ring is
-          // easy to miss, and the swatches differ only by hue.
-          child: selected
-              ? Icon(Icons.check, size: 16, color: foreground)
-              : null,
         ),
       ),
     );
   }
 }
+
+/// The colour row's geometry, shared by the named swatches and the custom
+/// one so the row reads as one control.
+const double _swatchSize = 34;
+const double _selectedSwatchBorder = 2.5;
+const double _swatchIconSize = 16;
 
 /// The colour row's way past the named ten: a swatch that opens the picker.
 ///
@@ -1214,43 +1239,48 @@ class _CustomColorSwatch extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final chosen = color;
+    final selected = chosen != null;
     final accent = chosen == null
         ? null
         : serverAccent(context, ServerTint(custom: chosen));
-    return Tooltip(
-      message: chosen == null
-          ? 'Custom colour…'
-          : 'Custom colour (${formatServerCustomColor(chosen)})',
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: Container(
-          width: _ColorSwatch._size,
-          height: _ColorSwatch._size,
-          decoration: BoxDecoration(
-            color: accent?.container,
-            gradient: accent != null
-                ? null
-                : SweepGradient(
-                    colors: [
-                      for (var hue = 0; hue <= 360; hue += 60)
-                        HSVColor.fromAHSV(1, hue.toDouble(), 0.6, 0.95)
-                            .toColor(),
-                    ],
-                  ),
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: accent != null ? scheme.primary : scheme.outlineVariant,
-              width: accent != null ? 2.5 : 1,
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: Tooltip(
+        message: chosen == null
+            ? 'Custom colour…'
+            : 'Custom colour (${formatServerCustomColor(chosen)})',
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: Container(
+            width: _swatchSize,
+            height: _swatchSize,
+            decoration: BoxDecoration(
+              color: accent?.container,
+              gradient: selected
+                  ? null
+                  : SweepGradient(
+                      colors: [
+                        for (var hue = 0; hue <= 360; hue += 60)
+                          HSVColor.fromAHSV(1, hue.toDouble(), 0.6, 0.95)
+                              .toColor(),
+                      ],
+                    ),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.outlineVariant,
+                width: selected ? _selectedSwatchBorder : 1,
+              ),
             ),
-          ),
-          child: Icon(
-            accent != null ? Icons.check : Icons.colorize,
-            size: 16,
-            // Over the spectrum, a fixed dark tone: no single "on" colour
-            // fits every hue, and the lighter tones the sweep is drawn in
-            // carry dark well enough.
-            color: accent?.onContainer ?? Colors.black87,
+            child: Icon(
+              selected ? Icons.check : Icons.colorize,
+              size: _swatchIconSize,
+              // Over the spectrum, a fixed dark tone: no single "on" colour
+              // fits every hue, and the lighter tones the sweep is drawn in
+              // carry dark well enough.
+              color: accent?.onContainer ?? Colors.black87,
+            ),
           ),
         ),
       ),

@@ -354,7 +354,12 @@ void main() {
       expect(result.failure, isNull);
       final decoded = await decode(result.image!.png);
       expect(decoded.width, decoded.height);
-      expect(decoded.width, lessThanOrEqualTo(kBadgeImageSide));
+      // Four pixels, exactly: the long-edge cap scales the 1000-unit width
+      // to 4096, which makes the 1-unit height 4, and the crop of the middle
+      // is never scaled back up (a badge is not upscaled from any source).
+      // A drawing this shape is a banner, not a badge, and a tiny result is
+      // the honest one; anything up to 8:1 still fills the stored side.
+      expect(decoded.width, 4);
       decoded.dispose();
     });
   });

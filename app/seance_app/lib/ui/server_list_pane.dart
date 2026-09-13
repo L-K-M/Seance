@@ -808,11 +808,10 @@ class _DensitySwitch extends StatelessWidget {
           selected: {state.serverListDensity},
           showSelectedIcon: false,
           // Tightened to the app bar: at its default size the button is as
-          // tall as the bar's icons' tap targets and visibly heavier.
-          style: const ButtonStyle(
-            visualDensity: VisualDensity.compact,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
+          // tall as the bar's icons' tap targets and visibly heavier. The
+          // tap target itself is left to the theme, which pads it to 48 on
+          // touch platforms and shrink-wraps it on desktop.
+          style: const ButtonStyle(visualDensity: VisualDensity.compact),
           onSelectionChanged: (selection) =>
               state.setServerListDensity(selection.single),
         ),

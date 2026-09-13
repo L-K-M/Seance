@@ -66,7 +66,9 @@ void main() {
     testWidgets('a colour changes the fill; none leaves it neutral', (
       tester,
     ) async {
-      await tester.pumpWidget(_wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)));
+      await tester.pumpWidget(
+        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)),
+      );
       final neutral = _badgeFill(tester);
 
       await tester.pumpWidget(
@@ -102,7 +104,9 @@ void main() {
       // independent, and the cross product is seventy-odd times the frames for
       // nothing.
       for (final color in ServerColor.values) {
-        await tester.pumpWidget(_wrap(ServerBadge.glyph(tint: ServerTint(named: color), icon: null)));
+        await tester.pumpWidget(
+          _wrap(ServerBadge.glyph(tint: ServerTint(named: color), icon: null)),
+        );
         expect(find.byType(ServerBadge), findsOneWidget);
       }
       for (final icon in ServerIcon.values) {
@@ -121,12 +125,15 @@ void main() {
   group('ServerAvatar', () {
     /// The session ring: the one box under the avatar that is a border and
     /// nothing else. The badge's own fill is a DecoratedBox too.
-    final ring = find.byWidgetPredicate(
-      (widget) =>
-          widget is DecoratedBox &&
-          widget.decoration is BoxDecoration &&
-          (widget.decoration as BoxDecoration).border != null &&
-          (widget.decoration as BoxDecoration).color == null,
+    final ring = find.descendant(
+      of: find.byType(ServerAvatar),
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is DecoratedBox &&
+            widget.decoration is BoxDecoration &&
+            (widget.decoration as BoxDecoration).border != null &&
+            (widget.decoration as BoxDecoration).color == null,
+      ),
     );
 
     testWidgets('rings the badge in the session\'s status colour', (
@@ -186,6 +193,55 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       final after = tester.widget<CustomPaint>(sweep).painter;
       expect(after!.shouldRepaint(before!), isTrue);
+    });
+
+    testWidgets('holds the connecting ring still under reduced motion', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          MediaQuery(
+            data: const MediaQueryData(disableAnimations: true),
+            child: ServerAvatar(
+              server: _server(),
+              connection: TerminalStatus.connecting,
+              hasSession: true,
+            ),
+          ),
+        ),
+      );
+      // The plain frame the other states draw, still labelled: the state
+      // is not lost, only the motion.
+      expect(find.byTooltip('connecting'), findsOneWidget);
+      expect(ring, findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ServerAvatar),
+          matching: find.byType(CustomPaint),
+        ),
+        findsNothing,
+      );
+      // Nothing is left ticking either; settling would otherwise never end.
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a first connection with no session yet has no ring', (
+      tester,
+    ) async {
+      // `hasSession` is what the tile says; it is true whenever a tab exists,
+      // so this combination is the tile's to avoid, and the avatar's answer
+      // to it is pinned so a refactor cannot change it silently.
+      await tester.pumpWidget(
+        _wrap(
+          ServerAvatar(
+            server: _server(),
+            connection: TerminalStatus.connecting,
+            hasSession: false,
+          ),
+        ),
+      );
+      expect(find.byTooltip('connecting'), findsNothing);
+      expect(ring, findsNothing);
     });
 
     testWidgets('a server with no session wears no ring', (tester) async {
@@ -328,7 +384,9 @@ void main() {
       // The badge's whole job is telling servers apart; unlabelled it says
       // nothing at all to assistive technology.
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.database)),
+        _wrap(
+          ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.database),
+        ),
       );
       expect(
         tester.widget<Icon>(find.byType(Icon)).semanticLabel,
@@ -504,6 +562,12 @@ void main() {
         const ServerTint(named: ServerColor.red),
       )!;
       expect(custom.container, isNot(named.container));
+      // Outranks, not blends: the named accent contributes nothing.
+      expect(
+        custom.container,
+        serverAccent(ctx, const ServerTint(custom: Color(0xFF123456)))!
+            .container,
+      );
     });
 
     test('the stored form round-trips and refuses what the protocol does', () {

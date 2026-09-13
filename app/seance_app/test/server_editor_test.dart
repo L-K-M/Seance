@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/app_state.dart';
 import 'package:seance_app/services/app_services.dart';
+import 'package:seance_app/ui/server_appearance.dart';
 import 'package:seance_app/ui/server_editor.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -45,7 +46,10 @@ void main() {
   Future<void> boot(WidgetTester tester) => tester.runAsync(() async {
     directory = await Directory.systemTemp.createTemp('seance-editor-');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(_pathChannel, (call) async => directory!.path);
+        .setMockMethodCallHandler(
+          _pathChannel,
+          (call) async => directory!.path,
+        );
     FlutterSecureStorage.setMockInitialValues({});
     services = await AppServices.initialize();
     state = AppState(services!);
@@ -66,8 +70,10 @@ void main() {
     );
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    expect(find.text(existing == null ? 'Add server' : 'Edit server'),
-        findsOneWidget);
+    expect(
+      find.text(existing == null ? 'Add server' : 'Edit server'),
+      findsOneWidget,
+    );
   }
 
   Finder field(String label) => find.widgetWithText(TextFormField, label);
@@ -93,16 +99,32 @@ void main() {
     await tester.pump();
   }
 
+  /// Poll [done] on the real event loop until it holds or five seconds pass.
+  /// Only meaningful inside `runAsync`.
+  Future<void> waitUntil(bool Function() done) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (!done() && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+  }
+
   /// Press [key] with the editor open, and give a save it triggers time to
   /// finish. The save writes through the config store on the real event
   /// loop, so the key press that starts it has to happen inside `runAsync`
-  /// too (see AGENTS.md §5).
-  Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
+  /// too (see AGENTS.md §5). With [expectSave] false the wait is a short
+  /// fixed one: long enough for a save that should not happen to show up,
+  /// without spending the whole deadline proving a negative.
+  Future<void> press(
+    WidgetTester tester,
+    LogicalKeyboardKey key, {
+    bool expectSave = true,
+  }) async {
     await tester.runAsync(() async {
       await tester.sendKeyEvent(key);
-      final deadline = DateTime.now().add(const Duration(seconds: 5));
-      while (state!.servers.isEmpty && DateTime.now().isBefore(deadline)) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+      if (expectSave) {
+        await waitUntil(() => state!.servers.isNotEmpty);
+      } else {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
       }
     });
     await tester.pumpAndSettle();
@@ -117,12 +139,14 @@ void main() {
       await press(tester, LogicalKeyboardKey.enter);
 
       expect(state!.servers.map((s) => s.label), ['box']);
-      expect(find.text('Add server'), findsNothing, reason: 'the dialog closed');
+      expect(
+        find.text('Add server'),
+        findsNothing,
+        reason: 'the dialog closed',
+      );
     });
 
-    testWidgets('in the login script is a newline, not a save', (
-      tester,
-    ) async {
+    testWidgets('in the login script is a newline, not a save', (tester) async {
       await boot(tester);
       await openEditor(tester);
       await fillRequired(tester);
@@ -130,7 +154,7 @@ void main() {
       await scrollTo(tester, script);
       await tester.enterText(script, 'cd ~/work');
 
-      await press(tester, LogicalKeyboardKey.enter);
+      await press(tester, LogicalKeyboardKey.enter, expectSave: false);
 
       expect(state!.servers, isEmpty);
       expect(find.text('Add server'), findsOneWidget);
@@ -150,10 +174,7 @@ void main() {
         await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-        final deadline = DateTime.now().add(const Duration(seconds: 5));
-        while (state!.servers.isEmpty && DateTime.now().isBefore(deadline)) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-        }
+        await waitUntil(() => state!.servers.isNotEmpty);
       });
       await tester.pumpAndSettle();
 
@@ -171,10 +192,39 @@ void main() {
       Focus.of(tester.element(find.text('Cancel'))).requestFocus();
       await tester.pump();
 
-      await press(tester, LogicalKeyboardKey.enter);
+      await press(tester, LogicalKeyboardKey.enter, expectSave: false);
 
       expect(state!.servers, isEmpty, reason: 'Cancel, not Save');
       expect(find.text('Add server'), findsNothing, reason: 'Cancel closed it');
+    });
+
+    testWidgets('on a focused colour swatch picks the colour', (tester) async {
+      // A swatch is an InkWell, which activates on Return through its own
+      // action; the save shortcut yields to that, so keyboard users can pick
+      // a colour without the dialog closing under them.
+      await boot(tester);
+      await openEditor(tester);
+      await fillRequired(tester);
+      await scrollTo(tester, find.byTooltip('Teal'));
+      Focus.of(
+        tester.element(
+          find.descendant(
+            of: find.byTooltip('Teal'),
+            matching: find.byType(Container),
+          ),
+        ),
+      ).requestFocus();
+      await tester.pump();
+
+      await press(tester, LogicalKeyboardKey.enter, expectSave: false);
+
+      expect(state!.servers, isEmpty);
+      expect(find.text('Add server'), findsOneWidget);
+      final previews = tester.widgetList<ServerBadge>(find.byType(ServerBadge));
+      expect(previews, isNotEmpty);
+      expect(previews.map((badge) => badge.tint).toSet(), {
+        const ServerTint(named: ServerColor.teal),
+      });
     });
 
     testWidgets('does nothing while the form does not validate', (
@@ -184,7 +234,7 @@ void main() {
       await openEditor(tester);
       await tester.enterText(field('Label'), 'box');
 
-      await press(tester, LogicalKeyboardKey.enter);
+      await press(tester, LogicalKeyboardKey.enter, expectSave: false);
 
       expect(state!.servers, isEmpty);
       expect(find.text('Required'), findsWidgets);
@@ -215,10 +265,7 @@ void main() {
       await scrollTo(tester, find.widgetWithText(FilledButton, 'Save'));
       await tester.runAsync(() async {
         await tester.tap(find.widgetWithText(FilledButton, 'Save'));
-        final deadline = DateTime.now().add(const Duration(seconds: 5));
-        while (state!.servers.isEmpty && DateTime.now().isBefore(deadline)) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-        }
+        await waitUntil(() => state!.servers.isNotEmpty);
       });
       await tester.pumpAndSettle();
 
@@ -257,11 +304,7 @@ void main() {
       await scrollTo(tester, find.widgetWithText(FilledButton, 'Save'));
       await tester.runAsync(() async {
         await tester.tap(find.widgetWithText(FilledButton, 'Save'));
-        final deadline = DateTime.now().add(const Duration(seconds: 5));
-        while (state!.servers.single.customColor != null &&
-            DateTime.now().isBefore(deadline)) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-        }
+        await waitUntil(() => state!.servers.single.customColor == null);
       });
       await tester.pumpAndSettle();
 

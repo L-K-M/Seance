@@ -16,7 +16,7 @@ void main() {
 
   const initial = Color(0xFF2F6FED);
 
-  Future<void> open(WidgetTester tester, {Color initial = initial}) async {
+  Future<void> open(WidgetTester tester, {Color start = initial}) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Builder(
@@ -25,7 +25,7 @@ void main() {
               onPressed: () async => picked.add(
                 await showServerColorPicker(
                   context,
-                  initial: initial,
+                  initial: start,
                   mark: const ServerGlyphMark(ServerIcon.rocket),
                 ),
               ),
@@ -87,17 +87,37 @@ void main() {
     tester,
   ) async {
     await open(tester);
+    // Letters past F never get in: the box filters, so junk is impossible to
+    // type and a pasted `#` is dropped rather than refused.
     await tester.enterText(find.byType(TextField), 'zz');
     await tester.pump();
+    expect(find.text('Six hex digits'), findsNothing);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
+    await tester.enterText(find.byType(TextField), '#e03131');
+    await tester.pump();
+    expect(preview(tester), const Color(0xFFE03131));
+    // Too short is the one way to hold something that is not a colour.
+    await tester.enterText(find.byType(TextField), '1e9');
+    await tester.pump();
     expect(find.text('Six hex digits'), findsOneWidget);
-    expect(preview(tester), initial);
+    expect(preview(tester), const Color(0xFFE03131));
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Use colour'))
+          .enabled,
+      isFalse,
+      reason: 'confirming would hand back a colour the box does not show',
+    );
     // Emptying the box is not an error, just nothing yet.
     await tester.enterText(find.byType(TextField), '');
     await tester.pump();
     expect(find.text('Six hex digits'), findsNothing);
-    expect(preview(tester), initial);
+    expect(preview(tester), const Color(0xFFE03131));
     await use(tester);
-    expect(picked.single, initial);
+    expect(picked.single, const Color(0xFFE03131));
   });
 
   testWidgets('dragging a slider moves the preview and the hex box', (

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
 import 'server_appearance.dart';
@@ -123,6 +124,15 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
                     controller: _hex,
                     onChanged: _hexChanged,
                     maxLength: 6,
+                    // Hex digits only, and none of a phone keyboard's help:
+                    // "beef" and "face" are colours here, not words to
+                    // correct, and a pasted `#1E90FF` loses its `#` on the
+                    // way in rather than being refused for it.
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp('[0-9a-fA-F]')),
+                    ],
+                    autocorrect: false,
+                    enableSuggestions: false,
                     textInputAction: TextInputAction.done,
                     style: const TextStyle(fontFamily: 'monospace'),
                     decoration: InputDecoration(
@@ -189,9 +199,14 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          // Read when pressed rather than captured at build: a keystroke in
-          // the hex box and the press can land in the same frame.
-          onPressed: () => Navigator.of(context).pop(_color),
+          // Disabled while the box holds something that is not a colour:
+          // confirming would silently hand back the last good value under
+          // text that says otherwise. Read when pressed rather than captured
+          // at build: a keystroke in the hex box and the press can land in
+          // the same frame.
+          onPressed: _hexInvalid
+              ? null
+              : () => Navigator.of(context).pop(_color),
           child: const Text('Use colour'),
         ),
       ],

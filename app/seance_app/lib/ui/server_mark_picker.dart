@@ -595,7 +595,10 @@ class _ImageTabState extends State<_ImageTab> {
           ],
           const Divider(height: 24),
           Text(
-            'PNG, JPEG, WebP or SVG. The image is cropped square, stored at '
+            // iOS gets the photo picker (see `_pickImageBytes`), and there
+            // are no SVGs in a photo library, so it is not promised there.
+            '${!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS ? 'PNG, JPEG or WebP' : 'PNG, JPEG, WebP or SVG'}. '
+            'The image is cropped square, stored at '
             '$kBadgeImageSide pixels, and travels inside this server\u2019s '
             'own settings — so it reaches your other devices with everything '
             'else about the server, and never arrives without it. Anything '

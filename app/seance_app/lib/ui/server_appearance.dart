@@ -57,11 +57,14 @@ final Map<(ServerColor, Brightness), ServerAccent> _accents = {};
 
 /// Derived accents for custom colours, memoized per (colour, brightness).
 ///
-/// Not bounded by an enum, so bounded by hand: past [_customAccentLimit]
-/// entries the map is dropped and refilled. A list of servers each with a
-/// colour of its own never gets near the limit, and the failure mode of a
-/// smaller cache is one scheme derivation per badge per build, which is what
-/// the memo exists to avoid.
+/// Not bounded by an enum, so bounded by hand: at [_customAccentLimit] the
+/// oldest entry makes room for the next (a Dart map iterates in insertion
+/// order, so first-in is first-out). Oldest-out rather than clearing the
+/// whole map, because a working set that sits exactly at the limit would
+/// otherwise clear and re-derive on every badge of every build — the one
+/// scheme derivation per badge per build the memo exists to avoid, made
+/// permanent. A list of servers each with a colour of its own, seen in both
+/// themes, does not get near the limit in any case.
 final Map<(int, Brightness), ServerAccent> _customAccents = {};
 const int _customAccentLimit = 64;
 
@@ -71,7 +74,9 @@ ServerAccent? serverAccent(BuildContext context, ServerTint tint) {
   final brightness = Theme.of(context).brightness;
   final custom = tint.custom;
   if (custom != null) {
-    if (_customAccents.length >= _customAccentLimit) _customAccents.clear();
+    while (_customAccents.length >= _customAccentLimit) {
+      _customAccents.remove(_customAccents.keys.first);
+    }
     return _customAccents.putIfAbsent((custom.toARGB32(), brightness), () {
       // The fidelity variant, unlike the tonal-spot default the named
       // accents use: it keeps the seed's own chroma and paints the seed
@@ -961,7 +966,27 @@ class _ConnectingRingState extends State<_ConnectingRing>
   late final AnimationController _turn = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1400),
-  )..repeat();
+  );
+
+  /// Whether the platform asked for animations to be removed. The sweep is
+  /// motion for motion's sake, exactly what that setting is about, so it
+  /// holds still and the ring is drawn as the plain frame the other states
+  /// use; the tooltip still says "connecting".
+  bool _reduceMotion = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    // Stopped rather than left ticking behind a static frame: a repeating
+    // controller schedules a frame every vsync whether or not anything
+    // reads it.
+    if (_reduceMotion) {
+      _turn.stop();
+    } else if (!_turn.isAnimating) {
+      _turn.repeat();
+    }
+  }
 
   @override
   void dispose() {
@@ -971,6 +996,14 @@ class _ConnectingRingState extends State<_ConnectingRing>
 
   @override
   Widget build(BuildContext context) {
+    if (_reduceMotion) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(widget.radius),
+          border: Border.all(color: widget.color, width: widget.width),
+        ),
+      );
+    }
     return AnimatedBuilder(
       animation: _turn,
       builder: (context, _) => CustomPaint(
