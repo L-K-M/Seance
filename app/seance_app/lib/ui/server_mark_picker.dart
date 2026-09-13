@@ -46,7 +46,7 @@ const List<String> kCuratedServerEmoji = [
 Future<ServerMark?> showServerMarkPicker(
   BuildContext context, {
   required ServerMark current,
-  required ServerColor? accent,
+  required ServerTint accent,
   /// Test seam: reads the bytes of an image the user chose. Defaults to the
   /// platform file picker, which a widget test cannot drive.
   @visibleForTesting Future<Uint8List?> Function()? readImage,
@@ -65,9 +65,30 @@ Future<ServerMark?> showServerMarkPicker(
 /// cancelled. `withData` because the bytes are re-encoded rather than kept:
 /// there is nothing to stream to, and on Android a document provider may have
 /// no path at all (see AGENTS.md on file_picker).
+///
+/// Desktop pickers get an explicit extension list, because the plugin's own
+/// image type is a fixed list without SVG on Linux and Windows. Mobile keeps
+/// the platform image type: on Android that is `image/*`, which SVG's MIME
+/// type already matches, and on iOS it is the photo picker, which an
+/// extension list would replace with the document browser.
 Future<Uint8List?> _pickImageBytes() async {
+  final desktop =
+      !kIsWeb &&
+      switch (defaultTargetPlatform) {
+        TargetPlatform.linux ||
+        TargetPlatform.macOS ||
+        TargetPlatform.windows => true,
+        _ => false,
+      };
   final result = await FilePicker.pickFiles(
-    type: FileType.image,
+    type: desktop ? FileType.custom : FileType.image,
+    allowedExtensions: desktop
+        ? [
+            ...kBadgeImageExtensions,
+            if (defaultTargetPlatform == TargetPlatform.macOS)
+              ...kBadgeImageAppleExtensions,
+          ]
+        : null,
     withData: true,
   );
   final files = result?.files ?? const [];
@@ -85,7 +106,7 @@ Future<Uint8List?> _pickImageBytes() async {
 
 class _MarkPickerDialog extends StatelessWidget {
   final ServerMark current;
-  final ServerColor? accent;
+  final ServerTint accent;
   final Future<Uint8List?> Function() readImage;
 
   const _MarkPickerDialog({
@@ -155,7 +176,7 @@ class _MarkPickerDialog extends StatelessWidget {
 /// The built-in glyphs, under their headings, with a search over labels and
 /// the extra terms each glyph carries.
 class _IconsTab extends StatefulWidget {
-  final ServerColor? accent;
+  final ServerTint accent;
   final ServerMark current;
 
   const _IconsTab({required this.accent, required this.current});
@@ -243,7 +264,7 @@ class _IconsTabState extends State<_IconsTab> {
 class _IconSection extends StatelessWidget {
   final String heading;
   final List<ServerIcon?> icons;
-  final ServerColor? accent;
+  final ServerTint accent;
   final ServerIcon? selected;
 
   /// Whether [selected] should be drawn as chosen at all — false when the
@@ -289,7 +310,7 @@ class _IconSection extends StatelessWidget {
 /// The emoji tab: a field that takes anything the OS can produce, plus a
 /// starting grid.
 class _EmojiTab extends StatefulWidget {
-  final ServerColor? accent;
+  final ServerTint accent;
   final ServerMark current;
 
   const _EmojiTab({required this.accent, required this.current});
@@ -430,7 +451,7 @@ class _EmojiTabState extends State<_EmojiTab> {
 
 /// The image tab: import a file, see what will be stored, or take it off.
 class _ImageTab extends StatefulWidget {
-  final ServerColor? accent;
+  final ServerTint accent;
   final ServerMark current;
   final Future<Uint8List?> Function() readImage;
 
@@ -516,7 +537,7 @@ class _ImageTabState extends State<_ImageTab> {
           Row(
             children: [
               ServerBadge(
-                color: widget.accent,
+                tint: widget.accent,
                 mark: widget.current,
                 size: 64,
               ),
@@ -574,12 +595,16 @@ class _ImageTabState extends State<_ImageTab> {
           ],
           const Divider(height: 24),
           Text(
-            'The image is cropped square, stored at $kBadgeImageSide pixels, '
-            'and travels inside this server\u2019s own settings — so it '
-            'reaches '
-            'your other devices with everything else about the server, and '
-            'never arrives without it. Anything larger than a badge can show '
-            'would only be paid for on every sync.',
+            // iOS gets the photo picker (see `_pickImageBytes`), and there
+            // are no SVGs in a photo library, so it is not promised there.
+            '${!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS ? 'PNG, JPEG or WebP' : 'PNG, JPEG, WebP or SVG'}. '
+            'The image is cropped square, stored at '
+            '$kBadgeImageSide pixels, and travels inside this server\u2019s '
+            'own settings — so it reaches your other devices with everything '
+            'else about the server, and never arrives without it. Anything '
+            'larger than a badge can show would only be paid for on every '
+            'sync. A transparent image shows the server\u2019s colour '
+            'through it.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -590,7 +615,7 @@ class _ImageTabState extends State<_ImageTab> {
 
 /// One candidate mark, previewed on the colour the server is actually using.
 class _MarkChoice extends StatelessWidget {
-  final ServerColor? accent;
+  final ServerTint accent;
   final ServerMark mark;
   final String label;
   final bool selected;
@@ -625,7 +650,7 @@ class _MarkChoice extends StatelessWidget {
             label: label,
             selected: selected,
             button: true,
-            child: ServerBadge(color: accent, mark: mark, size: _size),
+            child: ServerBadge(tint: accent, mark: mark, size: _size),
           ),
         ),
       ),

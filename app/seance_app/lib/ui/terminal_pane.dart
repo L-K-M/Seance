@@ -91,7 +91,9 @@ class TerminalPane extends StatelessWidget {
                   // terminal has, so it carries the server's colour: the
                   // "am I on prod?" question gets an answer at the edge of
                   // vision instead of one you have to read.
-                  accent: serverAccent(context, server?.color)?.line,
+                  accent: server == null
+                      ? null
+                      : serverAccent(context, ServerTint.of(server))?.line,
                 ),
               Expanded(child: _body(state)),
               if (active != null) SessionStatusBar(session: active),
@@ -163,7 +165,7 @@ class TerminalPane extends StatelessWidget {
             // label here would have a screen reader say the name twice.
             ExcludeSemantics(
               child: ServerBadge(
-                color: server.color,
+                tint: ServerTint.of(server),
                 mark: server.mark,
                 size: 24,
               ),

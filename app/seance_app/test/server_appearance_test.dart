@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/app_state.dart';
+import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/server_appearance.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -49,14 +50,14 @@ void main() {
   group('ServerBadge', () {
     testWidgets('an untagged server gets the default glyph', (tester) async {
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(color: null, icon: null)),
+        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)),
       );
       expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
     });
 
     testWidgets('the chosen icon is the one drawn', (tester) async {
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(color: null, icon: ServerIcon.rocket)),
+        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.rocket)),
       );
       expect(find.byIcon(Icons.rocket_launch_outlined), findsOneWidget);
       expect(find.byIcon(Icons.dns_outlined), findsNothing);
@@ -65,11 +66,13 @@ void main() {
     testWidgets('a colour changes the fill; none leaves it neutral', (
       tester,
     ) async {
-      await tester.pumpWidget(_wrap(ServerBadge.glyph(color: null, icon: null)));
+      await tester.pumpWidget(
+        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)),
+      );
       final neutral = _badgeFill(tester);
 
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(color: ServerColor.red, icon: null)),
+        _wrap(ServerBadge.glyph(tint: const ServerTint(named: ServerColor.red), icon: null)),
       );
       expect(_badgeFill(tester), isNot(neutral));
     });
@@ -80,13 +83,13 @@ void main() {
       // The point of storing a name rather than an ARGB value: a colour picked
       // in light mode still has to be legible in dark mode.
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(color: ServerColor.teal, icon: null)),
+        _wrap(ServerBadge.glyph(tint: const ServerTint(named: ServerColor.teal), icon: null)),
       );
       final light = _badgeFill(tester);
 
       await tester.pumpWidget(
         _wrap(
-          ServerBadge.glyph(color: ServerColor.teal, icon: null),
+          ServerBadge.glyph(tint: const ServerTint(named: ServerColor.teal), icon: null),
           brightness: Brightness.dark,
         ),
       );
@@ -101,12 +104,17 @@ void main() {
       // independent, and the cross product is seventy-odd times the frames for
       // nothing.
       for (final color in ServerColor.values) {
-        await tester.pumpWidget(_wrap(ServerBadge.glyph(color: color, icon: null)));
+        await tester.pumpWidget(
+          _wrap(ServerBadge.glyph(tint: ServerTint(named: color), icon: null)),
+        );
         expect(find.byType(ServerBadge), findsOneWidget);
       }
       for (final icon in ServerIcon.values) {
         await tester.pumpWidget(
-          _wrap(ServerBadge.glyph(color: ServerColor.violet, icon: icon)),
+          _wrap(ServerBadge.glyph(
+            tint: const ServerTint(named: ServerColor.violet),
+            icon: icon,
+          )),
         );
         expect(find.byIcon(serverIconData(icon)), findsOneWidget,
             reason: icon.name);
@@ -115,14 +123,37 @@ void main() {
   });
 
   group('ServerAvatar', () {
-    testWidgets('carries the connection status alongside the badge', (
+    /// The session ring: the one box under the avatar that is a border and
+    /// nothing else. The badge's own fill is a DecoratedBox too.
+    final ring = find.descendant(
+      of: find.byType(ServerAvatar),
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is DecoratedBox &&
+            widget.decoration is BoxDecoration &&
+            (widget.decoration as BoxDecoration).border != null &&
+            (widget.decoration as BoxDecoration).color == null,
+      ),
+    );
+
+    testWidgets('rings the badge in the session\'s status colour', (
       tester,
     ) async {
+      late BuildContext captured;
       await tester.pumpWidget(
         _wrap(
-          ServerAvatar(
-            server: _server(color: ServerColor.red, icon: ServerIcon.rocket),
-            connection: TerminalStatus.connected,
+          Builder(
+            builder: (context) {
+              captured = context;
+              return ServerAvatar(
+                server: _server(
+                  color: ServerColor.red,
+                  icon: ServerIcon.rocket,
+                ),
+                connection: TerminalStatus.connected,
+                hasSession: true,
+              );
+            },
           ),
         ),
       );
@@ -131,21 +162,140 @@ void main() {
       expect(
         find.byTooltip('connected'),
         findsOneWidget,
-        reason: 'the status dot keeps the tooltip it had as a standalone dot',
+        reason: 'the ring keeps the tooltip the status dot used to carry',
       );
+      expect(ring, findsOneWidget);
+      final border =
+          (tester.widget<DecoratedBox>(ring).decoration as BoxDecoration)
+              .border!;
+      expect(border.top.color, StatusColors.online(captured));
     });
 
-    testWidgets('shows a spinner while connecting', (tester) async {
+    testWidgets('animates the ring while connecting', (tester) async {
       await tester.pumpWidget(
         _wrap(
           ServerAvatar(
             server: _server(),
             connection: TerminalStatus.connecting,
+            hasSession: true,
           ),
         ),
       );
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
       expect(find.byTooltip('connecting'), findsOneWidget);
+      // The sweep is a custom painter rather than the static border the
+      // other states draw, and it repaints as the highlight travels.
+      final sweep = find.descendant(
+        of: find.byType(ServerAvatar),
+        matching: find.byType(CustomPaint),
+      );
+      expect(sweep, findsOneWidget);
+      final before = tester.widget<CustomPaint>(sweep).painter;
+      await tester.pump(const Duration(milliseconds: 300));
+      final after = tester.widget<CustomPaint>(sweep).painter;
+      expect(after!.shouldRepaint(before!), isTrue);
+    });
+
+    testWidgets('holds the connecting ring still under reduced motion', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          MediaQuery(
+            data: const MediaQueryData(disableAnimations: true),
+            child: ServerAvatar(
+              server: _server(),
+              connection: TerminalStatus.connecting,
+              hasSession: true,
+            ),
+          ),
+        ),
+      );
+      // The plain frame the other states draw, still labelled: the state
+      // is not lost, only the motion.
+      expect(find.byTooltip('connecting'), findsOneWidget);
+      expect(ring, findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ServerAvatar),
+          matching: find.byType(CustomPaint),
+        ),
+        findsNothing,
+      );
+      // Nothing is left ticking either; settling would otherwise never end.
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a first connection with no session yet has no ring', (
+      tester,
+    ) async {
+      // `hasSession` is what the tile says; it is true whenever a tab exists,
+      // so this combination is the tile's to avoid, and the avatar's answer
+      // to it is pinned so a refactor cannot change it silently.
+      await tester.pumpWidget(
+        _wrap(
+          ServerAvatar(
+            server: _server(),
+            connection: TerminalStatus.connecting,
+            hasSession: false,
+          ),
+        ),
+      );
+      expect(find.byTooltip('connecting'), findsNothing);
+      expect(ring, findsNothing);
+    });
+
+    testWidgets('a server with no session wears no ring', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          ServerAvatar(
+            server: _server(),
+            connection: TerminalStatus.disconnected,
+            hasSession: false,
+          ),
+        ),
+      );
+      // Nothing to say, so no tooltip either: the old grey dot on every idle
+      // row was the state the eye had to tell green apart from.
+      expect(find.byTooltip('disconnected'), findsNothing);
+      expect(ring, findsNothing);
+
+      // A session that dropped is a session: it keeps its (grey) ring.
+      await tester.pumpWidget(
+        _wrap(
+          ServerAvatar(
+            server: _server(),
+            connection: TerminalStatus.disconnected,
+            hasSession: true,
+          ),
+        ),
+      );
+      expect(find.byTooltip('disconnected'), findsOneWidget);
+      expect(ring, findsOneWidget);
+    });
+
+    testWidgets('the ring is reserved space whether or not it is drawn', (
+      tester,
+    ) async {
+      // Otherwise a session opening would shift every row below it.
+      Future<Size> sizeWith({required bool hasSession}) async {
+        await tester.pumpWidget(
+          _wrap(
+            ServerAvatar(
+              server: _server(),
+              connection: hasSession
+                  ? TerminalStatus.connected
+                  : TerminalStatus.disconnected,
+              hasSession: hasSession,
+            ),
+          ),
+        );
+        return tester.getSize(find.byType(ServerAvatar));
+      }
+
+      expect(
+        await sizeWith(hasSession: true),
+        await sizeWith(hasSession: false),
+      );
     });
   });
 
@@ -162,8 +312,11 @@ void main() {
           ),
         ),
       );
-      expect(serverAccent(captured, null), isNull);
-      expect(serverAccent(captured, ServerColor.violet), isNotNull);
+      expect(serverAccent(captured, ServerTint.none), isNull);
+      expect(
+        serverAccent(captured, const ServerTint(named: ServerColor.violet)),
+        isNotNull,
+      );
     });
   });
 
@@ -191,7 +344,7 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           const ServerBadge(
-            color: ServerColor.violet,
+            tint: ServerTint(named: ServerColor.violet),
             mark: ServerEmojiMark('\u{1F680}'),
           ),
         ),
@@ -211,7 +364,7 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           const ServerBadge(
-            color: null,
+            tint: ServerTint.none,
             mark: ServerEmojiMark(
               '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}',
             ),
@@ -231,7 +384,9 @@ void main() {
       // The badge's whole job is telling servers apart; unlabelled it says
       // nothing at all to assistive technology.
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(color: null, icon: ServerIcon.database)),
+        _wrap(
+          ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.database),
+        ),
       );
       expect(
         tester.widget<Icon>(find.byType(Icon)).semanticLabel,
@@ -242,7 +397,7 @@ void main() {
     testWidgets('an image mark is drawn from its bytes', (tester) async {
       final bytes = await tester.runAsync(pngBytes);
       await tester.pumpWidget(
-        _wrap(ServerBadge(color: null, mark: ServerImageMark(bytes!))),
+        _wrap(ServerBadge(tint: ServerTint.none, mark: ServerImageMark(bytes!))),
       );
       // Not pumpAndSettle: an image codec resolves on the real event loop,
       // which a widget test's fake-async zone never reaches, so settling here
@@ -270,7 +425,7 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           ServerBadge(
-            color: null,
+            tint: ServerTint.none,
             mark: ServerImageMark(
               // A PNG signature and nothing behind it: the protocol accepts
               // this shape, so a record really can carry it, and the badge is
@@ -315,11 +470,231 @@ void main() {
               iconEmoji: '\u{1F427}',
             ),
             connection: TerminalStatus.disconnected,
+            hasSession: false,
           ),
         ),
       );
       expect(find.text('\u{1F427}'), findsOneWidget);
       expect(find.byIcon(Icons.rocket_launch_outlined), findsNothing);
+    });
+  });
+
+  group('custom colours', () {
+    Future<BuildContext> context(
+      WidgetTester tester, {
+      Brightness brightness = Brightness.light,
+    }) async {
+      late BuildContext captured;
+      await tester.pumpWidget(
+        _wrap(
+          Builder(
+            builder: (context) {
+              captured = context;
+              return const SizedBox.shrink();
+            },
+          ),
+          brightness: brightness,
+        ),
+      );
+      return captured;
+    }
+
+    /// WCAG contrast between two colours, which is what the scheme promises
+    /// for a container and its foreground.
+    double contrast(Color a, Color b) {
+      final la = a.computeLuminance();
+      final lb = b.computeLuminance();
+      final (light, dark) = la > lb ? (la, lb) : (lb, la);
+      return (light + 0.05) / (dark + 0.05);
+    }
+
+    testWidgets('a custom colour is drawn as picked, with a legible mark', (
+      tester,
+    ) async {
+      // The point of a picker over a named list: what was chosen is what is
+      // painted, in both themes. The named accents are folded into a pastel
+      // by design; a custom one must not be, or the saturation and
+      // brightness sliders would do nothing.
+      const picks = [
+        Color(0xFFE03131),
+        Color(0xFF123456),
+        Color(0xFFF5F5DC),
+        Color(0xFF2B8A3E),
+      ];
+      for (final brightness in Brightness.values) {
+        final ctx = await context(tester, brightness: brightness);
+        for (final pick in picks) {
+          final accent = serverAccent(ctx, ServerTint(custom: pick))!;
+          final want = HSVColor.fromColor(pick);
+          final got = HSVColor.fromColor(accent.container);
+          var hueDelta = (want.hue - got.hue).abs() % 360;
+          if (hueDelta > 180) hueDelta = 360 - hueDelta;
+          expect(hueDelta, lessThan(12), reason: '$pick $brightness hue');
+          expect(
+            (want.saturation - got.saturation).abs(),
+            lessThan(0.2),
+            reason: '$pick $brightness saturation',
+          );
+          expect(
+            (want.value - got.value).abs(),
+            lessThan(0.2),
+            reason: '$pick $brightness brightness',
+          );
+          expect(
+            contrast(accent.container, accent.onContainer),
+            greaterThanOrEqualTo(4.5),
+            reason: '$pick $brightness contrast',
+          );
+        }
+      }
+    });
+
+    testWidgets('a custom colour outranks the named accent beside it', (
+      tester,
+    ) async {
+      final ctx = await context(tester);
+      final custom = serverAccent(
+        ctx,
+        const ServerTint(named: ServerColor.red, custom: Color(0xFF123456)),
+      )!;
+      final named = serverAccent(
+        ctx,
+        const ServerTint(named: ServerColor.red),
+      )!;
+      expect(custom.container, isNot(named.container));
+      // Outranks, not blends: the named accent contributes nothing.
+      expect(
+        custom.container,
+        serverAccent(ctx, const ServerTint(custom: Color(0xFF123456)))!
+            .container,
+      );
+    });
+
+    test('the stored form round-trips and refuses what the protocol does', () {
+      expect(formatServerCustomColor(const Color(0xFF0A0B0C)), '#0A0B0C');
+      // Alpha is dropped: the fill is opaque by design.
+      expect(formatServerCustomColor(const Color(0x800A0B0C)), '#0A0B0C');
+      expect(parseServerCustomColor('#0A0B0C'), const Color(0xFF0A0B0C));
+      expect(parseServerCustomColor('0a0b0c'), const Color(0xFF0A0B0C));
+      expect(parseServerCustomColor('#0A0B'), isNull);
+      expect(parseServerCustomColor(null), isNull);
+
+      final tint = ServerTint.custom(const Color(0xFFE03131));
+      expect(tint.stored.customColor, '#E03131');
+      expect(tint.stored.color, ServerColor.red);
+      expect(
+        ServerTint.of(
+          _server().copyWith(color: ServerColor.red, customColor: '#e03131'),
+        ),
+        tint,
+      );
+      expect(ServerTint.of(_server()), ServerTint.none);
+    });
+
+    test('the nearest named accent is judged by hue, greys go to slate', () {
+      expect(nearestServerColor(const Color(0xFFE03131)), ServerColor.red);
+      expect(nearestServerColor(const Color(0xFF2F6FED)), ServerColor.blue);
+      expect(nearestServerColor(const Color(0xFFFFFF00)), ServerColor.amber);
+      expect(nearestServerColor(const Color(0xFF7B5CE0)), ServerColor.violet);
+      expect(nearestServerColor(const Color(0xFFC2185B)), ServerColor.pink);
+      expect(nearestServerColor(const Color(0xFF808080)), ServerColor.slate);
+      expect(nearestServerColor(const Color(0xFF64748B)), ServerColor.slate);
+      expect(nearestServerColor(const Color(0xFF000000)), ServerColor.slate);
+      // Every seed maps to itself, or the fallback would misname the very
+      // colour it stands in for.
+      for (final color in ServerColor.values) {
+        expect(nearestServerColor(serverColorSeed(color)), color);
+      }
+    });
+  });
+
+  group('the accent frame', () {
+    BoxDecoration? frameOf(WidgetTester tester) {
+      final container = tester.widget<Container>(
+        find
+            .descendant(
+              of: find.byType(ServerBadge),
+              matching: find.byType(Container),
+            )
+            .first,
+      );
+      return container.foregroundDecoration as BoxDecoration?;
+    }
+
+    testWidgets('an image mark carries the accent as a frame', (
+      tester,
+    ) async {
+      // The fill is under the image, so this is the only place the colour
+      // can show. The frame is the line colour, not the fill's pastel: at two
+      // pixels the pastel is invisible.
+      final bytes = await tester.runAsync(() async {
+        final recorder = ui.PictureRecorder();
+        ui.Canvas(recorder).drawRect(
+          const ui.Rect.fromLTWH(0, 0, 8, 8),
+          ui.Paint()..color = const ui.Color(0xFF00FF00),
+        );
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(8, 8);
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        picture.dispose();
+        image.dispose();
+        return data!.buffer.asUint8List(
+          data.offsetInBytes,
+          data.lengthInBytes,
+        );
+      });
+      late BuildContext captured;
+      await tester.pumpWidget(
+        _wrap(
+          Builder(
+            builder: (context) {
+              captured = context;
+              return ServerBadge(
+                tint: const ServerTint(named: ServerColor.teal),
+                mark: ServerImageMark(bytes!),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      final frame = frameOf(tester);
+      expect(frame, isNotNull);
+      final line = serverAccent(
+        captured,
+        const ServerTint(named: ServerColor.teal),
+      )!.line;
+      expect(frame!.border, Border.all(color: line, width: 2));
+
+      // No accent, no frame: a neutral image badge is just the image.
+      await tester.pumpWidget(
+        _wrap(ServerBadge(tint: ServerTint.none, mark: ServerImageMark(bytes!))),
+      );
+      await tester.pump();
+      expect(frameOf(tester), isNull);
+    });
+
+    testWidgets('a glyph or emoji mark needs no frame', (tester) async {
+      // The fill shows the accent there, and a frame on top would say it
+      // twice.
+      await tester.pumpWidget(
+        _wrap(
+          ServerBadge.glyph(
+            tint: const ServerTint(named: ServerColor.teal),
+            icon: ServerIcon.rocket,
+          ),
+        ),
+      );
+      expect(frameOf(tester), isNull);
+      await tester.pumpWidget(
+        _wrap(
+          const ServerBadge(
+            tint: ServerTint(named: ServerColor.teal),
+            mark: ServerEmojiMark('\u{1F680}'),
+          ),
+        ),
+      );
+      expect(frameOf(tester), isNull);
     });
   });
 

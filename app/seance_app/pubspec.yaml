@@ -50,6 +50,9 @@ dependencies:
   # Owner-only mode bits for path-bearing local files (identity audit log);
   # the calls are guarded to desktop POSIX, other platforms use storage ACLs.
   posix: ^6.5.0
+  # Rasterizes an SVG picked as a server badge image; the engine's own codecs
+  # read only bitmaps (lib/services/badge_image.dart).
+  flutter_svg: ^2.3.0
 
 dev_dependencies:
   # Mock network lifetimes at the AppServices boundary.

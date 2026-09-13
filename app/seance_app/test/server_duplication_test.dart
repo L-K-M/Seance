@@ -121,6 +121,7 @@ void main() {
       syncSecret: syncSecret,
       group: 'Production',
       color: ServerColor.red,
+      customColor: '#123456',
       // All three mark fields carry a non-default value, because the
       // whole-record comparison below only catches a dropped field once the
       // fixture sets one (see its own comment).
@@ -163,6 +164,7 @@ void main() {
       expect(copy.jumpHostId, 'bastion');
       expect(copy.group, 'Production');
       expect(copy.color, ServerColor.red);
+      expect(copy.customColor, '#123456');
       // The mark as a whole, not just the glyph: a copy that lost the emoji
       // or the imported image would read as a different server at a glance.
       expect(copy.mark, original.mark);

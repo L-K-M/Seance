@@ -22,7 +22,7 @@ void main() {
   Future<void> open(
     WidgetTester tester, {
     ServerMark current = const ServerGlyphMark(null),
-    ServerColor? accent,
+    ServerTint accent = ServerTint.none,
     Future<Uint8List?> Function()? readImage,
     /// False when a mark in force holds a live [Image]: its resolution never
     /// completes here, so settling would spin forever (see AGENTS.md §5).
@@ -284,6 +284,37 @@ void main() {
       );
     });
 
+    testWidgets('an SVG is rasterized into the same kind of mark', (
+      tester,
+    ) async {
+      // The picker's part of the SVG path is only that the bytes reach the
+      // encoder and the result comes back as an image mark; what the raster
+      // looks like is badge_image_test.dart's job.
+      final svg = Uint8List.fromList(
+        utf8.encode(
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+          '<rect width="10" height="10" fill="#c00"/></svg>',
+        ),
+      );
+      await open(
+        tester,
+        current: const ServerGlyphMark(ServerIcon.web),
+        readImage: () async => svg,
+      );
+      await chooseImage(tester);
+      await pumpUntil(tester, () => picked.isNotEmpty);
+
+      final mark = picked.single;
+      expect(mark, isA<ServerImageMark>());
+      expect(mark!.fallback, ServerIcon.web);
+      final stored = mark.stored.image;
+      expect(stored, isNotNull, reason: 'stored as the PNG it was drawn to');
+      expect(
+        base64Decode(stored!).length,
+        lessThanOrEqualTo(kMaxServerIconImageBytes),
+      );
+    });
+
     testWidgets('a file that is not an image is reported, not stored', (
       tester,
     ) async {
@@ -397,10 +428,11 @@ void main() {
   ) async {
     // Not cosmetic: a mark chosen against the wrong accent was judged on a
     // badge the server will never draw.
-    await open(tester, accent: ServerColor.amber);
+    const accent = ServerTint(named: ServerColor.amber);
+    await open(tester, accent: accent);
     final badges = tester.widgetList<ServerBadge>(find.byType(ServerBadge));
     expect(badges, isNotEmpty);
-    expect(badges.map((badge) => badge.color).toSet(), {ServerColor.amber});
+    expect(badges.map((badge) => badge.tint).toSet(), {accent});
   });
 
   test('every curated emoji is one the protocol will store', () {

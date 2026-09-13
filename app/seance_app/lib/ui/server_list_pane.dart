@@ -122,7 +122,7 @@ class _ServerListPaneState extends State<ServerListPane> {
           ),
           ListenableBuilder(
             listenable: state,
-            builder: (context, _) => _DensityMenu(state: state),
+            builder: (context, _) => _DensitySwitch(state: state),
           ),
           IconButton(
             tooltip: 'Import ~/.ssh/config',
@@ -634,14 +634,38 @@ class ServerTile extends StatelessWidget {
   /// without setting the row's height itself.
   static const double _compactAvatarSize = 22;
 
+  /// The bar down the selected row's leading edge.
+  static const double _selectionBarWidth = 3;
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final connected = connection == TerminalStatus.connected;
     final hasSession = tabCount > 0;
     final compact = density == ServerListDensity.compact;
     final address = '${server.username}@${server.host}:${server.port}';
     return ListTile(
       selected: selected,
+      // Selection is said three ways, because a tinted title — which is all
+      // ListTile does on its own — is the one the eye is worst at picking out
+      // of a list of tinted badges: a filled row, a bar down its leading edge
+      // in the app's own colour, and a heavier title. The fill is the
+      // standard "selected" surface rather than the server's accent, so it
+      // means the same thing on every row and shows on a neutral one.
+      selectedTileColor: scheme.secondaryContainer,
+      selectedColor: scheme.onSecondaryContainer,
+      shape: selected
+          ? BorderDirectional(
+              start: BorderSide(
+                color: scheme.primary,
+                width: _selectionBarWidth,
+              ),
+            )
+          : null,
+      titleTextStyle: selected
+          ? theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600)
+          : null,
       // `dense` shrinks the type; `visualDensity` shrinks the padding around
       // it. Both, plus dropping the second line, is what halves the row —
       // either alone leaves a row that is barely tighter than the default.
@@ -660,6 +684,7 @@ class ServerTile extends StatelessWidget {
           ServerAvatar(
             server: server,
             connection: connection,
+            hasSession: hasSession,
             size: compact ? _compactAvatarSize : null,
           ),
           if (tabCount > 1)
@@ -748,34 +773,49 @@ class ServerTile extends StatelessWidget {
 
 /// The app bar's view control: how tightly the list packs its rows.
 ///
-/// A menu rather than a straight toggle so the current choice is readable
-/// without counting pixels, and so a third density could be added without
-/// turning a two-state button into a three-state one.
-class _DensityMenu extends StatelessWidget {
+/// A segmented button rather than the menu it used to be: both choices are
+/// in view, the current one is the filled segment, and switching is one tap
+/// rather than a tap and a pick. A third density would be a third segment,
+/// which is why the segments are built from the enum rather than written out.
+class _DensitySwitch extends StatelessWidget {
   final AppState state;
-  const _DensityMenu({required this.state});
+  const _DensitySwitch({required this.state});
+
+  /// A switch rather than a ternary because a third density is addable: a
+  /// ternary would draw it with the comfortable icon while its own tooltip
+  /// said otherwise, and nothing would complain.
+  static IconData _icon(ServerListDensity density) => switch (density) {
+    ServerListDensity.comfortable => Icons.density_medium,
+    ServerListDensity.compact => Icons.density_small,
+  };
 
   @override
   Widget build(BuildContext context) {
-    final current = state.serverListDensity;
-    return PopupMenuButton<ServerListDensity>(
-      tooltip: 'Server list density',
-      // A switch rather than a ternary because the doc above promises a third
-      // density is addable: a ternary would draw it with the comfortable icon
-      // while its own menu row said otherwise, and nothing would complain.
-      icon: Icon(switch (current) {
-        ServerListDensity.comfortable => Icons.density_medium,
-        ServerListDensity.compact => Icons.density_small,
-      }),
-      onSelected: state.setServerListDensity,
-      itemBuilder: (_) => [
-        for (final density in ServerListDensity.values)
-          CheckedPopupMenuItem(
-            value: density,
-            checked: density == current,
-            child: Text(density.label),
-          ),
-      ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Center(
+        child: SegmentedButton<ServerListDensity>(
+          segments: [
+            for (final density in ServerListDensity.values)
+              ButtonSegment(
+                value: density,
+                icon: Icon(_icon(density)),
+                // The label, as a tooltip: icons alone fit the app bar, and
+                // the tooltip is also what a screen reader gets.
+                tooltip: density.label,
+              ),
+          ],
+          selected: {state.serverListDensity},
+          showSelectedIcon: false,
+          // Tightened to the app bar: at its default size the button is as
+          // tall as the bar's icons' tap targets and visibly heavier. The
+          // tap target itself is left to the theme, which pads it to 48 on
+          // touch platforms and shrink-wraps it on desktop.
+          style: const ButtonStyle(visualDensity: VisualDensity.compact),
+          onSelectionChanged: (selection) =>
+              state.setServerListDensity(selection.single),
+        ),
+      ),
     );
   }
 }
