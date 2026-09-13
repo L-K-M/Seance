@@ -9,8 +9,12 @@
 /// one thing that actually syncs.
 library;
 
+import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+
+import 'package:flutter_svg/flutter_svg.dart';
 
 /// The side the badge image is stored at.
 ///
@@ -28,6 +32,32 @@ const int kBadgeImageSide = 256;
 /// content that compresses worse than noise. They are kept because the
 /// alternative to stepping down is refusing the import.
 const List<int> _sideAttempts = [kBadgeImageSide, 192, 128, 96];
+
+/// The file extensions the desktop pickers offer for a badge image.
+///
+/// Desktop pickers filter by extension, and the list `file_picker` uses for
+/// its own image type leaves SVG out, so the list is spelled out here. The
+/// bitmap formats are the ones every engine decodes; HEIC is only added on
+/// Apple platforms, where the engine has a decoder for it. Mobile pickers
+/// take a platform image type instead and are not driven by this.
+const List<String> kBadgeImageExtensions = [
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+  'svg',
+];
+const List<String> kBadgeImageAppleExtensions = ['heic', 'heif'];
+
+/// Longest edge an SVG is rasterized at, whatever its aspect.
+///
+/// The short edge is rendered at twice the stored side (the same headroom a
+/// bitmap gets, see `encodeBadgeImage`), so this only matters for a very wide
+/// or very tall drawing, where it keeps a 100:1 banner from asking for a
+/// 50,000-pixel bitmap on its way to a square crop of its middle.
+const int kMaxSvgRasterSide = 4096;
 
 /// Largest source accepted, measured on the bytes as handed over.
 ///
@@ -91,6 +121,17 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
 }) async {
   if (source.lengthInBytes > kMaxBadgeSourceBytes) {
     return (image: null, failure: BadgeImageFailure.tooLarge);
+  }
+  if (looksLikeSvg(source)) {
+    // Rasterized first and then treated as the bitmap it now is, so an SVG
+    // is cropped, bounded and re-encoded by exactly the code a PNG goes
+    // through. The engine's codecs do not read SVG, so without this step the
+    // descriptor below would report it as not an image.
+    final raster = await _rasterizeSvg(source);
+    if (raster == null) {
+      return (image: null, failure: BadgeImageFailure.undecodable);
+    }
+    source = raster;
   }
   final ui.Image decoded;
   try {
@@ -214,6 +255,76 @@ Future<({BadgeImage? image, BadgeImageFailure? failure})> encodeBadgeImage(
     return (image: null, failure: BadgeImageFailure.encodeFailed);
   } finally {
     decoded.dispose();
+  }
+}
+
+/// Whether [source] is an SVG document rather than a bitmap.
+///
+/// Judged on the content, not a file name: the picker hands over bytes, and
+/// on Android a document provider may not give a name at all. An SVG is XML,
+/// so it starts with `<` after any byte-order mark and whitespace — which no
+/// bitmap format does — and names its root element within the first couple
+/// of kilobytes even behind a prolog, a doctype and comments. Something that
+/// passes this and is not an SVG (an HTML page with an inline drawing) fails
+/// to parse and is reported as undecodable, the same as any other non-image.
+bool looksLikeSvg(Uint8List source) {
+  final head = utf8.decode(
+    Uint8List.sublistView(source, 0, math.min(source.length, 2048)),
+    allowMalformed: true,
+  );
+  final text = head.startsWith('\uFEFF') ? head.substring(1) : head;
+  final trimmed = text.trimLeft();
+  return trimmed.startsWith('<') && trimmed.contains('<svg');
+}
+
+/// [source] drawn to a PNG, with its short edge at twice [kBadgeImageSide] and
+/// its long edge at most [kMaxSvgRasterSide], or null when it will not parse.
+Future<Uint8List?> _rasterizeSvg(Uint8List source) async {
+  final loader = SvgBytesLoader(source);
+  final PictureInfo info;
+  try {
+    info = await vg.loadPicture(loader, null);
+  } catch (error) {
+    // Broader than the bitmap path's `on Exception`, on purpose. The parser
+    // reports SVG it does not support — CSS `<style>` blocks, embedded raster
+    // in a format it lacks — as `UnsupportedError` and `UnimplementedError`,
+    // which are Errors, and a file the user picked must never take the app
+    // down whatever the parser thinks of it.
+    return null;
+  } finally {
+    // The loader caches what it compiles, keyed by the bytes, for the widget
+    // that draws SVGs repeatedly. This one is drawn once and then stored as
+    // a PNG, so its entry would only sit there until the cache evicted it.
+    svg.cache.evict(loader.cacheKey(null));
+  }
+  try {
+    final size = info.size;
+    if (!size.isFinite || size.width <= 0 || size.height <= 0) return null;
+    final scale = math.min(
+      kBadgeImageSide * 2 / size.shortestSide,
+      kMaxSvgRasterSide / size.longestSide,
+    );
+    final width = math.max(1, (size.width * scale).round());
+    final height = math.max(1, (size.height * scale).round());
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder)
+      ..scale(scale)
+      ..drawPicture(info.picture);
+    final picture = recorder.endRecording();
+    try {
+      final image = await picture.toImage(width, height);
+      try {
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        if (data == null) return null;
+        return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+      } finally {
+        image.dispose();
+      }
+    } finally {
+      picture.dispose();
+    }
+  } finally {
+    info.picture.dispose();
   }
 }
 

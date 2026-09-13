@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
@@ -53,11 +55,47 @@ class ServerAccent {
 /// kept. The map is bounded by the enum: it cannot grow.
 final Map<(ServerColor, Brightness), ServerAccent> _accents = {};
 
-/// The accent for [color] under the current theme brightness, or null when the
-/// server has no color and should be drawn neutrally.
-ServerAccent? serverAccent(BuildContext context, ServerColor? color) {
-  if (color == null) return null;
+/// Derived accents for custom colours, memoized per (colour, brightness).
+///
+/// Not bounded by an enum, so bounded by hand: past [_customAccentLimit]
+/// entries the map is dropped and refilled. A list of servers each with a
+/// colour of its own never gets near the limit, and the failure mode of a
+/// smaller cache is one scheme derivation per badge per build, which is what
+/// the memo exists to avoid.
+final Map<(int, Brightness), ServerAccent> _customAccents = {};
+const int _customAccentLimit = 64;
+
+/// The accent for [tint] under the current theme brightness, or null when the
+/// server has no colour and should be drawn neutrally.
+ServerAccent? serverAccent(BuildContext context, ServerTint tint) {
   final brightness = Theme.of(context).brightness;
+  final custom = tint.custom;
+  if (custom != null) {
+    if (_customAccents.length >= _customAccentLimit) _customAccents.clear();
+    return _customAccents.putIfAbsent((custom.toARGB32(), brightness), () {
+      // The fidelity variant, unlike the tonal-spot default the named
+      // accents use: it keeps the seed's own chroma and paints the seed
+      // itself as the container tone. So what was picked is what is drawn,
+      // give or take the small shifts the scheme makes to keep a foreground
+      // legible on it — which is the point of deriving rather than painting
+      // the raw value, and what makes one stored colour work in both themes.
+      // Tonal spot would instead fold every custom colour into the same
+      // pastel the named ones get, and a picker whose saturation and
+      // brightness did nothing would be a strange picker.
+      final scheme = ColorScheme.fromSeed(
+        seedColor: custom,
+        brightness: brightness,
+        dynamicSchemeVariant: DynamicSchemeVariant.fidelity,
+      );
+      return ServerAccent(
+        container: scheme.primaryContainer,
+        onContainer: scheme.onPrimaryContainer,
+        line: scheme.primary,
+      );
+    });
+  }
+  final color = tint.named;
+  if (color == null) return null;
   return _accents.putIfAbsent((color, brightness), () {
     final scheme = ColorScheme.fromSeed(
       seedColor: _seeds[color]!,
@@ -69,6 +107,101 @@ ServerAccent? serverAccent(BuildContext context, ServerColor? color) {
       line: scheme.primary,
     );
   });
+}
+
+/// What colours a server: a named accent, a colour of the user's own, or
+/// nothing.
+///
+/// `ServerConfig` stores the two in two fields (its `customColor` doc says
+/// why), and this resolves them the way [ServerMark] resolves the three mark
+/// fields: the custom colour wins, and the named accent beside it is what an
+/// older build draws instead. Everything that paints a server's colour takes
+/// one of these rather than the fields, so the precedence lives here — and
+/// so the editor can preview a choice before there is a config to make it on.
+@immutable
+class ServerTint {
+  /// The named accent, or null. Drawn when [custom] is null; kept as the
+  /// older-build stand-in otherwise.
+  final ServerColor? named;
+
+  /// The user's own colour, opaque, or null.
+  final Color? custom;
+
+  const ServerTint({this.named, this.custom});
+
+  /// No colour at all: the server is drawn neutrally.
+  static const ServerTint none = ServerTint();
+
+  /// The tint [server] stores.
+  factory ServerTint.of(ServerConfig server) => ServerTint(
+    named: server.color,
+    custom: parseServerCustomColor(server.customColor),
+  );
+
+  /// A custom colour, with the named accent it is nearest to kept beside it
+  /// so a build without this field still draws something chosen.
+  factory ServerTint.custom(Color color) =>
+      ServerTint(named: nearestServerColor(color), custom: color);
+
+  bool get isNone => named == null && custom == null;
+
+  /// The two field values a `ServerConfig` stores for this tint: the inverse
+  /// of [ServerTint.of], so an editor holds one tint and writes both.
+  ({ServerColor? color, String? customColor}) get stored => (
+    color: named,
+    customColor: custom == null ? null : formatServerCustomColor(custom!),
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ServerTint && other.named == named && other.custom == custom;
+
+  @override
+  int get hashCode => Object.hash(named, custom);
+}
+
+/// The stored `#RRGGBB` form of [color], which is what
+/// `normalizeServerCustomColor` accepts back. Alpha is dropped: the badge fill
+/// is opaque by design.
+String formatServerCustomColor(Color color) {
+  final rgb = color.toARGB32() & 0xFFFFFF;
+  return '#${rgb.toRadixString(16).padLeft(6, '0').toUpperCase()}';
+}
+
+/// The colour a stored `customColor` names, or null when it is absent or not
+/// something this build will draw — the same rule the protocol applies on
+/// read, so a value that reached the record is the only thing that parses.
+Color? parseServerCustomColor(String? stored) {
+  final hex = normalizeServerCustomColor(stored);
+  if (hex == null) return null;
+  return Color(0xFF000000 | int.parse(hex.substring(1), radix: 16));
+}
+
+/// Below this saturation a colour is a grey, whatever its hue says.
+const double _greyThreshold = 0.35;
+
+/// The named accent closest to [color], for the older-build stand-in a custom
+/// colour keeps beside it.
+///
+/// Judged by hue, which is what the named accents differ by — except slate,
+/// which is the only one that is barely a hue at all and so takes every grey.
+/// The threshold sits above slate's own saturation (0.28), so slate maps to
+/// slate, and below every other seed's (violet's 0.57 is the next).
+ServerColor nearestServerColor(Color color) {
+  final hsv = HSVColor.fromColor(color);
+  if (hsv.saturation < _greyThreshold) return ServerColor.slate;
+  ServerColor? nearest;
+  var nearestDistance = double.infinity;
+  for (final MapEntry(key: candidate, value: seed) in _seeds.entries) {
+    if (candidate == ServerColor.slate) continue;
+    final delta = (HSVColor.fromColor(seed).hue - hsv.hue).abs() % 360;
+    final distance = delta > 180 ? 360 - delta : delta;
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest = candidate;
+    }
+  }
+  return nearest!;
 }
 
 /// One built-in glyph: what it looks like, what it is called, and what else
@@ -503,6 +636,9 @@ const List<(String, List<ServerIcon>)> serverIconGroups = [
   ),
 ];
 
+/// The hue [color] is generated from, for a picker that starts from it.
+Color serverColorSeed(ServerColor color) => _seeds[color]!;
+
 /// A human name for [color], for the editor's swatch tooltips.
 String serverColorLabel(ServerColor? color) => color == null
     ? 'None'
@@ -510,11 +646,11 @@ String serverColorLabel(ServerColor? color) => color == null
 
 /// A server's mark on its accent: what says *which* box a row is.
 ///
-/// Takes a colour and a [ServerMark] rather than a whole [ServerConfig] so the
+/// Takes a tint and a [ServerMark] rather than a whole [ServerConfig] so the
 /// editor can preview a pair the user is still choosing, before there is a
 /// config to preview them on.
 class ServerBadge extends StatelessWidget {
-  final ServerColor? color;
+  final ServerTint tint;
   final ServerMark mark;
 
   /// What the badge announces, overriding the mark's own description.
@@ -529,7 +665,7 @@ class ServerBadge extends StatelessWidget {
 
   const ServerBadge({
     super.key,
-    required this.color,
+    required this.tint,
     required this.mark,
     this.semanticsLabel,
     this.size = 32,
@@ -538,17 +674,36 @@ class ServerBadge extends StatelessWidget {
   /// Convenience for the common case: a built-in glyph, or none.
   ServerBadge.glyph({
     super.key,
-    required this.color,
+    required this.tint,
     required ServerIcon? icon,
     this.semanticsLabel,
     this.size = 32,
   }) : mark = ServerGlyphMark(icon);
 
+  /// The corner radius, as a share of the side. [ServerAvatar] draws its ring
+  /// concentric with this, so the two are kept in one place.
+  static const double cornerRatio = 0.28;
+
+  /// The accent border an image mark gets, as a share of the side: 2 px on
+  /// the list's 32 px badge, and never thinner than [_minFrameWidth] on the
+  /// compact row's.
+  static const double _frameRatio = 1 / 16;
+  static const double _minFrameWidth = 1.5;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final accent = serverAccent(context, color);
-    final radius = BorderRadius.circular(size * 0.28);
+    final accent = serverAccent(context, tint);
+    final radius = BorderRadius.circular(size * cornerRatio);
+    // An image covers the fill edge to edge, which is the one case where the
+    // accent has nowhere to show — so it moves to a frame around the image,
+    // in the accent's line colour rather than its container tone: at two
+    // pixels a pastel fill is invisible, a saturated line is not. Painted as
+    // a foreground so it sits over the image's edge instead of under it.
+    final framed = accent != null && mark is ServerImageMark;
+    final frameWidth = framed
+        ? (size * _frameRatio).clamp(_minFrameWidth, double.infinity)
+        : 0.0;
     return Container(
       width: size,
       height: size,
@@ -559,6 +714,12 @@ class ServerBadge extends StatelessWidget {
         color: accent?.container ?? scheme.surfaceContainerHighest,
         borderRadius: radius,
       ),
+      foregroundDecoration: framed
+          ? BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(color: accent.line, width: frameWidth),
+            )
+          : null,
       // Clipped so an imported image takes the badge's own shape rather than
       // squaring off the corner the accent rounds.
       child: ClipRRect(
@@ -639,44 +800,73 @@ class ServerBadge extends StatelessWidget {
   );
 }
 
-/// A [ServerBadge] with the connection status dot tucked into its corner.
+/// A [ServerBadge] ringed by the state of the server's open session, if any.
 ///
-/// The two are drawn together rather than side by side because the row is as
-/// narrow as 200 logical pixels in the resizable list pane, and because they
-/// answer one question between them — *which* box, and is it up. The status
-/// dot keeps its own tooltip, so nothing is lost by the arrangement.
+/// The ring replaces the dot that used to sit in the badge's corner. A dot
+/// changed only its colour between "nothing open" and "connected", which is
+/// the difference the eye is worst at picking out of a list; a ring changes
+/// the badge's *silhouette*. A server with no session has no ring at all, so
+/// the rows that are live are the rows that are framed, and the colour then
+/// says how the session is doing. It sits outside the badge with a gap, so it
+/// stays a separate mark on any fill, over any image, and beside the accent
+/// frame an image badge carries.
+///
+/// The two answer one question between them — *which* box, and is it up —
+/// which is why they are drawn together rather than side by side in a row
+/// that can be as narrow as 200 logical pixels. The ring keeps its own
+/// tooltip, so nothing is lost by the arrangement.
 class ServerAvatar extends StatelessWidget {
   final ServerConfig server;
   final TerminalStatus connection;
 
+  /// Whether the server has a session open at all. [connection] reports
+  /// `disconnected` both for a session that dropped and for none having been
+  /// opened, and only the first of those is worth a ring.
+  final bool hasSession;
+
   /// The badge's edge, or null for the list's usual [_badgeSize]. The compact
-  /// server row passes a smaller one; the dot and the overhang it needs scale
-  /// with it, so the whole mark stays in proportion rather than the dot
-  /// swallowing a small badge.
+  /// server row passes a smaller one; the ring and the gap inside it scale
+  /// with it, so the whole mark stays in proportion.
   final double? size;
 
   static const double _badgeSize = 32;
-  static const double _dotSize = 14;
 
-  /// The badge plus the overhang of the dot on its bottom-right corner.
-  static const double _extent = 36;
+  /// The ring's stroke and the gap between it and the badge, at the default
+  /// badge size. The stroke has a floor so a compact row's ring is still a
+  /// line rather than a haze.
+  static const double _ringWidth = 2;
+  static const double _gap = 2;
+  static const double _minRingWidth = 1.5;
 
   const ServerAvatar({
     super.key,
     required this.server,
     required this.connection,
+    required this.hasSession,
     this.size,
   });
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final badgeSize = size ?? _badgeSize;
     final scale = badgeSize / _badgeSize;
+    final ringWidth = (_ringWidth * scale).clamp(
+      _minRingWidth,
+      double.infinity,
+    );
+    final gap = _gap * scale;
+    final extent = badgeSize + 2 * (ringWidth + gap);
+    // The ring is drawn concentric with the badge's corners, which is what
+    // makes it read as a frame around this shape rather than a circle
+    // dropped over a square.
+    final ringRadius = badgeSize * ServerBadge.cornerRatio + gap + ringWidth;
     return SizedBox(
-      width: _extent * scale,
-      height: _extent * scale,
+      // The full extent is reserved whether or not a ring is drawn, so a
+      // session opening does not shift every row below it.
+      width: extent,
+      height: extent,
       child: Stack(
+        alignment: Alignment.center,
         children: [
           // Decorative, like the tab strip's: every row that shows this puts
           // the server's label in its title, and labelling the badge too
@@ -684,52 +874,40 @@ class ServerAvatar extends StatelessWidget {
           // that has no such sibling.
           ExcludeSemantics(
             child: ServerBadge(
-              color: server.color,
+              tint: ServerTint.of(server),
               mark: server.mark,
               size: badgeSize,
             ),
           ),
-          // Directional so the dot tucks into the badge's trailing corner
-          // rather than its leading one under a right-to-left locale.
-          PositionedDirectional(
-            end: 0,
-            bottom: 0,
-            child: _StatusDot(
-              status: connection,
-              ring: scheme.surface,
-              size: _dotSize * scale,
+          if (hasSession)
+            Positioned.fill(
+              child: _SessionRing(
+                status: connection,
+                width: ringWidth,
+                radius: ringRadius,
+              ),
             ),
-          ),
         ],
       ),
     );
   }
 }
 
-/// The connection dot, ringed in the surface color so it stays a separate mark
-/// when it overlaps the badge behind it.
-class _StatusDot extends StatelessWidget {
+/// The frame around a badge whose server has a session open, coloured by how
+/// that session is doing. While it is connecting, a highlight travels around
+/// the frame: motion is the one thing that says "not finished" without a
+/// word, and the alternative — a spinner — is a circle, which a rounded
+/// square cannot wear.
+class _SessionRing extends StatelessWidget {
   final TerminalStatus status;
-  final Color ring;
+  final double width;
+  final double radius;
 
-  /// The ringed dot's edge. Scales with the badge it sits on so a compact
-  /// row's smaller badge is not swallowed by a full-size dot.
-  final double size;
-  const _StatusDot({
+  const _SessionRing({
     required this.status,
-    required this.ring,
-    required this.size,
+    required this.width,
+    required this.radius,
   });
-
-  /// How much of the dot is the coloured centre; the rest is the ring that
-  /// separates it from the badge behind. 10 of the default 14.
-  static const double _innerRatio = 10 / 14;
-
-  /// The spinner's stroke at the default dot size, scaled with the dot like
-  /// every other dimension here. Left fixed it reads about a third heavier on
-  /// a compact row — the disproportion [ServerAvatar.size] exists to avoid,
-  /// reintroduced in the one state the eye is drawn to.
-  static const double _baseStrokeWidth = 1.6;
 
   @override
   Widget build(BuildContext context) {
@@ -750,35 +928,108 @@ class _StatusDot extends StatelessWidget {
     };
     return Tooltip(
       message: label,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: ring,
-          shape: BoxShape.circle,
-        ),
-        child: Center(
-          child: status == TerminalStatus.connecting
-              // Sized to the dot it replaces, so the badge doesn't shift while
-              // a connection is being made.
-              ? SizedBox(
-                  width: size * _innerRatio,
-                  height: size * _innerRatio,
-                  child: CircularProgressIndicator(
-                    strokeWidth:
-                        _baseStrokeWidth * size / ServerAvatar._dotSize,
-                  ),
-                )
-              : Container(
-                  width: size * _innerRatio,
-                  height: size * _innerRatio,
-                  decoration: BoxDecoration(
-                    color: color,
-                    shape: BoxShape.circle,
-                  ),
-                ),
+      child: status == TerminalStatus.connecting
+          ? _ConnectingRing(color: color, width: width, radius: radius)
+          : DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(radius),
+                border: Border.all(color: color, width: width),
+              ),
+            ),
+    );
+  }
+}
+
+/// A [_SessionRing] with a highlight sweeping around it.
+class _ConnectingRing extends StatefulWidget {
+  final Color color;
+  final double width;
+  final double radius;
+
+  const _ConnectingRing({
+    required this.color,
+    required this.width,
+    required this.radius,
+  });
+
+  @override
+  State<_ConnectingRing> createState() => _ConnectingRingState();
+}
+
+class _ConnectingRingState extends State<_ConnectingRing>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _turn = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _turn.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _turn,
+      builder: (context, _) => CustomPaint(
+        painter: _SweepRingPainter(
+          color: widget.color,
+          width: widget.width,
+          radius: widget.radius,
+          turn: _turn.value,
         ),
       ),
     );
   }
+}
+
+/// Strokes the ring with a sweep gradient rotated by [turn] of a full circle:
+/// a bright quarter that chases its own tail around the frame.
+class _SweepRingPainter extends CustomPainter {
+  final Color color;
+  final double width;
+  final double radius;
+  final double turn;
+
+  const _SweepRingPainter({
+    required this.color,
+    required this.width,
+    required this.radius,
+    required this.turn,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    // Stroked along its centre line, so the stroke stays inside the bounds.
+    final path = rect.deflate(width / 2);
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = width
+      ..shader = SweepGradient(
+        colors: [
+          color.withValues(alpha: 0.15),
+          color,
+          color.withValues(alpha: 0.15),
+        ],
+        stops: const [0, 0.25, 0.5],
+        // Past the highlight the ring settles at its dim tone: the gradient
+        // ends at half a turn and the shader repeats the last colour.
+        tileMode: TileMode.clamp,
+        transform: GradientRotation(turn * 2 * math.pi),
+      ).createShader(rect);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(path, Radius.circular(radius - width / 2)),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_SweepRingPainter old) =>
+      old.turn != turn ||
+      old.color != color ||
+      old.width != width ||
+      old.radius != radius;
 }

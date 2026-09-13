@@ -86,6 +86,7 @@ void main() {
         username: 'deploy',
         group: 'Production',
         color: ServerColor.red,
+        customColor: '#a1b2c3',
         icon: ServerIcon.rocket,
         createdAt: 1,
         updatedAt: 2,
@@ -94,7 +95,52 @@ void main() {
       expect(back.toJson(), equals(c.toJson()));
       expect(back.group, 'Production');
       expect(back.color, ServerColor.red);
+      // Canonicalized on the way out, so two devices spelling the same colour
+      // differently do not keep rewriting each other's record.
+      expect(back.customColor, '#A1B2C3');
       expect(back.icon, ServerIcon.rocket);
+    });
+
+    test('a custom colour is six hex digits or nothing', () {
+      expect(normalizeServerCustomColor('#A1B2C3'), '#A1B2C3');
+      expect(normalizeServerCustomColor('a1b2c3'), '#A1B2C3');
+      expect(normalizeServerCustomColor('  #a1b2c3 '), '#A1B2C3');
+      // No short form, no alpha, no names: each would be one more spelling
+      // every device has to agree on.
+      expect(normalizeServerCustomColor('#abc'), isNull);
+      expect(normalizeServerCustomColor('#A1B2C3FF'), isNull);
+      expect(normalizeServerCustomColor('red'), isNull);
+      expect(normalizeServerCustomColor('#GGGGGG'), isNull);
+      expect(normalizeServerCustomColor(''), isNull);
+      expect(normalizeServerCustomColor(null), isNull);
+    });
+
+    test('a custom colour this build refuses costs the colour, not the '
+        'server', () {
+      final base = ServerConfig(
+        id: 's1',
+        label: 'l',
+        host: 'h',
+        username: 'u',
+        color: ServerColor.teal,
+        createdAt: 1,
+        updatedAt: 2,
+      );
+      // Malformed, and the wrong type: neither throws out of fromJson, and
+      // the named accent kept beside the custom colour is what remains.
+      for (final value in ['#12', 0x123456, ['#123456']]) {
+        final decoded = ServerConfig.fromJson({
+          ...base.toJson(),
+          'customColor': value,
+        });
+        expect(decoded.customColor, isNull, reason: '$value');
+        expect(decoded.color, ServerColor.teal);
+        expect(decoded.toJson().containsKey('customColor'), isFalse);
+      }
+      // The const constructor cannot normalize, so toJson does: a value that
+      // would be refused on read is never written either.
+      final raw = base.copyWith(customColor: 'nonsense');
+      expect(raw.customColor, isNull);
     });
 
     test('ServerConfig carries excludeFromSync explicitly', () {
@@ -221,6 +267,7 @@ void main() {
       // simply doesn't use them, so an upgrade rewrites nothing.
       expect(json.containsKey('group'), isFalse);
       expect(json.containsKey('color'), isFalse);
+      expect(json.containsKey('customColor'), isFalse);
       expect(json.containsKey('icon'), isFalse);
       expect(json.containsKey('loginScript'), isFalse);
     });
@@ -262,21 +309,26 @@ void main() {
         username: 'u',
         group: 'Production',
         color: ServerColor.red,
+        customColor: '#E03131',
         icon: ServerIcon.rocket,
         createdAt: 1,
         updatedAt: 2,
       );
       expect(tagged.copyWith(color: ServerColor.teal).color, ServerColor.teal);
+      expect(tagged.copyWith(customColor: '#0000ff').customColor, '#0000FF');
       // Null alone means "unchanged" in copyWith, so clearing needs its own
       // flag — the same shape secretRef and jumpHostId already use.
       expect(tagged.copyWith(color: null).color, ServerColor.red);
+      expect(tagged.copyWith(customColor: null).customColor, '#E03131');
       final cleared = tagged.copyWith(
         clearGroup: true,
         clearColor: true,
+        clearCustomColor: true,
         clearIcon: true,
       );
       expect(cleared.group, isNull);
       expect(cleared.color, isNull);
+      expect(cleared.customColor, isNull);
       expect(cleared.icon, isNull);
     });
 

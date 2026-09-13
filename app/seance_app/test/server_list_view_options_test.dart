@@ -151,24 +151,24 @@ void main() {
       expect(semantics.label, contains('deploy@alpha.example.com:22'));
     });
 
-    testWidgets('the app-bar menu switches density and records the choice', (
+    testWidgets('the app-bar switch changes density and records the choice', (
       tester,
     ) async {
       await boot(tester, [server('alpha')]);
       await pumpPane(tester);
 
+      // Both choices in view, one tap apart; the current one is the selected
+      // segment, so the mode is readable without counting row heights.
+      final control = find.byType(SegmentedButton<ServerListDensity>);
+      Set<ServerListDensity> selected() =>
+          tester.widget<SegmentedButton<ServerListDensity>>(control).selected;
+      expect(selected(), {ServerListDensity.comfortable});
       expect(find.byIcon(Icons.density_medium), findsOneWidget);
-      await tester.tap(find.byIcon(Icons.density_medium));
-      await tester.pumpAndSettle();
-      // The menu item, not its label: a CheckedPopupMenuItem puts the text
-      // inside an ignore-pointer ListTile, so tapping the paragraph lands on
-      // the item by luck rather than by hit test.
-      await tester.tap(
-        find.widgetWithText(
-          CheckedPopupMenuItem<ServerListDensity>,
-          ServerListDensity.compact.label,
-        ),
-      );
+      expect(find.byIcon(Icons.density_small), findsOneWidget);
+      // Each segment says what it is, for a pointer and a screen reader.
+      expect(find.byTooltip(ServerListDensity.compact.label), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.density_small));
       await tester.pumpAndSettle();
 
       expect(state!.serverListDensity, ServerListDensity.compact);
@@ -177,9 +177,7 @@ void main() {
         ServerListDensity.compact,
         reason: 'the choice has to reach the settings the next launch loads',
       );
-      // The button reflects what the list is now doing, so the mode is
-      // readable without counting row heights.
-      expect(find.byIcon(Icons.density_small), findsOneWidget);
+      expect(selected(), {ServerListDensity.compact});
     });
   });
 

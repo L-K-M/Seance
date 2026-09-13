@@ -90,6 +90,7 @@ ServerConfig duplicateServerConfig(
   syncSecret: source.syncSecret,
   group: source.group,
   color: source.color,
+  customColor: source.customColor,
   // All three mark fields, not just the glyph: they are one choice to the
   // user, and a copy that lost the emoji or the imported image would look
   // like a different server at a glance — which is the whole point of a mark.

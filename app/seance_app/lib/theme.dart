@@ -3,14 +3,16 @@ import 'package:flutter/material.dart';
 /// Séance's theme. A calm, slightly spectral palette that reads well behind a
 /// terminal in both light and dark.
 class SeanceTheme {
-  static const _seed = Color(0xFF6B5BD2); // muted violet
+  /// The muted violet everything else is derived from. Public because the
+  /// server colour picker starts from it when no accent is chosen yet.
+  static const Color seed = Color(0xFF6B5BD2);
 
   static ThemeData light() => _base(Brightness.light);
   static ThemeData dark() => _base(Brightness.dark);
 
   static ThemeData _base(Brightness brightness) {
     final scheme = ColorScheme.fromSeed(
-      seedColor: _seed,
+      seedColor: seed,
       brightness: brightness,
     );
     return ThemeData(

@@ -1,12 +1,15 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
 import '../services/app_settings.dart';
+import '../theme.dart';
 import 'connection_test_report.dart';
 import 'server_appearance.dart';
+import 'server_color_picker.dart';
 import 'server_grouping.dart';
 import 'server_mark_picker.dart';
 import 'top_toast.dart';
@@ -224,7 +227,7 @@ class _ServerEditorState extends State<_ServerEditor> {
   final _loginScript = TextEditingController();
 
   late AuthMethod _auth;
-  late ServerColor? _color;
+  late ServerTint _tint;
 
   /// What a server shows before anything is chosen. Named once: the reset
   /// button's visibility and its action both compare against it, and a second
@@ -279,7 +282,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     _port = TextEditingController(text: '${e?.port ?? 22}');
     _user = TextEditingController(text: e?.username ?? '');
     _group = TextEditingController(text: e?.group ?? '');
-    _color = e?.color;
+    _tint = e == null ? ServerTint.none : ServerTint.of(e);
     _mark = e?.mark ?? _defaultMark;
     // Default new servers to password: ssh-agent is offered but not yet
     // supported by the backend, so defaulting to it would dead-end the very
@@ -373,8 +376,53 @@ class _ServerEditorState extends State<_ServerEditor> {
     super.dispose();
   }
 
+  /// Whether Return, pressed with the focus where it is now, should save.
+  ///
+  /// Save is the dialog's default button, and a form whose fields swallow
+  /// Return is one where the mouse has to come back at the end of every
+  /// edit. But Return already means something in two places: a multi-line
+  /// field, where it is a newline, and a focused control that activates on
+  /// it — a button, a switch, the auth dropdown — where the app-level binding
+  /// would otherwise fire it. Both keep their meaning; everywhere else it is
+  /// Save. Answered false rather than swallowing the key, so the event goes
+  /// on to whatever owned it before this existed. [anywhere] is the modified
+  /// chord, which saves even from the script box.
+  bool _returnSaves({required bool anywhere}) {
+    if (_busy) return false;
+    if (anywhere) return true;
+    final focus = FocusManager.instance.primaryFocus?.context;
+    if (focus == null) return true;
+    final editable = focus.findAncestorWidgetOfExactType<EditableText>();
+    if (editable != null && editable.maxLines != 1) return false;
+    return Actions.maybeFind<ActivateIntent>(focus) == null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    return Shortcuts(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.enter): _SaveIntent(),
+        SingleActivator(LogicalKeyboardKey.numpadEnter): _SaveIntent(),
+        // The chord editors use for "submit despite being multi-line", on
+        // both modifier conventions, since the shortcut is unbound otherwise
+        // and a macOS user's hands expect the one, a Linux user's the other.
+        SingleActivator(LogicalKeyboardKey.enter, control: true):
+            _SaveIntent(anywhere: true),
+        SingleActivator(LogicalKeyboardKey.enter, meta: true):
+            _SaveIntent(anywhere: true),
+        SingleActivator(LogicalKeyboardKey.numpadEnter, control: true):
+            _SaveIntent(anywhere: true),
+        SingleActivator(LogicalKeyboardKey.numpadEnter, meta: true):
+            _SaveIntent(anywhere: true),
+      },
+      child: Actions(
+        actions: {_SaveIntent: _SaveAction(this)},
+        child: _body(context),
+      ),
+    );
+  }
+
+  Widget _body(BuildContext context) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Form(
@@ -449,28 +497,38 @@ class _ServerEditorState extends State<_ServerEditor> {
             const SizedBox(height: 20),
             Row(
               children: [
-                OutlinedButton.icon(
-                  onPressed: _busy || _testing ? null : _testConnection,
-                  icon: _testing
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          // Labelled like the outcome icons this PR adds: a
-                          // spinner is the one state with nothing to read, so
-                          // without this a screen-reader user cannot tell a
-                          // running test from a button that did nothing. The
-                          // indicator's own parameter rather than a wrapping
-                          // `Semantics`, which would merge a second node into
-                          // its announcement.
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            semanticsLabel: 'Testing connection',
-                          ),
-                        )
-                      : const Icon(Icons.wifi_tethering, size: 18),
-                  label: Text(_testing ? 'Testing…' : 'Test connection'),
+                // Flexible, so the row never overflows: on a phone at a large
+                // text scale the three buttons are wider than the dialog, and
+                // this is the one whose label can wrap onto a second line
+                // without changing what the row means.
+                Flexible(
+                  child: Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: OutlinedButton.icon(
+                      onPressed: _busy || _testing ? null : _testConnection,
+                      icon: _testing
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              // Labelled like the outcome icons this PR adds:
+                              // a spinner is the one state with nothing to
+                              // read, so without this a screen-reader user
+                              // cannot tell a running test from a button that
+                              // did nothing. The indicator's own parameter
+                              // rather than a wrapping `Semantics`, which
+                              // would merge a second node into its
+                              // announcement.
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                semanticsLabel: 'Testing connection',
+                              ),
+                            )
+                          : const Icon(Icons.wifi_tethering, size: 18),
+                      label: Text(_testing ? 'Testing…' : 'Test connection'),
+                    ),
+                  ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 8),
                 // Cancel stays live during a test: the attempt cannot be
                 // stopped, but being unable to leave the dialog for the five
                 // minutes an authentication may take is worse than letting it
@@ -639,7 +697,7 @@ class _ServerEditorState extends State<_ServerEditor> {
         children: [
           // Colour and mark combine, so they are previewed together rather
           // than left to be imagined from two separate pickers.
-          ServerBadge(color: _color, mark: _mark),
+          ServerBadge(tint: _tint, mark: _mark),
           const SizedBox(width: 12),
           Text('Appearance', style: Theme.of(context).textTheme.titleSmall),
         ],
@@ -679,10 +737,16 @@ class _ServerEditorState extends State<_ServerEditor> {
         children: [
           for (final color in <ServerColor?>[null, ...ServerColor.values])
             _ColorSwatch(
-              color: color,
-              selected: _color == color,
-              onTap: () => setState(() => _color = color),
+              tint: ServerTint(named: color),
+              selected: _tint == ServerTint(named: color),
+              onTap: () => setState(() => _tint = ServerTint(named: color)),
             ),
+          // Last, after the named ten: the picker is the way past them, not
+          // the first thing to reach for.
+          _CustomColorSwatch(
+            color: _tint.custom,
+            onTap: _pickCustomColor,
+          ),
         ],
       ),
       const SizedBox(height: 16),
@@ -700,7 +764,7 @@ class _ServerEditorState extends State<_ServerEditor> {
         runSpacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          ServerBadge(color: _color, mark: _mark, size: 44),
+          ServerBadge(tint: _tint, mark: _mark, size: 44),
           OutlinedButton.icon(
             onPressed: _pickMark,
             icon: const Icon(Icons.palette_outlined),
@@ -721,10 +785,26 @@ class _ServerEditorState extends State<_ServerEditor> {
     final chosen = await showServerMarkPicker(
       context,
       current: _mark,
-      accent: _color,
+      accent: _tint,
     );
     if (chosen == null || !mounted) return;
     setState(() => _mark = chosen);
+  }
+
+  /// Open the colour picker on the colour in force: the custom one if there
+  /// is one, else the seed of the named accent — so "a bit darker than teal"
+  /// starts from teal — else the app's own violet.
+  Future<void> _pickCustomColor() async {
+    final named = _tint.named;
+    final chosen = await showServerColorPicker(
+      context,
+      initial:
+          _tint.custom ??
+          (named == null ? SeanceTheme.seed : serverColorSeed(named)),
+      mark: _mark,
+    );
+    if (chosen == null || !mounted) return;
+    setState(() => _tint = ServerTint.custom(chosen));
   }
 
   /// Per-server opt-in for including this credential in sync. Gated globally by
@@ -816,6 +896,7 @@ class _ServerEditorState extends State<_ServerEditor> {
   ServerConfig _formConfig({required String? secretRef, required int now}) {
     final existing = widget.existing;
     final mark = _mark.stored;
+    final tint = _tint.stored;
     return ServerConfig(
       id: existing?.id ?? _draftId,
       label: _label.text.trim(),
@@ -837,7 +918,8 @@ class _ServerEditorState extends State<_ServerEditor> {
       // space typed into the group name can't fork a second section that
       // looks identical to the one the user meant to join.
       group: normalizeServerGroup(_group.text),
-      color: _color,
+      color: tint.color,
+      customColor: tint.customColor,
       // Read once rather than three times: encoding an image mark for storage
       // is not free, and the three have to come from one reading anyway so
       // they cannot disagree about which is in force.
@@ -1038,18 +1120,45 @@ class _ServerEditorState extends State<_ServerEditor> {
   }
 }
 
+/// Return, in the editor: save the server, unless the focus is somewhere the
+/// key means something else (see `_returnSaves`).
+class _SaveIntent extends Intent {
+  /// Set for the modified chord, which saves wherever the focus is.
+  final bool anywhere;
+  const _SaveIntent({this.anywhere = false});
+}
+
+/// An [Action] rather than a callback so that declining is possible: an
+/// action that is not enabled leaves the key event unhandled, and it carries
+/// on to the text field or button that was going to take it. A
+/// `CallbackShortcuts` binding would have consumed it either way.
+class _SaveAction extends Action<_SaveIntent> {
+  final _ServerEditorState _editor;
+  _SaveAction(this._editor);
+
+  @override
+  bool isEnabled(_SaveIntent intent) =>
+      _editor._returnSaves(anywhere: intent.anywhere);
+
+  @override
+  Object? invoke(_SaveIntent intent) {
+    _editor._save();
+    return null;
+  }
+}
+
 /// One choice in the colour row. The first is null — "no colour" — drawn as
 /// the same neutral tone an untagged server gets in the list, so the option
 /// shows what it does rather than describing it.
 class _ColorSwatch extends StatelessWidget {
-  final ServerColor? color;
+  final ServerTint tint;
   final bool selected;
   final VoidCallback onTap;
 
   static const double _size = 34;
 
   const _ColorSwatch({
-    required this.color,
+    required this.tint,
     required this.selected,
     required this.onTap,
   });
@@ -1057,11 +1166,11 @@ class _ColorSwatch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final accent = serverAccent(context, color);
+    final accent = serverAccent(context, tint);
     final fill = accent?.container ?? scheme.surfaceContainerHighest;
     final foreground = accent?.onContainer ?? scheme.onSurfaceVariant;
     return Tooltip(
-      message: serverColorLabel(color),
+      message: serverColorLabel(tint.named),
       child: InkWell(
         onTap: onTap,
         customBorder: const CircleBorder(),
@@ -1081,6 +1190,68 @@ class _ColorSwatch extends StatelessWidget {
           child: selected
               ? Icon(Icons.check, size: 16, color: foreground)
               : null,
+        ),
+      ),
+    );
+  }
+}
+
+/// The colour row's way past the named ten: a swatch that opens the picker.
+///
+/// Shows the custom colour when one is chosen, as a swatch like its
+/// neighbours, so the row reads "this one is selected" the same way whether
+/// the choice was named or picked. With none chosen it wears the spectrum
+/// instead of a colour, which is the one honest answer to "what does this
+/// button give me" before it has been pressed.
+class _CustomColorSwatch extends StatelessWidget {
+  /// The custom colour in force, or null when a named accent (or none) is.
+  final Color? color;
+  final VoidCallback onTap;
+
+  const _CustomColorSwatch({required this.color, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final chosen = color;
+    final accent = chosen == null
+        ? null
+        : serverAccent(context, ServerTint(custom: chosen));
+    return Tooltip(
+      message: chosen == null
+          ? 'Custom colour…'
+          : 'Custom colour (${formatServerCustomColor(chosen)})',
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: Container(
+          width: _ColorSwatch._size,
+          height: _ColorSwatch._size,
+          decoration: BoxDecoration(
+            color: accent?.container,
+            gradient: accent != null
+                ? null
+                : SweepGradient(
+                    colors: [
+                      for (var hue = 0; hue <= 360; hue += 60)
+                        HSVColor.fromAHSV(1, hue.toDouble(), 0.6, 0.95)
+                            .toColor(),
+                    ],
+                  ),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: accent != null ? scheme.primary : scheme.outlineVariant,
+              width: accent != null ? 2.5 : 1,
+            ),
+          ),
+          child: Icon(
+            accent != null ? Icons.check : Icons.colorize,
+            size: 16,
+            // Over the spectrum, a fixed dark tone: no single "on" colour
+            // fits every hue, and the lighter tones the sweep is drawn in
+            // carry dark well enough.
+            color: accent?.onContainer ?? Colors.black87,
+          ),
         ),
       ),
     );

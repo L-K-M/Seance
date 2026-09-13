@@ -98,6 +98,21 @@ class ServerConfig {
   /// and it costs a color rather than a credential.
   final ServerColor? color;
 
+  /// A colour of the user's own to draw instead of [color], as `#RRGGBB`, or
+  /// null to use the named accent.
+  ///
+  /// The reasons [color] is a closed set still hold, and this is not a way
+  /// around them. Whatever is stored here is a *seed*: the app derives the
+  /// fill and a legible foreground per theme brightness from it, the same as
+  /// it does for a named accent, so a colour picked in light mode is not
+  /// drawn raw in dark mode. And a build that predates this field ignores the
+  /// key and draws [color], which the editor keeps set to the nearest of the
+  /// named accents whenever a custom colour is chosen — the same arrangement
+  /// [icon] has with [iconEmoji] and [iconImage]. A value that is not six hex
+  /// digits is dropped on read rather than drawn or re-published, like every
+  /// other presentation field.
+  final String? customColor;
+
   /// A built-in glyph for this server, or null for the default. See [color]
   /// for the unrecognized-value behavior, which is identical.
   ///
@@ -202,6 +217,7 @@ class ServerConfig {
     this.syncSecret = false,
     this.group,
     this.color,
+    this.customColor,
     this.icon,
     this.iconEmoji,
     this.iconImage,
@@ -228,6 +244,8 @@ class ServerConfig {
     bool clearGroup = false,
     ServerColor? color,
     bool clearColor = false,
+    String? customColor,
+    bool clearCustomColor = false,
     ServerIcon? icon,
     bool clearIcon = false,
     String? iconEmoji,
@@ -273,6 +291,11 @@ class ServerConfig {
       // is why every caller-facing path — the editor, this — normalizes.
       group: clearGroup ? null : normalizeServerGroup(group ?? this.group),
       color: clearColor ? null : (color ?? this.color),
+      // Normalized like the group and the emoji: the const constructor
+      // cannot, so every other way in does.
+      customColor: clearCustomColor
+          ? null
+          : normalizeServerCustomColor(customColor ?? this.customColor),
       icon: clearIcon ? null : (icon ?? this.icon),
       // Normalized here as well as in fromJson, for the same reason the group
       // is: the two ways a value can be replaced have to agree, and a const
@@ -306,6 +329,7 @@ class ServerConfig {
     // on every save and every sync round.
     final emoji = normalizeServerEmoji(iconEmoji);
     final image = normalizeServerIconImage(iconImage);
+    final custom = normalizeServerCustomColor(customColor);
     return {
         'id': id,
         'label': label,
@@ -319,6 +343,7 @@ class ServerConfig {
         'syncSecret': syncSecret,
         if (group != null) 'group': group,
         if (color != null) 'color': color!.name,
+        if (custom != null) 'customColor': custom,
         if (icon != null) 'icon': icon!.name,
         // Written only when they survive validation, so a value this build
         // refuses to draw is never re-published as though it had been
@@ -352,6 +377,11 @@ class ServerConfig {
         // put a nameless section in the list on the device that read it.
         group: normalizeServerGroup(json['group'] as String?),
         color: _colorFromName(json['color'] as String?),
+        // Type-tested for the same reason the mark fields below are: a
+        // record carrying a number here must cost the colour, not the server.
+        customColor: json['customColor'] is String
+            ? normalizeServerCustomColor(json['customColor'] as String)
+            : null,
         // Type-tested like the two fields below rather than cast: a record
         // carrying a number here would otherwise throw out of fromJson and
         // take the whole server entry with it, which is the degradation the
@@ -387,6 +417,24 @@ String? normalizeServerGroup(String? group) {
   final trimmed = group.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
+
+/// The stored form of a custom colour: `#RRGGBB`, upper-case, or null when
+/// [value] is not exactly six hex digits with or without the `#`.
+///
+/// No alpha and no short form. A badge fill has to be opaque to sit under a
+/// mark, and `#RGB` would double the number of spellings every device has to
+/// agree on for the sake of a form nobody stores. Whitespace at the edges is
+/// forgiven, like a group name's; anything else is the caller's mistake and
+/// reads as "no custom colour" rather than as some other colour.
+String? normalizeServerCustomColor(String? value) {
+  if (value == null) return null;
+  var hex = value.trim();
+  if (hex.startsWith('#')) hex = hex.substring(1);
+  if (!_sixHexDigits.hasMatch(hex)) return null;
+  return '#${hex.toUpperCase()}';
+}
+
+final RegExp _sixHexDigits = RegExp(r'^[0-9a-fA-F]{6}$');
 
 /// The stored form of a login script: CR family line endings canonicalized to
 /// LF and outer edges trimmed (so an editor's trailing newline doesn't survive

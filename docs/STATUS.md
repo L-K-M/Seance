@@ -7,7 +7,10 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-12. The server list now offers a compact row and
+_Last updated: 2026-09-13. The server list now says which row is selected and
+which servers have a session open in ways the eye can pick out, a server's
+colour can be one of the user's own, an SVG can be its image, and Return saves
+the editor. Before that, the server list gained a compact row and
 pinning: the app bar's density switch trades the address line for a row that
 is 40 px instead of 72, and a pinned server sits in its own section at the top
 (device-local, never synced). Before that, a single record past the server's
@@ -36,6 +39,71 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## List signals, custom colours, SVG marks, Return saves (2026-09-13)
+
+Five things about the server list and its editor, all asked for together.
+
+**Selected and connected rows.** The selected row used to differ from its
+neighbours only by a tinted title, and a connected server only by the colour
+of a ten-pixel dot — both the kind of difference the eye is worst at picking
+out of a list of coloured badges. The selected row is now filled (the
+standard "selected" surface, so it means the same on every row), barred down
+its leading edge in the app's colour, and set in a heavier title. The corner
+dot is gone: a server with a session open wears a *ring* around its badge,
+green when connected, red on error, grey when the session dropped, and with a
+highlight sweeping round it while connecting. A server with no session wears
+no ring at all, so the live rows are the framed rows and the colour then says
+how each is doing. The ring sits outside the badge with a gap, so it stays a
+separate mark over any fill or image; its footprint is reserved either way so
+rows never shift. Both the ring and the selection styling scale with the
+compact row. `ServerAvatar` takes `hasSession` for this, since
+`TerminalStatus.disconnected` covers both "dropped" and "never opened".
+
+**The accent under an image.** An imported image covers the badge's fill edge
+to edge, which hid the server's colour exactly where a logo made the row most
+distinctive. An image badge now carries the accent as a frame around the
+image, in the accent's line colour rather than its pastel fill (invisible at
+two pixels). Glyph and emoji badges are unchanged: the fill shows it there.
+
+**Custom colours.** The colour row's ten named accents gained a picker. The
+protocol's `ServerConfig` grew a `customColor` field (`#RRGGBB`, normalized
+like the other presentation fields, dropped on read when malformed) beside
+the named `color`, on the same forward-compatibility arrangement as the mark
+fields: the editor keeps `color` set to the nearest named accent (by hue,
+greys to slate), so a build without the field still draws something chosen.
+The named accents are derived with the tonal-spot scheme, which folds every
+seed into the same pastel; a custom colour uses the fidelity variant instead,
+so what was picked is what is painted, with the foreground derived for
+legibility in both themes — the reason `ServerColor` is a closed set still
+holds, and a custom colour is a seed, not a raw fill. The app resolves the
+two fields through `ServerTint`, the colour analogue of `ServerMark`. The
+picker itself is hue, saturation and brightness sliders on gradient tracks, a
+hex box, and the badge previewed on the colour; the exact value is kept
+beside the slider state so a typed colour comes back untouched and a hue
+survives being desaturated.
+
+**SVG marks.** The image tab accepts SVG. The file is told apart from a bitmap
+by its content, rasterized with `flutter_svg` (short edge at twice the stored
+side, long edge capped so a banner cannot ask for a fifty-thousand-pixel
+bitmap), and then cropped, bounded and re-encoded by exactly the code a PNG
+goes through, so a transparent drawing shows the server's colour through it.
+Unsupported SVG is reported as "not an image" rather than crashing: the
+parser signals it with `Error` subclasses, which that path catches on
+purpose. Desktop pickers get an explicit extension list because the plugin's
+own image filter leaves SVG out on Linux and Windows; mobile keeps the
+platform image type, which already covers it.
+
+**Return saves.** Return in the editor triggers Save from any one-line field,
+through a `Shortcuts`/`Actions` pair whose action declines — leaving the key
+to whoever owned it — when the focus is in a multi-line field (a newline) or
+on a control that activates on Return (the buttons, the switches, the auth
+dropdown). Ctrl+Return and Cmd+Return save from anywhere, including the login
+script. The editor's button row also became flexible, since at a large text
+scale it overflowed the dialog on a phone.
+
+**Density switch.** The app bar's density menu is a two-segment button: both
+choices in view, the current one filled, one tap to switch.
 
 ## The vault re-key survives a crash (2026-09-12)
 
@@ -585,6 +653,16 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
 - `app/seance_app/test/server_grouping_test.dart` — sectioning: no groups means
   no headers, case-folded keys with the first spelling kept, ungrouped last,
   collapse/expand, and a stale collapsed key doing nothing.
+- `app/seance_app/test/server_editor_test.dart` — Return saves from a
+  one-line field, is a newline in the login script, presses a focused button
+  instead, and does nothing while the form is invalid; a custom colour is
+  saved with its nearest named accent and reopens as itself.
+- `app/seance_app/test/server_color_picker_test.dart` — the picker returns
+  the colour handed in untouched, follows a typed hex value and a dragged
+  slider, flags a non-colour, keeps a hue through desaturation.
+- `app/seance_app/test/server_tile_test.dart` — the selected row is filled,
+  barred and bold; a row with a session wears the ring and one without does
+  not, at the same footprint, in both densities.
 - `app/seance_app/test/server_appearance_test.dart` — every colour × icon
   renders, the same accent resolves differently per brightness, and the status
   dot keeps its tooltip inside the badge.

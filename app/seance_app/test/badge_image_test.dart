@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -237,6 +238,127 @@ void main() {
     expect(result.image, isNull);
     expect(result.failure, BadgeImageFailure.tooLarge);
   });
+
+  group('svg', () {
+    /// A 100x50 drawing: a blue field with a yellow disc in its middle, so
+    /// the centre crop of its raster is recognisable.
+    final svg = Uint8List.fromList(
+      utf8.encode(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!-- a logo -->\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">'
+        '<rect width="100" height="50" fill="#3366cc"/>'
+        '<circle cx="50" cy="25" r="20" fill="#ffcc00"/>'
+        '</svg>',
+      ),
+    );
+
+    test('is told apart from a bitmap by its content, not a name', () async {
+      expect(looksLikeSvg(svg), isTrue);
+      expect(looksLikeSvg(await png(8, 8)), isFalse);
+      // A byte-order mark and leading whitespace are what an editor leaves.
+      expect(
+        looksLikeSvg(Uint8List.fromList([0xEF, 0xBB, 0xBF, ...svg])),
+        isTrue,
+      );
+      expect(
+        looksLikeSvg(Uint8List.fromList(utf8.encode('  \n<svg/>'))),
+        isTrue,
+      );
+      expect(
+        looksLikeSvg(Uint8List.fromList(utf8.encode('svg is not xml'))),
+        isFalse,
+      );
+      expect(looksLikeSvg(Uint8List(0)), isFalse);
+    });
+
+    test('is rasterized, cropped square and stored like a bitmap', () async {
+      final result = await encodeBadgeImage(
+        svg,
+        maxBytes: kMaxServerIconImageBytes,
+      );
+      expect(result.failure, isNull);
+      final image = result.image!;
+      // Drawn large enough to fill a full-size badge: the short edge is
+      // rendered at twice the stored side, so no source resolution caps it.
+      expect(image.side, kBadgeImageSide);
+      expect(
+        image.png.sublist(0, 8),
+        [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        reason: 'a PNG, whatever came in',
+      );
+      final decoded = await decode(image.png);
+      expect(decoded.width, kBadgeImageSide);
+      expect(decoded.height, kBadgeImageSide);
+      // The middle of the crop is the disc; a corner is the field. Read
+      // through the raw pixels rather than trusting the dimensions alone.
+      final pixels = (await decoded.toByteData())!;
+      ui.Color at(int x, int y) {
+        final i = (y * kBadgeImageSide + x) * 4;
+        return ui.Color.fromARGB(
+          pixels.getUint8(i + 3),
+          pixels.getUint8(i),
+          pixels.getUint8(i + 1),
+          pixels.getUint8(i + 2),
+        );
+      }
+
+      expect(at(128, 128), const ui.Color(0xFFFFCC00));
+      expect(at(4, 4), const ui.Color(0xFF3366CC));
+      decoded.dispose();
+    });
+
+    test('a drawing with no fill keeps its transparency', () async {
+      // The badge draws the image over the accent fill, so a logo on a
+      // transparent background shows the server's colour through it — which
+      // is the whole reason to prefer an SVG. Flattening onto white would
+      // lose that silently.
+      final result = await encodeBadgeImage(
+        Uint8List.fromList(
+          utf8.encode(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<circle cx="5" cy="5" r="2" fill="#000"/></svg>',
+          ),
+        ),
+        maxBytes: kMaxServerIconImageBytes,
+      );
+      final decoded = await decode(result.image!.png);
+      final pixels = (await decoded.toByteData())!;
+      // The corner is outside the disc: alpha zero.
+      expect(pixels.getUint8(3), 0);
+      decoded.dispose();
+    });
+
+    test('one that will not parse is reported as not an image', () async {
+      final result = await encodeBadgeImage(
+        Uint8List.fromList(utf8.encode('<svg><rect width="10" </svg')),
+        maxBytes: kMaxServerIconImageBytes,
+      );
+      expect(result.image, isNull);
+      expect(result.failure, BadgeImageFailure.undecodable);
+    });
+
+    test('a banner is bounded before it is drawn', () async {
+      // 1000:1. At twice the stored side for the short edge this would be a
+      // 512,000-pixel-wide bitmap; the long edge cap scales it down instead,
+      // and the centre crop still comes out square.
+      final result = await encodeBadgeImage(
+        Uint8List.fromList(
+          utf8.encode(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1">'
+            '<rect width="1000" height="1" fill="#000"/></svg>',
+          ),
+        ),
+        maxBytes: kMaxServerIconImageBytes,
+      );
+      expect(result.failure, isNull);
+      final decoded = await decode(result.image!.png);
+      expect(decoded.width, decoded.height);
+      expect(decoded.width, lessThanOrEqualTo(kBadgeImageSide));
+      decoded.dispose();
+    });
+  });
+
 }
 
 /// [ui.decodeImageFromPixels] with a future instead of a callback.
