@@ -399,15 +399,17 @@ class _ServerEditorState extends State<_ServerEditor> {
   /// commit the text rather than save around it.
   bool _returnSaves({required bool anywhere}) {
     if (_busy) return false;
-    if (anywhere) return true;
     final focus = FocusManager.instance.primaryFocus?.context;
-    if (focus == null) return true;
-    final editable = focus.findAncestorWidgetOfExactType<EditableText>();
+    final editable = focus?.findAncestorWidgetOfExactType<EditableText>();
+    // Before the chord's early return: a composition is open text, and the
+    // chord saving around it would persist the half-typed preedit.
     if (editable != null) {
-      if (editable.maxLines != 1) return false;
       final composing = editable.controller.value.composing;
       if (composing.isValid && !composing.isCollapsed) return false;
     }
+    if (anywhere) return true;
+    if (focus == null) return true;
+    if (editable != null && editable.maxLines != 1) return false;
     return Actions.maybeFind<ActivateIntent>(focus) == null;
   }
 

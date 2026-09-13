@@ -74,10 +74,15 @@ ServerAccent? serverAccent(BuildContext context, ServerTint tint) {
   final brightness = Theme.of(context).brightness;
   final custom = tint.custom;
   if (custom != null) {
-    while (_customAccents.length >= _customAccentLimit) {
-      _customAccents.remove(_customAccents.keys.first);
+    final key = (custom.toARGB32(), brightness);
+    // Only when about to insert: a hit at the limit must not evict a live
+    // entry to make room for nothing.
+    if (!_customAccents.containsKey(key)) {
+      while (_customAccents.length >= _customAccentLimit) {
+        _customAccents.remove(_customAccents.keys.first);
+      }
     }
-    return _customAccents.putIfAbsent((custom.toARGB32(), brightness), () {
+    return _customAccents.putIfAbsent(key, () {
       // The fidelity variant, unlike the tonal-spot default the named
       // accents use: it keeps the seed's own chroma and paints the seed
       // itself as the container tone. So what was picked is what is drawn,

@@ -106,6 +106,10 @@ void main() {
     while (!done() && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }
+    // Named as what it is: a save that never landed reads differently from
+    // one that wrote the wrong thing, and the downstream expect only says
+    // the second.
+    expect(done(), isTrue, reason: 'timed out after 5 s waiting for a save');
   }
 
   /// Press [key] with the editor open, and give a save it triggers time to
