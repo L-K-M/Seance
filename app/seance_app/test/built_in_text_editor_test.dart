@@ -628,6 +628,7 @@ Future<void> _pollUntil(WidgetTester tester, bool Function() condition) async {
     await tester.pump();
     if (condition()) return;
   }
+  fail('Polled condition was not met within 5s');
 }
 
 /// The editor buffer's current text, or null while the loading spinner is
@@ -706,7 +707,16 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
     RemoteTransferCancellation? cancellation,
     bool computeHash = true,
   }) async {
-    final bytes = utf8.encode(files[path]!);
+    final content = files[path];
+    if (content == null) {
+      throw RemoteFileException(
+        kind: RemoteFileErrorKind.notFound,
+        operation: 'download',
+        path: path,
+        message: 'Not found',
+      );
+    }
+    final bytes = utf8.encode(content);
     destination.add(bytes);
     onProgress?.call(bytes.length, bytes.length);
     return entry(path);

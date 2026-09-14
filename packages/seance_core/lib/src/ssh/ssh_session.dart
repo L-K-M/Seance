@@ -500,7 +500,9 @@ class SshSession {
 
     // One deadline across both waits: two independent effectiveTimeout
     // windows could otherwise hold the caller for twice the configured time.
-    final deadline = DateTime.now().add(effectiveTimeout);
+    // A stopwatch keeps the arithmetic monotonic where DateTime would
+    // inherit wall-clock adjustments.
+    final stopwatch = Stopwatch()..start();
     try {
       // Both stream completions are awaited together: awaiting them one after
       // the other would leave the second without an error handler until the
@@ -509,7 +511,7 @@ class SshSession {
         stdoutDone.future,
         stderrDone.future,
       ], eagerError: true).timeout(effectiveTimeout);
-      final remaining = deadline.difference(DateTime.now());
+      final remaining = effectiveTimeout - stopwatch.elapsed;
       await channel.done.timeout(
         remaining.isNegative ? Duration.zero : remaining,
       );
