@@ -644,9 +644,7 @@ class ServerTile extends StatelessWidget {
     final connected = connection == TerminalStatus.connected;
     final hasSession = tabCount > 0;
     final compact = density == ServerListDensity.compact;
-    final avatarSize = compact
-        ? _compactAvatarSize
-        : ServerAvatar.defaultBadgeSize;
+    final avatarSize = compact ? _compactAvatarSize : ServerBadge.defaultSize;
     final address = '${server.username}@${server.host}:${server.port}';
     return ListTile(
       selected: selected,

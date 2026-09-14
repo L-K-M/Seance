@@ -98,6 +98,10 @@ void main() {
         _wrap(const ServerAccentBar(tint: ServerTint(named: ServerColor.red))),
       );
       expect(_barColor(tester), isNotNull);
+      expect(
+        tester.getSize(find.byType(ServerAccentBar)).width,
+        ServerAccentBar.width,
+      );
     });
 
     testWidgets('the same accent resolves differently per brightness', (
@@ -666,6 +670,14 @@ void main() {
         _wrap(ServerBadge(mark: ServerImageMark(bytes!))),
       );
       await tester.pump();
+      expect(_badgeFill(tester), neutral);
+      expect(frameOf(tester), isNull);
+
+      // The third kind of mark, on the same tile: a per-mark decoration
+      // branch coming back is exactly what this group exists to catch.
+      await tester.pumpWidget(
+        _wrap(const ServerBadge(mark: ServerEmojiMark('\u{1F680}'))),
+      );
       expect(_badgeFill(tester), neutral);
       expect(frameOf(tester), isNull);
     });

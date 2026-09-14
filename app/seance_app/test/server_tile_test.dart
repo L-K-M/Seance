@@ -10,11 +10,12 @@ import 'package:seance_core/seance_core.dart';
 /// and which have a session open. Both in both densities, since the compact
 /// row is not the comfortable one with a line removed.
 void main() {
-  ServerConfig server() => ServerConfig(
+  ServerConfig server({ServerColor? color}) => ServerConfig(
     id: 'box',
     label: 'box',
     host: 'box.example.com',
     username: 'deploy',
+    color: color,
     createdAt: 1,
     updatedAt: 1,
   );
@@ -25,13 +26,14 @@ void main() {
     bool selected = false,
     int tabCount = 0,
     TerminalStatus connection = TerminalStatus.disconnected,
+    ServerColor? color,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: ServerTile(
             density: density,
-            server: server(),
+            server: server(color: color),
             connection: connection,
             tabCount: tabCount,
             reachability: ProbeStatus.unknown,
@@ -83,6 +85,41 @@ void main() {
         await pump(tester, density: density, selected: false);
         expect(tile(tester).shape, isNull);
         expect(titleStyle(tester).fontWeight, isNot(FontWeight.w600));
+      });
+
+      testWidgets('the row carries the server\'s colour as its bar', (
+        tester,
+      ) async {
+        // The composition the whole treatment rests on. Every badge is
+        // neutral now, so a tint that stopped reaching the bar would take
+        // the colour out of the list while the bar's own tests, and the
+        // badge's, stayed green.
+        const red = ServerTint(named: ServerColor.red);
+        await pump(tester, density: density, color: ServerColor.red);
+        final bar = find.byType(ServerAccentBar);
+        expect(tester.widget<ServerAccentBar>(bar).tint, red);
+        final painted = tester.widget<DecoratedBox>(
+          find.descendant(of: bar, matching: find.byType(DecoratedBox)),
+        );
+        expect(
+          (painted.decoration as BoxDecoration).color,
+          serverAccent(tester.element(bar), red)!.line,
+        );
+        // As tall as the whole mark beside it, ring included, at either
+        // density — the two read as one block or as two stray shapes.
+        expect(
+          tester.getSize(bar).height,
+          ServerAvatar.extentFor(tester.getSize(find.byType(ServerBadge)).width),
+        );
+
+        // No colour: nothing painted, but the slot stays, so the marks of
+        // coloured and uncoloured rows line up in one column.
+        await pump(tester, density: density);
+        expect(
+          find.descendant(of: bar, matching: find.byType(DecoratedBox)),
+          findsNothing,
+        );
+        expect(tester.getSize(bar).width, ServerAccentBar.width);
       });
 
       testWidgets('a row with a session wears the ring, others do not', (

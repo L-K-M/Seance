@@ -671,7 +671,14 @@ class ServerAccentBar extends StatelessWidget {
   /// bar cannot take the row's own height.
   final double height;
 
-  const ServerAccentBar({super.key, required this.tint, this.height = 32});
+  /// Defaulted to the badge's own edge, so a bar and a badge left at their
+  /// defaults — the editor's preview — are one aligned block whatever that
+  /// edge becomes.
+  const ServerAccentBar({
+    super.key,
+    required this.tint,
+    this.height = ServerBadge.defaultSize,
+  });
 
   /// The slot is this wide whether or not a line is drawn in it, so the marks
   /// of coloured and uncoloured servers still line up in one column.
@@ -717,11 +724,15 @@ class ServerBadge extends StatelessWidget {
   final String? semanticsLabel;
   final double size;
 
+  /// The badge's edge in the list, and what every other default here is
+  /// measured from.
+  static const double defaultSize = 32;
+
   const ServerBadge({
     super.key,
     required this.mark,
     this.semanticsLabel,
-    this.size = 32,
+    this.size = defaultSize,
   });
 
   /// Convenience for the common case: a built-in glyph, or none.
@@ -729,7 +740,7 @@ class ServerBadge extends StatelessWidget {
     super.key,
     required ServerIcon? icon,
     this.semanticsLabel,
-    this.size = 32,
+    this.size = defaultSize,
   }) : mark = ServerGlyphMark(icon);
 
   /// The corner radius, as a share of the side. [ServerAvatar] draws its ring
@@ -850,12 +861,10 @@ class ServerAvatar extends StatelessWidget {
   /// opened, and only the first of those is worth a ring.
   final bool hasSession;
 
-  /// The badge's edge, or null for the list's usual [defaultBadgeSize]. The
-  /// compact server row passes a smaller one; the ring and the gap inside it
-  /// scale with it, so the whole mark stays in proportion.
+  /// The badge's edge, or null for the list's usual [ServerBadge.defaultSize].
+  /// The compact server row passes a smaller one; the ring and the gap inside
+  /// it scale with it, so the whole mark stays in proportion.
   final double? size;
-
-  static const double defaultBadgeSize = 32;
 
   /// The ring's stroke and the gap between it and the badge, at the default
   /// badge size. The stroke has a floor so a compact row's ring is still a
@@ -869,7 +878,7 @@ class ServerAvatar extends StatelessWidget {
   /// this height, so the colour and the mark it belongs to read as one block
   /// at either density.
   static double extentFor(double badgeSize) {
-    final scale = badgeSize / defaultBadgeSize;
+    final scale = badgeSize / ServerBadge.defaultSize;
     return badgeSize + 2 * (_ringStroke(scale) + _gap * scale);
   }
 
@@ -886,8 +895,8 @@ class ServerAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final badgeSize = size ?? defaultBadgeSize;
-    final scale = badgeSize / defaultBadgeSize;
+    final badgeSize = size ?? ServerBadge.defaultSize;
+    final scale = badgeSize / ServerBadge.defaultSize;
     final ringWidth = _ringStroke(scale);
     final gap = _gap * scale;
     final extent = extentFor(badgeSize);
