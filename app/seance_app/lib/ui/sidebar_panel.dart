@@ -5,6 +5,7 @@ import 'app_menus.dart';
 import 'settings_screen.dart';
 import 'chat_sidebar.dart';
 import 'files_pane.dart';
+import 'git_pane.dart';
 import 'snippets_pane.dart';
 
 /// The right-hand utility panel: an Assistant tab (the LLM chat, when a provider
@@ -23,6 +24,11 @@ class _SidebarPanelState extends State<SidebarPanel>
     with SingleTickerProviderStateMixin {
   TabController? _tabs;
   bool _filesVisited = false;
+  bool _gitVisited = false;
+
+  /// The Git tab is always last; the Files tab only exists when
+  /// [SidebarPanel.includeFiles] is on.
+  int get _gitIndex => widget.includeFiles ? 3 : 2;
 
   @override
   void didChangeDependencies() {
@@ -30,7 +36,7 @@ class _SidebarPanelState extends State<SidebarPanel>
     if (_tabs != null) return;
     final state = AppScope.of(context);
     _tabs = TabController(
-      length: widget.includeFiles ? 3 : 2,
+      length: widget.includeFiles ? 4 : 3,
       initialIndex: state.llmConfigured ? 0 : 1,
       vsync: this,
     )..addListener(_tabChanged);
@@ -39,6 +45,9 @@ class _SidebarPanelState extends State<SidebarPanel>
   void _tabChanged() {
     if (widget.includeFiles && _tabs?.index == 2 && !_filesVisited) {
       setState(() => _filesVisited = true);
+    }
+    if (_tabs?.index == _gitIndex && !_gitVisited) {
+      setState(() => _gitVisited = true);
     }
   }
 
@@ -64,6 +73,7 @@ class _SidebarPanelState extends State<SidebarPanel>
                   const Tab(text: 'Assistant'),
                   const Tab(text: 'Snippets'),
                   if (widget.includeFiles) const Tab(text: 'Files'),
+                  const Tab(text: 'Git'),
                 ],
               ),
               Expanded(
@@ -78,6 +88,7 @@ class _SidebarPanelState extends State<SidebarPanel>
                       _filesVisited
                           ? const FilesPane()
                           : const SizedBox.shrink(),
+                    _gitVisited ? const GitPane() : const SizedBox.shrink(),
                   ],
                 ),
               ),

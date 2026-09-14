@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../services/managed_remote_file_store.dart';
+import '../services/remote_files_controller.dart';
 import '../theme.dart';
 import 'editor_syntax.dart';
 import 'top_toast.dart';
@@ -163,6 +165,11 @@ class BuiltInTextEditorScreen extends StatefulWidget {
   final File file;
   final String remotePath;
   final String? initialText;
+
+  /// When set, the editor watches this controller's drift flag for
+  /// [remotePath] and offers to reload the file once the server copy no
+  /// longer matches what the local checkout was taken from.
+  final RemoteFilesController? remoteFiles;
   final Future<void> Function(File file, String text)? saveDocument;
   final Future<void> Function()? onSaved;
   final Future<bool> Function()? onUpload;
@@ -172,6 +179,7 @@ class BuiltInTextEditorScreen extends StatefulWidget {
     required this.file,
     required this.remotePath,
     this.initialText,
+    this.remoteFiles,
     this.saveDocument,
     this.onSaved,
     this.onUpload,
@@ -182,7 +190,8 @@ class BuiltInTextEditorScreen extends StatefulWidget {
       _BuiltInTextEditorScreenState();
 }
 
-class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen> {
+class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
+    with WidgetsBindingObserver {
   late final CodeEditingController _text = CodeEditingController(
     language: syntaxLanguageFor(widget.remotePath),
   );
@@ -197,6 +206,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen> {
   String _lineEnding = '\n';
   bool _loading = true;
   bool _saving = false;
+  bool _reloading = false;
   bool _searchOpen = false;
   bool _searchCaseSensitive = false;
   List<TextRange> _matches = const [];
@@ -219,9 +229,23 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen> {
 
   bool get _dirty => !_loading && _text.text != _savedText;
 
+  /// Tri-state drift answer: true once a freshness check has proven the
+  /// server copy moved on (or disappeared), false while it still matches,
+  /// null until the first check lands.
+  bool? get _remoteChanged =>
+      widget.remoteFiles?.remoteChangedFor(widget.remotePath);
+
+  bool get _remoteMissing {
+    final files = widget.remoteFiles;
+    return files != null &&
+        files.latestRemoteSnapshots.containsKey(widget.remotePath) &&
+        files.latestRemoteSnapshots[widget.remotePath] == null;
+  }
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _text.addListener(_changed);
     _search.addListener(_searchChanged);
     final initialText = widget.initialText;
@@ -231,10 +255,27 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen> {
       _applyLoadedText(initialText);
       _loading = false;
     }
+    _checkRemoteDrift();
+  }
+
+  /// Best-effort re-stat of the server copy — drives the reload banner.
+  void _checkRemoteDrift() {
+    unawaited(
+      widget.remoteFiles?.checkRemoteSnapshot(widget.remotePath) ??
+          Future<void>.value(),
+    );
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Returning to the app is the cheapest moment to notice remote drift a
+    // command-completion listener cannot see (another session, a cron job).
+    if (state == AppLifecycleState.resumed) _checkRemoteDrift();
   }
 
   Future<void> _load() async {
     try {
+      _error = null;
       final document = await loadBuiltInTextDocumentDetails(widget.file);
       if (!mounted) return;
       _applyLoadedText(document.text);
@@ -278,6 +319,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _search.removeListener(_searchChanged);
     _text.removeListener(_changed);
     _text.dispose();
@@ -515,6 +557,52 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen> {
     }
   }
 
+  /// Replace the local checkout (and this document) with the current server
+  /// copy. Confirms first when local edits — unsaved buffer text or a dirty
+  /// managed copy — would be lost.
+  Future<void> _reloadFromServer() async {
+    final files = widget.remoteFiles;
+    if (files == null || _reloading || _saving || _loading) return;
+    final localEdits =
+        _dirty || (files.localCopies[widget.remotePath]?.dirty ?? false);
+    if (localEdits) {
+      final discard = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Discard local changes?'),
+          content: const Text(
+            'Reloading replaces the local copy with the server version. '
+            'Unsaved edits will be lost.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Discard and reload'),
+            ),
+          ],
+        ),
+      );
+      if (discard != true || !mounted) return;
+    }
+    setState(() => _reloading = true);
+    try {
+      await files.refreshLocalCopy(
+        widget.remotePath,
+        maximumBytes: builtInEditorMaximumBytes,
+      );
+      if (!mounted) return;
+      await _load();
+    } catch (error) {
+      if (mounted) showTopToastIn(context, message: error.toString());
+    } finally {
+      if (mounted) setState(() => _reloading = false);
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -610,7 +698,34 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen> {
                   )
                 : null,
           ),
-          body: _body(),
+          body: Column(
+            children: [
+              if (widget.remoteFiles != null)
+                ListenableBuilder(
+                  listenable: widget.remoteFiles!,
+                  builder: (context, _) {
+                    if (_remoteChanged != true) {
+                      return const SizedBox.shrink();
+                    }
+                    return MaterialBanner(
+                      leading: const Icon(Icons.sync_problem_outlined),
+                      content: Text(
+                        _remoteMissing
+                            ? 'This file no longer exists on the server.'
+                            : 'This file changed on the server.',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: _reloading ? null : _reloadFromServer,
+                          child: const Text('Reload'),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              Expanded(child: _body()),
+            ],
+          ),
           bottomNavigationBar: _loading || _error != null
               ? null
               : SafeArea(

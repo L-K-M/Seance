@@ -10,6 +10,7 @@ import 'package:seance_protocol/seance_protocol.dart';
 
 import '../hostkey/tofu.dart';
 import '../terminal/terminal_engine.dart';
+import 'remote_command.dart';
 import 'remote_file_system.dart';
 import 'sequential_cleanup.dart';
 
@@ -420,6 +421,111 @@ class SshSession {
         message: 'Could not open SFTP on this server: $e',
         cause: e,
       );
+    }
+  }
+
+  /// Runs [command] on a fresh non-PTY exec channel over this session's
+  /// authenticated transport — beside the interactive shell, never through
+  /// it: the remote prompt, scrollback, and shell cwd are untouched and both
+  /// output streams are captured.
+  ///
+  /// Each stream is bounded at [maxOutputBytes]; excess is discarded and
+  /// [RemoteCommandResult.truncated] reports it, so a command that prints
+  /// without limit cannot exhaust app memory. Reading continues past the cap
+  /// because a channel whose output is never drained stalls on window.
+  ///
+  /// Throws [RemoteCommandException] when the transport is down, the channel
+  /// cannot be opened, a stream errors, or [timeout] elapses — the channel is
+  /// closed either way. A remote command that merely *fails* is not thrown:
+  /// it comes back as a result with a non-zero exit code.
+  Future<RemoteCommandResult> runCommand(
+    String command, {
+    Duration? timeout,
+    int maxOutputBytes = 256 * 1024,
+  }) async {
+    final effectiveTimeout = timeout ?? const Duration(seconds: 30);
+    if (_closed || client.isClosed) {
+      throw const RemoteCommandException('The SSH session is disconnected.');
+    }
+    final SSHSession channel;
+    try {
+      channel = await client.execute(command);
+    } catch (e) {
+      if (_closed || client.isClosed) {
+        throw const RemoteCommandException('The SSH session is disconnected.');
+      }
+      throw RemoteCommandException('Could not open a command channel: $e');
+    }
+
+    final stdout = BytesBuilder(copy: false);
+    final stderr = BytesBuilder(copy: false);
+    var truncated = false;
+    final stdoutDone = Completer<void>();
+    final stderrDone = Completer<void>();
+
+    void collect(Uint8List data, BytesBuilder into) {
+      final remaining = maxOutputBytes - into.length;
+      if (data.length <= remaining) {
+        into.add(data);
+      } else {
+        if (remaining > 0) {
+          into.add(Uint8List.sublistView(data, 0, remaining));
+        }
+        truncated = true;
+      }
+    }
+
+    final subscriptions = <StreamSubscription<Uint8List>>[
+      channel.stdout.listen(
+        (data) => collect(data, stdout),
+        onDone: stdoutDone.complete,
+        onError: stdoutDone.completeError,
+        cancelOnError: true,
+      ),
+      channel.stderr.listen(
+        (data) => collect(data, stderr),
+        onDone: stderrDone.complete,
+        onError: stderrDone.completeError,
+        cancelOnError: true,
+      ),
+    ];
+
+    Future<void> abort() async {
+      for (final subscription in subscriptions) {
+        await subscription.cancel();
+      }
+      channel.close();
+    }
+
+    try {
+      // Both stream completions are awaited together: awaiting them one after
+      // the other would leave the second without an error handler until the
+      // first finished.
+      await Future.wait([
+        stdoutDone.future,
+        stderrDone.future,
+      ], eagerError: true).timeout(effectiveTimeout);
+      await channel.done;
+      for (final subscription in subscriptions) {
+        await subscription.cancel();
+      }
+      return RemoteCommandResult(
+        stdout: utf8.decode(stdout.takeBytes(), allowMalformed: true),
+        stderr: utf8.decode(stderr.takeBytes(), allowMalformed: true),
+        exitCode: channel.exitCode,
+        truncated: truncated,
+      );
+    } on TimeoutException {
+      await abort();
+      throw RemoteCommandException(
+        'The command did not finish within ${effectiveTimeout.inSeconds}s.',
+      );
+    } catch (e) {
+      await abort();
+      if (_closed || client.isClosed) {
+        throw const RemoteCommandException('The SSH session is disconnected.');
+      }
+      throw RemoteCommandException('The command channel failed: $e');
     }
   }
 

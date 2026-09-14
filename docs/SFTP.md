@@ -130,6 +130,14 @@ Opening a remote file locally is a managed checkout:
 7. Upload through a temporary remote file and rename only after completion.
 8. Remove plaintext support files on discard or confirmed tab/server deletion.
 
+Reopening a managed path re-stats the remote copy rather than reusing the
+checkout blindly: a clean local checkout is refreshed from the server when the
+remote snapshot drifted, while a dirty one keeps its edits and flags the drift
+instead — the built-in editor then shows a **Reload** banner (confirming
+before discarding unsaved changes). Directory listings, uploads, and finished
+shell commands (`pico`, `git pull`, …) all refresh the known remote snapshot
+for managed paths, so drift is noticed even when the file is not reopened.
+
 The managed-edit index is persisted atomically. Checkouts are SHA-256 hashed,
 watched by parent directory to catch atomic saves, reconciled on app resume,
 and restored into their original logical session after process death. A save

@@ -13,6 +13,7 @@ import 'services/chat_session.dart';
 import 'services/default_snippets.dart';
 import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
+import 'services/remote_git_controller.dart';
 import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
 import 'ui/server_list_density.dart';
@@ -90,6 +91,10 @@ class TerminalSession {
   XtermTerminalEngine engine;
   SshSession? session;
   RemoteFilesController? files;
+
+  /// Git status/actions for the shell's reported directory, driven by the
+  /// Git sidebar tab. Lives only while connected, like [files].
+  RemoteGitController? git;
   final Map<String, ManagedRemoteFile> retainedLocalCopies = {};
   bool connecting;
   String? error;
@@ -1052,7 +1057,14 @@ class AppState extends ChangeNotifier {
           await services.saveSettings();
         },
         terminalTitle: engine.terminalTitle,
+        activeCommand: engine.activeCommand,
         initialLocalCopies: tab.retainedLocalCopies,
+      );
+      tab.git = RemoteGitController(
+        session.runCommand,
+        shellDirectory: engine.workingDirectory,
+        terminalTitle: engine.terminalTitle,
+        activeCommand: engine.activeCommand,
       );
       tab.retainedLocalCopies.clear();
       tab.connecting = false;
@@ -1069,6 +1081,8 @@ class AppState extends ChangeNotifier {
             files.dispose();
             tab.files = null;
           }
+          tab.git?.dispose();
+          tab.git = null;
           tab.session = null;
           tab.connecting = false;
           notifyListeners();
@@ -1152,6 +1166,8 @@ class AppState extends ChangeNotifier {
       files.dispose();
       tab.files = null;
     }
+    tab.git?.dispose();
+    tab.git = null;
     if (deleteLocalCopies && tab.retainedLocalCopies.isNotEmpty) {
       for (final copy in tab.retainedLocalCopies.values) {
         await services.managedRemoteFiles.remove(copy.id);
@@ -1796,6 +1812,8 @@ class AppState extends ChangeNotifier {
       files.dispose();
       tab.files = null;
     }
+    tab.git?.dispose();
+    tab.git = null;
     await tab.session?.close();
     tab.session = null;
     tab.connecting = false;
