@@ -111,11 +111,15 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
             Row(
               children: [
                 // Previewed as the list will draw it, in this theme: the
-                // line is derived from the picked colour rather than painted
-                // raw, and this is where that shows.
+                // line and the fill are derived from the picked colour rather
+                // than painted raw, and this is where that shows.
                 ServerAccentBar(tint: ServerTint(custom: color), height: 48),
                 const SizedBox(width: 12),
-                ServerBadge(mark: widget.mark, size: 48),
+                ServerBadge(
+                  tint: ServerTint(custom: color),
+                  mark: widget.mark,
+                  size: 48,
+                ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: TextField(

@@ -90,10 +90,10 @@ void main() {
       testWidgets('the row carries the server\'s colour as its bar', (
         tester,
       ) async {
-        // The composition the whole treatment rests on. Every badge is
-        // neutral now, so a tint that stopped reaching the bar would take
-        // the colour out of the list while the bar's own tests, and the
-        // badge's, stayed green.
+        // The composition the whole treatment rests on. The badge carries
+        // the same colour as a fill, so a tint that stopped reaching the bar
+        // would take the one carrier an image mark cannot cover out of the
+        // list while the bar's own tests, and the badge's, stayed green.
         const red = ServerTint(named: ServerColor.red);
         await pump(tester, density: density, color: ServerColor.red);
         final bar = find.byType(ServerAccentBar);

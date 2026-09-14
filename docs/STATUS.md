@@ -7,10 +7,11 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-14. A server's colour is now a line down the leading
-edge of its row rather than a tint on its badge, so it reads the same whether
-the mark is a glyph, an emoji or a logo. Before that, the server list gained
-signals the eye can pick out for which row is selected and which servers have
+_Last updated: 2026-09-14. A server's colour is a line down the leading edge
+of its row *and* the fill under its mark: the line is the carrier every kind
+of mark keeps, the fill the echo a glyph or an emoji adds to it. Before that,
+the server list gained signals the eye can pick out for which row is selected
+and which servers have
 a session open, a server's colour could be one of the user's own, an SVG could
 be its image, and Return saved the editor. Before that, the server list gained a compact row and
 pinning: the app bar's density switch trades the address line for a row that
@@ -41,6 +42,25 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## The badge wears the colour again, beside the line (2026-09-14)
+
+The entry below took the colour off the badge when it made it a line. The line
+is what a list can be read down, but the mark is the thing the eye lands on,
+and a neutral tile under every mark made two servers a row apart look like the
+same kind of thing.
+
+So the fill is back, and the line stays. `ServerBadge` takes a tint again: the
+accent's container tone under the mark, its `onContainer` tone for the glyph
+on top, and no frame for the one mark that covers the fill — an image simply
+hides it, because the line beside the badge is the carrier that does not
+depend on which mark is drawn. That is what the previous entry's frame existed
+to work around, and why it is not coming back with the fill.
+
+The accent returns to the mark picker with it, where a candidate is again
+previewed on the fill it will sit on, and a transparent image again shows the
+server's colour through it. The editor and the custom-colour picker preview
+the pair the list draws: the line beside the mark, the colour under it.
 
 ## The server colour is a line, not a fill (2026-09-14)
 
