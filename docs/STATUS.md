@@ -763,8 +763,11 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
     in its PATCHES.md): single/double/triple click (word / soft-wrap-aware
     line), shift-click extension, drag selection anchored to content with
     edge autoscroll, selections and the scrolled-up viewport surviving
-    scrollback trims, and mouse-report hygiene for remote apps. Right-click
-    gives Copy / Paste / Select all. Ctrl+Shift+C/V/A elsewhere; ⌘C/⌘V/⌘A
+    scrollback trims, and mouse-report hygiene for remote apps. Links are
+    both the URLs visible in the output and the OSC 8 hyperlinks a program
+    attaches to its cells (which is what makes a CLI's "click here" line, or
+    a URL that CLI wrapped across its own newlines, open the whole target).
+    Right-click gives Copy / Paste / Select all. Ctrl+Shift+C/V/A elsewhere; ⌘C/⌘V/⌘A
     on macOS/iPadOS (macOS additionally retargets the native Edit menu via
     `MainFlutterWindow.swift`: routes to the focused terminal, falls back
     to text fields; focus pushed over the `seance/menu` channel, the

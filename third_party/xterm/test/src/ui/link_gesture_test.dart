@@ -13,8 +13,9 @@ void main() {
     WidgetTester tester,
     Terminal terminal,
     TerminalController controller,
-    List<Uri> opened,
-  ) async {
+    List<Uri> opened, {
+    String? text,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -29,7 +30,7 @@ void main() {
         ),
       ),
     );
-    terminal.write(url.toString());
+    terminal.write(text ?? url.toString());
     await tester.pump();
     final render = tester
         .state<TerminalViewState>(find.byType(TerminalView))
@@ -171,6 +172,29 @@ void main() {
       await mouse.removePointer();
     });
   }
+
+  testWidgets('OSC 8 link text opens its target, not its text', (tester) async {
+    final terminal = Terminal();
+    final controller = TerminalController();
+    addTearDown(controller.dispose);
+    final opened = <Uri>[];
+    final target = Uri.parse('https://example.com/auth?token=abc');
+    final point = await pumpTerminal(
+      tester,
+      terminal,
+      controller,
+      opened,
+      // A URL in the link text, so this pins the precedence and not just the
+      // absence of anything else to open.
+      text: '\x1b]8;;$target\x1b\\https://decoy.test/looks-fine\x1b]8;;\x1b\\',
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.tapAt(point, kind: PointerDeviceKind.mouse);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump(gestureTimeout);
+    expect(opened, [target]);
+  });
 
   testWidgets('hover signals links without opening them', (tester) async {
     final terminal = Terminal();

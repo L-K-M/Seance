@@ -355,6 +355,55 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
     counts treat zero as one, matching REP and cursor movement; this also
     prevents a zero-length ECH from reading before the start of a line.
 
+### OSC 8 hyperlinks
+
+30. **Links a program marks are followed, not re-read from the screen**
+    (`core/hyperlinks.dart`, `core/escape/parser.dart#_escHandleOSC`,
+    `core/escape/handler.dart#setHyperlink`, `terminal.dart`,
+    `core/cell.dart#CellAttr`, `core/cursor.dart`,
+    `core/buffer/line.dart#getHyperlinkId`, `core/buffer/buffer.dart#getLinkAt`;
+    regressions: `test/src/core/hyperlinks_test.dart`,
+    `test/src/core/buffer/link_test.dart`, `test/src/ui/link_gesture_test.dart`):
+    patch 26 found links by reading the text on screen, which is all a terminal
+    can do for a bare URL — and is not what modern CLIs emit. `OSC 8 ; params ;
+    URI ST` attaches a target to the cells that follow until `OSC 8 ; ; ST`, so
+    the visible text is free to be anything. Both halves of the Antigravity
+    CLI's login flow were unusable without it: its "Click here to authenticate"
+    line has no URL to find, and the line that does print one is wrapped by the
+    CLI itself across hard newlines, so following the text opened the first
+    fragment of the URL as if it were the whole thing.
+
+    The parser now hands OSC 8 to the terminal, which registers the target in a
+    `Hyperlinks` table and stores the returned id in the cursor style; every
+    cell written carries it, and `getLinkAt` resolves that id before falling
+    back to the text scan. Details worth keeping:
+    - **Where the id lives**: the high 24 bits of the cell's attribute word,
+      whose low byte holds the style flags (`CellAttr.styleMask` /
+      `hyperlinkMask`). A fifth word per cell would have grown every buffer by
+      25% for a field almost no cell uses; packing it here also means the
+      paths that already copy cells — `setCell`, `copyFrom`, the reflow —
+      carry the link with no new code. `CellData.getHash` masks it out so the
+      painter's paragraph cache stays one entry per glyph and style.
+    - **SGR 0 does not close a hyperlink** (`CursorStyle.reset`): OSC 8 is a
+      state of its own per the spec, and programs reset colors inside link text
+      routinely. `eraseCell` is the opposite case — an erased cell holds no
+      text, so it drops the link (and keeps the colors it still paints with),
+      or a full-screen redraw inside a link would leave rows of clickable
+      blanks.
+    - **The table is bounded and ids are never recycled**: past 1024 targets
+      the least recently opened one is dropped, so a cell whose entry is gone
+      resolves to nothing rather than to somebody else's URL. Spending the
+      whole id space stops new targets being registered rather than starting
+      the ids over — an open prints nothing, so a remote can spend every id
+      without ever scrolling away the cells that hold them. Only targets this
+      terminal would actually open are stored — same gate as the text scan
+      (`parseWebUri`: http(s) only, a host, no credentials), plus the 2083-byte
+      ceiling VTE and iTerm2 use. A `file://` listing from `ls --hyperlink`
+      therefore never enters the table at all.
+    - The `params` field is ignored. Its only defined key, `id`, exists to
+      group a link's cells for hover highlighting, which this terminal does not
+      do; targets containing semicolons are rejoined rather than truncated.
+
 ### App-layer notes (outside this package)
 
 - The app passes `shortcuts: {}` and instead routes ⌘C/⌘V/⌘A on

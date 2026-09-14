@@ -228,6 +228,28 @@ void main() {
     await e.dispose();
   });
 
+  test('OSC 8 hyperlinks arrive from the session as clickable links', () async {
+    final e = XtermTerminalEngine();
+    const target = 'https://accounts.google.com/signin?continue=long/path';
+
+    // A CLI login prompt: the link text is a label, and the closing sequence
+    // ends it, so the text around it stays unlinked.
+    e.feed(
+      Uint8List.fromList(
+        utf8.encode(
+          '\x1b]8;;$target\x1b\\Click here to authenticate\x1b]8;;\x1b\\ later',
+        ),
+      ),
+    );
+
+    expect(
+      e.terminal.buffer.getLinkAt(const CellOffset(2, 0)),
+      Uri.parse(target),
+    );
+    expect(e.terminal.buffer.getLinkAt(const CellOffset(28, 0)), isNull);
+    await e.dispose();
+  });
+
   test('OSC 0 preserves the shell title for cwd fallback', () async {
     final e = XtermTerminalEngine();
 

@@ -211,5 +211,9 @@ abstract class EscapeHandler {
 
   void setIconName(String name);
 
+  /// [seance fork] OSC 8: cells written from now on belong to the hyperlink
+  /// [uri]. A null [uri] closes the current hyperlink (`OSC 8 ; ; ST`).
+  void setHyperlink(String? uri);
+
   void unknownOSC(String code, List<String> args);
 }
