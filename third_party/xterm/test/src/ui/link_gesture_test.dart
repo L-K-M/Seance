@@ -184,7 +184,9 @@ void main() {
       terminal,
       controller,
       opened,
-      text: '\x1b]8;;$target\x1b\\Click here to authenticate\x1b]8;;\x1b\\',
+      // A URL in the link text, so this pins the precedence and not just the
+      // absence of anything else to open.
+      text: '\x1b]8;;$target\x1b\\https://decoy.test/looks-fine\x1b]8;;\x1b\\',
     );
 
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);

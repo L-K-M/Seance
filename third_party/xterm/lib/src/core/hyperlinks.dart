@@ -77,11 +77,13 @@ class Hyperlinks {
     }
 
     if (_lastId >= maxHyperlinkId) {
-      // The id space is exhausted, so ids have to start over. Forget every
-      // target first: a recycled id that still resolved would send a cell to
-      // the wrong site. Reaching here takes 16M distinct targets in one
-      // session, by which point the cells holding those ids are long trimmed.
+      // The id space is exhausted, so ids have to start over. This is the one
+      // place that may recycle one, and it forgets every target first: a
+      // recycled id that still resolved would send a cell to the wrong site.
+      // Reaching here takes 16M distinct targets in one session, by which
+      // point the cells holding the ids it reuses are long trimmed.
       clear();
+      _lastId = noHyperlink;
     }
 
     final id = ++_lastId;
@@ -100,9 +102,10 @@ class Hyperlinks {
   /// no hyperlink or its target has aged out of the table.
   Uri? operator [](int id) => _targets[id];
 
+  /// Forgets every target. Ids keep counting up, so cells written before the
+  /// call resolve to nothing rather than to whatever is registered next.
   void clear() {
     _targets.clear();
     _ids.clear();
-    _lastId = noHyperlink;
   }
 }

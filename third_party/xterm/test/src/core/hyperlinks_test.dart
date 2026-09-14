@@ -39,11 +39,27 @@ void main() {
     expect(links[noHyperlink], isNull);
   });
 
-  test('clear forgets every target', () {
+  test('accepts a target of exactly the greatest allowed length', () {
+    const prefix = 'https://example.com/';
+    final target = prefix + 'a' * (maxHyperlinkTargetLength - prefix.length);
+    expect(target, hasLength(maxHyperlinkTargetLength));
+
+    final links = Hyperlinks();
+    final id = links.open(target);
+    expect(id, isNot(noHyperlink));
+    expect(links[id], Uri.parse(target));
+  });
+
+  test('clear forgets every target without recycling its id', () {
     final links = Hyperlinks();
     final id = links.open('https://a.test');
     links.clear();
     expect(links[id], isNull);
+    expect(
+      links.open('https://b.test'),
+      isNot(id),
+      reason: 'a cell left holding the old id must not resolve to a new target',
+    );
   });
 
   test('an id fits beside the style flags in a cell', () {

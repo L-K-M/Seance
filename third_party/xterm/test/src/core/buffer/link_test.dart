@@ -209,7 +209,7 @@ void main() {
         'ssh://example.com',
         'https://',
         'https://user:password@example.com',
-        'https://example.com/${'a' * 2100}',
+        'https://example.com/${'a' * maxHyperlinkTargetLength}',
       ]) {
         final terminal = terminalWith(link(target, 'text'));
         expect(
@@ -218,6 +218,17 @@ void main() {
           reason: target,
         );
       }
+    });
+
+    test('the target wins over a URL in the link text', () {
+      // The phishing shape: text that reads like one site, a target that is
+      // another. The attached target is what a click follows.
+      final terminal =
+          terminalWith(link('https://real.test/auth', 'https://decoy.test'));
+      expect(
+        terminal.buffer.getLinkAt(const CellOffset(4, 0)),
+        Uri.parse('https://real.test/auth'),
+      );
     });
 
     test('falls back to a URL in the text when the target is refused', () {
