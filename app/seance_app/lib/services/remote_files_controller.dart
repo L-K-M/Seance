@@ -682,7 +682,7 @@ class RemoteFilesController extends ChangeNotifier {
     RemoteFileEntry entry, {
     int? maximumBytes,
   }) async {
-    return _checkoutFlights.putIfAbsent(entry.path, () async {
+    var copy = await _checkoutFlights.putIfAbsent(entry.path, () async {
       try {
         final existing = localCopies[entry.path];
         return existing == null
@@ -695,6 +695,13 @@ class RemoteFilesController extends ChangeNotifier {
         _checkoutFlights.remove(entry.path);
       }
     });
+    // A flight joined while its checkout was being discarded can resolve to
+    // a copy that is no longer tracked (its local file is gone). Never hand
+    // that out — take a fresh flight so the caller gets a live checkout.
+    if (!_disposed && localCopies[entry.path]?.id != copy.id) {
+      copy = await checkoutRemoteFile(entry, maximumBytes: maximumBytes);
+    }
+    return copy;
   }
 
   /// Re-stats an existing checkout's remote path and refreshes the local copy
@@ -783,8 +790,10 @@ class RemoteFilesController extends ChangeNotifier {
       sink = null;
       // The copy may have been discarded, migrated via takeLocalCopies, or
       // the whole controller disposed while the download was in flight —
-      // finishing now would resurrect it.
-      if (_disposed || !localCopies.containsKey(copy.remotePath)) {
+      // finishing now would resurrect it. Keyed on identity, not path
+      // presence: a same-path re-checkout during the download must not let
+      // this stale copy clobber the new one.
+      if (_disposed || localCopies[copy.remotePath]?.id != copy.id) {
         if (await partial.exists()) await partial.delete();
         return copy;
       }

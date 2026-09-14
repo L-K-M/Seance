@@ -150,10 +150,37 @@ void main() {
     await controller.initialize();
     expect(runner.commands, hasLength(1));
 
-    activeCommand.value = 'vim digital-ocean-notes.md';
-    activeCommand.value = null;
-    await _settle();
-    expect(runner.commands, hasLength(1));
+    for (final command in [
+      'vim digital-ocean-notes.md',
+      'echo digit',
+      'git-upload-pack /srv/repo',
+    ]) {
+      activeCommand.value = command;
+      activeCommand.value = null;
+      await _settle();
+      expect(runner.commands, hasLength(1), reason: command);
+    }
+  });
+
+  test('refreshes for git inside compounds and substitutions', () async {
+    shellDirectory.value = '/srv/app';
+    runner.onRun = (_) => _repo();
+    await controller.initialize();
+    var probes = 1; // initialize() itself
+    expect(runner.commands, hasLength(probes));
+
+    for (final command in [
+      'echo "\$(git log --oneline)"',
+      'export V=\$(git rev-parse HEAD)',
+      'xargs git checkout --',
+      'GIT_DIR=.git git status',
+      'make foo | tee log && sudo git status',
+    ]) {
+      activeCommand.value = command;
+      activeCommand.value = null;
+      await _settle();
+      expect(runner.commands, hasLength(++probes), reason: command);
+    }
   });
 
   test('stages a file and refreshes afterwards', () async {

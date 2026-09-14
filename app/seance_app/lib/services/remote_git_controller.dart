@@ -140,14 +140,21 @@ class RemoteGitController extends ChangeNotifier {
   }
 
   /// Whether [command] runs git — a bare `git` token in any `&&`/`;`/`|`
-  /// segment (covering `xargs git`, `$(git …)`, `GIT_DIR=… git`), or under
-  /// `sudo`. A false positive costs one extra probe; a miss leaves the panel
-  /// stale.
+  /// segment (covering `xargs git`, `GIT_DIR=… git`, `sudo git`). Leading
+  /// shell punctuation is stripped so `$(git …)` counts, and `$(git`/`` `git ``
+  /// are matched embedded too (`export V=$(git …)` keeps the `V=` prefix on
+  /// the token). A false positive costs one extra probe; a miss leaves the
+  /// panel stale.
   static bool _touchesGit(String command) {
     for (final segment in command.split(RegExp(r'&&|\|\||[;|]'))) {
-      final words = segment.trim().split(RegExp(r'\s+'));
-      if (words.isEmpty || words.first.isEmpty) continue;
-      if (words.any((word) => word == 'git')) return true;
+      for (final word in segment.trim().split(RegExp(r'\s+'))) {
+        if (word.isEmpty) continue;
+        if (word.replaceAll(RegExp(r'^[^\w.-]+'), '') == 'git' ||
+            word.contains(r'$(git') ||
+            word.contains('`git')) {
+          return true;
+        }
+      }
     }
     return false;
   }

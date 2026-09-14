@@ -152,11 +152,16 @@ class GitProbeResult {
 ///
 /// Old gits matter: `--porcelain=v2` needs git 2.11 (2016) and hosts like
 /// CentOS 7 still ship 1.8, so a usage-level failure retries down a ladder —
-/// v2 with stash, v2, then the v1 format, which has existed forever.
+/// v2 with stash, v2, then the v1 format, which has existed forever. The
+/// working rung is latched so ancient hosts don't re-walk it on every probe.
 class RemoteGit {
   final RemoteCommandRunner _run;
 
-  const RemoteGit(this._run);
+  /// Status-command rung that last produced a non-usage response: 0 = v2
+  /// with `--show-stash`, 1 = plain v2, 2 = v1.
+  int _statusRung = 0;
+
+  RemoteGit(this._run);
 
   /// Probe [directory] for a repository and read its status. A null or
   /// relative [directory] runs in the exec channel's own working directory
@@ -166,28 +171,28 @@ class RemoteGit {
   /// owns the distinction between "the command ran and git complained" and
   /// "no command ran at all".
   Future<GitProbeResult> probe(String? directory) async {
-    var result = await _run(_statusCommand(directory, porcelainV2: true));
-    var parser = _parseV2;
-    if (_isUsageError(result)) {
-      // git 2.11–2.16 knows --porcelain=v2 but not --show-stash: drop just
-      // the flag before assuming the whole v2 format is missing.
+    var rung = _statusRung;
+    var result = await _run(
+      _statusCommand(directory, porcelainV2: rung < 2, showStash: rung == 0),
+    );
+    while (_isUsageError(result) && rung < 2) {
+      // git 2.11–2.16 knows --porcelain=v2 but not --show-stash; git < 2.11
+      // has no v2 at all and only understands the v1 format.
+      rung++;
       result = await _run(
-        _statusCommand(directory, porcelainV2: true, showStash: false),
+        _statusCommand(directory, porcelainV2: rung < 2, showStash: rung == 0),
       );
-      if (_isUsageError(result)) {
-        // git < 2.11 has no --porcelain=v2 at all; v1 reports the same
-        // changes minus the stash count.
-        result = await _run(_statusCommand(directory, porcelainV2: false));
-        parser = _parseV1;
-      }
     }
+    // Any non-usage answer — even "not a git repository" — proves git
+    // accepted the rung's flags, so the next probe can start there.
+    if (!_isUsageError(result)) _statusRung = rung;
     final failure = _classify(result);
     if (failure != null) return failure;
 
     final GitRepoStatus repo;
     try {
       final payload = _splitStatusOutput(result.stdout);
-      repo = parser(payload).copyWith(
+      repo = (rung == 2 ? _parseV1 : _parseV2)(payload).copyWith(
         rootPath: payload.root,
         recentCommits: _parseLog(payload.logLines),
       );

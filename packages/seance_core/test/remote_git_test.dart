@@ -258,6 +258,27 @@ void main() {
       expect(result.status!.branch, 'main');
     });
 
+    test('latches the working rung so old hosts probe in one round trip',
+        () async {
+      final usageError = _result(
+        '',
+        stderr: 'usage: git status [<options>]',
+        exitCode: 129,
+      );
+      final v1 = _result('/srv/app\n## main\n?? a.txt$_nul$_nul\n');
+      final runner = _FakeRunner([usageError, usageError, v1, v1]);
+      final git = RemoteGit(runner.call);
+
+      await git.probe('/srv/app');
+      expect(runner.commands, hasLength(3));
+
+      // The v1 rung latched — the refresh doesn't re-walk the ladder.
+      final second = await git.probe('/srv/app');
+      expect(runner.commands, hasLength(4));
+      expect(runner.commands[3], contains('--porcelain --branch'));
+      expect(second.status!.branch, 'main');
+    });
+
     test('a malformed status payload is an error, not an empty repo', () async {
       final result = await RemoteGit(
         _FakeRunner([_result('no-newline-anywhere')]).call,

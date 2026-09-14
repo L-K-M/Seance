@@ -574,17 +574,26 @@ void main() {
       modifiedAt: DateTime.utc(2024),
     );
 
-    // Hold the download open so the discard lands mid-flight.
+    // Hold the first download open so the discard lands mid-flight; the
+    // second call is the re-checkout's own download, which proceeds.
     final gate = Completer<void>();
-    remote.duringDownload = () => gate.future;
+    var downloads = 0;
+    remote.duringDownload = () =>
+        ++downloads == 1 ? gate.future : Future<void>.value();
     final refresh = controller.refreshLocalCopy(entry.path);
     await controller.removeLocalCopy(entry.path);
+    // Re-checking out the same path joins the in-flight refresh, which
+    // resolves to the discarded copy — the caller must get a live one.
+    final recheckout = controller.checkoutRemoteFile(entry);
     gate.complete();
     await refresh;
+    final recheckedOut = await recheckout;
 
-    expect(controller.localCopies.containsKey(entry.path), isFalse);
+    expect(controller.localCopies[entry.path]?.id, recheckedOut.id);
+    expect(recheckedOut.id, isNot(copy.id));
     expect(await store.get(copy.id), isNull);
-    expect(await controller.localFile(copy).exists(), isFalse);
+    expect(await store.get(recheckedOut.id), isNotNull);
+    expect(await controller.localFile(recheckedOut).exists(), isTrue);
 
     controller.dispose();
     shellDirectory.dispose();

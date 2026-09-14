@@ -498,6 +498,9 @@ class SshSession {
       channel.close();
     }
 
+    // One deadline across both waits: two independent effectiveTimeout
+    // windows could otherwise hold the caller for twice the configured time.
+    final deadline = DateTime.now().add(effectiveTimeout);
     try {
       // Both stream completions are awaited together: awaiting them one after
       // the other would leave the second without an error handler until the
@@ -506,7 +509,10 @@ class SshSession {
         stdoutDone.future,
         stderrDone.future,
       ], eagerError: true).timeout(effectiveTimeout);
-      await channel.done.timeout(effectiveTimeout);
+      final remaining = deadline.difference(DateTime.now());
+      await channel.done.timeout(
+        remaining.isNegative ? Duration.zero : remaining,
+      );
       for (final subscription in subscriptions) {
         await subscription.cancel();
       }
