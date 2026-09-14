@@ -7,7 +7,7 @@ A cross-platform SSH client for Mac and Android with an optional self-hostable s
 
 *You summon remote machines and talk to them.*
 
-**Latest release:** v<!-- version -->0.9.0<!-- /version --> · [Download](https://github.com/L-K-M/Seance/releases/latest)
+**Latest release:** v<!-- version -->0.9.1<!-- /version --> · [Download](https://github.com/L-K-M/Seance/releases/latest)
 
 ![Screenshot Mac OS X](screenshot.png)
 
