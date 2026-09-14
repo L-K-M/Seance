@@ -224,9 +224,11 @@ void main() {
 
       expect(state!.servers, isEmpty);
       expect(find.text('Add server'), findsOneWidget);
-      final previews = tester.widgetList<ServerBadge>(find.byType(ServerBadge));
+      final previews = tester.widgetList<ServerAccentBar>(
+        find.byType(ServerAccentBar),
+      );
       expect(previews, isNotEmpty);
-      expect(previews.map((badge) => badge.tint).toSet(), {
+      expect(previews.map((bar) => bar.tint).toSet(), {
         const ServerTint(named: ServerColor.teal),
       });
     });

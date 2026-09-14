@@ -421,9 +421,10 @@ String? normalizeServerGroup(String? group) {
 /// The stored form of a custom colour: `#RRGGBB`, upper-case, or null when
 /// [value] is not exactly six hex digits with or without the `#`.
 ///
-/// No alpha and no short form. A badge fill has to be opaque to sit under a
-/// mark, and `#RGB` would double the number of spellings every device has to
-/// agree on for the sake of a form nobody stores. Whitespace at the edges is
+/// No alpha and no short form. What is drawn from this — the line down a row,
+/// the fill of a swatch — is opaque, and `#RGB` would double the number of
+/// spellings every device has to agree on for the sake of a form nobody
+/// stores. Whitespace at the edges is
 /// forgiven, like a group name's; anything else is the caller's mistake and
 /// reads as "no custom colour" rather than as some other colour.
 String? normalizeServerCustomColor(String? value) {

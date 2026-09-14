@@ -22,7 +22,6 @@ void main() {
   Future<void> open(
     WidgetTester tester, {
     ServerMark current = const ServerGlyphMark(null),
-    ServerTint accent = ServerTint.none,
     Future<Uint8List?> Function()? readImage,
     /// False when a mark in force holds a live [Image]: its resolution never
     /// completes here, so settling would spin forever (see AGENTS.md §5).
@@ -37,7 +36,6 @@ void main() {
                 await showServerMarkPicker(
                   context,
                   current: current,
-                  accent: accent,
                   readImage: readImage ?? () async => null,
                 ),
               ),
@@ -423,16 +421,15 @@ void main() {
     }
   });
 
-  testWidgets('the previews carry the colour the server actually uses', (
+  testWidgets('the previews are the badges the list will draw', (
     tester,
   ) async {
-    // Not cosmetic: a mark chosen against the wrong accent was judged on a
-    // badge the server will never draw.
-    const accent = ServerTint(named: ServerColor.amber);
-    await open(tester, accent: accent);
-    final badges = tester.widgetList<ServerBadge>(find.byType(ServerBadge));
-    expect(badges, isNotEmpty);
-    expect(badges.map((badge) => badge.tint).toSet(), {accent});
+    // The picker chooses a mark, and the server's colour is a line beside it
+    // in the list rather than a fill under it — so a candidate here is
+    // already exactly what a row will show.
+    await open(tester);
+    expect(find.byType(ServerBadge), findsWidgets);
+    expect(find.byType(ServerAccentBar), findsNothing);
   });
 
   test('every curated emoji is one the protocol will store', () {
