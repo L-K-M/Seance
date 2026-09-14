@@ -7,10 +7,12 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-13. The server list now says which row is selected and
-which servers have a session open in ways the eye can pick out, a server's
-colour can be one of the user's own, an SVG can be its image, and Return saves
-the editor. Before that, the server list gained a compact row and
+_Last updated: 2026-09-14. A server's colour is now a line down the leading
+edge of its row rather than a tint on its badge, so it reads the same whether
+the mark is a glyph, an emoji or a logo. Before that, the server list gained
+signals the eye can pick out for which row is selected and which servers have
+a session open, a server's colour could be one of the user's own, an SVG could
+be its image, and Return saved the editor. Before that, the server list gained a compact row and
 pinning: the app bar's density switch trades the address line for a row that
 is 40 px instead of 72, and a pinned server sits in its own section at the top
 (device-local, never synced). Before that, a single record past the server's
@@ -39,6 +41,28 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## The server colour is a line, not a fill (2026-09-14)
+
+The colour was the badge's fill, which an image mark covers edge to edge — so
+an image badge wore it as a frame instead (the entry below), and one colour
+then read as a pastel square on one row and a saturated outline on the next.
+
+It is now a rounded vertical line at the leading edge of the row
+(`ServerAccentBar`), drawn inside the tile's content padding so the selected
+row's own bar — the app's colour, hard against the pane edge — stays a
+separate mark. The badge lost both the fill and the frame: every mark sits on
+the same neutral tile, so a glyph, an emoji and a logo read the same way, and
+a transparent image now shows that tile rather than the colour. The line's
+slot is reserved whether or not a colour is set, so the marks of coloured and
+uncoloured servers stay in one column, and it is drawn to the avatar's full
+height — session ring included — at either density.
+
+`ServerBadge` no longer takes a tint at all, which also took the accent out of
+the mark picker, where it existed only to preview candidates on the colour
+they would have sat on. The editor and the custom-colour picker preview the
+pair the way the list draws it: the line beside the mark. The terminal's tab
+strip is unchanged — it still carries the colour as its bottom rule.
 
 ## List signals, custom colours, SVG marks, Return saves (2026-09-13)
 

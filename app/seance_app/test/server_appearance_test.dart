@@ -46,35 +46,58 @@ Color? _badgeFill(WidgetTester tester) {
   return (container.decoration as BoxDecoration?)?.color;
 }
 
+/// An 8x8 solid PNG, built here rather than encoded through the real import
+/// path: these tests are about what the badge *draws*, and asserting on the
+/// encoded bytes is `badge_image_test.dart`'s job.
+Future<Uint8List> _pngBytes() async {
+  final recorder = ui.PictureRecorder();
+  ui.Canvas(recorder).drawRect(
+    const ui.Rect.fromLTWH(0, 0, 8, 8),
+    ui.Paint()..color = const ui.Color(0xFF00FF00),
+  );
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(8, 8);
+  final data = await image.toByteData(format: ui.ImageByteFormat.png);
+  picture.dispose();
+  image.dispose();
+  return data!.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+}
+
+/// The line a [ServerAccentBar] paints, or null when it paints none.
+Color? _barColor(WidgetTester tester) {
+  final painted = find.descendant(
+    of: find.byType(ServerAccentBar),
+    matching: find.byType(DecoratedBox),
+  );
+  if (painted.evaluate().isEmpty) return null;
+  return (tester.widget<DecoratedBox>(painted).decoration as BoxDecoration)
+      .color;
+}
+
+ServerAvatar _idleAvatar(ServerConfig server) => ServerAvatar(
+  server: server,
+  connection: TerminalStatus.disconnected,
+  hasSession: false,
+);
+
 void main() {
-  group('ServerBadge', () {
-    testWidgets('an untagged server gets the default glyph', (tester) async {
+  group('ServerAccentBar', () {
+    testWidgets('a colour draws a line; none draws nothing', (tester) async {
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)),
+        _wrap(const ServerAccentBar(tint: ServerTint.none)),
       );
-      expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
-    });
-
-    testWidgets('the chosen icon is the one drawn', (tester) async {
-      await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.rocket)),
+      expect(_barColor(tester), isNull);
+      // The slot stays either way, so the marks of coloured and uncoloured
+      // servers line up in one column.
+      expect(
+        tester.getSize(find.byType(ServerAccentBar)).width,
+        ServerAccentBar.width,
       );
-      expect(find.byIcon(Icons.rocket_launch_outlined), findsOneWidget);
-      expect(find.byIcon(Icons.dns_outlined), findsNothing);
-    });
-
-    testWidgets('a colour changes the fill; none leaves it neutral', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)),
-      );
-      final neutral = _badgeFill(tester);
 
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(tint: const ServerTint(named: ServerColor.red), icon: null)),
+        _wrap(const ServerAccentBar(tint: ServerTint(named: ServerColor.red))),
       );
-      expect(_badgeFill(tester), isNot(neutral));
+      expect(_barColor(tester), isNotNull);
     });
 
     testWidgets('the same accent resolves differently per brightness', (
@@ -83,41 +106,57 @@ void main() {
       // The point of storing a name rather than an ARGB value: a colour picked
       // in light mode still has to be legible in dark mode.
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(tint: const ServerTint(named: ServerColor.teal), icon: null)),
+        _wrap(const ServerAccentBar(tint: ServerTint(named: ServerColor.teal))),
       );
-      final light = _badgeFill(tester);
+      final light = _barColor(tester);
 
       await tester.pumpWidget(
         _wrap(
-          ServerBadge.glyph(tint: const ServerTint(named: ServerColor.teal), icon: null),
+          const ServerAccentBar(tint: ServerTint(named: ServerColor.teal)),
           brightness: Brightness.dark,
         ),
       );
-      expect(_badgeFill(tester), isNot(light));
+      expect(_barColor(tester), isNot(light));
     });
 
-    testWidgets('every colour and every glyph renders', (tester) async {
-      // Cheap insurance that the enums and their mappings stay exhaustive: a
-      // value added to the protocol without a case fails the switch at compile
-      // time, and one added without a seed would throw right here. Each enum
-      // is swept once rather than against the other — the two mappings are
-      // independent, and the cross product is seventy-odd times the frames for
-      // nothing.
+    testWidgets('every colour resolves to a line', (tester) async {
+      // Cheap insurance that the enum and its seeds stay in step: a value
+      // added to the protocol without a seed would throw right here.
       for (final color in ServerColor.values) {
         await tester.pumpWidget(
-          _wrap(ServerBadge.glyph(tint: ServerTint(named: color), icon: null)),
+          _wrap(ServerAccentBar(tint: ServerTint(named: color))),
         );
-        expect(find.byType(ServerBadge), findsOneWidget);
+        expect(_barColor(tester), isNotNull, reason: color.name);
       }
+    });
+  });
+
+  group('ServerBadge', () {
+    testWidgets('an untagged server gets the default glyph', (tester) async {
+      await tester.pumpWidget(
+        _wrap(ServerBadge.glyph(icon: null)),
+      );
+      expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
+    });
+
+    testWidgets('the chosen icon is the one drawn', (tester) async {
+      await tester.pumpWidget(
+        _wrap(ServerBadge.glyph(icon: ServerIcon.rocket)),
+      );
+      expect(find.byIcon(Icons.rocket_launch_outlined), findsOneWidget);
+      expect(find.byIcon(Icons.dns_outlined), findsNothing);
+    });
+
+    testWidgets('every glyph renders', (tester) async {
+      // Cheap insurance that the enum and its mapping stay exhaustive: a value
+      // added to the protocol without a case fails the switch at compile time.
       for (final icon in ServerIcon.values) {
-        await tester.pumpWidget(
-          _wrap(ServerBadge.glyph(
-            tint: const ServerTint(named: ServerColor.violet),
-            icon: icon,
-          )),
+        await tester.pumpWidget(_wrap(ServerBadge.glyph(icon: icon)));
+        expect(
+          find.byIcon(serverIconData(icon)),
+          findsOneWidget,
+          reason: icon.name,
         );
-        expect(find.byIcon(serverIconData(icon)), findsOneWidget,
-            reason: icon.name);
       }
     });
   });
@@ -321,32 +360,12 @@ void main() {
   });
 
   group('richer marks', () {
-    /// An 8x8 solid PNG, built here rather than encoded through the real
-    /// import path: this group is about what the badge *draws*, and asserting
-    /// on the encoded bytes is `badge_image_test.dart`'s job.
-    Future<Uint8List> pngBytes() async {
-      final recorder = ui.PictureRecorder();
-      ui.Canvas(recorder).drawRect(
-        const ui.Rect.fromLTWH(0, 0, 8, 8),
-        ui.Paint()..color = const ui.Color(0xFF00FF00),
-      );
-      final picture = recorder.endRecording();
-      final image = await picture.toImage(8, 8);
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
-      picture.dispose();
-      image.dispose();
-      return data!.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-    }
-
     testWidgets('an emoji mark is drawn as text, not as a glyph', (
       tester,
     ) async {
       await tester.pumpWidget(
         _wrap(
-          const ServerBadge(
-            tint: ServerTint(named: ServerColor.violet),
-            mark: ServerEmojiMark('\u{1F680}'),
-          ),
+          const ServerBadge(mark: ServerEmojiMark('\u{1F680}')),
         ),
       );
       expect(find.text('\u{1F680}'), findsOneWidget);
@@ -364,7 +383,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           const ServerBadge(
-            tint: ServerTint.none,
             mark: ServerEmojiMark(
               '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}',
             ),
@@ -385,7 +403,7 @@ void main() {
       // nothing at all to assistive technology.
       await tester.pumpWidget(
         _wrap(
-          ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.database),
+          ServerBadge.glyph(icon: ServerIcon.database),
         ),
       );
       expect(
@@ -395,9 +413,9 @@ void main() {
     });
 
     testWidgets('an image mark is drawn from its bytes', (tester) async {
-      final bytes = await tester.runAsync(pngBytes);
+      final bytes = await tester.runAsync(_pngBytes);
       await tester.pumpWidget(
-        _wrap(ServerBadge(tint: ServerTint.none, mark: ServerImageMark(bytes!))),
+        _wrap(ServerBadge(mark: ServerImageMark(bytes!))),
       );
       // Not pumpAndSettle: an image codec resolves on the real event loop,
       // which a widget test's fake-async zone never reaches, so settling here
@@ -425,7 +443,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           ServerBadge(
-            tint: ServerTint.none,
             mark: ServerImageMark(
               // A PNG signature and nothing behind it: the protocol accepts
               // this shape, so a record really can carry it, and the badge is
@@ -608,7 +625,10 @@ void main() {
     });
   });
 
-  group('the accent frame', () {
+  group('the mark sits on one neutral tile', () {
+    /// The foreground decoration an image mark used to wear as an accent
+    /// frame, back when the colour was the badge's fill and an image covered
+    /// it. Read back so the colour cannot creep onto the mark again.
     BoxDecoration? frameOf(WidgetTester tester) {
       final container = tester.widget<Container>(
         find
@@ -621,79 +641,32 @@ void main() {
       return container.foregroundDecoration as BoxDecoration?;
     }
 
-    testWidgets('an image mark carries the accent as a frame', (
-      tester,
-    ) async {
-      // The fill is under the image, so this is the only place the colour
-      // can show. The frame is the line colour, not the fill's pastel: at two
-      // pixels the pastel is invisible.
-      final bytes = await tester.runAsync(() async {
-        final recorder = ui.PictureRecorder();
-        ui.Canvas(recorder).drawRect(
-          const ui.Rect.fromLTWH(0, 0, 8, 8),
-          ui.Paint()..color = const ui.Color(0xFF00FF00),
-        );
-        final picture = recorder.endRecording();
-        final image = await picture.toImage(8, 8);
-        final data = await image.toByteData(format: ui.ImageByteFormat.png);
-        picture.dispose();
-        image.dispose();
-        return data!.buffer.asUint8List(
-          data.offsetInBytes,
-          data.lengthInBytes,
-        );
-      });
-      late BuildContext captured;
-      await tester.pumpWidget(
-        _wrap(
-          Builder(
-            builder: (context) {
-              captured = context;
-              return ServerBadge(
-                tint: const ServerTint(named: ServerColor.teal),
-                mark: ServerImageMark(bytes!),
-              );
-            },
-          ),
-        ),
-      );
-      await tester.pump();
-      final frame = frameOf(tester);
-      expect(frame, isNotNull);
-      final line = serverAccent(
-        captured,
-        const ServerTint(named: ServerColor.teal),
-      )!.line;
-      expect(frame!.border, Border.all(color: line, width: 2));
+    testWidgets('a server\'s colour leaves its badge alone', (tester) async {
+      // The colour is the row's bar; a tinted badge as well would say it
+      // twice, and would say it differently on the mark that covers a fill.
+      await tester.pumpWidget(_wrap(_idleAvatar(_server())));
+      final neutral = _badgeFill(tester);
+      expect(neutral, isNotNull);
 
-      // No accent, no frame: a neutral image badge is just the image.
-      await tester.pumpWidget(
-        _wrap(ServerBadge(tint: ServerTint.none, mark: ServerImageMark(bytes!))),
-      );
-      await tester.pump();
-      expect(frameOf(tester), isNull);
+      for (final color in ServerColor.values) {
+        await tester.pumpWidget(_wrap(_idleAvatar(_server(color: color))));
+        expect(_badgeFill(tester), neutral, reason: color.name);
+        expect(frameOf(tester), isNull, reason: color.name);
+      }
     });
 
-    testWidgets('a glyph or emoji mark needs no frame', (tester) async {
-      // The fill shows the accent there, and a frame on top would say it
-      // twice.
+    testWidgets('an image mark is drawn on the same tile, unframed', (
+      tester,
+    ) async {
+      final bytes = await tester.runAsync(_pngBytes);
+      await tester.pumpWidget(_wrap(ServerBadge.glyph(icon: null)));
+      final neutral = _badgeFill(tester);
+
       await tester.pumpWidget(
-        _wrap(
-          ServerBadge.glyph(
-            tint: const ServerTint(named: ServerColor.teal),
-            icon: ServerIcon.rocket,
-          ),
-        ),
+        _wrap(ServerBadge(mark: ServerImageMark(bytes!))),
       );
-      expect(frameOf(tester), isNull);
-      await tester.pumpWidget(
-        _wrap(
-          const ServerBadge(
-            tint: ServerTint(named: ServerColor.teal),
-            mark: ServerEmojiMark('\u{1F680}'),
-          ),
-        ),
-      );
+      await tester.pump();
+      expect(_badgeFill(tester), neutral);
       expect(frameOf(tester), isNull);
     });
   });

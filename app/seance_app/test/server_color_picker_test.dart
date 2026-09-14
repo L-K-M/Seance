@@ -39,9 +39,9 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// The colour the preview badge is drawn with right now.
+  /// The colour the preview line is drawn with right now.
   Color preview(WidgetTester tester) =>
-      tester.widget<ServerBadge>(find.byType(ServerBadge)).tint.custom!;
+      tester.widget<ServerAccentBar>(find.byType(ServerAccentBar)).tint.custom!;
 
   /// The hue, saturation and brightness sliders, in that order.
   List<Slider> sliders(WidgetTester tester) =>

@@ -155,20 +155,17 @@ class TerminalPane extends StatelessWidget {
           ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: onBack)
           : null,
       // The badge repeats the mark from the list row, which is what makes it
-      // worth anything: the same colour and glyph you picked the server by is
-      // still in front of you once you are on it. `leading` is spoken for by
-      // back-navigation on the narrow layout, so it rides with the title.
+      // worth anything: the glyph you picked the server by is still in front
+      // of you once you are on it, and the strip below carries its colour.
+      // `leading` is spoken for by back-navigation on the narrow layout, so
+      // the badge rides with the title.
       title: Row(
         children: [
           if (server != null) ...[
             // Decorative: the title beside it is the server's label, so a
             // label here would have a screen reader say the name twice.
             ExcludeSemantics(
-              child: ServerBadge(
-                tint: ServerTint.of(server),
-                mark: server.mark,
-                size: 24,
-              ),
+              child: ServerBadge(mark: server.mark, size: 24),
             ),
             const SizedBox(width: 10),
           ],

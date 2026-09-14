@@ -712,8 +712,11 @@ class _ServerEditorState extends State<_ServerEditor> {
       Row(
         children: [
           // Colour and mark combine, so they are previewed together rather
-          // than left to be imagined from two separate pickers.
-          ServerBadge(tint: _tint, mark: _mark),
+          // than left to be imagined from two separate pickers — and as the
+          // list draws them: the colour a line beside the mark, not under it.
+          ServerAccentBar(tint: _tint),
+          const SizedBox(width: 8),
+          ServerBadge(mark: _mark),
           const SizedBox(width: 12),
           Text('Appearance', style: Theme.of(context).textTheme.titleSmall),
         ],
@@ -780,7 +783,7 @@ class _ServerEditorState extends State<_ServerEditor> {
         runSpacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          ServerBadge(tint: _tint, mark: _mark, size: 44),
+          ServerBadge(mark: _mark, size: 44),
           OutlinedButton.icon(
             onPressed: _pickMark,
             icon: const Icon(Icons.palette_outlined),
@@ -798,11 +801,7 @@ class _ServerEditorState extends State<_ServerEditor> {
   }
 
   Future<void> _pickMark() async {
-    final chosen = await showServerMarkPicker(
-      context,
-      current: _mark,
-      accent: _tint,
-    );
+    final chosen = await showServerMarkPicker(context, current: _mark);
     if (chosen == null || !mounted) return;
     setState(() => _mark = chosen);
   }

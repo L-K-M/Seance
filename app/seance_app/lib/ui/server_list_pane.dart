@@ -644,6 +644,9 @@ class ServerTile extends StatelessWidget {
     final connected = connection == TerminalStatus.connected;
     final hasSession = tabCount > 0;
     final compact = density == ServerListDensity.compact;
+    final avatarSize = compact
+        ? _compactAvatarSize
+        : ServerAvatar.defaultBadgeSize;
     final address = '${server.username}@${server.host}:${server.port}';
     return ListTile(
       selected: selected,
@@ -681,11 +684,22 @@ class ServerTile extends StatelessWidget {
       leading: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // The server's colour, as a line down the leading edge of the row
+          // rather than a tint on the mark beside it: one treatment whether
+          // the mark is a glyph, an emoji, or a logo that would cover a fill.
+          // It sits inside the tile's content padding, so the selected row's
+          // own bar — the app's colour, hard against the pane edge — stays a
+          // separate mark from this one.
+          ServerAccentBar(
+            tint: ServerTint.of(server),
+            height: ServerAvatar.extentFor(avatarSize),
+          ),
+          SizedBox(width: compact ? 6 : 8),
           ServerAvatar(
             server: server,
             connection: connection,
             hasSession: hasSession,
-            size: compact ? _compactAvatarSize : null,
+            size: avatarSize,
           ),
           if (tabCount > 1)
             Padding(

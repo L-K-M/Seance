@@ -654,13 +654,57 @@ String serverColorLabel(ServerColor? color) => color == null
     ? 'None'
     : '${color.name[0].toUpperCase()}${color.name.substring(1)}';
 
-/// A server's mark on its accent: what says *which* box a row is.
+/// The vertical line that carries a server's colour, down the leading edge of
+/// the row it marks.
 ///
-/// Takes a tint and a [ServerMark] rather than a whole [ServerConfig] so the
-/// editor can preview a pair the user is still choosing, before there is a
-/// config to preview them on.
-class ServerBadge extends StatelessWidget {
+/// The colour used to be the badge's fill, which an image mark covers edge to
+/// edge — so that one case needed a treatment of its own, a frame, and the
+/// same colour then read as a pastel square on one row and a saturated outline
+/// on the next. A line beside the mark is one treatment for all three kinds of
+/// mark, and it is a shape the eye can run down a list rather than one more
+/// tinted square among the marks.
+class ServerAccentBar extends StatelessWidget {
   final ServerTint tint;
+
+  /// How tall the line is. The caller sizes it against the row it sits in:
+  /// inside a `ListTile`'s leading slot, which sizes itself to its child, the
+  /// bar cannot take the row's own height.
+  final double height;
+
+  const ServerAccentBar({super.key, required this.tint, this.height = 32});
+
+  /// The slot is this wide whether or not a line is drawn in it, so the marks
+  /// of coloured and uncoloured servers still line up in one column.
+  static const double width = 4;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = serverAccent(context, tint);
+    return SizedBox(
+      width: width,
+      height: height,
+      child: accent == null
+          ? null
+          : DecoratedBox(
+              decoration: BoxDecoration(
+                // The saturated line tone rather than the pastel container
+                // one: four pixels of a fill tone is a smudge, not a mark.
+                color: accent.line,
+                borderRadius: BorderRadius.circular(width / 2),
+              ),
+            ),
+    );
+  }
+}
+
+/// A server's mark: what says *which* box a row is.
+///
+/// Takes a [ServerMark] rather than a whole [ServerConfig] so the editor can
+/// preview a mark the user is still choosing, before there is a config to
+/// preview it on. The colour is not drawn here — [ServerAccentBar] carries it
+/// — so a glyph, an emoji and an imported image all sit on the same neutral
+/// tile.
+class ServerBadge extends StatelessWidget {
   final ServerMark mark;
 
   /// What the badge announces, overriding the mark's own description.
@@ -675,7 +719,6 @@ class ServerBadge extends StatelessWidget {
 
   const ServerBadge({
     super.key,
-    required this.tint,
     required this.mark,
     this.semanticsLabel,
     this.size = 32,
@@ -684,7 +727,6 @@ class ServerBadge extends StatelessWidget {
   /// Convenience for the common case: a built-in glyph, or none.
   ServerBadge.glyph({
     super.key,
-    required this.tint,
     required ServerIcon? icon,
     this.semanticsLabel,
     this.size = 32,
@@ -694,52 +736,30 @@ class ServerBadge extends StatelessWidget {
   /// concentric with this, so the two are kept in one place.
   static const double cornerRatio = 0.28;
 
-  /// The accent border an image mark gets, as a share of the side: 2 px on
-  /// the list's 32 px badge, and never thinner than [_minFrameWidth] on the
-  /// compact row's.
-  static const double _frameRatio = 1 / 16;
-  static const double _minFrameWidth = 1.5;
-
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final accent = serverAccent(context, tint);
     final radius = BorderRadius.circular(size * cornerRatio);
-    // An image covers the fill edge to edge, which is the one case where the
-    // accent has nowhere to show — so it moves to a frame around the image,
-    // in the accent's line colour rather than its container tone: at two
-    // pixels a pastel fill is invisible, a saturated line is not. Painted as
-    // a foreground so it sits over the image's edge instead of under it.
-    final framed = accent != null && mark is ServerImageMark;
-    final frameWidth = framed
-        ? (size * _frameRatio).clamp(_minFrameWidth, double.infinity)
-        : 0.0;
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        // No accent: the neutral surface tone, so an untagged server still
-        // lines up with a tagged one instead of leaving a hole where the badge
-        // would be.
-        color: accent?.container ?? scheme.surfaceContainerHighest,
+        // One neutral tone under every mark: the colour is the bar beside
+        // this, and a tinted fill would say it a second time — on every mark
+        // except the images, which cover it.
+        color: scheme.surfaceContainerHighest,
         borderRadius: radius,
       ),
-      foregroundDecoration: framed
-          ? BoxDecoration(
-              borderRadius: radius,
-              border: Border.all(color: accent.line, width: frameWidth),
-            )
-          : null,
       // Clipped so an imported image takes the badge's own shape rather than
-      // squaring off the corner the accent rounds.
+      // squaring off the corner the fill rounds.
       child: ClipRRect(
         borderRadius: radius,
-        child: Center(child: _content(accent, scheme)),
+        child: Center(child: _content(scheme)),
       ),
     );
   }
 
-  Widget _content(ServerAccent? accent, ColorScheme scheme) {
+  Widget _content(ColorScheme scheme) {
     switch (mark) {
       case ServerImageMark(:final png, :final fallback):
         return Image.memory(
@@ -763,7 +783,7 @@ class ServerBadge extends StatelessWidget {
           semanticLabel: semanticsLabel ?? serverIconLabel(fallback),
           // Bytes that will not decode fall back to the glyph stored beside
           // them, which is what an older build would have drawn anyway.
-          errorBuilder: (_, _, _) => _glyphIcon(fallback, accent, scheme),
+          errorBuilder: (_, _, _) => _glyphIcon(fallback, scheme),
         );
       case ServerEmojiMark(:final emoji):
         // Scaled down rather than clipped: a wide cluster (a family emoji, a
@@ -790,18 +810,14 @@ class ServerBadge extends StatelessWidget {
           ),
         );
       case ServerGlyphMark(:final icon):
-        return _glyphIcon(icon, accent, scheme);
+        return _glyphIcon(icon, scheme);
     }
   }
 
-  Widget _glyphIcon(
-    ServerIcon? icon,
-    ServerAccent? accent,
-    ColorScheme scheme,
-  ) => Icon(
+  Widget _glyphIcon(ServerIcon? icon, ColorScheme scheme) => Icon(
     serverIconData(icon),
     size: size * 0.56,
-    color: accent?.onContainer ?? scheme.onSurfaceVariant,
+    color: scheme.onSurfaceVariant,
     // The badge identifies the server at a glance; without this it is an
     // unlabelled image to a screen reader, in the one widget whose entire job
     // is telling servers apart. The caller's label wins where there is one —
@@ -819,7 +835,7 @@ class ServerBadge extends StatelessWidget {
 /// the rows that are live are the rows that are framed, and the colour then
 /// says how the session is doing. It sits outside the badge with a gap, so it
 /// stays a separate mark on any fill, over any image, and beside the accent
-/// frame an image badge carries.
+/// bar its row carries.
 ///
 /// The two answer one question between them — *which* box, and is it up —
 /// which is why they are drawn together rather than side by side in a row
@@ -834,12 +850,12 @@ class ServerAvatar extends StatelessWidget {
   /// opened, and only the first of those is worth a ring.
   final bool hasSession;
 
-  /// The badge's edge, or null for the list's usual [_badgeSize]. The compact
-  /// server row passes a smaller one; the ring and the gap inside it scale
-  /// with it, so the whole mark stays in proportion.
+  /// The badge's edge, or null for the list's usual [defaultBadgeSize]. The
+  /// compact server row passes a smaller one; the ring and the gap inside it
+  /// scale with it, so the whole mark stays in proportion.
   final double? size;
 
-  static const double _badgeSize = 32;
+  static const double defaultBadgeSize = 32;
 
   /// The ring's stroke and the gap between it and the badge, at the default
   /// badge size. The stroke has a floor so a compact row's ring is still a
@@ -847,6 +863,18 @@ class ServerAvatar extends StatelessWidget {
   static const double _ringWidth = 2;
   static const double _gap = 2;
   static const double _minRingWidth = 1.5;
+
+  /// The side of the whole mark — badge plus ring and gap on both edges — for
+  /// a badge of [badgeSize]. Exposed because the row draws its accent bar to
+  /// this height, so the colour and the mark it belongs to read as one block
+  /// at either density.
+  static double extentFor(double badgeSize) {
+    final scale = badgeSize / defaultBadgeSize;
+    return badgeSize + 2 * (_ringStroke(scale) + _gap * scale);
+  }
+
+  static double _ringStroke(double scale) =>
+      (_ringWidth * scale).clamp(_minRingWidth, double.infinity);
 
   const ServerAvatar({
     super.key,
@@ -858,14 +886,11 @@ class ServerAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final badgeSize = size ?? _badgeSize;
-    final scale = badgeSize / _badgeSize;
-    final ringWidth = (_ringWidth * scale).clamp(
-      _minRingWidth,
-      double.infinity,
-    );
+    final badgeSize = size ?? defaultBadgeSize;
+    final scale = badgeSize / defaultBadgeSize;
+    final ringWidth = _ringStroke(scale);
     final gap = _gap * scale;
-    final extent = badgeSize + 2 * (ringWidth + gap);
+    final extent = extentFor(badgeSize);
     // The ring is drawn concentric with the badge's corners, which is what
     // makes it read as a frame around this shape rather than a circle
     // dropped over a square.
@@ -883,11 +908,7 @@ class ServerAvatar extends StatelessWidget {
           // would announce the name twice. The parameter stays for a caller
           // that has no such sibling.
           ExcludeSemantics(
-            child: ServerBadge(
-              tint: ServerTint.of(server),
-              mark: server.mark,
-              size: badgeSize,
-            ),
+            child: ServerBadge(mark: server.mark, size: badgeSize),
           ),
           if (hasSession)
             Positioned.fill(
