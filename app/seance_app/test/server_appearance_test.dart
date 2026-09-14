@@ -170,7 +170,10 @@ void main() {
           ),
         ),
       );
-      expect(_badgeFill(tester), isNot(neutral));
+      // Non-null as well as different: `_badgeFill` reads the decoration off
+      // the tree, and a null from a fill that stopped being a plain colour
+      // would satisfy `isNot(neutral)` while drawing no colour at all.
+      expect(_badgeFill(tester), allOf(isNotNull, isNot(neutral)));
     });
 
     testWidgets('every glyph renders', (tester) async {
@@ -687,7 +690,11 @@ void main() {
 
       for (final color in ServerColor.values) {
         await tester.pumpWidget(_wrap(_idleAvatar(_server(color: color))));
-        expect(_badgeFill(tester), isNot(neutral), reason: color.name);
+        expect(
+          _badgeFill(tester),
+          allOf(isNotNull, isNot(neutral)),
+          reason: color.name,
+        );
         expect(frameOf(tester), isNull, reason: color.name);
       }
     });

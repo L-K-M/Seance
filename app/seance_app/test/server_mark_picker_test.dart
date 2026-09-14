@@ -434,7 +434,7 @@ void main() {
     await open(tester, accent: accent);
     final badges = tester.widgetList<ServerBadge>(find.byType(ServerBadge));
     expect(badges, isNotEmpty);
-    expect(badges.every((badge) => badge.tint == accent), isTrue);
+    expect(badges.map((badge) => badge.tint), everyElement(accent));
     expect(find.byType(ServerAccentBar), findsNothing);
   });
 
