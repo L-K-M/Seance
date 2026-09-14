@@ -43,13 +43,22 @@ Uri? parseWebUri(String text) {
 /// cover hundreds of cells and the buffer keeps thousands of lines of them.
 /// The table is bounded: past [capacity] targets the least recently opened one
 /// is dropped, and an id is never handed to a second target, so a cell whose
-/// entry is gone resolves to nothing instead of to somebody else's URL.
+/// entry is gone resolves to nothing instead of to somebody else's URL. Once
+/// every id has been spent the table stops registering new targets rather than
+/// reuse one.
 class Hyperlinks {
-  Hyperlinks({this.capacity = _defaultHyperlinkCapacity})
-      : assert(capacity > 0);
+  Hyperlinks({
+    this.capacity = _defaultHyperlinkCapacity,
+    this.greatestId = maxHyperlinkId,
+  })  : assert(capacity > 0),
+        assert(greatestId > noHyperlink && greatestId <= maxHyperlinkId);
 
   /// The number of targets kept resolvable at once.
   final int capacity;
+
+  /// The last id this table will ever hand out. See [maxHyperlinkId];
+  /// injectable so tests can reach exhaustion without 16M targets.
+  final int greatestId;
 
   /// Insertion-ordered, so the first key is the least recently opened target.
   final _targets = <int, Uri>{};
@@ -76,14 +85,14 @@ class Hyperlinks {
       return known;
     }
 
-    if (_lastId >= maxHyperlinkId) {
-      // The id space is exhausted, so ids have to start over. This is the one
-      // place that may recycle one, and it forgets every target first: a
-      // recycled id that still resolved would send a cell to the wrong site.
-      // Reaching here takes 16M distinct targets in one session, by which
-      // point the cells holding the ids it reuses are long trimmed.
-      clear();
-      _lastId = noHyperlink;
+    if (_lastId >= greatestId) {
+      // The id space is exhausted, and starting over is not an option: an
+      // open costs no printed text, so a remote can spend every id without
+      // ever scrolling the cells that hold them, and a reused id would then
+      // send one of those cells to whatever registers next. Further targets
+      // stay unlinked, which is the state a refused one already leaves, and
+      // the targets already registered keep resolving.
+      return noHyperlink;
     }
 
     final id = ++_lastId;

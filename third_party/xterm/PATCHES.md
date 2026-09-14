@@ -392,7 +392,10 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
       blanks.
     - **The table is bounded and ids are never recycled**: past 1024 targets
       the least recently opened one is dropped, so a cell whose entry is gone
-      resolves to nothing rather than to somebody else's URL. Only targets this
+      resolves to nothing rather than to somebody else's URL. Spending the
+      whole id space stops new targets being registered rather than starting
+      the ids over — an open prints nothing, so a remote can spend every id
+      without ever scrolling away the cells that hold them. Only targets this
       terminal would actually open are stored — same gate as the text scan
       (`parseWebUri`: http(s) only, a host, no credentials), plus the 2083-byte
       ceiling VTE and iTerm2 use. A `file://` listing from `ls --hyperlink`

@@ -50,6 +50,17 @@ void main() {
     expect(links[id], Uri.parse(target));
   });
 
+  test('refuses new targets rather than reuse an id when ids run out', () {
+    final links = Hyperlinks(greatestId: 2);
+    final a = links.open('https://a.test');
+    final b = links.open('https://b.test');
+    expect({a, b}, hasLength(2));
+
+    expect(links.open('https://c.test'), noHyperlink);
+    expect(links[a], Uri.parse('https://a.test'), reason: 'live links stay');
+    expect(links.open('https://a.test'), a, reason: 'a known target reopens');
+  });
+
   test('clear forgets every target without recycling its id', () {
     final links = Hyperlinks();
     final id = links.open('https://a.test');
