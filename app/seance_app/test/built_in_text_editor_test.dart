@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:seance_app/services/managed_remote_file_store.dart';
+import 'package:seance_app/services/remote_files_controller.dart';
 import 'package:seance_app/ui/built_in_text_editor.dart';
 import 'package:seance_app/ui/editor_syntax.dart';
+import 'package:seance_core/seance_core.dart';
 
 void main() {
   late Directory directory;
@@ -452,4 +456,274 @@ void main() {
       isNotNull,
     );
   });
+
+  testWidgets('offers reload once the server copy drifts', (tester) async {
+    // runAsync throughout: checkout, refresh and reload all do real file IO.
+    // pumpAndSettle is unusable there (the blinking cursor never settles), so
+    // frames are driven by bounded pumps instead.
+    await tester.runAsync(() async {
+      final remote = _FakeRemoteFileSystem({'/etc/config.txt': 'one\ntwo\n'});
+      final controller = await _driftController(remote);
+      addTearDown(controller.dispose);
+      final copy = await controller.checkoutRemoteFile(
+        remote.entry('/etc/config.txt'),
+      );
+
+      // The server copy moves on after the checkout was taken.
+      remote.files['/etc/config.txt'] = 'one\ntwo\nthree\n';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BuiltInTextEditorScreen(
+            file: controller.localFile(copy),
+            remotePath: copy.remotePath,
+            remoteFiles: controller,
+          ),
+        ),
+      );
+      await tester.pump();
+      // The document loads off the real event loop — wait for the editor
+      // body before the banner so neither races the loading spinner.
+      await _pollUntil(
+        tester,
+        () => find.byType(TextField).evaluate().isNotEmpty,
+      );
+      await _pollUntil(
+        tester,
+        () => find
+            .text('This file changed on the server.')
+            .evaluate()
+            .isNotEmpty,
+      );
+
+      // The mount-time check flags the drift without any user action.
+      expect(
+        find.text('This file changed on the server.'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Reload'));
+      await _pollUntil(
+        tester,
+        () => _editorText(tester) == 'one\ntwo\nthree\n',
+      );
+
+      expect(
+        find.text('This file changed on the server.'),
+        findsNothing,
+      );
+      expect(controller.remoteChangedFor(copy.remotePath), isFalse);
+    });
+  });
+
+  testWidgets('reload confirms before discarding local edits', (tester) async {
+    await tester.runAsync(() async {
+      final remote = _FakeRemoteFileSystem({'/etc/config.txt': 'one\ntwo\n'});
+      final controller = await _driftController(remote);
+      addTearDown(controller.dispose);
+      final copy = await controller.checkoutRemoteFile(
+        remote.entry('/etc/config.txt'),
+      );
+      remote.files['/etc/config.txt'] = 'server side\n';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BuiltInTextEditorScreen(
+            file: controller.localFile(copy),
+            remotePath: copy.remotePath,
+            remoteFiles: controller,
+          ),
+        ),
+      );
+      await tester.pump();
+      await _pollUntil(
+        tester,
+        () => find.byType(TextField).evaluate().isNotEmpty,
+      );
+      await _pollUntil(
+        tester,
+        () => find
+            .text('This file changed on the server.')
+            .evaluate()
+            .isNotEmpty,
+      );
+      await tester.enterText(find.byType(TextField).first, 'local edit\n');
+      await tester.pump();
+
+      await tester.tap(find.text('Reload'));
+      await tester.pump();
+      expect(find.text('Discard local changes?'), findsOneWidget);
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        'local edit\n',
+      );
+
+      await tester.tap(find.text('Reload'));
+      await tester.pump();
+      await tester.tap(find.text('Discard and reload'));
+      await _pollUntil(tester, () => _editorText(tester) == 'server side\n');
+      expect(_editorText(tester), 'server side\n');
+    });
+  });
+
+  testWidgets('a server-deleted file offers keep-local, not reload', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final remote = _FakeRemoteFileSystem({'/etc/config.txt': 'one\n'});
+      final controller = await _driftController(remote);
+      addTearDown(controller.dispose);
+      final copy = await controller.checkoutRemoteFile(
+        remote.entry('/etc/config.txt'),
+      );
+      remote.files.remove('/etc/config.txt');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BuiltInTextEditorScreen(
+            file: controller.localFile(copy),
+            remotePath: copy.remotePath,
+            remoteFiles: controller,
+          ),
+        ),
+      );
+      await tester.pump();
+      await _pollUntil(
+        tester,
+        () => find.byType(TextField).evaluate().isNotEmpty,
+      );
+      await _pollUntil(
+        tester,
+        () => find
+            .text('This file no longer exists on the server.')
+            .evaluate()
+            .isNotEmpty,
+      );
+
+      // Reload can only fail against a deleted remote — don't offer it.
+      expect(find.text('Reload'), findsNothing);
+      expect(find.text('Keep local copy'), findsOneWidget);
+
+      await tester.tap(find.text('Keep local copy'));
+      await tester.pump();
+      expect(
+        find.text('This file no longer exists on the server.'),
+        findsNothing,
+      );
+      // The local copy is untouched.
+      expect(_editorText(tester), 'one\n');
+    });
+  });
+}
+
+/// Bounded poll for async work landing inside `tester.runAsync` — a fixed
+/// sleep would be both slower and flaky on a loaded CI runner. Returns as
+/// soon as the condition holds; the 5 s ceiling only bites when it's stuck.
+Future<void> _pollUntil(WidgetTester tester, bool Function() condition) async {
+  for (var i = 0; i < 500; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await tester.pump();
+    if (condition()) return;
+  }
+  fail('Polled condition was not met within 5s');
+}
+
+/// The editor buffer's current text, or null while the loading spinner is
+/// still standing in for the TextField.
+String? _editorText(WidgetTester tester) {
+  final field = find.byType(TextField);
+  if (field.evaluate().isEmpty) return null;
+  return tester.widget<TextField>(field.first).controller!.text;
+}
+
+/// A controller backed by a temp-dir store and [_FakeRemoteFileSystem],
+/// initialized so its remote handle is live.
+Future<RemoteFilesController> _driftController(
+  _FakeRemoteFileSystem remote,
+) async {
+  final directory = await Directory.systemTemp.createTemp(
+    'seance-editor-drift-',
+  );
+  addTearDown(() async {
+    if (await directory.exists()) await directory.delete(recursive: true);
+  });
+  final controller = RemoteFilesController(
+    () async => remote,
+    shellDirectory: ValueNotifier<String?>(null),
+    managedFileStore: ManagedRemoteFileStore(
+      indexFile: File('${directory.path}/index.json'),
+      checkoutRoot: Directory('${directory.path}/checkouts'),
+    ),
+    serverId: 'server',
+    editSessionId: 'session',
+  );
+  await controller.initialize();
+  return controller;
+}
+
+/// Minimal in-memory remote: one directory's worth of regular text files.
+class _FakeRemoteFileSystem implements RemoteFileSystem {
+  final Map<String, String> files;
+
+  _FakeRemoteFileSystem(this.files);
+
+  RemoteFileEntry entry(String path) => RemoteFileEntry(
+    path: path,
+    name: remoteBasename(path),
+    type: RemoteFileType.file,
+    size: files[path]?.length,
+  );
+
+  @override
+  Future<String> canonicalize(String path) async => '/etc';
+
+  @override
+  Future<List<RemoteFileEntry>> listDirectory(String path) async => [
+    for (final file in files.keys)
+      if (remoteParent(file) == path) entry(file),
+  ];
+
+  @override
+  Future<RemoteFileEntry> stat(String path, {bool followLinks = true}) async {
+    if (!files.containsKey(path)) {
+      throw RemoteFileException(
+        kind: RemoteFileErrorKind.notFound,
+        operation: 'inspect',
+        path: path,
+        message: 'Not found',
+      );
+    }
+    return entry(path);
+  }
+
+  @override
+  Future<RemoteFileEntry> download(
+    String path,
+    StreamSink<List<int>> destination, {
+    RemoteTransferProgress? onProgress,
+    RemoteTransferCancellation? cancellation,
+    bool computeHash = true,
+  }) async {
+    final content = files[path];
+    if (content == null) {
+      throw RemoteFileException(
+        kind: RemoteFileErrorKind.notFound,
+        operation: 'download',
+        path: path,
+        message: 'Not found',
+      );
+    }
+    final bytes = utf8.encode(content);
+    destination.add(bytes);
+    onProgress?.call(bytes.length, bytes.length);
+    return entry(path);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+    '_FakeRemoteFileSystem.${invocation.memberName}',
+  );
 }

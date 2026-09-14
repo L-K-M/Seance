@@ -388,6 +388,244 @@ void main() {
       shellDirectory.dispose();
     },
   );
+
+  test('reopening a managed copy refreshes changed remote content', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+    final copy = await controller.checkoutRemoteFile(entry);
+    expect(await controller.localFile(copy).readAsBytes(), [1, 2, 3]);
+
+    // The file changes on the server after the checkout was taken.
+    remote.contents[entry.path] = [9, 8, 7, 6];
+    final updated = RemoteFileEntry(
+      path: entry.path,
+      name: entry.name,
+      type: RemoteFileType.file,
+      size: 4,
+      modifiedAt: DateTime.utc(2024),
+    );
+    remote.directories['/home/test']![0] = updated;
+
+    final reopened = await controller.checkoutRemoteFile(updated);
+
+    expect(reopened.id, copy.id);
+    expect(await controller.localFile(reopened).readAsBytes(), [9, 8, 7, 6]);
+    expect(reopened.remoteSnapshot.size, 4);
+    expect(reopened.dirty, isFalse);
+    expect(controller.remoteChangedFor(entry.path), isFalse);
+
+    controller.dispose();
+    shellDirectory.dispose();
+  });
+
+  test('reopening keeps a dirty copy but flags the remote drift', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+    final copy = await controller.checkoutRemoteFile(entry);
+    await controller.localFile(copy).writeAsBytes([4, 5, 6]);
+
+    remote.contents[entry.path] = [9, 9, 9];
+    final updated = RemoteFileEntry(
+      path: entry.path,
+      name: entry.name,
+      type: RemoteFileType.file,
+      size: 3,
+      modifiedAt: DateTime.utc(2024),
+    );
+    remote.directories['/home/test']![0] = updated;
+
+    final reopened = await controller.checkoutRemoteFile(updated);
+
+    // Local edits win silently; the drift is flagged for the editor's reload.
+    expect(await controller.localFile(reopened).readAsBytes(), [4, 5, 6]);
+    expect(reopened.dirty, isTrue);
+    expect(controller.remoteChangedFor(entry.path), isTrue);
+
+    controller.dispose();
+    shellDirectory.dispose();
+  });
+
+  test('remoteChangedFor follows checks and refreshLocalCopy repairs', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+    final copy = await controller.checkoutRemoteFile(entry);
+
+    // A fresh checkout is known-fresh; only drift flags it.
+    expect(controller.remoteChangedFor(entry.path), isFalse);
+    await controller.checkRemoteSnapshot(entry.path);
+    expect(controller.remoteChangedFor(entry.path), isFalse);
+
+    remote.contents[entry.path] = [7, 7];
+    remote.directories['/home/test']![0] = RemoteFileEntry(
+      path: entry.path,
+      name: entry.name,
+      type: RemoteFileType.file,
+      size: 2,
+      modifiedAt: DateTime.utc(2024),
+    );
+    await controller.checkRemoteSnapshot(entry.path);
+    expect(controller.remoteChangedFor(entry.path), isTrue);
+
+    await controller.refreshLocalCopy(entry.path);
+    expect(await controller.localFile(copy).readAsBytes(), [7, 7]);
+    expect(controller.remoteChangedFor(entry.path), isFalse);
+
+    controller.dispose();
+    shellDirectory.dispose();
+  });
+
+  test('a finished shell command re-stats managed copies', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final activeCommand = ValueNotifier<String?>(null);
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      activeCommand: activeCommand,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+    await controller.checkoutRemoteFile(entry);
+
+    remote.directories['/home/test']![0] = RemoteFileEntry(
+      path: entry.path,
+      name: entry.name,
+      type: RemoteFileType.file,
+      size: 4,
+      modifiedAt: DateTime.utc(2024),
+    );
+    activeCommand.value = 'pico a.txt';
+    activeCommand.value = null;
+    // The re-stat is debounced (~350 ms); poll well past it rather than
+    // sleep a fixed duration.
+    for (var i = 0; i < 500; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      if (controller.remoteChangedFor(entry.path) == true) break;
+    }
+
+    expect(controller.remoteChangedFor(entry.path), isTrue);
+
+    controller.dispose();
+    shellDirectory.dispose();
+    activeCommand.dispose();
+  });
+
+  test('a copy deleted mid-refresh is not resurrected', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final store = _store();
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      managedFileStore: store,
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+    final copy = await controller.checkoutRemoteFile(entry);
+
+    remote.contents[entry.path] = [9, 9, 9];
+    remote.directories['/home/test']![0] = RemoteFileEntry(
+      path: entry.path,
+      name: entry.name,
+      type: RemoteFileType.file,
+      size: 3,
+      modifiedAt: DateTime.utc(2024),
+    );
+
+    // Hold the first download open so the discard lands mid-flight; the
+    // second call is the re-checkout's own download, which proceeds.
+    final gate = Completer<void>();
+    var downloads = 0;
+    remote.duringDownload = () =>
+        ++downloads == 1 ? gate.future : Future<void>.value();
+    final refresh = controller.refreshLocalCopy(entry.path);
+    await controller.removeLocalCopy(entry.path);
+    // Re-checking out the same path joins the in-flight refresh, which
+    // resolves to the discarded copy — the caller must get a live one.
+    final recheckout = controller.checkoutRemoteFile(entry);
+    gate.complete();
+    await refresh;
+    final recheckedOut = await recheckout;
+
+    expect(controller.localCopies[entry.path]?.id, recheckedOut.id);
+    expect(recheckedOut.id, isNot(copy.id));
+    expect(await store.get(copy.id), isNull);
+    expect(await store.get(recheckedOut.id), isNotNull);
+    expect(await controller.localFile(recheckedOut).exists(), isTrue);
+
+    controller.dispose();
+    shellDirectory.dispose();
+  });
+
+  test('a remotely deleted file is flagged but the local copy survives',
+      () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      managedFileStore: _store(),
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+    await controller.checkoutRemoteFile(entry);
+
+    await remote.delete(entry);
+    await controller.checkRemoteSnapshot(entry.path);
+    expect(controller.remoteChangedFor(entry.path), isTrue);
+
+    final reopened = await controller.checkoutRemoteFile(entry);
+    expect(await controller.localFile(reopened).readAsBytes(), [1, 2, 3]);
+
+    controller.dispose();
+    shellDirectory.dispose();
+  });
 }
 
 ManagedRemoteFileStore _store() {
@@ -427,8 +665,15 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
     '/home/test/docker': [],
   };
   final Map<String, List<int>> uploaded = {};
+
+  /// Bytes [download] serves per path; defaults to `[1, 2, 3]`.
+  final Map<String, List<int>> contents = {};
   RemoteFileEntry? expectedUploadTarget;
   Future<void> Function()? duringUpload;
+
+  /// A hook awaited mid-[download], letting a test interleave another call
+  /// (e.g. a delete) while a transfer is in flight.
+  Future<void> Function()? duringDownload;
 
   @override
   Future<void> setMode(String path, int permissions) async {}
@@ -503,8 +748,10 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
     bool computeHash = true,
   }) async {
     cancellation?.throwIfCancelled();
-    destination.add([1, 2, 3]);
-    onProgress?.call(3, 3);
+    await duringDownload?.call();
+    final bytes = contents[path] ?? const [1, 2, 3];
+    destination.add(bytes);
+    onProgress?.call(bytes.length, bytes.length);
     try {
       return await stat(path, followLinks: false);
     } on RemoteFileException {

@@ -162,10 +162,10 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
                 if (controller.localCopies.isNotEmpty)
                   _LocalCopiesPanel(
                     copies: controller.localCopies.values.toList(),
-                    onOpen: _openLocalCopy,
+                    onOpen: _openManagedCopy,
                     editorChoices: (copy) => _editorChoices(copy.remotePath),
                     onOpenWith: (copy, editorId) =>
-                        _openLocalCopy(copy, editorId: editorId),
+                        _openManagedCopy(copy, editorId: editorId),
                     onUpload: _uploadLocalCopy,
                     onDiscard: _discardLocalCopy,
                   ),
@@ -481,12 +481,6 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       _showError('The built-in editor supports text files up to 4 MB.');
       return;
     }
-    final existing = widget.controller.localCopies[entry.path];
-    if (existing != null) {
-      await _openLocalCopy(existing, editorId: editorId);
-      return;
-    }
-
     try {
       final copy = await widget.controller.checkoutRemoteFile(
         entry,
@@ -511,11 +505,6 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       _showError('The built-in editor supports text files up to 4 MB.');
       return;
     }
-    final existing = widget.controller.localCopies[entry.path];
-    if (existing != null) {
-      await _openLocalCopy(existing, editorId: editorId);
-      return;
-    }
     try {
       final copy = await widget.controller.checkoutRemoteFile(
         entry,
@@ -527,6 +516,28 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       await _openLocalCopy(copy, editorId: editorId);
     } catch (error) {
       _showError(error);
+    }
+  }
+
+  /// Opens a managed copy — routed through [RemoteFilesController]'s checkout
+  /// so a stale copy is refreshed from the server before the editor sees it.
+  Future<void> _openManagedCopy(
+    ManagedRemoteFile copy, {
+    String? editorId,
+  }) async {
+    final registry = AppScope.of(context).services.settings.editorRegistry;
+    final selected = editorId ?? registry.effectiveDefaultFor(copy.remotePath);
+    try {
+      final fresh = await widget.controller.checkoutRemoteFile(
+        copy.remoteSnapshot,
+        maximumBytes: selected == EditorRegistry.builtInId
+            ? builtInEditorMaximumBytes
+            : null,
+      );
+      if (!mounted) return;
+      await _openLocalCopy(fresh, editorId: editorId);
+    } catch (e) {
+      _showError(e);
     }
   }
 
@@ -545,6 +556,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
             builder: (_) => BuiltInTextEditorScreen(
               file: file,
               remotePath: copy.remotePath,
+              remoteFiles: widget.controller,
               onSaved: widget.controller.reconcileLocalCopies,
               // The editor reports "Saved and uploaded" itself.
               onUpload: () => _uploadLocalCopy(copy, notifySuccess: false),

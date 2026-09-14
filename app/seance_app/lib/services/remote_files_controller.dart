@@ -45,6 +45,7 @@ class RemoteFilesController extends ChangeNotifier {
   final Future<RemoteFileSystem> Function() _openRemoteFileSystem;
   final ValueListenable<String?> shellDirectory;
   final ValueListenable<String?> terminalTitle;
+  final ValueListenable<String?> activeCommand;
   final ManagedRemoteFileStore managedFileStore;
   final String serverId;
   final String editSessionId;
@@ -62,13 +63,16 @@ class RemoteFilesController extends ChangeNotifier {
     bool initialShowHidden = true,
     this.saveShowHidden,
     ValueListenable<String?>? terminalTitle,
+    ValueListenable<String?>? activeCommand,
     Map<String, ManagedRemoteFile>? initialLocalCopies,
-  }) : terminalTitle = terminalTitle ?? const _EmptyStringListenable() {
+  }) : terminalTitle = terminalTitle ?? const _EmptyStringListenable(),
+       activeCommand = activeCommand ?? const _EmptyStringListenable() {
     if (initialLocalCopies != null) localCopies.addAll(initialLocalCopies);
     showHidden = initialShowHidden;
     bookmarks.addAll(initialBookmarks.where(_isAbsolutePath));
     shellDirectory.addListener(_followShellDirectory);
     this.terminalTitle.addListener(_followShellDirectory);
+    this.activeCommand.addListener(_followActiveCommand);
   }
 
   RemoteFileSystem? _remoteFileSystem;
@@ -80,6 +84,15 @@ class RemoteFilesController extends ChangeNotifier {
   final Map<String, StreamSubscription<FileSystemEvent>> _checkoutWatches = {};
   final Map<String, Timer> _checkoutDebounces = {};
   final Map<String, Future<ManagedRemoteFile>> _checkoutFlights = {};
+  String? _lastCommand;
+  Timer? _remoteSnapshotDebounce;
+  int _remoteSnapshotGeneration = 0;
+
+  /// Collapses a burst of finished shell commands (a pasted multi-line
+  /// script) into one re-stat pass over the managed copies.
+  static const Duration _remoteSnapshotDebounceDelay = Duration(
+    milliseconds: 350,
+  );
 
   bool initialized = false;
   bool loading = false;
@@ -97,6 +110,12 @@ class RemoteFilesController extends ChangeNotifier {
   final List<String> bookmarks = [];
   final List<RemoteTransferItem> transfers = [];
   final Map<String, ManagedRemoteFile> localCopies = {};
+
+  /// The freshest server stat seen for each managed remote path: an entry
+  /// when the file exists, null once it is known to be gone, absent until a
+  /// check has looked. Compared against a copy's `remoteSnapshot` it answers
+  /// [remoteChangedFor].
+  final Map<String, RemoteFileEntry?> latestRemoteSnapshots = {};
 
   Future<void> initialize() {
     if (initialized) return Future.value();
@@ -149,6 +168,13 @@ class RemoteFilesController extends ChangeNotifier {
       currentPath = canonical;
       _allEntries = List.unmodifiable(next);
       selectedPaths.clear();
+      // A fresh listing doubles as a freshness check for managed copies in
+      // this directory — no extra round trips needed.
+      for (final entry in next) {
+        if (localCopies.containsKey(entry.path)) {
+          latestRemoteSnapshots[entry.path] = entry;
+        }
+      }
       _applyEntryView();
     } catch (e) {
       if (_disposed || generation != _navigationGeneration) return;
@@ -319,6 +345,13 @@ class RemoteFilesController extends ChangeNotifier {
         remoteSnapshot: _copyEntry(item.value.remoteSnapshot, nextPath),
       );
       localCopies[nextPath] = updated;
+      // A present-null means "known missing on the server" — containsKey
+      // carries it across the rename where a != null check would drop it.
+      if (latestRemoteSnapshots.containsKey(item.key)) {
+        latestRemoteSnapshots[nextPath] = latestRemoteSnapshots.remove(
+          item.key,
+        );
+      }
       await managedFileStore.update(updated);
     }
     await refresh();
@@ -639,18 +672,239 @@ class RemoteFilesController extends ChangeNotifier {
   /// Downloads [entry] into the durable app-support checkout area and starts
   /// watching its parent directory so editors that save by atomic replacement
   /// are detected as well as in-place writes.
+  ///
+  /// An existing checkout is re-validated against the server first: a clean
+  /// copy whose remote file changed is refreshed in place, so reopening a
+  /// file can never serve stale content. A dirty copy is never overwritten —
+  /// [remoteChangedFor] flags the drift and the editor's reload affordance
+  /// becomes the deliberate discard path.
   Future<ManagedRemoteFile> checkoutRemoteFile(
     RemoteFileEntry entry, {
     int? maximumBytes,
   }) async {
-    final existing = localCopies[entry.path];
-    if (existing != null) return existing;
-    return _checkoutFlights.putIfAbsent(entry.path, () async {
+    var copy = await _checkoutFlights.putIfAbsent(entry.path, () async {
       try {
-        return await _checkoutRemoteFile(entry, maximumBytes: maximumBytes);
+        final existing = localCopies[entry.path];
+        return existing == null
+            ? await _checkoutRemoteFile(entry, maximumBytes: maximumBytes)
+            : await _refreshExistingCheckout(
+                existing,
+                maximumBytes: maximumBytes,
+              );
       } finally {
         _checkoutFlights.remove(entry.path);
       }
+    });
+    // A flight joined while its checkout was being discarded can resolve to
+    // a copy that is no longer tracked (its local file is gone). Never hand
+    // that out — take a fresh flight so the caller gets a live checkout.
+    if (!_disposed && localCopies[entry.path]?.id != copy.id) {
+      copy = await checkoutRemoteFile(entry, maximumBytes: maximumBytes);
+    }
+    return copy;
+  }
+
+  /// Re-stats an existing checkout's remote path and refreshes the local copy
+  /// when the server version moved on. Falls back to the stale copy when the
+  /// refresh cannot complete — the recorded drift still lets the editor offer
+  /// an explicit reload.
+  Future<ManagedRemoteFile> _refreshExistingCheckout(
+    ManagedRemoteFile copy, {
+    int? maximumBytes,
+  }) async {
+    // Reconcile before deciding: an external editor's just-finished save must
+    // be seen before the server copy is allowed to overwrite the checkout.
+    final current = await managedFileStore.reconcile(copy.id) ?? copy;
+    if (_disposed) return current;
+    if (!identical(current, copy)) {
+      localCopies[current.remotePath] = current;
+    }
+    final RemoteFileEntry latest;
+    try {
+      latest = await _requireRemote().stat(
+        current.remotePath,
+        followLinks: false,
+      );
+    } on RemoteFileException catch (e) {
+      if (e.kind == RemoteFileErrorKind.notFound) {
+        latestRemoteSnapshots[current.remotePath] = null;
+      }
+      // Gone or unreachable: keep the local copy — it may hold the only
+      // surviving content, and a dead connection must not block reopening.
+      _notify();
+      return current;
+    } catch (_) {
+      // Not connected (or a non-standard filesystem failure): same answer.
+      return current;
+    }
+    latestRemoteSnapshots[current.remotePath] = latest;
+    if (current.dirty || _sameSnapshot(latest, current.remoteSnapshot)) {
+      _notify();
+      return current;
+    }
+    try {
+      return await _refreshLocalCopy(current, maximumBytes: maximumBytes);
+    } catch (_) {
+      return current;
+    }
+  }
+
+  /// Re-downloads the server copy into the managed checkout, replacing the
+  /// local file. Any local edits are discarded — callers confirm first.
+  Future<ManagedRemoteFile> refreshLocalCopy(
+    String remotePath, {
+    int? maximumBytes,
+  }) async {
+    final copy = localCopies[remotePath];
+    if (copy == null) {
+      throw StateError('No managed local copy of "$remotePath" exists.');
+    }
+    return _checkoutFlights.putIfAbsent(remotePath, () async {
+      try {
+        return await _refreshLocalCopy(copy, maximumBytes: maximumBytes);
+      } finally {
+        _checkoutFlights.remove(remotePath);
+      }
+    });
+  }
+
+  Future<ManagedRemoteFile> _refreshLocalCopy(
+    ManagedRemoteFile copy, {
+    int? maximumBytes,
+  }) async {
+    final local = localFile(copy);
+    final partial = File('${local.path}.seance-${uuidV4()}.part');
+    IOSink? sink;
+    try {
+      final latest = await _requireRemote().stat(
+        copy.remotePath,
+        followLinks: false,
+      );
+      sink = partial.openWrite();
+      final snapshot = await download(
+        latest,
+        maximumBytes == null ? sink : _MaximumByteSink(sink, maximumBytes),
+      );
+      await sink.flush();
+      await sink.close();
+      sink = null;
+      // The copy may have been discarded, migrated via takeLocalCopies, or
+      // the whole controller disposed while the download was in flight —
+      // finishing now would resurrect it. Keyed on identity, not path
+      // presence: a same-path re-checkout during the download must not let
+      // this stale copy clobber the new one.
+      if (_disposed || localCopies[copy.remotePath]?.id != copy.id) {
+        if (await partial.exists()) await partial.delete();
+        return copy;
+      }
+      await _replaceLocalFile(partial, local);
+      final updated = copy.copyWith(
+        remoteSnapshot: snapshot,
+        baselineSha256: await streamedFileSha256(local),
+        dirty: false,
+        missing: false,
+      );
+      await managedFileStore.update(updated);
+      localCopies[copy.remotePath] = updated;
+      latestRemoteSnapshots[copy.remotePath] = snapshot;
+      _checkoutDebounces.remove(copy.id)?.cancel();
+      _notify();
+      return updated;
+    } catch (_) {
+      await sink?.close();
+      if (await partial.exists()) await partial.delete();
+      rethrow;
+    }
+  }
+
+  /// Re-stats one managed path so [remoteChangedFor] reflects the present
+  /// server state. Best effort: failures keep the previous answer. Waits for
+  /// a still-running [initialize] so a check issued before the channel is up
+  /// still lands.
+  Future<void> checkRemoteSnapshot(String remotePath) async {
+    if (_remoteFileSystem == null) {
+      try {
+        await initialize();
+      } catch (_) {
+        return;
+      }
+    }
+    final remote = _remoteFileSystem;
+    if (remote == null) return;
+    try {
+      latestRemoteSnapshots[remotePath] = await remote.stat(
+        remotePath,
+        followLinks: false,
+      );
+    } on RemoteFileException catch (e) {
+      if (e.kind == RemoteFileErrorKind.notFound) {
+        latestRemoteSnapshots[remotePath] = null;
+      } else {
+        return;
+      }
+    } catch (_) {
+      return;
+    }
+    _notify();
+  }
+
+  /// Whether the server copy is known to differ from what the managed copy
+  /// at [remotePath] was checked out against — or is known to be missing.
+  /// Null until a freshness check has looked at the path.
+  bool? remoteChangedFor(String remotePath) {
+    final copy = localCopies[remotePath];
+    if (copy == null || !latestRemoteSnapshots.containsKey(remotePath)) {
+      return null;
+    }
+    final latest = latestRemoteSnapshots[remotePath];
+    return latest == null || !_sameSnapshot(latest, copy.remoteSnapshot);
+  }
+
+  /// Re-stats every managed remote path, refreshing the answers
+  /// [remoteChangedFor] gives. Per-path failures keep the previous answer — a
+  /// dropped connection must not read as "changed".
+  Future<void> refreshRemoteSnapshots() async {
+    final remote = _remoteFileSystem;
+    if (remote == null || localCopies.isEmpty) return;
+    final generation = ++_remoteSnapshotGeneration;
+    for (final path in localCopies.keys.toList()) {
+      // Publish each stat as it lands — batching into a trailing addAll could
+      // overwrite a fresher per-path check that ran mid-loop.
+      try {
+        latestRemoteSnapshots[path] = await remote.stat(
+          path,
+          followLinks: false,
+        );
+      } on RemoteFileException catch (e) {
+        if (e.kind == RemoteFileErrorKind.notFound) {
+          latestRemoteSnapshots[path] = null;
+        }
+      } catch (_) {}
+      if (_disposed || generation != _remoteSnapshotGeneration) return;
+    }
+    _notify();
+  }
+
+  /// A finished shell command may have rewritten managed files remotely
+  /// (pico, sed, git pull, a build script): re-stat them so
+  /// [remoteChangedFor] answers from fresh server state. Without OSC 133
+  /// [activeCommand] never fires; the open-time and explicit checks remain.
+  void _followActiveCommand() {
+    final running = activeCommand.value;
+    if (running != null) {
+      _lastCommand = running;
+      return;
+    }
+    if (_lastCommand == null) return;
+    _lastCommand = null;
+    _scheduleRemoteSnapshotCheck();
+  }
+
+  void _scheduleRemoteSnapshotCheck() {
+    if (_disposed || localCopies.isEmpty) return;
+    _remoteSnapshotDebounce?.cancel();
+    _remoteSnapshotDebounce = Timer(_remoteSnapshotDebounceDelay, () {
+      unawaited(refreshRemoteSnapshots());
     });
   }
 
@@ -714,6 +968,7 @@ class RemoteFilesController extends ChangeNotifier {
       return false;
     }
     localCopies[copy.remotePath] = copy;
+    latestRemoteSnapshots[copy.remotePath] = copy.remoteSnapshot;
     _watchCheckout(copy);
     _notify();
     return true;
@@ -770,6 +1025,7 @@ class RemoteFilesController extends ChangeNotifier {
       );
       await managedFileStore.update(updated);
       localCopies[copy.remotePath] = updated;
+      latestRemoteSnapshots[copy.remotePath] = uploaded;
       _notify();
     } finally {
       if (await snapshot.exists()) await snapshot.delete();
@@ -781,6 +1037,7 @@ class RemoteFilesController extends ChangeNotifier {
     if (copy == null) return;
     await managedFileStore.remove(copy.id);
     localCopies.remove(remotePath);
+    latestRemoteSnapshots.remove(remotePath);
     await _stopWatching(copy.id);
     _notify();
   }
@@ -960,6 +1217,7 @@ class RemoteFilesController extends ChangeNotifier {
   Map<String, ManagedRemoteFile> takeLocalCopies() {
     final copies = Map<String, ManagedRemoteFile>.of(localCopies);
     localCopies.clear();
+    latestRemoteSnapshots.clear();
     return copies;
   }
 
@@ -1142,6 +1400,8 @@ class RemoteFilesController extends ChangeNotifier {
     _disposed = true;
     shellDirectory.removeListener(_followShellDirectory);
     terminalTitle.removeListener(_followShellDirectory);
+    activeCommand.removeListener(_followActiveCommand);
+    _remoteSnapshotDebounce?.cancel();
     for (final transfer in transfers) {
       transfer.cancellation.cancel();
     }
