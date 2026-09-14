@@ -42,12 +42,9 @@ RemoteCommandResult _notRepo() => const RemoteCommandResult(
   exitCode: 128,
 );
 
-/// The probe's refresh is async all the way down; a couple of zero-delay
-/// pumps let listener-triggered ones land, as the files tests do.
-Future<void> _settle() async {
-  await Future<void>.delayed(Duration.zero);
-  await Future<void>.delayed(Duration.zero);
-}
+/// The probe's refresh is async all the way down; pumpEventQueue drains
+/// listener-triggered work deterministically regardless of hop count.
+Future<void> _settle() => pumpEventQueue();
 
 void main() {
   late ValueNotifier<String?> shellDirectory;
@@ -88,7 +85,10 @@ void main() {
     runner.onRun = (_) => _repo();
     await controller.initialize();
 
-    expect(runner.commands.single, startsWith("cd -- '/srv/app' && "));
+    expect(
+      runner.commands.single,
+      startsWith("export LC_ALL=C; cd -- '/srv/app' && "),
+    );
     final repo = controller.repo!;
     expect(repo.branch, 'main');
     expect(repo.recentCommits.single.subject, 'latest commit');
@@ -102,7 +102,10 @@ void main() {
     await controller.initialize();
 
     expect(controller.reportedDirectory, '~/proj');
-    expect(runner.commands.single, startsWith("cd -- ~/'proj' && "));
+    expect(
+      runner.commands.single,
+      startsWith("export LC_ALL=C; cd -- ~/'proj' && "),
+    );
   });
 
   test('re-probes when the reported directory changes', () async {
@@ -114,7 +117,10 @@ void main() {
     shellDirectory.value = '/srv/other';
     await _settle();
     expect(runner.commands, hasLength(2));
-    expect(runner.commands.last, startsWith("cd -- '/srv/other' && "));
+    expect(
+      runner.commands.last,
+      startsWith("export LC_ALL=C; cd -- '/srv/other' && "),
+    );
     expect(controller.directory, '/srv/other');
   });
 
@@ -180,9 +186,33 @@ void main() {
           );
     final result = await controller.stageFile('missing.txt');
     expect(result, isNull);
+    // A failed action must not clear or corrupt the displayed repo state.
+    expect(controller.repo, isNotNull);
+    expect(controller.repo!.branch, 'main');
     expect(controller.actionError, contains('pathspec'));
     controller.dismissActionError();
     expect(controller.actionError, isNull);
+  });
+
+  test('rejects a second action while one is in flight', () async {
+    shellDirectory.value = '/srv/app';
+    runner.onRun = (_) => _repo();
+    await controller.initialize();
+
+    var gitCalls = 0;
+    runner.onRun = (command) {
+      if (command.contains('rev-parse')) return _repo();
+      gitCalls++;
+      return const RemoteCommandResult(exitCode: 0);
+    };
+
+    // busy flips synchronously, so the overlapping call never runs.
+    final first = controller.stageFile('a.txt');
+    expect(await controller.stageAll(), isNull);
+    await first;
+    await _settle();
+    expect(gitCalls, 1);
+    expect(controller.busy, isFalse);
   });
 
   test('surfaces a transport failure as an error', () async {

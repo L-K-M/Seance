@@ -139,16 +139,15 @@ class RemoteGitController extends ChangeNotifier {
     if (_touchesGit(finished)) refresh();
   }
 
-  /// Whether [command] runs git — at the start or after `&&`/`;`/`|`, under
-  /// `sudo`. "git" inside a path or argument doesn't count.
+  /// Whether [command] runs git — a bare `git` token in any `&&`/`;`/`|`
+  /// segment (covering `xargs git`, `$(git …)`, `GIT_DIR=… git`), or under
+  /// `sudo`. A false positive costs one extra probe; a miss leaves the panel
+  /// stale.
   static bool _touchesGit(String command) {
     for (final segment in command.split(RegExp(r'&&|\|\||[;|]'))) {
       final words = segment.trim().split(RegExp(r'\s+'));
       if (words.isEmpty || words.first.isEmpty) continue;
-      if (words.first == 'git') return true;
-      if (words.first == 'sudo' && words.length > 1 && words[1] == 'git') {
-        return true;
-      }
+      if (words.any((word) => word == 'git')) return true;
     }
     return false;
   }
@@ -167,6 +166,9 @@ class RemoteGitController extends ChangeNotifier {
     List<String> args, {
     Duration? timeout,
   }) async {
+    // One action at a time: a second trigger while [busy] would run its git
+    // command concurrently and fight the first one's finally-notify.
+    if (_disposed || busy) return null;
     final dir = _actionDirectory;
     if (dir == null) {
       actionError = 'The shell has not reported its directory yet.';
@@ -234,8 +236,9 @@ class RemoteGitController extends ChangeNotifier {
   Future<RemoteCommandResult?> stashPop() => _action(['stash', 'pop']);
   Future<RemoteCommandResult?> initRepository() => _action(['init']);
 
-  /// Local branches for the switch-branch picker, or empty on failure.
-  Future<List<String>> branches() => _git.branches(_actionDirectory);
+  /// Local branches for the switch-branch picker, or null when the listing
+  /// itself failed — an empty list would pretend the repo has no branches.
+  Future<List<String>?> branches() => _git.branches(_actionDirectory);
 
   void _notify() {
     if (!_disposed) notifyListeners();

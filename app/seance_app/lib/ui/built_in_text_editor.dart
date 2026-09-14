@@ -209,6 +209,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   bool _reloading = false;
   bool _searchOpen = false;
   bool _searchCaseSensitive = false;
+  bool _missingBannerDismissed = false;
   List<TextRange> _matches = const [];
   int _activeMatch = -1;
   String _lastSearchedText = '';
@@ -704,7 +705,8 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
                 ListenableBuilder(
                   listenable: widget.remoteFiles!,
                   builder: (context, _) {
-                    if (_remoteChanged != true) {
+                    if (!_remoteMissing) _missingBannerDismissed = false;
+                    if (_remoteChanged != true || _missingBannerDismissed) {
                       return const SizedBox.shrink();
                     }
                     return MaterialBanner(
@@ -715,10 +717,20 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
                             : 'This file changed on the server.',
                       ),
                       actions: [
-                        TextButton(
-                          onPressed: _reloading ? null : _reloadFromServer,
-                          child: const Text('Reload'),
-                        ),
+                        if (_remoteMissing)
+                          // Reload cannot succeed against a deleted remote;
+                          // the honest action is keeping the surviving copy.
+                          TextButton(
+                            onPressed: () => setState(
+                              () => _missingBannerDismissed = true,
+                            ),
+                            child: const Text('Keep local copy'),
+                          )
+                        else
+                          TextButton(
+                            onPressed: _reloading ? null : _reloadFromServer,
+                            child: const Text('Reload'),
+                          ),
                       ],
                     );
                   },

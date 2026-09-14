@@ -7,7 +7,8 @@ class RemoteCommandResult {
   final String stderr;
 
   /// The remote process's exit code, or null when the channel ended without
-  /// an exit-status message (killed by signal, or the transport dropped).
+  /// an exit-status message (e.g. the remote process was killed by a signal —
+  /// a transport-level drop raises [RemoteCommandException] instead).
   final int? exitCode;
 
   final bool truncated;
@@ -28,7 +29,12 @@ class RemoteCommandResult {
 /// [RemoteCommandResult] with a non-zero exit code.
 class RemoteCommandException implements Exception {
   final String message;
-  const RemoteCommandException(this.message);
+
+  /// The underlying transport error, if any, so the original failure isn't
+  /// swallowed by this wrapper.
+  final Object? cause;
+
+  const RemoteCommandException(this.message, {this.cause});
 
   @override
   String toString() => message;

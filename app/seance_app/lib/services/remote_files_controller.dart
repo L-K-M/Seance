@@ -345,8 +345,13 @@ class RemoteFilesController extends ChangeNotifier {
         remoteSnapshot: _copyEntry(item.value.remoteSnapshot, nextPath),
       );
       localCopies[nextPath] = updated;
-      final known = latestRemoteSnapshots.remove(item.key);
-      if (known != null) latestRemoteSnapshots[nextPath] = known;
+      // A present-null means "known missing on the server" — containsKey
+      // carries it across the rename where a != null check would drop it.
+      if (latestRemoteSnapshots.containsKey(item.key)) {
+        latestRemoteSnapshots[nextPath] = latestRemoteSnapshots.remove(
+          item.key,
+        );
+      }
       await managedFileStore.update(updated);
     }
     await refresh();
@@ -776,6 +781,13 @@ class RemoteFilesController extends ChangeNotifier {
       await sink.flush();
       await sink.close();
       sink = null;
+      // The copy may have been discarded, migrated via takeLocalCopies, or
+      // the whole controller disposed while the download was in flight —
+      // finishing now would resurrect it.
+      if (_disposed || !localCopies.containsKey(copy.remotePath)) {
+        if (await partial.exists()) await partial.delete();
+        return copy;
+      }
       await _replaceLocalFile(partial, local);
       final updated = copy.copyWith(
         remoteSnapshot: snapshot,
@@ -801,7 +813,13 @@ class RemoteFilesController extends ChangeNotifier {
   /// a still-running [initialize] so a check issued before the channel is up
   /// still lands.
   Future<void> checkRemoteSnapshot(String remotePath) async {
-    if (_remoteFileSystem == null) await initialize();
+    if (_remoteFileSystem == null) {
+      try {
+        await initialize();
+      } catch (_) {
+        return;
+      }
+    }
     final remote = _remoteFileSystem;
     if (remote == null) return;
     try {
@@ -840,16 +858,21 @@ class RemoteFilesController extends ChangeNotifier {
     final remote = _remoteFileSystem;
     if (remote == null || localCopies.isEmpty) return;
     final generation = ++_remoteSnapshotGeneration;
-    final next = <String, RemoteFileEntry?>{};
     for (final path in localCopies.keys.toList()) {
+      // Publish each stat as it lands — batching into a trailing addAll could
+      // overwrite a fresher per-path check that ran mid-loop.
       try {
-        next[path] = await remote.stat(path, followLinks: false);
+        latestRemoteSnapshots[path] = await remote.stat(
+          path,
+          followLinks: false,
+        );
       } on RemoteFileException catch (e) {
-        if (e.kind == RemoteFileErrorKind.notFound) next[path] = null;
+        if (e.kind == RemoteFileErrorKind.notFound) {
+          latestRemoteSnapshots[path] = null;
+        }
       } catch (_) {}
       if (_disposed || generation != _remoteSnapshotGeneration) return;
     }
-    latestRemoteSnapshots.addAll(next);
     _notify();
   }
 

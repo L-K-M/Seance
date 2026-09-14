@@ -68,6 +68,16 @@ class _GitViewState extends State<_GitView> {
   }
 
   @override
+  void didUpdateWidget(covariant _GitView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Reconnect swaps in a fresh controller under the same session key —
+    // this State survives, so the new one needs its first probe here.
+    if (oldWidget.controller != widget.controller) {
+      unawaited(widget.controller.initialize());
+    }
+  }
+
+  @override
   void dispose() {
     _commitMessage.dispose();
     super.dispose();
@@ -131,6 +141,10 @@ class _GitViewState extends State<_GitView> {
     final controller = widget.controller;
     final branches = await controller.branches();
     if (!mounted) return;
+    if (branches == null) {
+      showTopToastIn(context, message: 'Could not list branches.');
+      return;
+    }
     final current = controller.repo?.branch;
     final selected = await showDialog<String>(
       context: context,
@@ -499,6 +513,11 @@ class _RepoView extends StatelessWidget {
   }
 }
 
+/// A commit id shortened for display, clamped so an already-short id can't
+/// throw a RangeError.
+String _shortId(String? id) =>
+    id == null ? '?' : id.substring(0, id.length < 7 ? id.length : 7);
+
 class _RepoHeader extends StatelessWidget {
   final GitRepoStatus repo;
   final String directory;
@@ -557,8 +576,7 @@ class _RepoHeader extends StatelessWidget {
               const SizedBox(width: 6),
               Flexible(
                 child: Text(
-                  repo.branch ??
-                      'detached @ ${repo.commitId?.substring(0, 7) ?? '?'}',
+                  repo.branch ?? 'detached @ ${_shortId(repo.commitId)}',
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.titleSmall,
                 ),
@@ -579,7 +597,7 @@ class _RepoHeader extends StatelessWidget {
                 _CountChip('↑${repo.ahead}', 'ahead of upstream'),
               if (repo.behind > 0)
                 _CountChip('↓${repo.behind}', 'behind upstream'),
-              if (repo.stashCount > 0)
+              if ((repo.stashCount ?? 0) > 0)
                 _CountChip('stash ×${repo.stashCount}', 'stashed changes'),
             ],
           ),
@@ -814,6 +832,13 @@ class _BranchNameDialogState extends State<_BranchNameDialog> {
     super.dispose();
   }
 
+  // Stray spaces are never legal in a ref, and an autofocused field's
+  // accidental Enter must not submit an empty name.
+  void _submit(String value) {
+    final name = value.trim();
+    if (name.isNotEmpty) Navigator.pop(context, name);
+  }
+
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: const Text('New branch'),
@@ -827,7 +852,7 @@ class _BranchNameDialogState extends State<_BranchNameDialog> {
           hintText: 'e.g. fix/login-redirect',
           border: OutlineInputBorder(),
         ),
-        onSubmitted: (value) => Navigator.pop(context, value),
+        onSubmitted: _submit,
       ),
     ),
     actions: [
@@ -836,7 +861,7 @@ class _BranchNameDialogState extends State<_BranchNameDialog> {
         child: const Text('Cancel'),
       ),
       FilledButton(
-        onPressed: () => Navigator.pop(context, _name.text),
+        onPressed: () => _submit(_name.text),
         child: const Text('Create and switch'),
       ),
     ],

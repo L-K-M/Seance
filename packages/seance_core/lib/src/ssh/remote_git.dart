@@ -76,7 +76,11 @@ class GitRepoStatus {
   final String? upstream;
   final int ahead;
   final int behind;
-  final int stashCount;
+
+  /// Stashes in the repository, or null when the status format couldn't
+  /// report them (porcelain v1 on git < 2.11, or v2 without `--show-stash`
+  /// on 2.11–2.16). 0 means "no stashes", not "unknown".
+  final int? stashCount;
   final List<GitFileStatus> changes;
   final List<GitCommitRef> recentCommits;
 
@@ -88,7 +92,7 @@ class GitRepoStatus {
     this.upstream,
     this.ahead = 0,
     this.behind = 0,
-    this.stashCount = 0,
+    this.stashCount,
     this.changes = const [],
     this.recentCommits = const [],
   });
@@ -103,6 +107,9 @@ class GitRepoStatus {
       if (c.isStaged) c,
   ];
 
+  /// Tracked worktree-vs-index changes only. Untracked, unmerged, and
+  /// ignored entries are excluded — render those via [untracked] and
+  /// [conflicted].
   List<GitFileStatus> get unstaged => [
     for (final c in changes)
       if (c.isUnstaged) c,
@@ -144,8 +151,8 @@ class GitProbeResult {
 /// interactive shell: the user's prompt and scrollback stay theirs.
 ///
 /// Old gits matter: `--porcelain=v2` needs git 2.11 (2016) and hosts like
-/// CentOS 7 still ship 1.8, so a usage-level failure retries with the v1
-/// format, which has existed forever.
+/// CentOS 7 still ship 1.8, so a usage-level failure retries down a ladder —
+/// v2 with stash, v2, then the v1 format, which has existed forever.
 class RemoteGit {
   final RemoteCommandRunner _run;
 
@@ -160,21 +167,33 @@ class RemoteGit {
   /// "no command ran at all".
   Future<GitProbeResult> probe(String? directory) async {
     var result = await _run(_statusCommand(directory, porcelainV2: true));
-    var v2 = true;
+    var parser = _parseV2;
     if (_isUsageError(result)) {
-      // git < 2.11 has no --porcelain=v2; the v1 format reports the same
-      // changes minus the stash count.
-      result = await _run(_statusCommand(directory, porcelainV2: false));
-      v2 = false;
+      // git 2.11–2.16 knows --porcelain=v2 but not --show-stash: drop just
+      // the flag before assuming the whole v2 format is missing.
+      result = await _run(
+        _statusCommand(directory, porcelainV2: true, showStash: false),
+      );
+      if (_isUsageError(result)) {
+        // git < 2.11 has no --porcelain=v2 at all; v1 reports the same
+        // changes minus the stash count.
+        result = await _run(_statusCommand(directory, porcelainV2: false));
+        parser = _parseV1;
+      }
     }
     final failure = _classify(result);
     if (failure != null) return failure;
 
-    final payload = _splitStatusOutput(result.stdout);
-    final repo = (v2 ? _parseV2 : _parseV1)(payload).copyWith(
-      rootPath: payload.root,
-      recentCommits: _parseLog(payload.logLines),
-    );
+    final GitRepoStatus repo;
+    try {
+      final payload = _splitStatusOutput(result.stdout);
+      repo = parser(payload).copyWith(
+        rootPath: payload.root,
+        recentCommits: _parseLog(payload.logLines),
+      );
+    } on FormatException catch (e) {
+      return GitProbeResult.error('Could not parse git status: ${e.message}');
+    }
     return GitProbeResult.ok(repo);
   }
 
@@ -190,16 +209,18 @@ class RemoteGit {
     timeout: timeout,
   );
 
-  /// Local branch names for a switch-branch picker. `for-each-ref` rather than
-  /// `git branch --format`: the former exists on every git vintage the v1
-  /// status fallback still supports.
-  Future<List<String>> branches(String? directory) async {
+  /// Local branch names for a switch-branch picker, or null when the listing
+  /// itself fails — callers can then tell "couldn't ask" apart from a repo
+  /// with zero branches. `for-each-ref` rather than `git branch --format`:
+  /// the former exists on every git vintage the v1 status fallback still
+  /// supports.
+  Future<List<String>?> branches(String? directory) async {
     final result = await run(directory, const [
       'for-each-ref',
       '--format=%(refname:short)',
       'refs/heads',
     ]);
-    if (!result.succeeded) return const [];
+    if (!result.succeeded) return null;
     return [
       for (final line in result.stdout.split('\n'))
         if (line.trim().isNotEmpty) line.trim(),
@@ -212,13 +233,20 @@ class RemoteGit {
   /// status entries are already NUL-separated, so the log lands in its own
   /// final NUL-field whatever the entry count. `|| true` keeps a repo with no
   /// commits (whose `git log` exits 128) from failing the whole probe.
-  static String _statusCommand(String? directory, {required bool porcelainV2}) {
+  static String _statusCommand(
+    String? directory, {
+    required bool porcelainV2,
+    bool showStash = true,
+  }) {
     final format = porcelainV2
-        ? '--porcelain=v2 --branch --show-stash'
+        ? '--porcelain=v2 --branch${showStash ? ' --show-stash' : ''}'
         // `--porcelain=v1` only parses on gits that already know v2; the
         // fallback targets older ones, where the flag is a bare boolean.
         : '--porcelain --branch';
-    return '${_cdPrefix(directory)}git rev-parse --show-toplevel && '
+    // LC_ALL=C keeps the diagnostics [_isUsageError] and [_classify] match
+    // stable regardless of the remote locale; porcelain output is unaffected.
+    return 'export LC_ALL=C; ${_cdPrefix(directory)}'
+        'git rev-parse --show-toplevel && '
         "git status $format -z && printf '\\0' && "
         "{ git log --format='%h%x09%s' -n 12 2>/dev/null || true; }";
   }
@@ -248,10 +276,13 @@ class RemoteGit {
     if (result.succeeded) return null;
     final err = result.stderr.trim();
     // 127 is the shell's "no such command"; git not being installed is a
-    // fact about the host, not about the directory.
-    if (result.exitCode == 127 ||
-        (err.contains('git') &&
-            (err.contains('not found') || err.contains('No such file')))) {
+    // fact about the host, not about the directory. Match the shell's own
+    // phrasing precisely — a `cd` failure into a path containing "git"
+    // ("cd: /home/u/git: No such file…") must not read as a missing binary.
+    final shellCannotFindGit =
+        RegExp(r'git: (command )?not found').hasMatch(err) ||
+        RegExp(r'command not found: git').hasMatch(err);
+    if (result.exitCode == 127 || shellCannotFindGit) {
       return const GitProbeResult.notInstalled();
     }
     if (err.contains('not a git repository')) {
@@ -291,7 +322,11 @@ _StatusPayload _splitStatusOutput(String stdout) {
   // lead, so a leading '#' marks them; whatever remains is the entry.
   var rest = parts.first;
   final firstBreak = rest.indexOf('\n');
-  if (firstBreak < 0) return payload;
+  if (firstBreak < 0) {
+    throw FormatException(
+      'Malformed git status payload (missing root line): $stdout',
+    );
+  }
   payload.root = rest.substring(0, firstBreak);
   rest = rest.substring(firstBreak + 1);
   while (rest.startsWith('#')) {
@@ -358,7 +393,10 @@ extension on GitRepoStatus {
 /// source.
 GitRepoStatus _parseV2(_StatusPayload payload) {
   String? branch, upstream, commitId;
-  var detached = false, ahead = 0, behind = 0, stashCount = 0;
+  var detached = false, ahead = 0, behind = 0;
+  // Absent on the no-stash middle rung (git 2.11–2.16) — stays null, which
+  // reads as "unknown" rather than a confident zero.
+  int? stashCount;
   for (final header in payload.headers) {
     final line = header.startsWith('#') ? header.substring(1).trim() : header;
     if (line.startsWith('branch.oid ')) {

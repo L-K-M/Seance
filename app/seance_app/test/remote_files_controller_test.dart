@@ -534,13 +534,60 @@ void main() {
     );
     activeCommand.value = 'pico a.txt';
     activeCommand.value = null;
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    // The re-stat is debounced (~350 ms); poll well past it rather than
+    // sleep a fixed duration.
+    for (var i = 0; i < 500; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      if (controller.remoteChangedFor(entry.path) == true) break;
+    }
 
     expect(controller.remoteChangedFor(entry.path), isTrue);
 
     controller.dispose();
     shellDirectory.dispose();
     activeCommand.dispose();
+  });
+
+  test('a copy deleted mid-refresh is not resurrected', () async {
+    final remote = _FakeRemoteFileSystem();
+    final shellDirectory = ValueNotifier<String?>(null);
+    final store = _store();
+    final controller = RemoteFilesController(
+      () async => remote,
+      shellDirectory: shellDirectory,
+      managedFileStore: store,
+      serverId: 'server',
+      editSessionId: 'session',
+    );
+    await controller.initialize();
+    final entry = controller.entries.singleWhere(
+      (item) => item.name == 'a.txt',
+    );
+    final copy = await controller.checkoutRemoteFile(entry);
+
+    remote.contents[entry.path] = [9, 9, 9];
+    remote.directories['/home/test']![0] = RemoteFileEntry(
+      path: entry.path,
+      name: entry.name,
+      type: RemoteFileType.file,
+      size: 3,
+      modifiedAt: DateTime.utc(2024),
+    );
+
+    // Hold the download open so the discard lands mid-flight.
+    final gate = Completer<void>();
+    remote.duringDownload = () => gate.future;
+    final refresh = controller.refreshLocalCopy(entry.path);
+    await controller.removeLocalCopy(entry.path);
+    gate.complete();
+    await refresh;
+
+    expect(controller.localCopies.containsKey(entry.path), isFalse);
+    expect(await store.get(copy.id), isNull);
+    expect(await controller.localFile(copy).exists(), isFalse);
+
+    controller.dispose();
+    shellDirectory.dispose();
   });
 
   test('a remotely deleted file is flagged but the local copy survives',
@@ -615,6 +662,10 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
   RemoteFileEntry? expectedUploadTarget;
   Future<void> Function()? duringUpload;
 
+  /// A hook awaited mid-[download], letting a test interleave another call
+  /// (e.g. a delete) while a transfer is in flight.
+  Future<void> Function()? duringDownload;
+
   @override
   Future<void> setMode(String path, int permissions) async {}
 
@@ -688,6 +739,7 @@ class _FakeRemoteFileSystem implements RemoteFileSystem {
     bool computeHash = true,
   }) async {
     cancellation?.throwIfCancelled();
+    await duringDownload?.call();
     final bytes = contents[path] ?? const [1, 2, 3];
     destination.add(bytes);
     onProgress?.call(bytes.length, bytes.length);

@@ -14,6 +14,11 @@ class _FakeRunner {
 
   RemoteCommandRunner get call => (command, {timeout}) async {
     commands.add(command);
+    if (results.isEmpty) {
+      throw StateError(
+        'Fake runner ran out of canned results for command: $command',
+      );
+    }
     return results.removeAt(0);
   };
 }
@@ -131,23 +136,46 @@ void main() {
     });
 
     test('maps a missing git binary to notInstalled', () async {
+      for (final stderr in [
+        'sh: 1: git: not found',
+        'bash: git: command not found',
+        'zsh: command not found: git',
+      ]) {
+        final result = await RemoteGit(
+          _FakeRunner([_result('', stderr: stderr, exitCode: 127)]).call,
+        ).probe('/srv/app');
+        expect(result.kind, GitProbeKind.notInstalled, reason: stderr);
+      }
+    });
+
+    test('a missing directory named *git* is not a missing binary', () async {
+      // The shell's `cd` failure mentions both "git" and "No such file";
+      // it must not read as "git is not installed".
       final result = await RemoteGit(
         _FakeRunner([
-          _result('', stderr: 'sh: git: command not found', exitCode: 127),
+          _result(
+            '',
+            stderr:
+                'bash: line 1: cd: /home/user/git: No such file or directory',
+            exitCode: 1,
+          ),
         ]).call,
-      ).probe('/srv/app');
-      expect(result.kind, GitProbeKind.notInstalled);
+      ).probe('/home/user/git');
+      expect(result.kind, GitProbeKind.error);
+      expect(result.detail, contains('No such file'));
     });
 
     test('retries with porcelain v1 when v2 is rejected', () async {
+      final usageError = _result(
+        '',
+        stderr:
+            "error: unknown option `porcelain=v2'\n"
+            'usage: git status [<options>]',
+        exitCode: 129,
+      );
       final runner = _FakeRunner([
-        _result(
-          '',
-          stderr:
-              "error: unknown option `porcelain=v2'\n"
-              'usage: git status [<options>]',
-          exitCode: 129,
-        ),
+        usageError,
+        usageError,
         _result(
           '/srv/app\n'
           '## main...origin/main [ahead 1, behind 2]\n'
@@ -161,10 +189,12 @@ void main() {
       ]);
       final result = await RemoteGit(runner.call).probe('/srv/app');
 
-      expect(runner.commands, hasLength(2));
+      expect(runner.commands, hasLength(3));
       expect(runner.commands[0], contains('--porcelain=v2'));
-      expect(runner.commands[1], contains('--porcelain --branch'));
-      expect(runner.commands[1], isNot(contains('=v2')));
+      expect(runner.commands[1], contains('--porcelain=v2'));
+      expect(runner.commands[1], isNot(contains('show-stash')));
+      expect(runner.commands[2], contains('--porcelain --branch'));
+      expect(runner.commands[2], isNot(contains('=v2')));
 
       expect(result.kind, GitProbeKind.ok);
       final repo = result.status!;
@@ -177,10 +207,68 @@ void main() {
       expect(repo.staged.last.originalPath, 'old.txt');
       expect(repo.untracked.single.path, 'fresh.txt');
       expect(repo.recentCommits.single.id, 'abc1234');
+      // Porcelain v1 has no stash header — null reads as "unknown", not 0.
+      expect(repo.stashCount, isNull);
+    });
+
+    test('git 2.11–2.16 retried without --show-stash keeps v2 parsing', () async {
+      const h = 'a1b2c3d4e5f6';
+      final runner = _FakeRunner([
+        _result(
+          '',
+          stderr:
+              "error: unknown option `show-stash'\n"
+              'usage: git status [<options>]',
+          exitCode: 129,
+        ),
+        _result(
+          '/srv/app\n'
+          '# branch.oid $h\n'
+          '# branch.head main\n'
+          '1 .M N... 100644 100644 100644 $h $h modified.txt$_nul'
+          '$_nul'
+          'abc1234\tstill v2\n',
+        ),
+      ]);
+      final result = await RemoteGit(runner.call).probe('/srv/app');
+
+      expect(runner.commands, hasLength(2));
+      expect(runner.commands[1], contains('--porcelain=v2'));
+      expect(runner.commands[1], isNot(contains('show-stash')));
+      expect(result.kind, GitProbeKind.ok);
+      expect(result.status!.unstaged.single.path, 'modified.txt');
+      // No stash header arrived, so the count is honestly unknown.
+      expect(result.status!.stashCount, isNull);
+    });
+
+    test('a v2 usage failure still falls all the way back to v1', () async {
+      final usageError = _result(
+        '',
+        stderr: 'usage: git status [<options>]',
+        exitCode: 129,
+      );
+      final runner = _FakeRunner([
+        usageError,
+        usageError,
+        _result('/srv/app\n## main\n?? a.txt$_nul$_nul\n'),
+      ]);
+      final result = await RemoteGit(runner.call).probe('/srv/app');
+      expect(runner.commands, hasLength(3));
+      expect(runner.commands[2], contains('--porcelain --branch'));
+      expect(result.status!.branch, 'main');
+    });
+
+    test('a malformed status payload is an error, not an empty repo', () async {
+      final result = await RemoteGit(
+        _FakeRunner([_result('no-newline-anywhere')]).call,
+      ).probe('/srv/app');
+      expect(result.kind, GitProbeKind.error);
+      expect(result.detail, contains('parse'));
     });
 
     test('v1 parses detached and unborn branch headers', () async {
-      // Each fixture needs a usage error first so probe takes the v1 retry.
+      // Each fixture needs two usage errors so probe descends the ladder
+      // (v2+stash, then v2) to the v1 retry.
       final usageError = _result(
         '',
         stderr: 'usage: git status [<options>]',
@@ -189,6 +277,7 @@ void main() {
       final detached = await RemoteGit(
         _FakeRunner([
           usageError,
+          usageError,
           _result('/srv/app\n## HEAD (no branch)\n$_nul\n'),
         ]).call,
       ).probe('/srv/app');
@@ -196,6 +285,7 @@ void main() {
 
       final unborn = await RemoteGit(
         _FakeRunner([
+          usageError,
           usageError,
           _result('/srv/app\n## No commits yet on trunk\n?? a.txt$_nul$_nul\n'),
         ]).call,
@@ -232,11 +322,19 @@ void main() {
       await git.probe('~/proj dir');
       await git.probe('~');
       await git.probe(null);
-      expect(runner.commands[0], startsWith("cd -- '/srv/my app' && "));
-      expect(runner.commands[1], startsWith("cd -- ~/'proj dir' && "));
-      expect(runner.commands[2], startsWith('cd -- ~ && '));
+      // LC_ALL=C leads so the diagnostics _classify matches stay English.
+      const prefix = 'export LC_ALL=C; ';
+      expect(
+        runner.commands[0],
+        startsWith("${prefix}cd -- '/srv/my app' && "),
+      );
+      expect(
+        runner.commands[1],
+        startsWith("${prefix}cd -- ~/'proj dir' && "),
+      );
+      expect(runner.commands[2], startsWith('${prefix}cd -- ~ && '));
       // A null directory runs in the channel's own cwd.
-      expect(runner.commands[3], startsWith('git rev-parse'));
+      expect(runner.commands[3], startsWith('${prefix}git rev-parse'));
     });
 
     test('run quotes every argument verbatim', () async {
@@ -258,11 +356,11 @@ void main() {
       expect(runner.commands.single, contains('for-each-ref'));
     });
 
-    test('branches is empty when the listing fails', () async {
+    test('branches is null when the listing fails', () async {
       final runner = _FakeRunner([
         _result('', stderr: 'fatal: not a git repository', exitCode: 128),
       ]);
-      expect(await RemoteGit(runner.call).branches('/tmp'), isEmpty);
+      expect(await RemoteGit(runner.call).branches('/tmp'), isNull);
     });
   });
 }

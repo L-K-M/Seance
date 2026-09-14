@@ -494,6 +494,7 @@ class SshSession {
       for (final subscription in subscriptions) {
         await subscription.cancel();
       }
+      channel.done.ignore();
       channel.close();
     }
 
@@ -505,7 +506,7 @@ class SshSession {
         stdoutDone.future,
         stderrDone.future,
       ], eagerError: true).timeout(effectiveTimeout);
-      await channel.done;
+      await channel.done.timeout(effectiveTimeout);
       for (final subscription in subscriptions) {
         await subscription.cancel();
       }
@@ -525,7 +526,7 @@ class SshSession {
       if (_closed || client.isClosed) {
         throw const RemoteCommandException('The SSH session is disconnected.');
       }
-      throw RemoteCommandException('The command channel failed: $e');
+      throw RemoteCommandException('The command channel failed: $e', cause: e);
     }
   }
 
