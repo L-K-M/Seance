@@ -100,6 +100,9 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final color = _color;
+    // One tint for both halves of the preview: the bar and the badge show the
+    // same colour two ways, and building it twice is how they drift apart.
+    final tint = ServerTint(custom: color);
     return AlertDialog(
       title: const Text('Custom colour'),
       content: SizedBox(
@@ -111,11 +114,11 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
             Row(
               children: [
                 // Previewed as the list will draw it, in this theme: the
-                // line is derived from the picked colour rather than painted
-                // raw, and this is where that shows.
-                ServerAccentBar(tint: ServerTint(custom: color), height: 48),
+                // line and the fill are derived from the picked colour rather
+                // than painted raw, and this is where that shows.
+                ServerAccentBar(tint: tint, height: 48),
                 const SizedBox(width: 12),
-                ServerBadge(mark: widget.mark, size: 48),
+                ServerBadge(tint: tint, mark: widget.mark, size: 48),
                 const SizedBox(width: 16),
                 Expanded(
                   child: TextField(

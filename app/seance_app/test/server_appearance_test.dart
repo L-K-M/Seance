@@ -138,24 +138,51 @@ void main() {
   group('ServerBadge', () {
     testWidgets('an untagged server gets the default glyph', (tester) async {
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(icon: null)),
+        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)),
       );
       expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
     });
 
     testWidgets('the chosen icon is the one drawn', (tester) async {
       await tester.pumpWidget(
-        _wrap(ServerBadge.glyph(icon: ServerIcon.rocket)),
+        _wrap(
+          ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.rocket),
+        ),
       );
       expect(find.byIcon(Icons.rocket_launch_outlined), findsOneWidget);
       expect(find.byIcon(Icons.dns_outlined), findsNothing);
+    });
+
+    testWidgets('a colour fills the badge; none leaves it neutral', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: null)),
+      );
+      final neutral = _badgeFill(tester);
+      expect(neutral, isNotNull);
+
+      await tester.pumpWidget(
+        _wrap(
+          ServerBadge.glyph(
+            tint: const ServerTint(named: ServerColor.red),
+            icon: null,
+          ),
+        ),
+      );
+      // Non-null as well as different: `_badgeFill` reads the decoration off
+      // the tree, and a null from a fill that stopped being a plain colour
+      // would satisfy `isNot(neutral)` while drawing no colour at all.
+      expect(_badgeFill(tester), allOf(isNotNull, isNot(neutral)));
     });
 
     testWidgets('every glyph renders', (tester) async {
       // Cheap insurance that the enum and its mapping stay exhaustive: a value
       // added to the protocol without a case fails the switch at compile time.
       for (final icon in ServerIcon.values) {
-        await tester.pumpWidget(_wrap(ServerBadge.glyph(icon: icon)));
+        await tester.pumpWidget(
+          _wrap(ServerBadge.glyph(tint: ServerTint.none, icon: icon)),
+        );
         expect(
           find.byIcon(serverIconData(icon)),
           findsOneWidget,
@@ -369,7 +396,10 @@ void main() {
     ) async {
       await tester.pumpWidget(
         _wrap(
-          const ServerBadge(mark: ServerEmojiMark('\u{1F680}')),
+          const ServerBadge(
+            tint: ServerTint(named: ServerColor.violet),
+            mark: ServerEmojiMark('\u{1F680}'),
+          ),
         ),
       );
       expect(find.text('\u{1F680}'), findsOneWidget);
@@ -387,6 +417,7 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           const ServerBadge(
+            tint: ServerTint.none,
             mark: ServerEmojiMark(
               '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}',
             ),
@@ -407,7 +438,7 @@ void main() {
       // nothing at all to assistive technology.
       await tester.pumpWidget(
         _wrap(
-          ServerBadge.glyph(icon: ServerIcon.database),
+          ServerBadge.glyph(tint: ServerTint.none, icon: ServerIcon.database),
         ),
       );
       expect(
@@ -419,7 +450,9 @@ void main() {
     testWidgets('an image mark is drawn from its bytes', (tester) async {
       final bytes = await tester.runAsync(_pngBytes);
       await tester.pumpWidget(
-        _wrap(ServerBadge(mark: ServerImageMark(bytes!))),
+        _wrap(
+          ServerBadge(tint: ServerTint.none, mark: ServerImageMark(bytes!)),
+        ),
       );
       // Not pumpAndSettle: an image codec resolves on the real event loop,
       // which a widget test's fake-async zone never reaches, so settling here
@@ -447,6 +480,7 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           ServerBadge(
+            tint: ServerTint.none,
             mark: ServerImageMark(
               // A PNG signature and nothing behind it: the protocol accepts
               // this shape, so a record really can carry it, and the badge is
@@ -629,10 +663,12 @@ void main() {
     });
   });
 
-  group('the mark sits on one neutral tile', () {
+  group('the colour under the mark', () {
     /// The foreground decoration an image mark used to wear as an accent
-    /// frame, back when the colour was the badge's fill and an image covered
-    /// it. Read back so the colour cannot creep onto the mark again.
+    /// frame, back when the fill was the colour's only carrier. The bar
+    /// carries that case now, so this stays null: read back because a
+    /// per-mark decoration branch creeping back is what makes one colour read
+    /// two ways down a list.
     BoxDecoration? frameOf(WidgetTester tester) {
       final container = tester.widget<Container>(
         find
@@ -645,41 +681,78 @@ void main() {
       return container.foregroundDecoration as BoxDecoration?;
     }
 
-    testWidgets('a server\'s colour leaves its badge alone', (tester) async {
-      // The colour is the row's bar; a tinted badge as well would say it
-      // twice, and would say it differently on the mark that covers a fill.
+    testWidgets('a server\'s colour fills its badge, unframed', (tester) async {
+      // The list reads the fill off the config rather than being handed a
+      // tint, so this is what pins the row to the colour the server stores.
       await tester.pumpWidget(_wrap(_idleAvatar(_server())));
       final neutral = _badgeFill(tester);
       expect(neutral, isNotNull);
 
       for (final color in ServerColor.values) {
         await tester.pumpWidget(_wrap(_idleAvatar(_server(color: color))));
-        expect(_badgeFill(tester), neutral, reason: color.name);
+        expect(
+          _badgeFill(tester),
+          allOf(isNotNull, isNot(neutral)),
+          reason: color.name,
+        );
         expect(frameOf(tester), isNull, reason: color.name);
       }
     });
 
-    testWidgets('an image mark is drawn on the same tile, unframed', (
+    testWidgets('an image mark keeps the fill it covers, unframed', (
       tester,
     ) async {
+      // An image leaves the colour nowhere to show, and gets no treatment of
+      // its own for it: the bar beside the badge is the carrier that does not
+      // depend on which mark is drawn.
       final bytes = await tester.runAsync(_pngBytes);
-      await tester.pumpWidget(_wrap(ServerBadge.glyph(icon: null)));
-      final neutral = _badgeFill(tester);
+      const tint = ServerTint(named: ServerColor.red);
+      await tester.pumpWidget(
+        _wrap(ServerBadge.glyph(tint: tint, icon: null)),
+      );
+      final tinted = _badgeFill(tester);
 
       await tester.pumpWidget(
-        _wrap(ServerBadge(mark: ServerImageMark(bytes!))),
+        _wrap(ServerBadge(tint: tint, mark: ServerImageMark(bytes!))),
       );
       await tester.pump();
-      expect(_badgeFill(tester), neutral);
+      expect(_badgeFill(tester), tinted);
       expect(frameOf(tester), isNull);
 
-      // The third kind of mark, on the same tile: a per-mark decoration
-      // branch coming back is exactly what this group exists to catch.
+      // The third kind of mark, on the same fill.
       await tester.pumpWidget(
-        _wrap(const ServerBadge(mark: ServerEmojiMark('\u{1F680}'))),
+        _wrap(
+          const ServerBadge(tint: tint, mark: ServerEmojiMark('\u{1F680}')),
+        ),
       );
-      expect(_badgeFill(tester), neutral);
+      expect(_badgeFill(tester), tinted);
       expect(frameOf(tester), isNull);
+    });
+
+    testWidgets('the glyph is drawn in the tone that stays legible on it', (
+      tester,
+    ) async {
+      // The fill moves with the colour, so a glyph left on the neutral
+      // foreground would be the one thing that did not.
+      late BuildContext captured;
+      await tester.pumpWidget(
+        _wrap(
+          Builder(
+            builder: (context) {
+              captured = context;
+              return ServerBadge.glyph(
+                tint: const ServerTint(named: ServerColor.red),
+                icon: ServerIcon.rocket,
+              );
+            },
+          ),
+        ),
+      );
+      expect(
+        tester.widget<Icon>(find.byType(Icon)).color,
+        serverAccent(captured, const ServerTint(named: ServerColor.red))!
+            .onContainer,
+      );
     });
   });
 

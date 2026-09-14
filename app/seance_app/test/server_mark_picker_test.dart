@@ -22,6 +22,7 @@ void main() {
   Future<void> open(
     WidgetTester tester, {
     ServerMark current = const ServerGlyphMark(null),
+    ServerTint accent = ServerTint.none,
     Future<Uint8List?> Function()? readImage,
     /// False when a mark in force holds a live [Image]: its resolution never
     /// completes here, so settling would spin forever (see AGENTS.md §5).
@@ -36,6 +37,7 @@ void main() {
                 await showServerMarkPicker(
                   context,
                   current: current,
+                  accent: accent,
                   readImage: readImage ?? () async => null,
                 ),
               ),
@@ -424,11 +426,15 @@ void main() {
   testWidgets('the previews are the badges the list will draw', (
     tester,
   ) async {
-    // The picker chooses a mark, and the server's colour is a line beside it
-    // in the list rather than a fill under it — so a candidate here is
-    // already exactly what a row will show.
-    await open(tester);
-    expect(find.byType(ServerBadge), findsWidgets);
+    // The server's colour is the fill under the mark, so which candidate
+    // reads well depends on it: a grid drawn on a neutral tile would preview
+    // a badge no row ever shows. The bar is the row's own carrier and has no
+    // row to run down in here.
+    const accent = ServerTint(named: ServerColor.red);
+    await open(tester, accent: accent);
+    final badges = tester.widgetList<ServerBadge>(find.byType(ServerBadge));
+    expect(badges, isNotEmpty);
+    expect(badges.map((badge) => badge.tint), everyElement(accent));
     expect(find.byType(ServerAccentBar), findsNothing);
   });
 
