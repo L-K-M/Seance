@@ -35,6 +35,8 @@ class _SidebarPanelState extends State<SidebarPanel>
     super.didChangeDependencies();
     if (_tabs != null) return;
     final state = AppScope.of(context);
+    // includeFiles is fixed at every call site (const constructions), so the
+    // controller's length never needs to track a rebuild-time change.
     _tabs = TabController(
       length: widget.includeFiles ? 4 : 3,
       initialIndex: state.llmConfigured ? 0 : 1,
