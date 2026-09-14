@@ -1116,6 +1116,16 @@ class EscapeParser {
         case '2':
           handler.setTitle(pt);
           return true;
+        // [seance fork] OSC 8 ; params ; URI — a hyperlink attached to the
+        // cells that follow, which is how a program links text that is not a
+        // URL (or wraps a URL across its own hard newlines). The params field
+        // is ignored: its only defined key, `id`, exists to group a link's
+        // cells for hover highlighting, which this terminal does not do. A
+        // target may itself contain semicolons, so the rest is rejoined.
+        case '8':
+          final target = _osc.length > 2 ? _osc.sublist(2).join(';') : '';
+          handler.setHyperlink(target.isEmpty ? null : target);
+          return true;
       }
     }
 

@@ -1,4 +1,5 @@
 import 'package:xterm/src/core/cursor.dart';
+import 'package:xterm/src/core/hyperlinks.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
 
 abstract class TerminalState {
@@ -7,6 +8,10 @@ abstract class TerminalState {
   int get viewHeight;
 
   CursorStyle get cursor;
+
+  /// [seance fork] Targets of the OSC 8 hyperlinks the terminal has seen. Cells
+  /// carry ids into this table.
+  Hyperlinks get hyperlinks;
 
   bool get reflowEnabled;
 

@@ -8,6 +8,7 @@ import 'package:xterm/src/core/cursor.dart';
 import 'package:xterm/src/core/escape/emitter.dart';
 import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/core/escape/parser.dart';
+import 'package:xterm/src/core/hyperlinks.dart';
 import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
@@ -119,6 +120,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   final _cursorStyle = CursorStyle();
 
+  /// [seance fork] Targets of the OSC 8 hyperlinks seen so far. Shared by both
+  /// buffers: a link belongs to the cells it was written to, and the alt buffer
+  /// can be entered and left in the middle of one.
+  final _hyperlinks = Hyperlinks();
+
   bool _insertMode = false;
 
   bool _lineFeedMode = false;
@@ -159,6 +165,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   CursorStyle get cursor => _cursorStyle;
+
+  @override
+  Hyperlinks get hyperlinks => _hyperlinks;
 
   @override
   bool get insertMode => _insertMode;
@@ -921,6 +930,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void setIconName(String name) {
     onIconChange?.call(name);
+  }
+
+  @override
+  void setHyperlink(String? uri) {
+    // An unopenable target (a non-web scheme, credentials, an oversized
+    // string) leaves the cells unlinked rather than carrying something this
+    // terminal would refuse to follow later.
+    _cursorStyle.hyperlinkId =
+        uri == null ? noHyperlink : _hyperlinks.open(uri);
   }
 
   @override

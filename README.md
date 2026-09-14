@@ -20,7 +20,9 @@ that for the full rationale, alternatives considered, and roadmap).
   indicators on the left, terminal sessions on the right; collapses to
   back/forward screens on narrow layouts.
 - **Clickable shell URLs** — Ctrl-click (⌘-click on Mac) or tap on touch
-  screens to open HTTP(S) links in your browser. Wrapped URLs work too.
+  screens to open HTTP(S) links in your browser. Wrapped URLs work too, and
+  links a program marks with OSC 8 open their real target even when the text
+  on screen is a label or the program broke the URL across lines.
 - **SSH** via [dartssh2](https://pub.dev/packages/dartssh2): password,
   private-key (stored or referenced-on-disk), and keyboard-interactive (2FA).
 - **Trust-on-first-use host keys** with a hard, un-dismissable block when a

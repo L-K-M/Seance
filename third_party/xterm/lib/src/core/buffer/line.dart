@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/cursor.dart';
+import 'package:xterm/src/core/hyperlinks.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 import 'package:xterm/src/utils/unicode_v11.dart';
 
@@ -55,6 +56,13 @@ class BufferLine with IndexedItem {
 
   int getCodePoint(int index) {
     return _data[index * _cellSize + _cellContent] & CellContent.codepointMask;
+  }
+
+  /// [seance fork] Id of the OSC 8 hyperlink this cell belongs to, or
+  /// [noHyperlink]. Resolve it through the terminal's [Hyperlinks].
+  int getHyperlinkId(int index) {
+    return (getAttributes(index) & CellAttr.hyperlinkMask) >>
+        CellAttr.hyperlinkShift;
   }
 
   int getWidth(int index) {
@@ -120,7 +128,11 @@ class BufferLine with IndexedItem {
     final offset = index * _cellSize;
     _data[offset + _cellForeground] = style.foreground;
     _data[offset + _cellBackground] = style.background;
-    _data[offset + _cellAttributes] = style.attrs;
+    // [seance fork] An erased cell keeps the style's colors (it still paints a
+    // background) but never its hyperlink: a cell with no text is not part of
+    // a link, and a program redrawing inside one would otherwise leave rows of
+    // clickable blanks behind.
+    _data[offset + _cellAttributes] = style.attrs & CellAttr.styleMask;
     _data[offset + _cellContent] = 0;
   }
 

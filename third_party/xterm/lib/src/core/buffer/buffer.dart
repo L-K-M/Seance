@@ -6,6 +6,7 @@ import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/charset.dart';
 import 'package:xterm/src/core/cursor.dart';
+import 'package:xterm/src/core/hyperlinks.dart';
 import 'package:xterm/src/core/reflow.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
@@ -101,11 +102,23 @@ class Buffer {
   /// Absolute index of the last line in the scroll region.
   int get absoluteMarginBottom => _marginBottom + scrollBack;
 
-  /// [seance fork] Finds a visible HTTP(S) URL at a buffer cell, including
-  /// soft-wrapped continuations. Hard newlines never join separate URLs.
+  /// [seance fork] Finds the HTTP(S) link at a buffer cell: the target of the
+  /// OSC 8 hyperlink the cell belongs to, or failing that a URL visible in the
+  /// text, including soft-wrapped continuations. Hard newlines never join two
+  /// URLs found in the text; only an OSC 8 target spans them, because it is
+  /// attached to the cells rather than read from them.
   Uri? getLinkAt(CellOffset cell) {
     if (cell.y < 0 || cell.y >= lines.length || cell.x < 0 || cell.x >= viewWidth) {
       return null;
+    }
+
+    // An OSC 8 hyperlink is attached to the cell, so it beats reading the
+    // text: it is the only thing that resolves link text which is not a URL,
+    // or a URL the emitting program wrapped across its own hard newlines.
+    final hitLine = lines[cell.y];
+    if (cell.x < hitLine.length) {
+      final target = terminal.hyperlinks[hitLine.getHyperlinkId(cell.x)];
+      if (target != null) return target;
     }
 
     // Bound hover work even when a remote prints an enormous unbroken line.
@@ -168,10 +181,7 @@ class Buffer {
       }
       if (hit >= match.start + end) return null;
 
-      final uri = Uri.tryParse(candidate.substring(0, end));
-      if (uri == null || uri.host.isEmpty || uri.userInfo.isNotEmpty)
-        return null;
-      return uri;
+      return parseWebUri(candidate.substring(0, end));
     }
     return null;
   }
