@@ -1003,11 +1003,11 @@ class _EmojiBadgePainter extends CustomPainter {
       textScaler: textScaler,
       locale: locale,
     )..layout();
+    canvas.save();
     try {
       final ink = _inkRect(painter);
       final scale = _fit(ink, size);
       canvas
-        ..save()
         ..translate(
           size.width / 2 - ink.center.dx * scale,
           size.height / 2 - ink.center.dy * scale,

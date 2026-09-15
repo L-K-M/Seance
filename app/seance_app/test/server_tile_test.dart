@@ -86,6 +86,9 @@ void main() {
         // Three signals, because a tinted title alone is what the eye is
         // worst at picking out of a list of tinted badges.
         expect(selected.selectedTileColor, scheme.secondaryContainer);
+        // The bar is a foreground decoration: the tile's own shape must stay
+        // empty even when selected, or the border would inset the content.
+        expect(selected.shape, isNull);
         // The bar is a foreground decoration, not the tile's shape: a shape
         // border insets the content by its width and the row would sit a few
         // pixels right of every unselected one.
@@ -177,6 +180,17 @@ void main() {
         await pump(tester, density: density, tabCount: 1);
         expect(find.byTooltip('connected'), findsNothing);
         expect(find.byTooltip('disconnected'), findsNothing);
+        expect(tester.getSize(find.byType(ServerAvatar)), ringed);
+
+        // Nor is a connecting one: no ring, no sweep, no tooltip.
+        await pump(
+          tester,
+          density: density,
+          tabCount: 1,
+          connection: TerminalStatus.connecting,
+        );
+        expect(find.byTooltip('connected'), findsNothing);
+        expect(find.byTooltip('connecting'), findsNothing);
         expect(tester.getSize(find.byType(ServerAvatar)), ringed);
 
         await pump(tester, density: density);
