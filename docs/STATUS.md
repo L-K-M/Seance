@@ -11,8 +11,8 @@ _Last updated: 2026-09-14. A server's colour is a line down the leading edge
 of its row *and* the fill under its mark: the line is the carrier every kind
 of mark keeps, the fill the echo a glyph or an emoji adds to it. Before that,
 the server list gained signals the eye can pick out for which row is selected
-and which servers have
-a session open, a server's colour could be one of the user's own, an SVG could
+and which servers are connected,
+a server's colour could be one of the user's own, an SVG could
 be its image, and Return saved the editor. Before that, the server list gained a compact row and
 pinning: the app bar's density switch trades the address line for a row that
 is 40 px instead of 72, and a pinned server sits in its own section at the top
@@ -42,6 +42,24 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## The list's marks, tightened (2026-09-14)
+
+Three consistency fixes in the server list:
+
+- A border on a badge now means one thing: the session is connected. A
+  dropped or connecting session used to keep a ring of its own — grey, or a
+  highlight sweeping the frame while connecting — which read as a stray
+  outline on rows that were not live. `ServerAvatar` draws the ring only
+  while `connection == connected`, and the sweep and the per-status colours
+  went with the other states.
+- The selected row's bar is painted over the tile as a foreground
+  decoration rather than through the tile's shape: a shape border insets
+  the content by its width, which sat the row a few pixels right of every
+  unselected one.
+- An emoji mark is painted with its ink centred in the badge instead of a
+  `Text` in a `FittedBox`: centring the cluster's advance box left the
+  glyph wherever the system font's bearings put it — visibly left and low.
 
 ## The badge wears the colour again, beside the line (2026-09-14)
 

@@ -68,23 +68,61 @@ void main() {
       testWidgets('the selected row is filled, barred and bold', (
         tester,
       ) async {
-        await pump(tester, density: density, selected: true);
+        await pump(
+          tester,
+          density: density,
+          selected: true,
+          color: ServerColor.red,
+        );
         final scheme = Theme.of(
           tester.element(find.byType(ListTile)),
         ).colorScheme;
         final selected = tile(tester);
+        // Where the row's content starts. A shape border on the tile would
+        // inset this by the border's width; the bar must not move it.
+        final leadingEdge = tester
+            .getTopLeft(find.byType(ServerAccentBar))
+            .dx;
         // Three signals, because a tinted title alone is what the eye is
         // worst at picking out of a list of tinted badges.
         expect(selected.selectedTileColor, scheme.secondaryContainer);
-        final shape = selected.shape;
-        expect(shape, isA<BorderDirectional>());
-        expect((shape as BorderDirectional).start.color, scheme.primary);
-        expect(shape.start.width, greaterThan(0));
+        // The bar is a foreground decoration, not the tile's shape: a shape
+        // border insets the content by its width and the row would sit a few
+        // pixels right of every unselected one.
+        final bar = find.ancestor(
+          of: find.byType(ListTile),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is DecoratedBox &&
+                widget.position == DecorationPosition.foreground &&
+                widget.decoration is BoxDecoration &&
+                (widget.decoration as BoxDecoration).border
+                    is BorderDirectional,
+          ),
+        );
+        expect(bar, findsOneWidget);
+        final border =
+            (tester.widget<DecoratedBox>(bar).decoration as BoxDecoration)
+                    .border!
+                as BorderDirectional;
+        expect(border.start.color, scheme.primary);
+        expect(border.start.width, greaterThan(0));
         expect(titleStyle(tester).fontWeight, FontWeight.w600);
 
-        await pump(tester, density: density, selected: false);
+        await pump(
+          tester,
+          density: density,
+          selected: false,
+          color: ServerColor.red,
+        );
         expect(tile(tester).shape, isNull);
+        expect(bar, findsNothing);
         expect(titleStyle(tester).fontWeight, isNot(FontWeight.w600));
+        expect(
+          tester.getTopLeft(find.byType(ServerAccentBar)).dx,
+          leadingEdge,
+          reason: 'selecting a row must not shift its content',
+        );
       });
 
       testWidgets('the row carries the server\'s colour as its bar', (
@@ -134,11 +172,16 @@ void main() {
         expect(find.byTooltip('connected'), findsOneWidget);
         final ringed = tester.getSize(find.byType(ServerAvatar));
 
+        // A dropped session is not connected: no ring. The footprint is
+        // reserved either way, so rows do not shift as sessions come and go.
+        await pump(tester, density: density, tabCount: 1);
+        expect(find.byTooltip('connected'), findsNothing);
+        expect(find.byTooltip('disconnected'), findsNothing);
+        expect(tester.getSize(find.byType(ServerAvatar)), ringed);
+
         await pump(tester, density: density);
         expect(find.byTooltip('connected'), findsNothing);
         expect(find.byTooltip('disconnected'), findsNothing);
-        // The same footprint either way: rows do not shift as sessions come
-        // and go.
         expect(tester.getSize(find.byType(ServerAvatar)), ringed);
       });
     });

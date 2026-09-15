@@ -561,9 +561,10 @@ class _UpdateBanner extends StatelessWidget {
   }
 }
 
-/// Aggregate a server's tab statuses into the single dot shown on its row:
-/// any connecting wins (spinner), else any connected (green), else any error
-/// (red), else disconnected/none (grey).
+/// Aggregate a server's tab statuses into the single state shown on its row:
+/// any connecting wins, else any connected, else any error, else
+/// disconnected/none. Only `connected` draws the badge's ring; the rest drive
+/// the row's menu entries (disconnect, reconnect).
 TerminalStatus _aggregateStatus(List<TerminalSession> tabs) {
   if (tabs.any((t) => t.status == TerminalStatus.connecting)) {
     return TerminalStatus.connecting;
@@ -646,7 +647,7 @@ class ServerTile extends StatelessWidget {
     final compact = density == ServerListDensity.compact;
     final avatarSize = compact ? _compactAvatarSize : ServerBadge.defaultSize;
     final address = '${server.username}@${server.host}:${server.port}';
-    return ListTile(
+    final tile = ListTile(
       selected: selected,
       // Selection is said three ways, because a tinted title — which is all
       // ListTile does on its own — is the one the eye is worst at picking out
@@ -656,14 +657,6 @@ class ServerTile extends StatelessWidget {
       // means the same thing on every row and shows on a neutral one.
       selectedTileColor: scheme.secondaryContainer,
       selectedColor: scheme.onSecondaryContainer,
-      shape: selected
-          ? BorderDirectional(
-              start: BorderSide(
-                color: scheme.primary,
-                width: _selectionBarWidth,
-              ),
-            )
-          : null,
       titleTextStyle: selected
           ? theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600)
           : null,
@@ -780,6 +773,25 @@ class ServerTile extends StatelessWidget {
         ],
       ),
     );
+    // The selection bar is painted over the tile rather than through the
+    // tile's shape: a border there is part of the decoration, and the tile
+    // insets its content by the border's width — which is exactly what the
+    // bar must not do, since the row has to keep the alignment of every
+    // unselected row.
+    return selected
+        ? DecoratedBox(
+            position: DecorationPosition.foreground,
+            decoration: BoxDecoration(
+              border: BorderDirectional(
+                start: BorderSide(
+                  color: scheme.primary,
+                  width: _selectionBarWidth,
+                ),
+              ),
+            ),
+            child: tile,
+          )
+        : tile;
   }
 }
 
