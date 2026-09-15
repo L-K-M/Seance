@@ -773,12 +773,16 @@ class ServerBadge extends StatelessWidget {
       // squaring off the corner the fill rounds.
       child: ClipRRect(
         borderRadius: radius,
-        child: Center(child: _content(accent, scheme)),
+        child: Center(child: _content(context, accent, scheme)),
       ),
     );
   }
 
-  Widget _content(ServerAccent? accent, ColorScheme scheme) {
+  Widget _content(
+    BuildContext context,
+    ServerAccent? accent,
+    ColorScheme scheme,
+  ) {
     switch (mark) {
       case ServerImageMark(:final png, :final fallback):
         return Image.memory(
@@ -805,26 +809,20 @@ class ServerBadge extends StatelessWidget {
           errorBuilder: (_, _, _) => _glyphIcon(fallback, accent, scheme),
         );
       case ServerEmojiMark(:final emoji):
-        // Scaled down rather than clipped: a wide cluster (a family emoji, a
-        // flag) is wider than the badge, and the ClipRRect above would slice
-        // it through the middle. Shrinking keeps the whole glyph. A single
-        // emoji is narrower than the box and is left at its natural size.
-        // Labelled like the other two branches. Left to the Text, the node
-        // would be the bare emoji, which each screen reader renders its own
-        // way and which says nothing about which server this is.
+        // Labelled like the other two branches. Painted rather than left to a
+        // Text, which would announce the bare emoji — and which a screen
+        // reader renders its own way, saying nothing about which server this
+        // is.
         return Semantics(
           label: semanticsLabel ?? emoji,
           excludeSemantics: true,
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(
-              emoji,
-              // Sized against the glyph it replaces rather than the badge, so
-              // an emoji and an icon sit at the same visual weight. No colour:
-              // an emoji carries its own, and tinting it would either do
-              // nothing or ruin it.
-              style: TextStyle(fontSize: size * 0.56, height: 1.1),
-              textAlign: TextAlign.center,
+          child: CustomPaint(
+            size: Size.square(size),
+            painter: _EmojiBadgePainter(
+              emoji: emoji,
+              fontSize: size * 0.56,
+              textScaler: MediaQuery.textScalerOf(context),
+              locale: Localizations.maybeLocaleOf(context),
             ),
           ),
         );
@@ -849,16 +847,16 @@ class ServerBadge extends StatelessWidget {
   );
 }
 
-/// A [ServerBadge] ringed by the state of the server's open session, if any.
+/// A [ServerBadge] ringed while the server has a *connected* session.
 ///
 /// The ring replaces the dot that used to sit in the badge's corner. A dot
 /// changed only its colour between "nothing open" and "connected", which is
 /// the difference the eye is worst at picking out of a list; a ring changes
-/// the badge's *silhouette*. A server with no session has no ring at all, so
-/// the rows that are live are the rows that are framed, and the colour then
-/// says how the session is doing. It sits outside the badge with a gap, so it
-/// stays a separate mark on any fill, over any image, and beside the accent
-/// bar its row carries.
+/// the badge's *silhouette*. Only a live connection draws one — a connecting
+/// or dropped session frames nothing, so a border on the badge always means
+/// "connected" — and it sits outside the badge with a gap, so it stays a
+/// separate mark on any fill, over any image, and beside the accent bar its
+/// row carries.
 ///
 /// The two answer one question between them — *which* box, and is it up —
 /// which is why they are drawn together rather than side by side in a row
@@ -870,7 +868,7 @@ class ServerAvatar extends StatelessWidget {
 
   /// Whether the server has a session open at all. [connection] reports
   /// `disconnected` both for a session that dropped and for none having been
-  /// opened, and only the first of those is worth a ring.
+  /// opened, and the ring is drawn only while one is actually connected.
   final bool hasSession;
 
   /// The badge's edge, or null for the list's usual [ServerBadge.defaultSize].
@@ -935,13 +933,9 @@ class ServerAvatar extends StatelessWidget {
               size: badgeSize,
             ),
           ),
-          if (hasSession)
+          if (hasSession && connection == TerminalStatus.connected)
             Positioned.fill(
-              child: _SessionRing(
-                status: connection,
-                width: ringWidth,
-                radius: ringRadius,
-              ),
+              child: _SessionRing(width: ringWidth, radius: ringRadius),
             ),
         ],
       ),
@@ -949,171 +943,120 @@ class ServerAvatar extends StatelessWidget {
   }
 }
 
-/// The frame around a badge whose server has a session open, coloured by how
-/// that session is doing. While it is connecting, a highlight travels around
-/// the frame: motion is the one thing that says "not finished" without a
-/// word, and the alternative — a spinner — is a circle, which a rounded
-/// square cannot wear.
+/// The frame a connected session draws around its badge, with the tooltip the
+/// status dot used to carry.
 class _SessionRing extends StatelessWidget {
-  final TerminalStatus status;
   final double width;
   final double radius;
 
-  const _SessionRing({
-    required this.status,
-    required this.width,
-    required this.radius,
-  });
+  const _SessionRing({required this.width, required this.radius});
 
   @override
   Widget build(BuildContext context) {
-    final (color, label) = switch (status) {
-      TerminalStatus.connected => (StatusColors.online(context), 'connected'),
-      TerminalStatus.error => (
-        StatusColors.offline(context),
-        'connection error',
-      ),
-      TerminalStatus.disconnected => (
-        StatusColors.unknown(context),
-        'disconnected',
-      ),
-      TerminalStatus.connecting => (
-        StatusColors.unknown(context),
-        'connecting',
-      ),
-    };
     return Tooltip(
-      message: label,
-      child: status == TerminalStatus.connecting
-          ? _ConnectingRing(color: color, width: width, radius: radius)
-          : DecoratedBox(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(radius),
-                border: Border.all(color: color, width: width),
-              ),
-            ),
-    );
-  }
-}
-
-/// A [_SessionRing] with a highlight sweeping around it.
-class _ConnectingRing extends StatefulWidget {
-  final Color color;
-  final double width;
-  final double radius;
-
-  const _ConnectingRing({
-    required this.color,
-    required this.width,
-    required this.radius,
-  });
-
-  @override
-  State<_ConnectingRing> createState() => _ConnectingRingState();
-}
-
-class _ConnectingRingState extends State<_ConnectingRing>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _turn = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1400),
-  );
-
-  /// Whether the platform asked for animations to be removed. The sweep is
-  /// motion for motion's sake, exactly what that setting is about, so it
-  /// holds still and the ring is drawn as the plain frame the other states
-  /// use; the tooltip still says "connecting".
-  bool _reduceMotion = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    // Stopped rather than left ticking behind a static frame: a repeating
-    // controller schedules a frame every vsync whether or not anything
-    // reads it.
-    if (_reduceMotion) {
-      _turn.stop();
-    } else if (!_turn.isAnimating) {
-      _turn.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _turn.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_reduceMotion) {
-      return DecoratedBox(
+      message: 'connected',
+      child: DecoratedBox(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(widget.radius),
-          border: Border.all(color: widget.color, width: widget.width),
-        ),
-      );
-    }
-    return AnimatedBuilder(
-      animation: _turn,
-      builder: (context, _) => CustomPaint(
-        painter: _SweepRingPainter(
-          color: widget.color,
-          width: widget.width,
-          radius: widget.radius,
-          turn: _turn.value,
+          borderRadius: BorderRadius.circular(radius),
+          border: Border.all(
+            color: StatusColors.online(context),
+            width: width,
+          ),
         ),
       ),
     );
   }
 }
 
-/// Strokes the ring with a sweep gradient rotated by [turn] of a full circle:
-/// a bright quarter that chases its own tail around the frame.
-class _SweepRingPainter extends CustomPainter {
-  final Color color;
-  final double width;
-  final double radius;
-  final double turn;
+/// Paints an emoji with its *ink* centred in the badge rather than its
+/// layout box.
+///
+/// A `Text` centres the cluster's advance: a system emoji font's bearings and
+/// line metrics leave the glyph visibly left-and-low inside it (the font is
+/// whatever the host ships, so the offset cannot be nudged out by hand). The
+/// cluster's measured bounds — where its pixels actually land — are centred
+/// instead, and only ever shrunk to fit: a wide cluster (a family emoji, a
+/// flag) keeps all of itself rather than being sliced by the badge's clip,
+/// and a single emoji stays at its natural size.
+class _EmojiBadgePainter extends CustomPainter {
+  final String emoji;
 
-  const _SweepRingPainter({
-    required this.color,
-    required this.width,
-    required this.radius,
-    required this.turn,
+  /// Sized against the glyph the emoji replaces rather than the badge, so an
+  /// emoji and an icon sit at the same visual weight. No colour: an emoji
+  /// carries its own, and tinting it would either do nothing or ruin it.
+  final double fontSize;
+  final TextScaler textScaler;
+  final Locale? locale;
+
+  const _EmojiBadgePainter({
+    required this.emoji,
+    required this.fontSize,
+    required this.textScaler,
+    required this.locale,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final rect = Offset.zero & size;
-    // Stroked along its centre line, so the stroke stays inside the bounds.
-    final path = rect.deflate(width / 2);
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = width
-      ..shader = SweepGradient(
-        colors: [
-          color.withValues(alpha: 0.15),
-          color,
-          color.withValues(alpha: 0.15),
-        ],
-        stops: const [0, 0.25, 0.5],
-        // Past the highlight the ring settles at its dim tone: the gradient
-        // ends at half a turn and the shader repeats the last colour.
-        tileMode: TileMode.clamp,
-        transform: GradientRotation(turn * 2 * math.pi),
-      ).createShader(rect);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(path, Radius.circular(radius - width / 2)),
-      paint,
+    final painter = TextPainter(
+      text: TextSpan(text: emoji, style: TextStyle(fontSize: fontSize)),
+      textDirection: TextDirection.ltr,
+      textScaler: textScaler,
+      locale: locale,
+    )..layout();
+    canvas.save();
+    try {
+      final ink = _inkRect(painter);
+      final scale = _fit(ink, size);
+      canvas
+        ..translate(
+          size.width / 2 - ink.center.dx * scale,
+          size.height / 2 - ink.center.dy * scale,
+        )
+        ..scale(scale);
+      painter.paint(canvas, Offset.zero);
+    } finally {
+      canvas.restore();
+      painter.dispose();
+    }
+  }
+
+  /// How much [ink] is shrunk to fit inside [bounds]: 1 unless it is wider or
+  /// taller than the badge.
+  static double _fit(Rect ink, Size bounds) {
+    if (ink.isEmpty) return 1;
+    final fit = math.min(
+      bounds.width / ink.width,
+      bounds.height / ink.height,
     );
+    return fit.isFinite ? math.min(1, fit) : 1;
+  }
+
+  /// Where the cluster's pixels land inside [painter]'s coordinate space.
+  ///
+  /// The tight selection box is the first answer — it hugs the glyph rather
+  /// than the em square — then the grapheme cluster's own layout bounds, and
+  /// finally the whole layout box, so a font that reports nothing useful
+  /// still centres something rather than throwing.
+  static Rect _inkRect(TextPainter painter) {
+    final boxes = painter.getBoxesForSelection(
+      TextSelection(baseOffset: 0, extentOffset: painter.plainText.length),
+    );
+    if (boxes.isNotEmpty) {
+      return boxes
+          .map((box) => box.toRect())
+          .reduce((a, b) => a.expandToInclude(b));
+    }
+    final layout = Offset.zero & painter.size;
+    return painter
+            .getClosestGlyphForOffset(layout.center)
+            ?.graphemeClusterLayoutBounds ??
+        layout;
   }
 
   @override
-  bool shouldRepaint(_SweepRingPainter old) =>
-      old.turn != turn ||
-      old.color != color ||
-      old.width != width ||
-      old.radius != radius;
+  bool shouldRepaint(_EmojiBadgePainter old) =>
+      old.emoji != emoji ||
+      old.fontSize != fontSize ||
+      old.textScaler != textScaler ||
+      old.locale != locale;
 }

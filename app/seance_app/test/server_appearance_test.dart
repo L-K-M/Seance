@@ -206,7 +206,7 @@ void main() {
       ),
     );
 
-    testWidgets('rings the badge in the session\'s status colour', (
+    testWidgets('rings the badge while the session is connected', (
       tester,
     ) async {
       late BuildContext captured;
@@ -241,58 +241,28 @@ void main() {
       expect(border.top.color, StatusColors.online(captured));
     });
 
-    testWidgets('animates the ring while connecting', (tester) async {
-      await tester.pumpWidget(
-        _wrap(
-          ServerAvatar(
-            server: _server(),
-            connection: TerminalStatus.connecting,
-            hasSession: true,
-          ),
-        ),
-      );
-      expect(find.byTooltip('connecting'), findsOneWidget);
-      // The sweep is a custom painter rather than the static border the
-      // other states draw, and it repaints as the highlight travels.
-      final sweep = find.descendant(
-        of: find.byType(ServerAvatar),
-        matching: find.byType(CustomPaint),
-      );
-      expect(sweep, findsOneWidget);
-      final before = tester.widget<CustomPaint>(sweep).painter;
-      await tester.pump(const Duration(milliseconds: 300));
-      final after = tester.widget<CustomPaint>(sweep).painter;
-      expect(after!.shouldRepaint(before!), isTrue);
-    });
-
-    testWidgets('holds the connecting ring still under reduced motion', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        _wrap(
-          MediaQuery(
-            data: const MediaQueryData(disableAnimations: true),
-            child: ServerAvatar(
+    testWidgets('only a connected session wears the ring', (tester) async {
+      // A border on the badge means "connected": a connecting or dropped
+      // session frames nothing, so the silhouette never has to be read in
+      // two ways.
+      for (final status in TerminalStatus.values) {
+        await tester.pumpWidget(
+          _wrap(
+            ServerAvatar(
               server: _server(),
-              connection: TerminalStatus.connecting,
+              connection: status,
               hasSession: true,
             ),
           ),
-        ),
-      );
-      // The plain frame the other states draw, still labelled: the state
-      // is not lost, only the motion.
-      expect(find.byTooltip('connecting'), findsOneWidget);
-      expect(ring, findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byType(ServerAvatar),
-          matching: find.byType(CustomPaint),
-        ),
-        findsNothing,
-      );
-      // Nothing is left ticking either; settling would otherwise never end.
-      await tester.pumpAndSettle();
+        );
+        expect(
+          ring,
+          status == TerminalStatus.connected
+              ? findsOneWidget
+              : findsNothing,
+          reason: status.name,
+        );
+      }
     });
 
     testWidgets('a first connection with no session yet has no ring', (
@@ -310,7 +280,6 @@ void main() {
           ),
         ),
       );
-      expect(find.byTooltip('connecting'), findsNothing);
       expect(ring, findsNothing);
     });
 
@@ -329,7 +298,8 @@ void main() {
       expect(find.byTooltip('disconnected'), findsNothing);
       expect(ring, findsNothing);
 
-      // A session that dropped is a session: it keeps its (grey) ring.
+      // A session that dropped frames nothing: the ring is only ever the
+      // connected one.
       await tester.pumpWidget(
         _wrap(
           ServerAvatar(
@@ -339,8 +309,8 @@ void main() {
           ),
         ),
       );
-      expect(find.byTooltip('disconnected'), findsOneWidget);
-      expect(ring, findsOneWidget);
+      expect(find.byTooltip('disconnected'), findsNothing);
+      expect(ring, findsNothing);
     });
 
     testWidgets('the ring is reserved space whether or not it is drawn', (
@@ -391,9 +361,7 @@ void main() {
   });
 
   group('richer marks', () {
-    testWidgets('an emoji mark is drawn as text, not as a glyph', (
-      tester,
-    ) async {
+    testWidgets('an emoji mark is painted, not a glyph', (tester) async {
       await tester.pumpWidget(
         _wrap(
           const ServerBadge(
@@ -402,18 +370,27 @@ void main() {
           ),
         ),
       );
-      expect(find.text('\u{1F680}'), findsOneWidget);
+      // Painted with its ink centred: a Text would centre the cluster's
+      // advance box, which a system emoji font's bearings leave visibly
+      // off-centre.
+      expect(
+        find.descendant(
+          of: find.byType(ServerBadge),
+          matching: find.byType(CustomPaint),
+        ),
+        findsOneWidget,
+      );
       expect(find.byType(Icon), findsNothing);
-      // No colour applied: an emoji carries its own, and tinting it would
-      // either do nothing or ruin it.
-      expect(tester.widget<Text>(find.text('\u{1F680}')).style?.color, isNull);
+      // Labelled by the mark itself: a painted glyph announces nothing.
+      expect(find.bySemanticsLabel('\u{1F680}'), findsOneWidget);
     });
 
     testWidgets('a wide emoji cluster is scaled down, not sliced', (
       tester,
     ) async {
       // A family emoji is wider than the badge, and the badge clips its
-      // content — without scaling it would be cut through the middle.
+      // content — the painter has to shrink it, not cut it through the
+      // middle.
       await tester.pumpWidget(
         _wrap(
           const ServerBadge(
@@ -424,11 +401,21 @@ void main() {
           ),
         ),
       );
-      expect(find.byType(FittedBox), findsOneWidget);
-      expect(
-        tester.widget<FittedBox>(find.byType(FittedBox)).fit,
-        BoxFit.scaleDown,
+      final paint = tester.widget<CustomPaint>(
+        find.descendant(
+          of: find.byType(ServerBadge),
+          matching: find.byType(CustomPaint),
+        ),
       );
+      expect(paint.painter, isNotNull);
+      // Painting must not throw for either the single or the wide cluster —
+      // the ink measure falls back to the layout box when a font reports
+      // nothing.
+      final recorder = ui.PictureRecorder();
+      final canvas = ui.Canvas(recorder);
+      paint.painter!.paint(canvas, const Size.square(32));
+      recorder.endRecording();
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('a glyph badge tells a screen reader what it is', (
@@ -529,7 +516,13 @@ void main() {
           ),
         ),
       );
-      expect(find.text('\u{1F427}'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Semantics && widget.properties.label == '\u{1F427}',
+        ),
+        findsOneWidget,
+      );
       expect(find.byIcon(Icons.rocket_launch_outlined), findsNothing);
     });
   });
