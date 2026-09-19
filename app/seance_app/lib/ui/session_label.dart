@@ -161,7 +161,7 @@ String sessionTabTooltip({
   String? terminalTitle,
   String? runningCommand,
 }) {
-  final lines = <String>['Session $ordinal · $target'];
+  final lines = <String>['Session $ordinal · ${sanitizeRemoteLabel(target)}'];
   // First, and in full: the chip truncates a long name, and this is the only
   // other place it is shown — so the untruncated text has to be reachable
   // here or it is not reachable at all.
