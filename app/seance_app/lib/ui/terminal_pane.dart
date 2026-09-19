@@ -176,7 +176,9 @@ class TerminalPane extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Discard unsaved changes?'),
-        content: Text('${tab.remotePath} has unsaved changes.'),
+        content: Text(
+          '${sanitizeRemoteLabel(tab.remotePath)} has unsaved changes.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),

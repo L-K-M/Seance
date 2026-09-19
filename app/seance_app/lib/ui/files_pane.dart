@@ -116,7 +116,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
   final ExternalFileOpener _fileOpener = const ExternalFileOpener();
   final TextEditingController _filter = TextEditingController();
   final Set<String> _promptedDirtyCopies = {};
-  final Set<String> _uploadingCopyIds = {};
+  final Set<String> _uploadingCopyPaths = {};
 
   @override
   void initState() {
@@ -601,9 +601,12 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
     bool notifySuccess = true,
   }) async {
     copy = widget.controller.localCopies[copy.remotePath] ?? copy;
-    // No setState: _uploadingCopyIds is only read as a guard inside
+    // Keyed on remotePath, not the record's id: a reconcile mid-upload swaps
+    // in a record with a fresh id, and an id-keyed guard would miss the
+    // second call on the swapped record — letting two uploads of the same
+    // file race. No setState: the set is only read as a guard inside
     // _queueDirtyEditPrompt, which runs on controller-driven rebuilds.
-    _uploadingCopyIds.add(copy.id);
+    _uploadingCopyPaths.add(copy.remotePath);
     try {
       return await uploadManagedLocalCopy(
         context,
@@ -612,7 +615,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
         notifySuccess: notifySuccess,
       );
     } finally {
-      _uploadingCopyIds.remove(copy.id);
+      _uploadingCopyPaths.remove(copy.remotePath);
     }
   }
 
@@ -635,7 +638,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       (copy) =>
           copy.dirty &&
           !_promptedDirtyCopies.contains(copy.id) &&
-          !_uploadingCopyIds.contains(copy.id),
+          !_uploadingCopyPaths.contains(copy.remotePath),
     );
     if (dirty.isEmpty) return;
     final copy = dirty.first;
@@ -648,7 +651,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       final current = controller.localCopies[copy.remotePath];
       if (current == null ||
           !current.dirty ||
-          _uploadingCopyIds.contains(current.id)) {
+          _uploadingCopyPaths.contains(current.remotePath)) {
         _promptedDirtyCopies.remove(copy.id);
         return;
       }
