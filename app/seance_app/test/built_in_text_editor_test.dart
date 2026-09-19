@@ -617,6 +617,165 @@ void main() {
       expect(_editorText(tester), 'one\n');
     });
   });
+
+  test('lineStartOffsets counts logical lines', () {
+    expect(lineStartOffsets(''), [0]);
+    expect(lineStartOffsets('one'), [0]);
+    expect(lineStartOffsets('one\ntwo\n'), [0, 4, 8]);
+    expect(lineStartOffsets('\n'), [0, 1]);
+    expect(lineStartOffsets('one\r\ntwo'), [0, 5]);
+  });
+
+  testWidgets('a gutter insets the text field', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          file: file,
+          remotePath: '/etc/config.txt',
+          initialText: 'one\ntwo\n',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final gutter = find.byWidgetPredicate(
+      (widget) => widget is SizedBox && widget.child is CustomPaint,
+    );
+    expect(gutter, findsOneWidget);
+    expect(
+      tester.getTopLeft(find.byType(TextField)).dx,
+      tester.getSize(gutter).width,
+    );
+  });
+
+  testWidgets('the gutter widens when line numbers grow a digit', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          file: file,
+          remotePath: '/etc/config.txt',
+          initialText: 'one\ntwo\n',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final oneDigit = tester.getTopLeft(find.byType(TextField)).dx;
+
+    await tester.enterText(
+      find.byType(TextField),
+      List.generate(12, (i) => 'line $i').join('\n'),
+    );
+    await tester.pump();
+    final twoDigits = tester.getTopLeft(find.byType(TextField)).dx;
+
+    expect(twoDigits, greaterThan(oneDigit));
+  });
+
+  testWidgets('the status bar tracks the caret, size, and unsaved state', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          file: file,
+          remotePath: '/etc/config.txt',
+          initialText: 'one\ntwo\n',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Ln 1, Col 1 · 3 lines · 8 bytes'), findsOneWidget);
+    expect(find.text('LF · UTF-8'), findsOneWidget);
+
+    final controller = tester
+        .widget<TextField>(find.byType(TextField))
+        .controller!;
+    controller.selection = const TextSelection.collapsed(offset: 5);
+    await tester.pump();
+    expect(find.textContaining('Ln 2, Col 2'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'one\ntwo\nthree');
+    await tester.pump();
+    expect(find.text('Ln 3, Col 6 · 3 lines · 13 bytes'), findsOneWidget);
+    expect(find.textContaining('Unsaved edits'), findsOneWidget);
+  });
+
+  testWidgets('the status bar reports CRLF endings and a UTF-8 BOM', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      await file.writeAsBytes([
+        0xef,
+        0xbb,
+        0xbf,
+        ...'one\r\ntwo\r\n'.codeUnits,
+      ]);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BuiltInTextEditorScreen(
+            file: file,
+            remotePath: '/etc/config.txt',
+          ),
+        ),
+      );
+      await tester.pump();
+      await _pollUntil(
+        tester,
+        () => find.textContaining('CRLF').evaluate().isNotEmpty,
+      );
+      expect(find.text('CRLF · UTF-8 BOM'), findsOneWidget);
+    });
+  });
+
+  testWidgets('the status bar shows local changes and server drift', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final remote = _FakeRemoteFileSystem({'/etc/config.txt': 'one\ntwo\n'});
+      final controller = await _driftController(remote);
+      addTearDown(controller.dispose);
+      final copy = await controller.checkoutRemoteFile(
+        remote.entry('/etc/config.txt'),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BuiltInTextEditorScreen(
+            file: controller.localFile(copy),
+            remotePath: copy.remotePath,
+            remoteFiles: controller,
+          ),
+        ),
+      );
+      await tester.pump();
+      await _pollUntil(
+        tester,
+        () => find.byType(TextField).evaluate().isNotEmpty,
+      );
+      await _pollUntil(
+        tester,
+        () => find.textContaining('In sync').evaluate().isNotEmpty,
+      );
+
+      // A managed copy whose checkout no longer matches its baseline is a
+      // local change waiting to be uploaded.
+      controller.localCopies[copy.remotePath] = copy.copyWith(dirty: true);
+      await controller.checkRemoteSnapshot(copy.remotePath);
+      await tester.pump();
+      expect(find.textContaining('Local changes'), findsOneWidget);
+      expect(find.textContaining('In sync'), findsNothing);
+
+      // The server copy moving on is a separate fact and is reported too.
+      remote.files['/etc/config.txt'] = 'one\ntwo\nthree\n';
+      await controller.checkRemoteSnapshot(copy.remotePath);
+      await tester.pump();
+      expect(find.textContaining('Changed on server'), findsOneWidget);
+      expect(find.textContaining('Local changes'), findsOneWidget);
+    });
+  });
 }
 
 /// Bounded poll for async work landing inside `tester.runAsync` — a fixed

@@ -161,6 +161,16 @@ String _normalizeLineEndings(String text, String lineEnding) {
       .replaceAll('\n', '\r\n');
 }
 
+/// Offsets at which logical lines begin: 0 plus the position after each
+/// `\n`. A trailing newline therefore still counts its empty final line.
+List<int> lineStartOffsets(String text) {
+  final starts = <int>[0];
+  for (var i = 0; i < text.length; i++) {
+    if (text.codeUnitAt(i) == 0x0a) starts.add(i + 1);
+  }
+  return starts;
+}
+
 class BuiltInTextEditorScreen extends StatefulWidget {
   final File file;
   final String remotePath;
@@ -216,8 +226,29 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   String? _lastQuery;
   double? _editorWidth;
 
+  /// Cache for [lineStartOffsets] — recomputed only when the text instance
+  /// changes.
+  String? _lineStartsFor;
+  List<int> _lineStarts = const [0];
+
+  /// Cache for the gutter's per-line visual offsets — keyed on the text
+  /// instance plus the layout inputs (text width, scaler).
+  List<double> _gutterTops = const [0];
+  String? _gutterLayoutText;
+  double? _gutterLayoutWidth;
+  TextScaler? _gutterLayoutScaler;
+
+  /// Repaint signal for the gutter. A ScrollController does not notify on
+  /// offset changes — only attach/detach — so the field's scroll
+  /// notifications bump this instead of rebuilding the row.
+  final ValueNotifier<int> _gutterRepaint = ValueNotifier(0);
+
   /// Inset around the document text; also part of the scroll-to-match math.
   static const double _editorPadding = 14;
+
+  /// Horizontal insets inside the line-number gutter.
+  static const double _gutterLeftInset = 8;
+  static const double _gutterRightInset = 8;
 
   /// Matches the terminal's monospace stack; a bare 'monospace' family does
   /// not resolve on every platform (notably macOS/iOS).
@@ -229,6 +260,75 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   );
 
   bool get _dirty => !_loading && _text.text != _savedText;
+
+  /// [lineStartOffsets] for the current buffer — identity-keyed so a
+  /// rebuild after only a caret move never rescans.
+  List<int> get _starts {
+    final text = _text.text;
+    if (!identical(_lineStartsFor, text)) {
+      _lineStarts = lineStartOffsets(text);
+      _lineStartsFor = text;
+    }
+    return _lineStarts;
+  }
+
+  /// 1-based line and column of the caret, for the status bar and the
+  /// gutter's current-line highlight.
+  (int, int) _caretLineCol() {
+    final selection = _text.selection;
+    if (!selection.isValid) return (1, 1);
+    final offset = selection.baseOffset.clamp(0, _text.text.length);
+    final starts = _starts;
+    var lo = 0;
+    var hi = starts.length - 1;
+    while (lo < hi) {
+      final mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= offset) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return (lo + 1, offset - starts[lo] + 1);
+  }
+
+  /// Visual top offset of every logical line, for the gutter. Precise layout
+  /// below [syntaxHighlightingMaxChars] — the same span and width the field
+  /// renders, so soft wraps land each number on the right row. Past the cap
+  /// the fixed-height estimate mirrors `_revealActiveMatch`: a wrapped line
+  /// in a huge file can leave numbers off by a row, never the whole gutter.
+  void _ensureGutterLayout(double textWidth, TextScaler scaler) {
+    if (identical(_gutterLayoutText, _text.text) &&
+        _gutterLayoutWidth == textWidth &&
+        _gutterLayoutScaler == scaler) {
+      return;
+    }
+    final text = _text.text;
+    final starts = _starts;
+    final lineHeight =
+        scaler.scale(_editorTextStyle.fontSize!) * _editorTextStyle.height!;
+    if (text.length <= syntaxHighlightingMaxChars) {
+      final painter = TextPainter(
+        text: _text.buildTextSpan(
+          context: context,
+          style: _editorTextStyle,
+          withComposing: false,
+        ),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+      )..layout(maxWidth: textWidth > 1 ? textWidth : 1);
+      _gutterTops = [
+        for (final start in starts)
+          painter.getOffsetForCaret(TextPosition(offset: start), Rect.zero).dy,
+      ];
+      painter.dispose();
+    } else {
+      _gutterTops = [for (var i = 0; i < starts.length; i++) i * lineHeight];
+    }
+    _gutterLayoutText = text;
+    _gutterLayoutWidth = textWidth;
+    _gutterLayoutScaler = scaler;
+  }
 
   /// Tri-state drift answer: true once a freshness check has proven the
   /// server copy moved on (or disappeared), false while it still matches,
@@ -328,6 +428,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     _searchFocus.dispose();
     _editorFocus.dispose();
     _scroll.dispose();
+    _gutterRepaint.dispose();
     super.dispose();
   }
 
@@ -742,18 +843,14 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
               ? null
               : SafeArea(
                   top: false,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    child: Text(
-                      '${_text.text.split('\n').length} lines · '
-                      '${utf8.encode(_text.text).length} bytes'
-                      '${_dirty ? ' · Unsaved' : ''}',
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
-                  ),
+                  // The copy's dirty flag and the drift answer live on the
+                  // controller; the banner listens to it the same way.
+                  child: widget.remoteFiles == null
+                      ? _statusBar(context)
+                      : ListenableBuilder(
+                          listenable: widget.remoteFiles!,
+                          builder: (context, _) => _statusBar(context),
+                        ),
                 ),
         ),
       ),
@@ -844,6 +941,56 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     );
   }
 
+  /// Caret position and size on the left; document state on the right.
+  /// "Local changes" is the managed-copy answer — the on-disk checkout
+  /// differs from its last-uploaded baseline — while "Unsaved edits" is the
+  /// buffer, so both can appear together.
+  Widget _statusBar(BuildContext context) {
+    final theme = Theme.of(context);
+    final (line, col) = _caretLineCol();
+    final copy = widget.remoteFiles?.localCopies[widget.remotePath];
+    final status = [
+      if (_saving) 'Saving…',
+      if (_remoteMissing)
+        'Deleted on server'
+      else if (_remoteChanged == true)
+        'Changed on server',
+      if (_dirty)
+        'Unsaved edits'
+      else if (copy?.dirty ?? false)
+        'Local changes'
+      else if (copy != null)
+        'In sync',
+      _lineEnding == '\r\n' ? 'CRLF' : 'LF',
+      _hasUtf8Bom ? 'UTF-8 BOM' : 'UTF-8',
+      if (_text.language case final language?) language.id,
+    ];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Ln $line, Col $col · ${_starts.length} lines · '
+              '${utf8.encode(_text.text).length} bytes',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall,
+            ),
+          ),
+          Flexible(
+            child: Text(
+              status.join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _body() {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
@@ -863,28 +1010,175 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     }
     return LayoutBuilder(
       builder: (context, constraints) {
-        _editorWidth = constraints.maxWidth;
-        return TextField(
-          controller: _text,
-          focusNode: _editorFocus,
-          scrollController: _scroll,
-          autofocus: true,
-          expands: true,
-          maxLines: null,
-          minLines: null,
-          keyboardType: TextInputType.multiline,
-          textAlignVertical: TextAlignVertical.top,
-          autocorrect: false,
-          enableSuggestions: false,
-          smartDashesType: SmartDashesType.disabled,
-          smartQuotesType: SmartQuotesType.disabled,
-          style: _editorTextStyle,
-          decoration: const InputDecoration(
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.all(_editorPadding),
+        final scaler = MediaQuery.textScalerOf(context);
+        final gutterWidth = _gutterWidth(scaler);
+        // The field's text wraps at its width minus the content padding;
+        // the gutter lays out at exactly that width so numbers track wraps.
+        final textWidth =
+            constraints.maxWidth - gutterWidth - 2 * _editorPadding;
+        _ensureGutterLayout(textWidth, scaler);
+        _editorWidth = constraints.maxWidth - gutterWidth;
+        final theme = Theme.of(context);
+        return NotificationListener<ScrollNotification>(
+          onNotification: (_) {
+            _gutterRepaint.value++;
+            return false;
+          },
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                width: gutterWidth,
+                child: CustomPaint(
+                  painter: _LineNumberGutterPainter(
+                    scroll: _scroll,
+                    repaint: _gutterRepaint,
+                    lineTops: _gutterTops,
+                    topInset: _editorPadding,
+                    caretLine: _caretLineCol().$1,
+                    textStyle: _editorTextStyle,
+                    numberColor: theme.colorScheme.onSurfaceVariant,
+                    caretLineColor: theme.colorScheme.onSurface,
+                    dividerColor: theme.dividerColor,
+                    textScaler: scaler,
+                    rightInset: _gutterRightInset,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: TextField(
+                  controller: _text,
+                  focusNode: _editorFocus,
+                  scrollController: _scroll,
+                  autofocus: true,
+                  expands: true,
+                  maxLines: null,
+                  minLines: null,
+                  keyboardType: TextInputType.multiline,
+                  textAlignVertical: TextAlignVertical.top,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  smartDashesType: SmartDashesType.disabled,
+                  smartQuotesType: SmartQuotesType.disabled,
+                  style: _editorTextStyle,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.all(_editorPadding),
+                  ),
+                ),
+              ),
+            ],
           ),
         );
       },
     );
   }
+
+  /// Width of the line-number gutter: the widest number plus side padding
+  /// and the hairline divider.
+  double _gutterWidth(TextScaler scaler) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: '0' * _starts.length.toString().length,
+        style: _editorTextStyle,
+      ),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+    )..layout();
+    final width = painter.width;
+    painter.dispose();
+    return _gutterLeftInset + width + _gutterRightInset + 1;
+  }
+}
+
+/// Paints right-aligned line numbers at each logical line's visual top,
+/// tracking the editor's scroll offset. Only lines intersecting the
+/// viewport are laid out, and scroll notifications repaint through
+/// [CustomPainter.repaint] without a widget rebuild.
+class _LineNumberGutterPainter extends CustomPainter {
+  /// Read for the live offset at paint time; its notifications do not
+  /// reach this painter — [repaint] (bumped by scroll notifications)
+  /// drives repaints instead.
+  final ScrollController scroll;
+  final List<double> lineTops;
+  final double topInset;
+
+  /// 1-based logical line holding the caret, drawn brighter.
+  final int caretLine;
+  final TextStyle textStyle;
+  final Color numberColor;
+  final Color caretLineColor;
+  final Color dividerColor;
+  final TextScaler textScaler;
+  final double rightInset;
+
+  _LineNumberGutterPainter({
+    required this.scroll,
+    required Listenable repaint,
+    required this.lineTops,
+    required this.topInset,
+    required this.caretLine,
+    required this.textStyle,
+    required this.numberColor,
+    required this.caretLineColor,
+    required this.dividerColor,
+    required this.textScaler,
+    required this.rightInset,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final offset = scroll.hasClients ? scroll.offset : 0.0;
+    final lineHeight =
+        textScaler.scale(textStyle.fontSize!) * (textStyle.height ?? 1);
+    canvas.clipRect(Offset.zero & size);
+    // Skip ahead to the first line whose box bottom is still on screen.
+    final threshold = offset - topInset - lineHeight;
+    var lo = 0;
+    var hi = lineTops.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (lineTops[mid] > threshold) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    final painter = TextPainter(
+      textDirection: TextDirection.ltr,
+      textScaler: textScaler,
+    );
+    for (var i = lo; i < lineTops.length; i++) {
+      final y = topInset + lineTops[i] - offset;
+      if (y > size.height) break;
+      painter.text = TextSpan(
+        text: '${i + 1}',
+        style: textStyle.copyWith(
+          color: i + 1 == caretLine ? caretLineColor : numberColor,
+        ),
+      );
+      painter.layout();
+      painter.paint(
+        canvas,
+        Offset(size.width - 1 - rightInset - painter.width, y),
+      );
+    }
+    painter.dispose();
+    canvas.drawRect(
+      Rect.fromLTWH(size.width - 1, 0, 1, size.height),
+      Paint()..color = dividerColor,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_LineNumberGutterPainter old) =>
+      !identical(lineTops, old.lineTops) ||
+      caretLine != old.caretLine ||
+      topInset != old.topInset ||
+      textStyle != old.textStyle ||
+      numberColor != old.numberColor ||
+      caretLineColor != old.caretLineColor ||
+      dividerColor != old.dividerColor ||
+      textScaler != old.textScaler ||
+      rightInset != old.rightInset;
 }

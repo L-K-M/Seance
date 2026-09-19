@@ -266,6 +266,12 @@ reliably edit app-private checkouts in place.
   toggle), open-at-top, and ⌘S/Ctrl+S as immediate save-and-upload for server
   files. Feedback moved from bottom SnackBars to top toasts app-wide so
   notices never cover the shell prompt.
+- Gave the built-in editor a line-number gutter that tracks soft wraps (a
+  laid-out per-line offset below the highlighting cap, a fixed-height
+  estimate past it) and a status bar: caret Ln/Col, line and byte counts,
+  then the file's standing — Saving…, Changed on server / Deleted on server,
+  Unsaved edits / Local changes (a dirty managed checkout) / In sync — plus
+  line ending (LF/CRLF), UTF-8 BOM, and detected language.
 
 ## Verification log
 
