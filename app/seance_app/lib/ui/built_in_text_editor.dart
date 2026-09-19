@@ -232,7 +232,10 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   List<int> _lineStarts = const [0];
 
   /// Cache for the gutter's per-line visual offsets — keyed on the text
-  /// instance plus the layout inputs (text width, scaler).
+  /// instance plus the layout inputs (text width, scaler). Language, theme
+  /// and search matches also feed `buildTextSpan`, but only through
+  /// color/background styles that never change metrics; a span input that
+  /// ever affects layout must invalidate this cache too.
   List<double> _gutterTops = const [0];
   String? _gutterLayoutText;
   double? _gutterLayoutWidth;
@@ -277,7 +280,9 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   (int, int) _caretLineCol() {
     final selection = _text.selection;
     if (!selection.isValid) return (1, 1);
-    final offset = selection.baseOffset.clamp(0, _text.text.length);
+    // extentOffset is the moving caret — during a drag/shift selection the
+    // anchor (baseOffset) stays pinned where the selection started.
+    final offset = selection.extentOffset.clamp(0, _text.text.length);
     final starts = _starts;
     var lo = 0;
     var hi = starts.length - 1;
@@ -1028,6 +1033,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(
+                key: const ValueKey('editor-line-gutter'),
                 width: gutterWidth,
                 child: CustomPaint(
                   painter: _LineNumberGutterPainter(
@@ -1124,7 +1130,12 @@ class _LineNumberGutterPainter extends CustomPainter {
     required this.dividerColor,
     required this.textScaler,
     required this.rightInset,
-  }) : super(repaint: repaint);
+  })  : assert(
+          textStyle.fontSize != null,
+          '_LineNumberGutterPainter needs a TextStyle with an explicit '
+          'fontSize.',
+        ),
+        super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1144,6 +1155,9 @@ class _LineNumberGutterPainter extends CustomPainter {
         lo = mid + 1;
       }
     }
+    // Cheap insurance against line-height estimate error: painting one
+    // extra off-screen line gets clipped, skipping a visible one doesn't.
+    if (lo > 0) lo--;
     final painter = TextPainter(
       textDirection: TextDirection.ltr,
       textScaler: textScaler,

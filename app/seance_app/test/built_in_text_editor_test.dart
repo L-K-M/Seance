@@ -638,9 +638,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final gutter = find.byWidgetPredicate(
-      (widget) => widget is SizedBox && widget.child is CustomPaint,
-    );
+    final gutter = find.byKey(const ValueKey('editor-line-gutter'));
     expect(gutter, findsOneWidget);
     expect(
       tester.getTopLeft(find.byType(TextField)).dx,
@@ -711,7 +709,7 @@ void main() {
         0xef,
         0xbb,
         0xbf,
-        ...'one\r\ntwo\r\n'.codeUnits,
+        ...utf8.encode('one\r\ntwo\r\n'),
       ]);
       await tester.pumpWidget(
         MaterialApp(
