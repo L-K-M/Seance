@@ -131,7 +131,7 @@ void main() {
       final pick = AppState.fallbackAfterClosing(
         closed: a1,
         siblingsBefore: [a1],
-        remaining: const [],
+        remaining: const <TerminalSession>[],
         lastSessionForServer: const {},
       );
       expect(pick, isNull);

@@ -168,8 +168,7 @@ class _ServerListPaneState extends State<ServerListPane> {
                   info: update,
                   onDismiss: state.dismissUpdateNotice,
                 ),
-              if (showFilter)
-                _filterField(matches, state.servers.length),
+              if (showFilter) _filterField(matches, state.servers.length),
               Expanded(child: list),
             ],
           );
@@ -287,6 +286,7 @@ class _ServerListPaneState extends State<ServerListPane> {
   Widget _tile(BuildContext context, AppState state, ServerConfig server) {
     final reachability = state.statuses[server.id] ?? ProbeStatus.unknown;
     final tabs = state.sessionsForServer(server.id);
+    final terminals = tabs.whereType<TerminalSession>().toList();
     return ServerTile(
       density: state.serverListDensity,
       pinned: state.isServerPinned(server.id),
@@ -295,7 +295,7 @@ class _ServerListPaneState extends State<ServerListPane> {
       // reconciles each tile to its server instead of by position.
       key: ValueKey(server.id),
       server: server,
-      connection: _aggregateStatus(tabs),
+      connection: _aggregateStatus(terminals),
       tabCount: tabs.length,
       reachability: reachability,
       selected: server.id == state.activeServerId,
@@ -304,16 +304,16 @@ class _ServerListPaneState extends State<ServerListPane> {
       onEdit: () => _editServer(context, state, server),
       onDuplicate: () => _duplicateServer(context, state, server),
       onDelete: () => _deleteServer(context, state, server),
-      // Disconnect every live tab; reconnect the lone dead tab.
+      // Disconnect every live terminal; reconnect the lone dead one.
       onDisconnect: () {
-        for (final t in tabs) {
+        for (final t in terminals) {
           if (t.status == TerminalStatus.connected) {
             state.disconnect(t.id);
           }
         }
       },
-      onReconnect: tabs.length == 1
-          ? () => state.reconnect(tabs.first.id)
+      onReconnect: terminals.length == 1
+          ? () => state.reconnect(terminals.first.id)
           : null,
     );
   }
@@ -402,6 +402,7 @@ class _ServerListPaneState extends State<ServerListPane> {
   ) async {
     final localCopyCount = state
         .sessionsForServer(server.id)
+        .whereType<TerminalSession>()
         .fold<int>(
           0,
           (count, session) =>
@@ -763,10 +764,7 @@ class ServerTile extends StatelessWidget {
                 child: Text(pinned ? 'Unpin' : 'Pin to top'),
               ),
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
-              const PopupMenuItem(
-                value: 'duplicate',
-                child: Text('Duplicate'),
-              ),
+              const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
               const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),

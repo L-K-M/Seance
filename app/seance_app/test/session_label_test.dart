@@ -74,10 +74,7 @@ void main() {
     });
 
     test('bidi overrides and zero-width characters are stripped', () {
-      expect(
-        sanitizeRemoteLabel('safe\u202Egnahc\u200B\uFEFF'),
-        'safe gnahc',
-      );
+      expect(sanitizeRemoteLabel('safe\u202Egnahc\u200B\uFEFF'), 'safe gnahc');
     });
 
     test('a hostile title is sanitized before it reaches the tab', () {
@@ -164,13 +161,58 @@ void main() {
     });
   });
 
+  group('editorTabLabel', () {
+    test('names the file by its basename', () {
+      expect(editorTabLabel('/etc/nginx/nginx.conf'), 'nginx.conf');
+      expect(editorTabLabel('/var/log/app/debug.log'), 'debug.log');
+    });
+
+    test('falls back to "File" when the path has no basename', () {
+      expect(editorTabLabel('/'), 'File');
+      expect(editorTabLabel('relative/path.txt'), 'File');
+    });
+
+    test('a hostile path is sanitized before it reaches the tab', () {
+      expect(editorTabLabel('/etc/ok\nrm -rf'), 'ok rm -rf');
+    });
+
+    test('keeps the distinguishing tail when shortening', () {
+      final label = editorTabLabel(
+        '/srv/app/config/very-long-file-name.conf',
+        maxLength: 10,
+      );
+      expect(label.length, 10);
+      expect(label.startsWith('…'), isTrue);
+      expect(label.endsWith('name.conf'), isTrue);
+    });
+  });
+
+  group('editorTabTooltip', () {
+    test('names the full path and the owning session', () {
+      expect(
+        editorTabTooltip(
+          remotePath: '/etc/nginx/nginx.conf',
+          target: 'ops@web-01:22',
+        ),
+        '/etc/nginx/nginx.conf\nops@web-01:22',
+      );
+    });
+
+    test('flags unsaved changes', () {
+      expect(
+        editorTabTooltip(
+          remotePath: '/etc/hosts',
+          target: 'ops@web-01:22',
+          dirty: true,
+        ),
+        '/etc/hosts\nops@web-01:22\nUnsaved changes',
+      );
+    });
+  });
+
   group('disambiguateTabLabels', () {
     test('unique labels pass through untouched', () {
-      expect(disambiguateTabLabels(['app', 'logs', '~']), [
-        'app',
-        'logs',
-        '~',
-      ]);
+      expect(disambiguateTabLabels(['app', 'logs', '~']), ['app', 'logs', '~']);
     });
 
     test('duplicates get stable ordinals in tab order', () {

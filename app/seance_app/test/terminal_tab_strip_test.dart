@@ -114,6 +114,91 @@ void main() {
     expect(find.text('log'), findsOneWidget);
   });
 
+  testWidgets('an editor tab sits beside terminal tabs in the strip', (
+    tester,
+  ) async {
+    final config = ServerConfig(
+      id: 'server',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'user',
+      authMethod: AuthMethod.password,
+      createdAt: 0,
+      updatedAt: 0,
+    );
+    final engine = XtermTerminalEngine();
+    addTearDown(engine.dispose);
+    final terminal = TerminalSession(
+      id: 'term',
+      serverId: config.id,
+      config: config,
+      engine: engine,
+      connecting: false,
+    );
+    addTearDown(terminal.dispose);
+    final editor = EditorTab(
+      id: 'edit',
+      serverId: config.id,
+      config: config,
+      remotePath: '/etc/nginx/nginx.conf',
+      localPath: 'nginx.conf',
+      ownerEditSessionId: terminal.editSessionId,
+    );
+    var closed = '';
+    var focused = '';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalTabStrip(
+            tabs: [terminal, editor],
+            activeSessionId: editor.id,
+            onFocus: (id) => focused = id,
+            onClose: (id) => closed = id,
+            onNewTab: () {},
+            onGenerateCommand: () {},
+          ),
+        ),
+      ),
+    );
+
+    // The file's basename labels the tab; the shell keeps its own name.
+    expect(find.text('nginx.conf'), findsOneWidget);
+    expect(find.text('Session 1'), findsOneWidget);
+
+    // The editor chip's close button doubles as the unsaved marker once the
+    // buffer is dirty (the terminal's status dot is also a circle, so the
+    // finders are scoped to the editor's chip).
+    final editorChip = find.ancestor(
+      of: find.text('nginx.conf'),
+      matching: find.byType(InkWell),
+    );
+    expect(
+      find.descendant(of: editorChip, matching: find.byIcon(Icons.close)),
+      findsOneWidget,
+    );
+    editor.dirty.value = true;
+    await tester.pump();
+    expect(
+      find.descendant(of: editorChip, matching: find.byIcon(Icons.circle)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: editorChip, matching: find.byIcon(Icons.close)),
+      findsNothing,
+    );
+
+    // Taps still focus and close by tab id.
+    await tester.tap(find.text('Session 1'));
+    expect(focused, terminal.id);
+    await tester.tap(
+      find.descendant(of: editorChip, matching: find.byType(IconButton)),
+    );
+    expect(closed, editor.id);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('the server accent colours the strip\'s rule', (tester) async {
     final config = ServerConfig(
       id: 'server',

@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:seance_core/seance_core.dart';
 import 'package:xterm/xterm.dart' show TerminalController;
 
@@ -16,6 +17,7 @@ import 'services/remote_files_controller.dart';
 import 'services/remote_git_controller.dart';
 import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
+import 'ui/built_in_text_editor.dart';
 import 'ui/server_list_density.dart';
 import 'ui/session_label.dart';
 import 'ui/terminal_appearance.dart';
@@ -76,18 +78,33 @@ class ConnectionLogNotifier extends ChangeNotifier {
   void bump() => notifyListeners();
 }
 
+/// One tab in a server's strip — a terminal session or a file editor.
+/// Sealed so the pane can switch exhaustively on the kind.
+sealed class PaneTab {
+  /// Unique tab identity (not per server) — selection and ordering key.
+  final String id;
+
+  /// The server this tab belongs to. Its tabs stay contiguous in
+  /// [AppState.sessions], so a per-server strip is an order-preserving filter.
+  final String serverId;
+
+  /// The config captured when the tab was opened; display reads prefer
+  /// [AppState.configFor] so an edit made mid-session is reflected.
+  final ServerConfig config;
+
+  PaneTab({required this.id, required this.serverId, required this.config});
+
+  /// Release what the tab owns. Overridden where there is something to free.
+  void dispose() {}
+}
+
 /// One terminal session — a single SSH connection. A server can have several
 /// (shown as tabs inside its terminal pane), so a session has its own [id]
 /// distinct from its [serverId]; many sessions can share one [serverId].
-class TerminalSession {
-  /// Unique per connection (not per server) — the tab identity.
-  final String id;
-
+class TerminalSession extends PaneTab {
   /// Stable ownership identity for durable local edit checkouts. Unlike [id],
   /// this survives reconnects that replace the terminal engine and widget.
   final String editSessionId;
-  final String serverId;
-  final ServerConfig config;
   XtermTerminalEngine engine;
   SshSession? session;
   RemoteFilesController? files;
@@ -149,10 +166,10 @@ class TerminalSession {
   int _commandGeneration = 0;
 
   TerminalSession({
-    required this.id,
+    required super.id,
     String? editSessionId,
-    required this.serverId,
-    required this.config,
+    required super.serverId,
+    required super.config,
     required this.engine,
     this.connecting = true,
     this.error,
@@ -223,6 +240,7 @@ class TerminalSession {
   /// braces — it makes the ordering invariant local instead of something a
   /// reader has to infer from `XtermTerminalEngine.dispose`. Removing a
   /// listener from an already-disposed notifier is explicitly supported.
+  @override
   void dispose() {
     _commandReveal?.cancel();
     engine.workingDirectory.removeListener(_syncMetadata);
@@ -240,6 +258,47 @@ class TerminalSession {
     if (isConnected) return TerminalStatus.connected;
     return TerminalStatus.disconnected;
   }
+}
+
+/// A file-editing tab: the built-in text editor on a managed local checkout,
+/// shown in the same strip as the owning server's terminal tabs.
+///
+/// Ownership is keyed on [TerminalSession.editSessionId] — the identity a
+/// reconnect preserves — so the tab follows its session across reconnects
+/// and is closed along with it (closing a session deletes the checkout the
+/// editor writes to).
+class EditorTab extends PaneTab {
+  EditorTab({
+    required super.id,
+    required super.serverId,
+    required super.config,
+    required this.remotePath,
+    required this.localPath,
+    required this.ownerEditSessionId,
+  });
+
+  /// Absolute path on the server — the tab's name and its drift/upload key.
+  final String remotePath;
+
+  /// Checkout-root-relative local path; the view resolves it through
+  /// [ManagedRemoteFileStore.checkoutFile] (see [ManagedRemoteFile.localPath]).
+  final String localPath;
+
+  /// The owning session's durable edit identity — matches
+  /// [ManagedRemoteFile.editSessionId].
+  final String ownerEditSessionId;
+
+  /// The unsaved-buffer flag, written by the mounted editor; the tab chip
+  /// draws its modified marker from it. Deliberately never disposed: the tab
+  /// can be dropped while its editor is still mounted for a frame (a save in
+  /// flight writes the flag from a `finally`), and a write to a disposed
+  /// notifier throws. With no subscribers left it is simply collected.
+  final ValueNotifier<bool> dirty = ValueNotifier(false);
+
+  /// Handle to the mounted editor — the strip's close button asks it whether
+  /// unsaved changes may be discarded. `currentState` is null only before the
+  /// tab's first frame, when there is nothing to lose.
+  final GlobalKey<BuiltInTextEditorScreenState> editorKey = GlobalKey();
 }
 
 /// Whether the server a duplicate was planned from still is what it was.
@@ -264,7 +323,8 @@ class SourceServerChanged implements Exception {
   const SourceServerChanged(this.label);
 
   @override
-  String toString() => '"$label" changed while it was being copied — it was '
+  String toString() =>
+      '"$label" changed while it was being copied — it was '
       'deleted, or it now holds a different credential. Nothing was created.';
 }
 
@@ -284,8 +344,7 @@ bool secretStillReferenced(
   String secretRef,
   Iterable<ServerConfig> servers, {
   required String excludingId,
-}) =>
-    servers.any((s) => s.id != excludingId && s.secretRef == secretRef);
+}) => servers.any((s) => s.id != excludingId && s.secretRef == secretRef);
 
 /// Top-level app state: the server list, live reachability, and the open
 /// terminal sessions. A server may have several sessions (tabs); the UI is a
@@ -298,12 +357,13 @@ class AppState extends ChangeNotifier {
   List<Snippet> snippets = [];
   Map<String, ProbeStatus> statuses = {};
 
-  /// All open sessions, in a stable global order. Sessions for the same server
-  /// are kept contiguous (enforced on insert), so a per-server tab strip is a
-  /// simple order-preserving filter and adjacent tabs are always same-server.
-  final List<TerminalSession> sessions = [];
+  /// All open tabs — terminal sessions and file editors — in a stable global
+  /// order. Tabs for the same server are kept contiguous (enforced on
+  /// insert), so a per-server tab strip is a simple order-preserving filter
+  /// and adjacent tabs are always same-server.
+  final List<PaneTab> sessions = [];
 
-  /// The id of the session shown in the right pane (see [activeServerId],
+  /// The id of the tab shown in the right pane (see [activeServerId],
   /// which is derived from it).
   String? activeSessionId;
 
@@ -371,8 +431,8 @@ class AppState extends ChangeNotifier {
     this.services, {
     UpdateChecker? updateChecker,
     BackgroundKeepAlive? keepAlive,
-  })  : _updateChecker = updateChecker ?? UpdateChecker(),
-        _keepAlive = keepAlive ?? BackgroundKeepAlive() {
+  }) : _updateChecker = updateChecker ?? UpdateChecker(),
+       _keepAlive = keepAlive ?? BackgroundKeepAlive() {
     _sessionManager = SshSessionManager(
       tofu: services.tofu,
       onHostKey: _promptForHostKey,
@@ -440,13 +500,33 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  /// The server whose terminal is shown — derived from the active session, so
-  /// there is a single source of truth. Null when nothing is open.
-  String? get activeServerId => activeSession?.serverId;
+  /// The server whose tabs are shown — derived from the active tab, so there
+  /// is a single source of truth. Null when nothing is open.
+  String? get activeServerId => activeTab?.serverId;
 
-  TerminalSession? get activeSession => sessionById(activeSessionId);
+  /// The tab shown in the right pane — a terminal session or a file editor.
+  PaneTab? get activeTab => sessionById(activeSessionId);
 
-  TerminalSession? sessionById(String? id) {
+  /// The terminal session the UI should act on. When the active tab is an
+  /// editor this is the session that owns its file's checkout (falling back
+  /// to the server's most recent terminal), so the Files/Git/Assistant panes
+  /// and command insertion keep the context the file was opened from.
+  TerminalSession? get activeSession {
+    final tab = activeTab;
+    if (tab is TerminalSession) return tab;
+    if (tab is EditorTab) {
+      final owner = ownerSessionFor(tab);
+      if (owner != null) return owner;
+      final terminals = [
+        for (final t in sessionsForServer(tab.serverId))
+          if (t is TerminalSession) t,
+      ];
+      return terminals.isEmpty ? null : terminals.last;
+    }
+    return null;
+  }
+
+  PaneTab? sessionById(String? id) {
     if (id == null) return null;
     for (final s in sessions) {
       if (s.id == id) return s;
@@ -454,24 +534,44 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  /// This server's sessions in tab order (a stable filter of [sessions]).
-  List<TerminalSession> sessionsForServer(String serverId) =>
+  /// The terminal session a file-editing tab belongs to — the owner of its
+  /// checkout. Keyed on [TerminalSession.editSessionId], the durable identity
+  /// a reconnect preserves, so the editor follows its session across
+  /// reconnects (and a dropped session leaves the tab on the placeholder).
+  TerminalSession? ownerSessionFor(EditorTab tab) {
+    for (final s in sessions) {
+      if (s is TerminalSession && s.editSessionId == tab.ownerEditSessionId) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  /// The editor tabs whose file checkout belongs to [session]. They die with
+  /// it: closing a session deletes the checkouts the editors write to.
+  List<EditorTab> editorTabsOwnedBy(TerminalSession session) => [
+    for (final t in sessions)
+      if (t is EditorTab && t.ownerEditSessionId == session.editSessionId) t,
+  ];
+
+  /// This server's tabs in strip order (a stable filter of [sessions]).
+  List<PaneTab> sessionsForServer(String serverId) =>
       sessionsForServerIn(sessions, serverId);
 
-  /// This server's sessions within an arbitrary ordered [list].
+  /// This server's tabs within an arbitrary ordered [list].
   @visibleForTesting
-  static List<TerminalSession> sessionsForServerIn(
-    List<TerminalSession> list,
+  static List<T> sessionsForServerIn<T extends PaneTab>(
+    List<T> list,
     String serverId,
   ) => [
     for (final s in list)
       if (s.serverId == serverId) s,
   ];
 
-  /// Insert index that keeps a server's sessions contiguous: just after that
-  /// server's last existing session, or at the end when it has none.
+  /// Insert index that keeps a server's tabs contiguous: just after that
+  /// server's last existing tab, or at the end when it has none.
   @visibleForTesting
-  static int insertIndexFor(List<TerminalSession> list, String serverId) {
+  static int insertIndexFor<T extends PaneTab>(List<T> list, String serverId) {
     for (var i = list.length - 1; i >= 0; i--) {
       if (list[i].serverId == serverId) return i + 1;
     }
@@ -496,7 +596,7 @@ class AppState extends ChangeNotifier {
     // reachable, and probing them only adds an sshd log line every sweep.
     services.probe.connectedServerIds = () => {
       for (final session in sessions)
-        if (session.isConnected) session.serverId,
+        if (session is TerminalSession && session.isConnected) session.serverId,
     };
     _probeSub = services.probe.statuses.listen((s) {
       statuses = s;
@@ -547,12 +647,13 @@ class AppState extends ChangeNotifier {
     ServerConfig config, {
     Secret? secret,
     IdentityFileBookmark? identityFileBookmark,
-  }) =>
-      _mutate(() => _saveServerNow(
-            config,
-            secret: secret,
-            identityFileBookmark: identityFileBookmark,
-          ));
+  }) => _mutate(
+    () => _saveServerNow(
+      config,
+      secret: secret,
+      identityFileBookmark: identityFileBookmark,
+    ),
+  );
 
   /// [saveServer] without the queue, for callers already holding it.
   Future<void> _saveServerNow(
@@ -784,11 +885,13 @@ class AppState extends ChangeNotifier {
       // than wedging the UI on a server the store no longer has.
       final deletedAt = _deletionStamp(server?.updatedAt);
       try {
-        await services.tombstoneStore.add(EncryptedRecord.tombstone(
-          id: id,
-          updatedAt: deletedAt,
-          deviceId: services.settings.deviceId,
-        ));
+        await services.tombstoneStore.add(
+          EncryptedRecord.tombstone(
+            id: id,
+            updatedAt: deletedAt,
+            deviceId: services.settings.deviceId,
+          ),
+        );
       } catch (error, stackTrace) {
         developer.log(
           'Could not record the deletion tombstone for server $id; it may '
@@ -989,10 +1092,49 @@ class AppState extends ChangeNotifier {
     }
     final last = sessionById(_lastSessionForServer[config.id]) ?? existing.last;
     focusSession(last.id);
-    if (last.status == TerminalStatus.disconnected ||
-        last.status == TerminalStatus.error) {
+    if (last is TerminalSession &&
+        (last.status == TerminalStatus.disconnected ||
+            last.status == TerminalStatus.error)) {
       await reconnect(last.id);
     }
+  }
+
+  /// Open [copy] in a built-in-editor tab beside the owning server's terminal
+  /// tabs. Reopening the same checkout focuses its existing tab; a copy that
+  /// was re-created under a different [ManagedRemoteFile.localPath] replaces
+  /// the stale tab — the checkout it was bound to is already gone.
+  void openEditorTab(ManagedRemoteFile copy) {
+    EditorTab? stale;
+    for (final t in sessions) {
+      if (t is! EditorTab ||
+          t.ownerEditSessionId != copy.editSessionId ||
+          t.remotePath != copy.remotePath) {
+        continue;
+      }
+      if (t.localPath == copy.localPath) {
+        focusSession(t.id);
+        return;
+      }
+      stale = t;
+    }
+    final config = _configFor(copy.serverId);
+    if (config == null) return;
+    if (stale != null) {
+      sessions.remove(stale);
+      _dropLastSessionFor(stale);
+      stale.dispose();
+    }
+    final tab = EditorTab(
+      id: uuidV4(),
+      serverId: copy.serverId,
+      config: config,
+      remotePath: copy.remotePath,
+      localPath: copy.localPath,
+      ownerEditSessionId: copy.editSessionId,
+    );
+    sessions.insert(insertIndexFor(sessions, copy.serverId), tab);
+    _setActive(tab.id);
+    notifyListeners();
   }
 
   /// Open an additional session (tab) for [config], adjacent to that server's
@@ -1109,6 +1251,7 @@ class AppState extends ChangeNotifier {
     final index = sessions.indexWhere((s) => s.id == sessionId);
     if (index < 0) return;
     final old = sessions[index];
+    if (old is! TerminalSession) return;
     final config = _configFor(old.serverId) ?? old.config;
 
     final replacement = TerminalSession(
@@ -1213,8 +1356,9 @@ class AppState extends ChangeNotifier {
       // same queue as deleteSnippet so a save and a delete of one id cannot
       // interleave into "row gone, tombstone gone".
       try {
-        await services.tombstoneStore
-            .remove('$_snippetRecordPrefix${snippet.id}');
+        await services.tombstoneStore.remove(
+          '$_snippetRecordPrefix${snippet.id}',
+        );
       } catch (error, stackTrace) {
         developer.log(
           'Could not clear a pending deletion tombstone for saved snippet '
@@ -1242,11 +1386,13 @@ class AppState extends ChangeNotifier {
       final existing = await services.snippetStore.getSnippet(id);
       final deletedAt = _deletionStamp(existing?.updatedAt);
       try {
-        await services.tombstoneStore.add(EncryptedRecord.tombstone(
-          id: '$_snippetRecordPrefix$id',
-          updatedAt: deletedAt,
-          deviceId: services.settings.deviceId,
-        ));
+        await services.tombstoneStore.add(
+          EncryptedRecord.tombstone(
+            id: '$_snippetRecordPrefix$id',
+            updatedAt: deletedAt,
+            deviceId: services.settings.deviceId,
+          ),
+        );
       } catch (error, stackTrace) {
         developer.log(
           'Could not record the deletion tombstone for snippet $id',
@@ -1403,8 +1549,8 @@ class AppState extends ChangeNotifier {
     // that record over the edit, silently.
     services.settings.assistantUpdatedAt =
         now > services.settings.assistantUpdatedAt
-            ? now
-            : services.settings.assistantUpdatedAt + 1;
+        ? now
+        : services.settings.assistantUpdatedAt + 1;
     await services.saveSettings();
     _scheduleAutoSync();
   }
@@ -1424,6 +1570,7 @@ class AppState extends ChangeNotifier {
       services.settings.assistantUpdatedAt != 0 ||
       !services.settings.syncAssistant ||
       !services.isSyncConfigured;
+
   /// Assistant sync was just switched on here: take whatever the account
   /// already holds, and publish this device's configuration only if it held
   /// nothing.
@@ -1547,8 +1694,7 @@ class AppState extends ChangeNotifier {
     _autoSyncTimer?.cancel();
     _autoSyncTimer = null;
     if (services.settings.autoSync && services.isSyncConfigured) {
-      _autoSyncTimer =
-          Timer.periodic(_autoSyncInterval, (_) => _autoSync());
+      _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => _autoSync());
     }
   }
 
@@ -1684,14 +1830,15 @@ class AppState extends ChangeNotifier {
   }
 
   /// Name a tab explicitly, or clear the name (null or blank) to return it to
-  /// shell-derived naming.
+  /// shell-derived naming. Editor tabs are named by what they edit — a custom
+  /// name would say less than the path does — so this is terminal-only.
   ///
   /// The name is collapsed to one line the same way remote labels are — not
   /// because the user is untrusted, but because a tab chip is one line of
   /// chrome and a pasted newline would break the strip either way.
   void renameSession(String sessionId, String? name) {
     final session = sessionById(sessionId);
-    if (session == null) return;
+    if (session is! TerminalSession) return;
     final cleaned = name == null ? '' : sanitizeRemoteLabel(name);
     // Only the chip repaints: the name lives on the session's own notifier,
     // so renaming a tab does not rebuild the app the way notifyListeners
@@ -1721,7 +1868,10 @@ class AppState extends ChangeNotifier {
   /// Called after every mutation of a session's connection state.
   void _refreshKeepAlive() {
     _keepAlive.refresh(
-      sessions.where((s) => s.connecting || s.session != null).length,
+      sessions
+          .whereType<TerminalSession>()
+          .where((s) => s.connecting || s.session != null)
+          .length,
     );
   }
 
@@ -1734,7 +1884,7 @@ class AppState extends ChangeNotifier {
     if (foreground) {
       services.probe.resume();
       unawaited(_reconcileRetainedLocalCopies());
-      for (final tab in sessions) {
+      for (final tab in sessions.whereType<TerminalSession>()) {
         final files = tab.files;
         if (files != null) unawaited(files.reconcileLocalCopies());
       }
@@ -1747,7 +1897,7 @@ class AppState extends ChangeNotifier {
     final reconciled = await services.managedRemoteFiles.reconcileAll();
     final byId = {for (final copy in reconciled) copy.id: copy};
     var changed = false;
-    for (final tab in sessions) {
+    for (final tab in sessions.whereType<TerminalSession>()) {
       for (final entry in tab.retainedLocalCopies.entries.toList()) {
         final updated = byId[entry.value.id];
         if (updated != null && !identical(updated, entry.value)) {
@@ -1805,7 +1955,7 @@ class AppState extends ChangeNotifier {
   /// (disconnected) and the pane offers a reconnect.
   Future<void> disconnect(String sessionId) async {
     final tab = sessionById(sessionId);
-    if (tab == null) return;
+    if (tab is! TerminalSession) return;
     final files = tab.files;
     if (files != null) {
       tab.retainedLocalCopies.addAll(files.takeLocalCopies());
@@ -1827,7 +1977,7 @@ class AppState extends ChangeNotifier {
     ManagedRemoteFile copy,
   ) async {
     final tab = sessionById(sessionId);
-    if (tab == null ||
+    if (tab is! TerminalSession ||
         tab.retainedLocalCopies[copy.remotePath]?.id != copy.id) {
       return;
     }
@@ -1841,7 +1991,7 @@ class AppState extends ChangeNotifier {
     ManagedRemoteFile copy,
   ) async {
     final tab = sessionById(sessionId);
-    if (tab == null) return;
+    if (tab is! TerminalSession) return;
     final updated = await services.managedRemoteFiles.reconcile(copy.id);
     if (updated == null ||
         tab.retainedLocalCopies[copy.remotePath]?.id != copy.id) {
@@ -1854,19 +2004,33 @@ class AppState extends ChangeNotifier {
   /// Close a single tab and drop it. The active session falls back to the next
   /// tab of the same server, then the previous, then any other server's
   /// most-recent tab, then null (which returns the UI to the server list).
+  ///
+  /// Closing a terminal also closes the editor tabs on its checkouts — the
+  /// teardown deletes the local copies they write to. (The UI asks about
+  /// unsaved editor buffers before calling this; a programmatic close is
+  /// allowed to drop them.)
   Future<void> closeTab(String sessionId) async {
-    final index = sessions.indexWhere((s) => s.id == sessionId);
-    if (index < 0) return;
-    final tab = sessions[index];
-    final wasActive = activeSessionId == tab.id;
-    final siblingsBefore = sessionsForServer(tab.serverId);
-    sessions.removeAt(index);
-    if (_lastSessionForServer[tab.serverId] == tab.id) {
-      _lastSessionForServer.remove(tab.serverId);
+    final tab = sessionById(sessionId);
+    if (tab == null) return;
+    if (tab is TerminalSession) {
+      for (final editor in editorTabsOwnedBy(tab)) {
+        sessions.remove(editor);
+        _dropLastSessionFor(editor);
+        editor.dispose();
+      }
     }
-    await _disposeSession(tab, deleteLocalCopies: true);
+    final siblingsBefore = sessionsForServer(tab.serverId);
+    sessions.remove(tab);
+    _dropLastSessionFor(tab);
+    if (tab is TerminalSession) {
+      await _disposeSession(tab, deleteLocalCopies: true);
+    } else {
+      tab.dispose();
+    }
 
-    if (wasActive) {
+    // The fallback is needed whenever the tab the pane was showing is gone —
+    // the closed tab itself, or an editor cascaded away with its session.
+    if (sessionById(activeSessionId) == null) {
       _setActive(
         fallbackAfterClosing(
           closed: tab,
@@ -1880,14 +2044,21 @@ class AppState extends ChangeNotifier {
     _refreshKeepAlive();
   }
 
+  /// Forget [tab] as its server's most-recent tab, if it still is.
+  void _dropLastSessionFor(PaneTab tab) {
+    if (_lastSessionForServer[tab.serverId] == tab.id) {
+      _lastSessionForServer.remove(tab.serverId);
+    }
+  }
+
   /// Pick the session to focus after [closed] is removed: the next tab of the
   /// same server (else the previous), then any other server's most-recent tab,
   /// then the last remaining session, then null.
   @visibleForTesting
-  static TerminalSession? fallbackAfterClosing({
-    required TerminalSession closed,
-    required List<TerminalSession> siblingsBefore,
-    required List<TerminalSession> remaining,
+  static T? fallbackAfterClosing<T extends PaneTab>({
+    required T closed,
+    required List<T> siblingsBefore,
+    required List<T> remaining,
     required Map<String, String> lastSessionForServer,
   }) {
     final sameServer = sessionsForServerIn(remaining, closed.serverId);
@@ -1964,14 +2135,18 @@ class AppState extends ChangeNotifier {
     services.probe.connectedServerIds = null;
     services.probe.dispose();
     for (final t in sessions) {
-      // Teardown is asynchronous but nothing can await it here: swallow the
-      // failure explicitly rather than leaving an unhandled async error to
-      // surface long after the state object is gone.
-      unawaited(
-        _disposeSession(t).catchError((Object error, StackTrace stack) {
-          debugPrint('Session teardown failed: $error\n$stack');
-        }),
-      );
+      if (t is TerminalSession) {
+        // Teardown is asynchronous but nothing can await it here: swallow the
+        // failure explicitly rather than leaving an unhandled async error to
+        // surface long after the state object is gone.
+        unawaited(
+          _disposeSession(t).catchError((Object error, StackTrace stack) {
+            debugPrint('Session teardown failed: $error\n$stack');
+          }),
+        );
+      } else {
+        t.dispose();
+      }
     }
     // Teardown is in flight and does not read this list; clearing it makes the
     // contract explicit — nothing may reach a session after this point.

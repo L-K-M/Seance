@@ -27,10 +27,8 @@ final RegExp _invisible = RegExp(
 );
 
 /// Make remote-supplied text safe to show in one line of chrome.
-String sanitizeRemoteLabel(String value) => value
-    .replaceAll(_invisible, ' ')
-    .replaceAll(RegExp(r'\s+'), ' ')
-    .trim();
+String sanitizeRemoteLabel(String value) =>
+    value.replaceAll(_invisible, ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
 
 /// Shorten [value] to [maxLength] grapheme clusters, ellipsising the *front*
 /// so the distinguishing tail survives — the useful half of a path, or of a
@@ -104,6 +102,34 @@ String sessionTabLabel({
   final title = terminalTitle == null ? '' : sanitizeRemoteLabel(terminalTitle);
   if (title.isNotEmpty) return shortenLabelHead(title, maxLength);
   return 'Session $ordinal';
+}
+
+/// The label shown on a file-editing tab: the file's basename, made safe for
+/// chrome. An editor is named by what it edits — a custom name would say
+/// less than the path does — so unlike [sessionTabLabel] there is no
+/// user-named variant.
+String editorTabLabel(String remotePath, {int maxLength = 18}) {
+  final base = posixBasename(sanitizeRemoteLabel(remotePath));
+  return shortenLabelHead(
+    base == null || base.isEmpty || base == '/' ? 'File' : base,
+    maxLength,
+  );
+}
+
+/// The tooltip for an editor's tab chip: the full remote path — the chip
+/// truncates it to a basename — the session it belongs to, and whether the
+/// buffer holds unsaved edits.
+String editorTabTooltip({
+  required String remotePath,
+  required String target,
+  bool dirty = false,
+}) {
+  final lines = <String>[
+    sanitizeRemoteLabel(remotePath),
+    target,
+    if (dirty) 'Unsaved changes',
+  ];
+  return lines.join('\n');
 }
 
 /// Suffix duplicate labels with a small stable ordinal (`~ ·1`, `~ ·2`) so
