@@ -209,7 +209,13 @@ void main() {
     // foreground tab's keystrokes would land here.
     await tester.pumpWidget(host(false));
     await tester.pump();
-    expect(field.focusNode!.hasFocus, isFalse);
+    expect(
+      tester
+          .widget<TextField>(find.byType(TextField).first)
+          .focusNode!
+          .hasFocus,
+      isFalse,
+    );
   });
 
   testWidgets('a focus restore queued before deactivation does not fire', (

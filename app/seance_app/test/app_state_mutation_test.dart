@@ -158,7 +158,7 @@ void main() {
       String localPath = 'motd',
       String remotePath = '/etc/motd',
     }) => ManagedRemoteFile(
-      id: 'copy-$localPath',
+      id: 'copy-$localPath-$remotePath',
       serverId: 'a',
       editSessionId: editSessionId,
       remotePath: remotePath,

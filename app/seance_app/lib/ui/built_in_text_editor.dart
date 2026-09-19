@@ -758,8 +758,14 @@ class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     } else if (!widget.isActive && oldWidget.isActive) {
       // This tab went to the background: release focus so keystrokes and
       // the on-screen keyboard follow the tab that is actually showing.
-      _editorFocus.unfocus();
-      _searchFocus.unfocus();
+      // Deferred like the requestFocus above — unfocus notifies listeners
+      // synchronously, and a Focus widget's listener calls setState, which
+      // must not run during this build.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || widget.isActive) return;
+        _editorFocus.unfocus();
+        _searchFocus.unfocus();
+      });
     }
     if (!identical(widget.dirtyNotifier, oldWidget.dirtyNotifier)) {
       // A fresh notifier from the host starts stale — prime it immediately.

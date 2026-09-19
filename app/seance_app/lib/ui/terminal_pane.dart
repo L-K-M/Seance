@@ -118,13 +118,7 @@ class TerminalPane extends StatelessWidget {
     final tab = state.tabById(tabId);
     if (tab == null) return;
     if (tab is EditorTab) {
-      // The editor decides whether its buffer may be dropped — a declined
-      // confirm leaves the tab open, and so does an editor whose state is
-      // unreachable while it is dirty (a clean buffer needs no ask).
-      if (!tab.dirty.value ||
-          (await tab.editorKey.currentState?.confirmDiscard() ?? false)) {
-        await state.closeTab(tabId);
-      }
+      if (await _editorMayClose(context, tab)) await state.closeTab(tabId);
       return;
     }
     if (tab is! TerminalSession) return;
@@ -132,15 +126,7 @@ class TerminalPane extends StatelessWidget {
     // deleted): a declined unsaved-buffer confirm aborts the whole close.
     final session = tab;
     for (final editor in state.editorTabsOwnedBy(session)) {
-      // Clean buffers need no ask; a dirty one whose editor state is
-      // unreachable refuses rather than being dropped silently. The confirm
-      // dialog runs on the editor's own context, so the pane's context is
-      // not needed here.
-      if (!editor.dirty.value) continue;
-      if (await editor.editorKey.currentState?.confirmDiscard() ?? false) {
-        continue;
-      }
-      return;
+      if (!await _editorMayClose(context, editor)) return;
     }
     final localCopyCount =
         (session.files?.localCopies.length ?? 0) +
@@ -174,6 +160,36 @@ class TerminalPane extends StatelessWidget {
       if (close != true) return;
     }
     await state.closeTab(tabId);
+  }
+
+  /// Whether an editor tab's buffer may be dropped. A clean buffer needs no
+  /// ask; a dirty one is asked through the editor's own confirm dialog when
+  /// its state is mounted, or — when the widget is somehow unreachable —
+  /// through a plain dialog on the pane's context, so the close click never
+  /// silently does nothing while unsaved text is at stake.
+  Future<bool> _editorMayClose(BuildContext context, EditorTab tab) async {
+    if (!tab.dirty.value) return true;
+    final confirmed = await tab.editorKey.currentState?.confirmDiscard();
+    if (confirmed != null) return confirmed;
+    if (!context.mounted) return false;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard unsaved changes?'),
+        content: Text('${tab.remotePath} has unsaved changes.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    return discard ?? false;
   }
 
   PreferredSizeWidget _appBar(
@@ -595,7 +611,12 @@ class _ChipShell extends StatelessWidget {
           ? null
           : () => onMenu!(context, _chipCenter(context)),
       child: Tooltip(
-        triggerMode: TooltipTriggerMode.manual,
+        // Manual mode yields the arena to the menu gestures above — but only
+        // when there is a menu to yield to. Without one, long-press must
+        // keep the default trigger or touch users get no tooltip at all.
+        triggerMode: onMenu == null
+            ? TooltipTriggerMode.longPress
+            : TooltipTriggerMode.manual,
         message: tooltip,
         child: InkWell(
           onTap: onTap,
