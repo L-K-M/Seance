@@ -232,6 +232,8 @@ void main() {
             target: 'ops@web-01:22',
           ),
           '/etc/hosts Unsaved changes\nops@web-01:22',
+          reason:
+              'separator ${separator.codeUnits} must collapse to one space',
         );
       }
     });
