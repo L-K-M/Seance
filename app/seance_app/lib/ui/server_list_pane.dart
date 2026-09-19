@@ -285,7 +285,7 @@ class _ServerListPaneState extends State<ServerListPane> {
 
   Widget _tile(BuildContext context, AppState state, ServerConfig server) {
     final reachability = state.statuses[server.id] ?? ProbeStatus.unknown;
-    final tabs = state.sessionsForServer(server.id);
+    final tabs = state.tabsForServer(server.id);
     final terminals = tabs.whereType<TerminalSession>().toList();
     return ServerTile(
       density: state.serverListDensity,
@@ -401,7 +401,7 @@ class _ServerListPaneState extends State<ServerListPane> {
     ServerConfig server,
   ) async {
     final localCopyCount = state
-        .sessionsForServer(server.id)
+        .tabsForServer(server.id)
         .whereType<TerminalSession>()
         .fold<int>(
           0,

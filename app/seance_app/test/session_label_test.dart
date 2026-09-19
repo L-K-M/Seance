@@ -208,6 +208,18 @@ void main() {
         '/etc/hosts\nops@web-01:22\nUnsaved changes',
       );
     });
+
+    test('sanitizes the target line too', () {
+      // The target string is assembled from server config — one hostile
+      // config value must not smuggle extra lines into the tooltip.
+      expect(
+        editorTabTooltip(
+          remotePath: '/etc/hosts',
+          target: 'ops@web-01\nnot a newline',
+        ),
+        '/etc/hosts\nops@web-01 not a newline',
+      );
+    });
   });
 
   group('disambiguateTabLabels', () {

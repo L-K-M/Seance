@@ -153,21 +153,24 @@ void main() {
   );
 
   group('editor tabs', () {
-    ManagedRemoteFile copy(String editSessionId, {String localPath = 'motd'}) =>
-        ManagedRemoteFile(
-          id: 'copy-$localPath',
-          serverId: 'a',
-          editSessionId: editSessionId,
-          remotePath: '/etc/motd',
-          localPath: localPath,
-          remoteSnapshot: const RemoteFileEntry(
-            path: '/etc/motd',
-            name: 'motd',
-            type: RemoteFileType.file,
-            size: 3,
-          ),
-          baselineSha256: 'abc',
-        );
+    ManagedRemoteFile copy(
+      String editSessionId, {
+      String localPath = 'motd',
+      String remotePath = '/etc/motd',
+    }) => ManagedRemoteFile(
+      id: 'copy-$localPath',
+      serverId: 'a',
+      editSessionId: editSessionId,
+      remotePath: remotePath,
+      localPath: localPath,
+      remoteSnapshot: RemoteFileEntry(
+        path: remotePath,
+        name: remotePath.split('/').last,
+        type: RemoteFileType.file,
+        size: 3,
+      ),
+      baselineSha256: 'abc',
+    );
 
     TerminalSession terminal() {
       final engine = XtermTerminalEngine();
@@ -183,13 +186,13 @@ void main() {
 
     test('openEditorTab focuses a tab beside the owner, and dedupes', () {
       final term = terminal();
-      // No teardown for the session itself: it stays in state.sessions, so
+      // No teardown for the session itself: it stays in state.tabs, so
       // the outer tearDown's state.dispose() disposes it exactly once.
-      state.sessions.add(term);
+      state.tabs.add(term);
       state.openEditorTab(copy(term.editSessionId));
 
-      expect(state.sessions.length, 2);
-      final editor = state.sessions[1];
+      expect(state.tabs.length, 2);
+      final editor = state.tabs[1];
       expect(editor, isA<EditorTab>());
       expect(state.activeTab, same(editor));
       // Context panes act on the owning terminal while the editor is shown.
@@ -197,41 +200,68 @@ void main() {
 
       // Reopening the same checkout focuses the existing tab.
       state.openEditorTab(copy(term.editSessionId));
-      expect(state.sessions.length, 2);
+      expect(state.tabs.length, 2);
       expect(state.activeTab, same(editor));
 
       // A checkout recreated under another local path replaces the stale tab.
       state.openEditorTab(copy(term.editSessionId, localPath: 'motd-2'));
-      expect(state.sessions.length, 2);
+      expect(state.tabs.length, 2);
       expect(state.activeTab, isA<EditorTab>());
       expect(state.activeTab, isNot(same(editor)));
     });
 
     test('closing a terminal takes its editor tabs with it', () async {
       final term = terminal();
-      state.sessions.add(term);
+      state.tabs.add(term);
       state.openEditorTab(copy(term.editSessionId));
+      state.openEditorTab(
+        copy(
+          term.editSessionId,
+          localPath: 'other',
+          remotePath: '/etc/other.conf',
+        ),
+      );
       expect(state.activeTab, isA<EditorTab>());
+      expect(state.tabs.length, 3);
 
+      // The iteration must be over a snapshot: closing removes editors from
+      // the list being walked.
       await state.closeTab(term.id);
 
-      expect(state.sessions, isEmpty);
-      expect(state.activeSessionId, isNull);
+      expect(state.tabs, isEmpty);
+      expect(state.activeTabId, isNull);
     });
 
     test(
       'closing an editor tab leaves its terminal and refocuses it',
       () async {
         final term = terminal();
-        state.sessions.add(term);
+        state.tabs.add(term);
         state.openEditorTab(copy(term.editSessionId));
         final editor = state.activeTab!;
 
         await state.closeTab(editor.id);
 
-        expect(state.sessions, [term]);
-        expect(state.activeSessionId, term.id);
+        expect(state.tabs, [term]);
+        expect(state.activeTabId, term.id);
       },
     );
+
+    test('focusing a server returns to its last-used tab, editor included', () {
+      // Selecting a server row restores the tab the user was last on — when
+      // that was an editor, they land back on their file, not on a shell
+      // they had already moved away from.
+      final term = terminal();
+      state.tabs.add(term);
+      state.openEditorTab(copy(term.editSessionId));
+      final editor = state.activeTab!;
+
+      state.focusTab(term.id);
+      expect(state.activeTab, same(term));
+
+      state.focusTab(editor.id);
+      state.focusServer('a');
+      expect(state.activeTab, same(editor));
+    });
   });
 }

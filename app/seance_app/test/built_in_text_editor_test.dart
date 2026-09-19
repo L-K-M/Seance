@@ -190,6 +190,51 @@ void main() {
     expect(dirty.value, isTrue);
   });
 
+  testWidgets('going inactive releases the editor\'s focus', (tester) async {
+    Widget host(bool active) => MaterialApp(
+      home: BuiltInTextEditorScreen(
+        file: file,
+        remotePath: '/etc/config.txt',
+        initialText: 'one\ntwo\n',
+        isActive: active,
+      ),
+    );
+
+    await tester.pumpWidget(host(true));
+    await tester.pump();
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    expect(field.focusNode!.hasFocus, isTrue);
+
+    // The tab slid into the background: its focus goes with it, or the
+    // foreground tab's keystrokes would land here.
+    await tester.pumpWidget(host(false));
+    await tester.pump();
+    expect(field.focusNode!.hasFocus, isFalse);
+  });
+
+  testWidgets('a focus restore queued before deactivation does not fire', (
+    tester,
+  ) async {
+    Widget host(bool active) => MaterialApp(
+      home: BuiltInTextEditorScreen(
+        file: file,
+        remotePath: '/etc/config.txt',
+        initialText: 'one\ntwo\n',
+        isActive: active,
+      ),
+    );
+
+    await tester.pumpWidget(host(false));
+    // Activation queues a post-frame requestFocus; the deactivation that
+    // follows it must still be the last word on who holds focus.
+    await tester.pumpWidget(host(true));
+    await tester.pumpWidget(host(false));
+    await tester.pump();
+
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    expect(field.focusNode!.hasFocus, isFalse);
+  });
+
   Future<void> pressCtrlS(WidgetTester tester) async {
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyS);

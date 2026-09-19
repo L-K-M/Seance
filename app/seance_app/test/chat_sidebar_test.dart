@@ -80,7 +80,7 @@ class _State extends ChangeNotifier implements AppState {
   _Session? activeSession;
   final List<_Session> terminals = [];
   @override
-  TerminalSession? sessionById(String? id) =>
+  TerminalSession? tabById(String? id) =>
       terminals.where((session) => session.id == id).firstOrNull;
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

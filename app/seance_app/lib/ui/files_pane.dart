@@ -76,7 +76,7 @@ class FilesPane extends StatelessWidget {
         // "Session N" numbers the shell sessions — editor tabs between them
         // do not count.
         final terminals = state
-            .sessionsForServer(session.serverId)
+            .tabsForServer(session.serverId)
             .whereType<TerminalSession>()
             .toList();
         final ordinal =
@@ -1838,7 +1838,21 @@ Future<bool> uploadManagedLocalCopy(
   ManagedRemoteFile copy, {
   bool notifySuccess = true,
 }) async {
-  copy = controller.localCopies[copy.remotePath] ?? copy;
+  // Re-resolve the copy — a reconcile may have swapped in a newer snapshot.
+  // When the controller no longer tracks the checkout at all, stop rather
+  // than upload a stale record: the checkout was discarded or reconciled
+  // away, and writing it would resurrect a file the user no longer manages.
+  final tracked = controller.localCopies[copy.remotePath];
+  if (tracked == null) {
+    if (context.mounted) {
+      showTopToastIn(
+        context,
+        message: 'No managed local copy of this file remains.',
+      );
+    }
+    return false;
+  }
+  copy = tracked;
   void showError(Object error) {
     if (context.mounted) {
       showTopToastIn(context, message: error.toString());

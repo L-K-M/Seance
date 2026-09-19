@@ -112,7 +112,10 @@ void main() {
     const name = 'production database migration';
     // The chip truncates it; the tooltip is the only other place it appears,
     // so the full text has to survive here.
-    expect(sessionTabLabel(ordinal: 1, customName: name), isNot(contains('migration')));
+    expect(
+      sessionTabLabel(ordinal: 1, customName: name),
+      isNot(contains('migration')),
+    );
     expect(
       sessionTabTooltip(ordinal: 1, target: 'a@b:22', customName: name),
       contains(name),
@@ -147,7 +150,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},
@@ -202,7 +205,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},
@@ -235,7 +238,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) => focused++,
             onClose: (_) {},
             onNewTab: () {},
@@ -263,7 +266,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},
@@ -296,7 +299,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},

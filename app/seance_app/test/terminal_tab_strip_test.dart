@@ -39,7 +39,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () => newTabCalls++,
@@ -94,7 +94,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [a, b],
-            activeSessionId: a.id,
+            activeTabId: a.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},
@@ -153,7 +153,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [terminal, editor],
-            activeSessionId: editor.id,
+            activeTabId: editor.id,
             onFocus: (id) => focused = id,
             onClose: (id) => closed = id,
             onNewTab: () {},
@@ -199,6 +199,65 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('editor tabs do not consume terminal ordinals', (tester) async {
+    final config = ServerConfig(
+      id: 'server',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'user',
+      authMethod: AuthMethod.password,
+      createdAt: 0,
+      updatedAt: 0,
+    );
+    TerminalSession term(String id) {
+      final engine = XtermTerminalEngine();
+      addTearDown(engine.dispose);
+      final t = TerminalSession(
+        id: id,
+        serverId: config.id,
+        config: config,
+        engine: engine,
+        connecting: false,
+      );
+      addTearDown(t.dispose);
+      return t;
+    }
+
+    final first = term('term-1');
+    final second = term('term-2');
+    final editor = EditorTab(
+      id: 'edit',
+      serverId: config.id,
+      config: config,
+      remotePath: '/etc/motd',
+      localPath: 'motd',
+      ownerEditSessionId: first.editSessionId,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalTabStrip(
+            // Terminal, editor, terminal: the editor sits between them in
+            // the strip but must not shift the second shell's ordinal.
+            tabs: [first, editor, second],
+            activeTabId: second.id,
+            onFocus: (_) {},
+            onClose: (_) {},
+            onNewTab: () {},
+            onGenerateCommand: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Session 1'), findsOneWidget);
+    expect(find.text('Session 2'), findsOneWidget);
+    expect(find.text('Session 3'), findsNothing);
+    expect(find.text('motd'), findsOneWidget);
+  });
+
   testWidgets('the server accent colours the strip\'s rule', (tester) async {
     final config = ServerConfig(
       id: 'server',
@@ -237,7 +296,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},

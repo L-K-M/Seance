@@ -752,8 +752,18 @@ class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
       // The tab was just focused again: hand the buffer its focus back —
       // unless the search field still owns it.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !_searchFocus.hasFocus) _editorFocus.requestFocus();
+        if (!mounted || !widget.isActive) return;
+        if (!_searchFocus.hasFocus) _editorFocus.requestFocus();
       });
+    } else if (!widget.isActive && oldWidget.isActive) {
+      // This tab went to the background: release focus so keystrokes and
+      // the on-screen keyboard follow the tab that is actually showing.
+      _editorFocus.unfocus();
+      _searchFocus.unfocus();
+    }
+    if (!identical(widget.dirtyNotifier, oldWidget.dirtyNotifier)) {
+      // A fresh notifier from the host starts stale — prime it immediately.
+      _syncDirty();
     }
     if (!identical(widget.remoteFiles, oldWidget.remoteFiles)) {
       // The owning session was reconnected (or dropped) under this tab:

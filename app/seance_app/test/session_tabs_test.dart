@@ -67,7 +67,7 @@ void main() {
       list.insert(AppState.insertIndexFor(list, 'B'), session('b1', 'B'));
       list.insert(AppState.insertIndexFor(list, 'A'), session('a2', 'A'));
       expect(list.map((s) => s.id).toList(), ['a1', 'a2', 'b1']);
-      expect(AppState.sessionsForServerIn(list, 'A').map((s) => s.id), [
+      expect(AppState.tabsForServerIn(list, 'A').map((s) => s.id), [
         'a1',
         'a2',
       ]);
@@ -85,7 +85,7 @@ void main() {
         closed: a2,
         siblingsBefore: siblingsBefore,
         remaining: remaining,
-        lastSessionForServer: const {},
+        lastTabForServer: const {},
       );
       expect(pick?.id, 'a3'); // successor at the closed position
     });
@@ -97,7 +97,7 @@ void main() {
         closed: a2,
         siblingsBefore: [a1, a2],
         remaining: [a1], // closed a2 (the last)
-        lastSessionForServer: const {},
+        lastTabForServer: const {},
       );
       expect(pick?.id, 'a1');
     });
@@ -109,7 +109,7 @@ void main() {
         closed: a1,
         siblingsBefore: [a1],
         remaining: [b1], // A has no tabs left
-        lastSessionForServer: {'B': 'b1'},
+        lastTabForServer: {'B': 'b1'},
       );
       expect(pick?.id, 'b1');
     });
@@ -121,7 +121,7 @@ void main() {
         closed: a1,
         siblingsBefore: [a1],
         remaining: [b1],
-        lastSessionForServer: const {}, // no hint
+        lastTabForServer: const {}, // no hint
       );
       expect(pick?.id, 'b1');
     });
@@ -132,7 +132,7 @@ void main() {
         closed: a1,
         siblingsBefore: [a1],
         remaining: const <TerminalSession>[],
-        lastSessionForServer: const {},
+        lastTabForServer: const {},
       );
       expect(pick, isNull);
     });

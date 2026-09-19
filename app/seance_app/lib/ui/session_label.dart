@@ -126,7 +126,7 @@ String editorTabTooltip({
 }) {
   final lines = <String>[
     sanitizeRemoteLabel(remotePath),
-    target,
+    sanitizeRemoteLabel(target),
     if (dirty) 'Unsaved changes',
   ];
   return lines.join('\n');
