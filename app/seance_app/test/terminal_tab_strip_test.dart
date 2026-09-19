@@ -39,7 +39,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () => newTabCalls++,
@@ -94,7 +94,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [a, b],
-            activeSessionId: a.id,
+            activeTabId: a.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},
@@ -112,6 +112,150 @@ void main() {
     await tester.pump();
     expect(find.text('user'), findsOneWidget);
     expect(find.text('log'), findsOneWidget);
+  });
+
+  testWidgets('an editor tab sits beside terminal tabs in the strip', (
+    tester,
+  ) async {
+    final config = ServerConfig(
+      id: 'server',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'user',
+      authMethod: AuthMethod.password,
+      createdAt: 0,
+      updatedAt: 0,
+    );
+    final engine = XtermTerminalEngine();
+    addTearDown(engine.dispose);
+    final terminal = TerminalSession(
+      id: 'term',
+      serverId: config.id,
+      config: config,
+      engine: engine,
+      connecting: false,
+    );
+    addTearDown(terminal.dispose);
+    final editor = EditorTab(
+      id: 'edit',
+      serverId: config.id,
+      config: config,
+      remotePath: '/etc/nginx/nginx.conf',
+      localPath: 'nginx.conf',
+      ownerEditSessionId: terminal.editSessionId,
+    );
+    var closed = '';
+    var focused = '';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalTabStrip(
+            tabs: [terminal, editor],
+            activeTabId: editor.id,
+            onFocus: (id) => focused = id,
+            onClose: (id) => closed = id,
+            onNewTab: () {},
+            onGenerateCommand: () {},
+          ),
+        ),
+      ),
+    );
+
+    // The file's basename labels the tab; the shell keeps its own name.
+    expect(find.text('nginx.conf'), findsOneWidget);
+    expect(find.text('Session 1'), findsOneWidget);
+
+    // The editor chip's close button doubles as the unsaved marker once the
+    // buffer is dirty (the terminal's status dot is also a circle, so the
+    // finders are scoped to the editor's chip).
+    final editorChip = find.ancestor(
+      of: find.text('nginx.conf'),
+      matching: find.byType(InkWell),
+    );
+    expect(
+      find.descendant(of: editorChip, matching: find.byIcon(Icons.close)),
+      findsOneWidget,
+    );
+    editor.dirty.value = true;
+    await tester.pump();
+    expect(
+      find.descendant(of: editorChip, matching: find.byIcon(Icons.circle)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: editorChip, matching: find.byIcon(Icons.close)),
+      findsNothing,
+    );
+
+    // Taps still focus and close by tab id.
+    await tester.tap(find.text('Session 1'));
+    expect(focused, terminal.id);
+    await tester.tap(
+      find.descendant(of: editorChip, matching: find.byType(IconButton)),
+    );
+    expect(closed, editor.id);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('editor tabs do not consume terminal ordinals', (tester) async {
+    final config = ServerConfig(
+      id: 'server',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'user',
+      authMethod: AuthMethod.password,
+      createdAt: 0,
+      updatedAt: 0,
+    );
+    TerminalSession term(String id) {
+      final engine = XtermTerminalEngine();
+      addTearDown(engine.dispose);
+      final t = TerminalSession(
+        id: id,
+        serverId: config.id,
+        config: config,
+        engine: engine,
+        connecting: false,
+      );
+      addTearDown(t.dispose);
+      return t;
+    }
+
+    final first = term('term-1');
+    final second = term('term-2');
+    final editor = EditorTab(
+      id: 'edit',
+      serverId: config.id,
+      config: config,
+      remotePath: '/etc/motd',
+      localPath: 'motd',
+      ownerEditSessionId: first.editSessionId,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalTabStrip(
+            // Terminal, editor, terminal: the editor sits between them in
+            // the strip but must not shift the second shell's ordinal.
+            tabs: [first, editor, second],
+            activeTabId: second.id,
+            onFocus: (_) {},
+            onClose: (_) {},
+            onNewTab: () {},
+            onGenerateCommand: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Session 1'), findsOneWidget);
+    expect(find.text('Session 2'), findsOneWidget);
+    expect(find.text('Session 3'), findsNothing);
+    expect(find.text('motd'), findsOneWidget);
   });
 
   testWidgets('the server accent colours the strip\'s rule', (tester) async {
@@ -152,7 +296,7 @@ void main() {
         home: Scaffold(
           body: TerminalTabStrip(
             tabs: [tab],
-            activeSessionId: tab.id,
+            activeTabId: tab.id,
             onFocus: (_) {},
             onClose: (_) {},
             onNewTab: () {},

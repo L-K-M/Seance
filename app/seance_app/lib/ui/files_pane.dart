@@ -62,16 +62,25 @@ class FilesPane extends StatelessWidget {
         }
         if (!session.isConnected || session.files == null) {
           if (session.retainedLocalCopies.isNotEmpty) {
-            return _RecoveredLocalEdits(session: session, state: state);
+            return _RecoveredLocalEdits(
+              session: session,
+              state: state,
+              popAfterTerminalStage: popAfterTerminalStage,
+            );
           }
           return const _FilesUnavailable(
             icon: Icons.link_off,
             message: 'Reconnect this session to browse remote files.',
           );
         }
-        final sessions = state.sessionsForServer(session.serverId);
+        // "Session N" numbers the shell sessions — editor tabs between them
+        // do not count.
+        final terminals = state
+            .tabsForServer(session.serverId)
+            .whereType<TerminalSession>()
+            .toList();
         final ordinal =
-            sessions.indexWhere((item) => item.id == session.id) + 1;
+            terminals.indexWhere((item) => item.id == session.id) + 1;
         return _RemoteBrowser(
           key: ValueKey(session.id),
           controller: session.files!,
@@ -107,7 +116,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
   final ExternalFileOpener _fileOpener = const ExternalFileOpener();
   final TextEditingController _filter = TextEditingController();
   final Set<String> _promptedDirtyCopies = {};
-  final Set<String> _uploadingCopyIds = {};
+  final Set<String> _uploadingCopyPaths = {};
 
   @override
   void initState() {
@@ -546,24 +555,23 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
     String? editorId,
   }) async {
     try {
-      final file = widget.controller.localFile(copy);
-      final registry = AppScope.of(context).services.settings.editorRegistry;
+      final state = AppScope.of(context);
+      final registry = state.services.settings.editorRegistry;
       final selected =
           editorId ?? registry.effectiveDefaultFor(copy.remotePath);
       if (selected == EditorRegistry.builtInId) {
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => BuiltInTextEditorScreen(
-              file: file,
-              remotePath: copy.remotePath,
-              remoteFiles: widget.controller,
-              onSaved: widget.controller.reconcileLocalCopies,
-              // The editor reports "Saved and uploaded" itself.
-              onUpload: () => _uploadLocalCopy(copy, notifySuccess: false),
-            ),
-          ),
-        );
-      } else if (selected == EditorRegistry.systemDefaultId) {
+        // The built-in editor is a tab beside the terminals, not a route —
+        // the shell and the file stay one tap apart.
+        state.openEditorTab(copy);
+        // On the pushed Files route (the narrow layout) the new tab is
+        // underneath this screen, so get out of its way.
+        if (widget.popAfterTerminalStage && mounted) {
+          Navigator.of(context).pop();
+        }
+        return;
+      }
+      final file = widget.controller.localFile(copy);
+      if (selected == EditorRegistry.systemDefaultId) {
         await _fileOpener.openSystemDefault(file.path);
       } else {
         final editor = registry.byId(selected);
@@ -593,45 +601,21 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
     bool notifySuccess = true,
   }) async {
     copy = widget.controller.localCopies[copy.remotePath] ?? copy;
-    // No setState: _uploadingCopyIds is only read as a guard inside
+    // Keyed on remotePath, not the record's id: a reconcile mid-upload swaps
+    // in a record with a fresh id, and an id-keyed guard would miss the
+    // second call on the swapped record — letting two uploads of the same
+    // file race. No setState: the set is only read as a guard inside
     // _queueDirtyEditPrompt, which runs on controller-driven rebuilds.
-    _uploadingCopyIds.add(copy.id);
+    _uploadingCopyPaths.add(copy.remotePath);
     try {
-      await widget.controller.uploadLocalCopy(copy);
-      if (notifySuccess) {
-        _showMessage('Uploaded ${remoteBasename(copy.remotePath)}');
-      }
-      return true;
-    } on RemoteFileException catch (e) {
-      if (e.kind != RemoteFileErrorKind.conflict) {
-        _showError(e);
-        return false;
-      }
-      if (!mounted) return false;
-      final overwrite = await _confirm(
-        title: 'Remote file changed',
-        message: '${e.message}\n\nOverwrite the newer remote version?',
-        confirmLabel: 'Overwrite',
+      return await uploadManagedLocalCopy(
+        context,
+        widget.controller,
+        copy,
+        notifySuccess: notifySuccess,
       );
-      if (!overwrite) return false;
-      try {
-        await widget.controller.uploadLocalCopy(
-          copy,
-          overwriteRemoteChanges: true,
-        );
-        if (notifySuccess) {
-          _showMessage('Uploaded ${remoteBasename(copy.remotePath)}');
-        }
-        return true;
-      } catch (failure) {
-        _showError(failure);
-        return false;
-      }
-    } catch (e) {
-      _showError(e);
-      return false;
     } finally {
-      _uploadingCopyIds.remove(copy.id);
+      _uploadingCopyPaths.remove(copy.remotePath);
     }
   }
 
@@ -654,7 +638,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       (copy) =>
           copy.dirty &&
           !_promptedDirtyCopies.contains(copy.id) &&
-          !_uploadingCopyIds.contains(copy.id),
+          !_uploadingCopyPaths.contains(copy.remotePath),
     );
     if (dirty.isEmpty) return;
     final copy = dirty.first;
@@ -667,7 +651,7 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
       final current = controller.localCopies[copy.remotePath];
       if (current == null ||
           !current.dirty ||
-          _uploadingCopyIds.contains(current.id)) {
+          _uploadingCopyPaths.contains(current.remotePath)) {
         _promptedDirtyCopies.remove(copy.id);
         return;
       }
@@ -1848,11 +1832,170 @@ class _FilesUnavailable extends StatelessWidget {
   );
 }
 
+/// Upload [copy] through [controller], confirming before it overwrites
+/// remote changes that landed after the checkout. Shared by the browser's
+/// upload buttons and the editor tab's save-and-upload.
+Future<bool> uploadManagedLocalCopy(
+  BuildContext context,
+  RemoteFilesController controller,
+  ManagedRemoteFile copy, {
+  bool notifySuccess = true,
+}) async {
+  // Re-resolve the copy — a reconcile may have swapped in a newer snapshot.
+  // When the controller no longer tracks the checkout at all, stop rather
+  // than upload a stale record: the checkout was discarded or reconciled
+  // away, and writing it would resurrect a file the user no longer manages.
+  final tracked = controller.localCopies[copy.remotePath];
+  if (tracked == null) {
+    if (context.mounted) {
+      showTopToastIn(
+        context,
+        message: 'No managed local copy of this file remains.',
+      );
+    }
+    return false;
+  }
+  copy = tracked;
+  void showError(Object error) {
+    if (context.mounted) {
+      showTopToastIn(context, message: error.toString());
+    }
+  }
+
+  void showSuccess() {
+    if (notifySuccess && context.mounted) {
+      showTopToastIn(
+        context,
+        message: 'Uploaded ${remoteBasename(copy.remotePath)}',
+      );
+    }
+  }
+
+  try {
+    await controller.uploadLocalCopy(copy);
+    showSuccess();
+    return true;
+  } on RemoteFileException catch (e) {
+    if (e.kind != RemoteFileErrorKind.conflict) {
+      showError(e);
+      return false;
+    }
+    if (!context.mounted) return false;
+    final overwrite =
+        await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Remote file changed'),
+            content: Text(
+              '${e.message}\n\nOverwrite the newer remote version?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Overwrite'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!overwrite) return false;
+    try {
+      await controller.uploadLocalCopy(copy, overwriteRemoteChanges: true);
+      showSuccess();
+      return true;
+    } catch (failure) {
+      showError(failure);
+      return false;
+    }
+  } catch (e) {
+    showError(e);
+    return false;
+  }
+}
+
+/// One editor tab's content: the built-in editor wired to whichever session
+/// currently owns the file's checkout. The owner is resolved fresh each
+/// build — a reconnect swaps the session object under the tab, and a dropped
+/// connection turns upload/drift off without touching the local copy.
+class EditorTabView extends StatelessWidget {
+  final EditorTab tab;
+  final AppState state;
+  final bool isActive;
+
+  const EditorTabView({
+    super.key,
+    required this.tab,
+    required this.state,
+    required this.isActive,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final owner = state.ownerSessionFor(tab);
+    final files = owner?.files;
+    return BuiltInTextEditorScreen(
+      key: tab.editorKey,
+      file: state.services.managedRemoteFiles.checkoutFile(tab.localPath),
+      remotePath: tab.remotePath,
+      isActive: isActive,
+      remoteFiles: files,
+      dirtyNotifier: tab.dirty,
+      onSaved: () => _reconcileAfterSave(owner),
+      onUpload: files == null
+          ? null
+          : () async {
+              final copy = files.localCopies[tab.remotePath];
+              if (copy == null) {
+                showTopToastIn(
+                  context,
+                  message: 'No managed local copy of this file remains.',
+                );
+                return false;
+              }
+              // The editor reports "Saved and uploaded" itself.
+              return uploadManagedLocalCopy(
+                context,
+                files,
+                copy,
+                notifySuccess: false,
+              );
+            },
+    );
+  }
+
+  /// After a save: refresh the owning controller's copy bookkeeping — or the
+  /// retained-copy map when the session is offline.
+  Future<void> _reconcileAfterSave(TerminalSession? owner) async {
+    final files = owner?.files;
+    if (files != null) {
+      await files.reconcileLocalCopies();
+      return;
+    }
+    if (owner == null) return;
+    final copy = owner.retainedLocalCopies[tab.remotePath];
+    if (copy != null) {
+      await state.reconcileRetainedLocalCopy(owner.id, copy);
+    }
+  }
+}
+
 class _RecoveredLocalEdits extends StatelessWidget {
   final TerminalSession session;
   final AppState state;
 
-  const _RecoveredLocalEdits({required this.session, required this.state});
+  /// True when this pane lives on a pushed route (the narrow layout's
+  /// [FilesScreen]): opening an editor tab pops it out of the way.
+  final bool popAfterTerminalStage;
+
+  const _RecoveredLocalEdits({
+    required this.session,
+    required this.state,
+    this.popAfterTerminalStage = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1947,19 +2090,23 @@ class _RecoveredLocalEdits extends StatelessWidget {
     ManagedRemoteFile copy,
     String editorId,
   ) async {
-    final file = state.services.managedRemoteFiles.checkoutFile(copy.localPath);
     try {
       if (editorId == EditorRegistry.builtInId) {
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => BuiltInTextEditorScreen(
-              file: file,
-              remotePath: copy.remotePath,
-              onSaved: () => state.reconcileRetainedLocalCopy(session.id, copy),
-            ),
-          ),
-        );
-      } else if (editorId == EditorRegistry.systemDefaultId) {
+        // A tab beside the terminals, like the live browser's open — the
+        // checkout keeps the placeholder session's edit identity, so the tab
+        // lands on it.
+        state.openEditorTab(copy);
+        // On the pushed Files route (the narrow layout) the new tab is
+        // underneath this screen, so get out of its way.
+        if (popAfterTerminalStage && context.mounted) {
+          Navigator.of(context).pop();
+        }
+        return;
+      }
+      final file = state.services.managedRemoteFiles.checkoutFile(
+        copy.localPath,
+      );
+      if (editorId == EditorRegistry.systemDefaultId) {
         await const ExternalFileOpener().openSystemDefault(file.path);
       } else {
         final editor = state.services.settings.editorRegistry.byId(editorId);

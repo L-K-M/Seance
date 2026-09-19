@@ -27,15 +27,17 @@ import 'top_toast.dart';
 /// terminal to reflow above the soft keyboard; desktops use a hardware keyboard.
 final bool _isTouchPlatform = Platform.isAndroid || Platform.isIOS;
 
-/// Right pane / second screen: the active server's terminal.
+/// Right pane / second screen: the active server's terminal and editor tabs.
 ///
-/// A server can have several sessions, shown as a tab strip at the top of the
-/// pane. Tabs are one level *below* the server list: the strip only ever shows
-/// the active server's sessions, so adjacent tabs are always the same server.
+/// A server can have several tabs, shown as a tab strip at the top of the
+/// pane — terminal sessions and built-in text editors side by side. Tabs are
+/// one level *below* the server list: the strip only ever shows the active
+/// server's tabs, so adjacent tabs are always the same server.
 ///
-/// Every open session stays mounted in an [IndexedStack] so switching tabs (or
+/// Every open tab stays mounted in an [IndexedStack] so switching tabs (or
 /// servers) is instant — the previously-rendered terminal is shown immediately
-/// instead of being rebuilt (which flashed a blank pane for a few seconds).
+/// instead of being rebuilt (which flashed a blank pane for a few seconds),
+/// and an editor keeps its unsaved buffer, caret and scroll position.
 ///
 /// In the wide layout the server name and disconnect controls live in the
 /// sidebar, so the app bar is dropped ([showAppBar] false). The narrow layout
@@ -58,9 +60,9 @@ class TerminalPane extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
-        final active = state.activeSession;
+        final active = state.activeTab;
         final showKeyRow =
-            _isTouchPlatform && active != null && active.isConnected;
+            _isTouchPlatform && active is TerminalSession && active.isConnected;
         // The stored config, not the session's connect-time snapshot: recolour
         // a server while you are on it and the strip should follow.
         final server = active == null
@@ -80,9 +82,9 @@ class TerminalPane extends StatelessWidget {
             children: [
               if (active != null)
                 TerminalTabStrip(
-                  tabs: state.sessionsForServer(active.serverId),
-                  activeSessionId: state.activeSessionId,
-                  onFocus: state.focusSession,
+                  tabs: state.tabsForServer(active.serverId),
+                  activeTabId: state.activeTabId,
+                  onFocus: state.focusTab,
                   onClose: (id) => _closeTab(context, state, id),
                   onNewTab: () => state.newTab(active.config),
                   onGenerateCommand: () => openCommandGenerator(state),
@@ -96,8 +98,11 @@ class TerminalPane extends StatelessWidget {
                       : serverAccent(context, ServerTint.of(server))?.line,
                 ),
               Expanded(child: _body(state)),
-              if (active != null) SessionStatusBar(session: active),
-              if (showKeyRow) TerminalKeyboardBar(engine: active.engine),
+              // The editor writes its own status row; this one is the
+              // terminal's (connection state, exit status, cwd).
+              if (active is TerminalSession) SessionStatusBar(session: active),
+              if (active is TerminalSession && showKeyRow)
+                TerminalKeyboardBar(engine: active.engine),
             ],
           ),
         );
@@ -108,14 +113,28 @@ class TerminalPane extends StatelessWidget {
   Future<void> _closeTab(
     BuildContext context,
     AppState state,
-    String sessionId,
+    String tabId,
   ) async {
-    final session = state.sessionById(sessionId);
-    if (session == null) return;
+    final tab = state.tabById(tabId);
+    if (tab == null) return;
+    if (tab is EditorTab) {
+      if (await _editorMayClose(context, tab)) await state.closeTab(tabId);
+      return;
+    }
+    if (tab is! TerminalSession) return;
+    // Its editor tabs die with the session (the checkouts they write to are
+    // deleted): a declined unsaved-buffer confirm aborts the whole close.
+    final session = tab;
+    for (final editor in state.editorTabsOwnedBy(session)) {
+      if (!await _editorMayClose(context, editor)) return;
+    }
     final localCopyCount =
         (session.files?.localCopies.length ?? 0) +
         session.retainedLocalCopies.length;
     if (localCopyCount > 0) {
+      // The guard lives here rather than above: a session with no local
+      // copies needs no dialog and no context, so it still closes.
+      if (!context.mounted) return;
       final close = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -140,7 +159,39 @@ class TerminalPane extends StatelessWidget {
       );
       if (close != true) return;
     }
-    await state.closeTab(sessionId);
+    await state.closeTab(tabId);
+  }
+
+  /// Whether an editor tab's buffer may be dropped. A clean buffer needs no
+  /// ask; a dirty one is asked through the editor's own confirm dialog when
+  /// its state is mounted, or — when the widget is somehow unreachable —
+  /// through a plain dialog on the pane's context, so the close click never
+  /// silently does nothing while unsaved text is at stake.
+  Future<bool> _editorMayClose(BuildContext context, EditorTab tab) async {
+    if (!tab.dirty.value) return true;
+    final confirmed = await tab.editorKey.currentState?.confirmDiscard();
+    if (confirmed != null) return confirmed;
+    if (!context.mounted) return false;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard unsaved changes?'),
+        content: Text(
+          '${sanitizeRemoteLabel(tab.remotePath)} has unsaved changes.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    return discard ?? false;
   }
 
   PreferredSizeWidget _appBar(
@@ -148,8 +199,11 @@ class TerminalPane extends StatelessWidget {
     AppState state,
     ServerConfig? server,
   ) {
-    final active = state.activeSession;
-    final status = active?.status;
+    final active = state.activeTab;
+    // For an editor tab this is the session that owns its checkout, so the
+    // Files button still opens the right tree.
+    final session = state.activeSession;
+    final status = active is TerminalSession ? active.status : null;
     return AppBar(
       leading: onBack != null
           ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: onBack)
@@ -182,12 +236,12 @@ class TerminalPane extends StatelessWidget {
         ],
       ),
       actions: [
-        if (active != null)
+        if (session != null)
           IconButton(
             tooltip: 'Remote files',
             icon: const Icon(Icons.folder_outlined),
             onPressed:
-                active.isConnected || active.retainedLocalCopies.isNotEmpty
+                session.isConnected || session.retainedLocalCopies.isNotEmpty
                 ? () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => const FilesScreen(),
@@ -221,35 +275,49 @@ class TerminalPane extends StatelessWidget {
   }
 
   Widget _body(AppState state) {
-    final entries = state.sessions;
+    final entries = state.tabs;
     if (entries.isEmpty) return const _NoSession();
-    final index = entries.indexWhere((t) => t.id == state.activeSessionId);
+    final index = entries.indexWhere((t) => t.id == state.activeTabId);
     if (index < 0) return const _NoSession();
     return IndexedStack(
       index: index,
       sizing: StackFit.expand,
       children: [
         for (var i = 0; i < entries.length; i++)
-          _SessionView(
-            // Keyed by session id (not server id): a reconnect swaps in a new
-            // session with a new id, so a fresh _SessionView mounts and binds
-            // its controller in initState — no didUpdateWidget rebind needed.
-            key: ValueKey(entries[i].id),
-            tab: entries[i],
-            state: state,
-            isActive: i == index,
-          ),
+          _tabChild(entries[i], state, isActive: i == index),
       ],
     );
   }
+
+  /// One entry's content in the stack. Keyed by tab id (not server id): a
+  /// reconnect swaps in a new session with a new id, so a fresh _SessionView
+  /// mounts and binds its controller in initState — no didUpdateWidget
+  /// rebind needed. The editor equivalent holds its key on [EditorTab] so the
+  /// strip's close button can ask about unsaved changes.
+  Widget _tabChild(PaneTab tab, AppState state, {required bool isActive}) =>
+      switch (tab) {
+        TerminalSession() => _SessionView(
+          key: ValueKey(tab.id),
+          tab: tab,
+          state: state,
+          isActive: isActive,
+        ),
+        EditorTab() => EditorTabView(
+          key: ValueKey(tab.id),
+          tab: tab,
+          state: state,
+          isActive: isActive,
+        ),
+      };
 }
 
-/// The active server's tab strip, including actions to open another session and
-/// generate a command for the current one. It remains visible for a single
-/// session so those actions are always reachable.
+/// The active server's tab strip — terminal sessions and file editors side by
+/// side — including actions to open another session and generate a command
+/// for the current one. It remains visible for a single session so those
+/// actions are always reachable.
 class TerminalTabStrip extends StatelessWidget {
-  final List<TerminalSession> tabs;
-  final String? activeSessionId;
+  final List<PaneTab> tabs;
+  final String? activeTabId;
   final ValueChanged<String> onFocus;
   final ValueChanged<String> onClose;
   final VoidCallback onNewTab;
@@ -266,7 +334,7 @@ class TerminalTabStrip extends StatelessWidget {
   const TerminalTabStrip({
     super.key,
     required this.tabs,
-    required this.activeSessionId,
+    required this.activeTabId,
     required this.onFocus,
     required this.onClose,
     required this.onNewTab,
@@ -303,36 +371,63 @@ class TerminalTabStrip extends StatelessWidget {
               // repaints the rest of the app.
               child: ListenableBuilder(
                 listenable: Listenable.merge([
-                  for (final tab in tabs) ...[tab.metadata, tab.customName],
+                  for (final tab in tabs)
+                    if (tab is TerminalSession) ...[
+                      tab.metadata,
+                      tab.customName,
+                    ] else if (tab is EditorTab)
+                      tab.dirty,
                 ]),
                 builder: (context, _) {
+                  // Editor tabs do not count for a terminal's "Session N"
+                  // fallback: the ordinal numbers the shell sessions. One
+                  // map keyed on the tab feeds both the label pass and the
+                  // chip, so the two can never disagree.
+                  final ordinals = <TerminalSession, int>{};
+                  for (final tab in tabs) {
+                    if (tab is TerminalSession) {
+                      ordinals[tab] = ordinals.length + 1;
+                    }
+                  }
                   final labels = disambiguateTabLabels([
-                    for (var i = 0; i < tabs.length; i++)
-                      sessionTabLabel(
-                        // 1-based ordinal within the server, used only as the
-                        // fallback name when the shell reports nothing.
-                        ordinal: i + 1,
-                        customName: tabs[i].customName.value,
-                        workingDirectory:
-                            tabs[i].metadata.value.workingDirectory,
-                        terminalTitle: tabs[i].metadata.value.terminalTitle,
-                        runningCommand: tabs[i].metadata.value.runningCommand,
-                      ),
+                    for (final tab in tabs)
+                      switch (tab) {
+                        TerminalSession() => sessionTabLabel(
+                          // 1-based ordinal within the server, used only as
+                          // the fallback name when the shell reports nothing.
+                          ordinal: ordinals[tab]!,
+                          customName: tab.customName.value,
+                          workingDirectory: tab.metadata.value.workingDirectory,
+                          terminalTitle: tab.metadata.value.terminalTitle,
+                          runningCommand: tab.metadata.value.runningCommand,
+                        ),
+                        EditorTab() => editorTabLabel(tab.remotePath),
+                      },
                   ]);
+                  Widget chip(PaneTab tab, String label) => switch (tab) {
+                    TerminalSession() => _TabChip(
+                      ordinal: ordinals[tab]!,
+                      label: label,
+                      session: tab,
+                      selected: tab.id == activeTabId,
+                      onTap: () => onFocus(tab.id),
+                      onClose: () => onClose(tab.id),
+                      onRename: onRename == null
+                          ? null
+                          : () => _rename(context, tab),
+                    ),
+                    EditorTab() => _EditorTabChip(
+                      tab: tab,
+                      label: label,
+                      selected: tab.id == activeTabId,
+                      onTap: () => onFocus(tab.id),
+                      onClose: () => onClose(tab.id),
+                    ),
+                  };
                   return Row(
                     children: [
                       for (var i = 0; i < tabs.length; i++)
-                        _TabChip(
-                          ordinal: i + 1,
-                          label: labels[i],
-                          session: tabs[i],
-                          selected: tabs[i].id == activeSessionId,
-                          onTap: () => onFocus(tabs[i].id),
-                          onClose: () => onClose(tabs[i].id),
-                          onRename: onRename == null
-                              ? null
-                              : () => _rename(context, tabs[i]),
-                        ),
+                        chip(tabs[i], labels[i]),
                     ],
                   );
                 },
@@ -406,12 +501,12 @@ class _RenameTabDialog extends StatefulWidget {
 class _RenameTabDialogState extends State<_RenameTabDialog> {
   // `late` matters: the initializer reads `widget`, which the framework only
   // wires up after construction, so this must not be evaluated eagerly.
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.currentName ?? '',
-  )..selection = TextSelection(
-    baseOffset: 0,
-    extentOffset: (widget.currentName ?? '').length,
-  );
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.currentName ?? '')
+        ..selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: (widget.currentName ?? '').length,
+        );
 
   @override
   void dispose() {
@@ -454,6 +549,126 @@ class _RenameTabDialogState extends State<_RenameTabDialog> {
   }
 }
 
+/// The visual shell both tab kinds share: a 38 px row with the selected
+/// underline, the label, and a per-kind leading indicator and trailing
+/// button.
+///
+/// Middle-click closes, matching browser/terminal tab conventions, and the
+/// context menu — right-click on a desktop, long-press on touch — carries the
+/// tooltip's content, since on touch there is no hover to show it any other
+/// way. The gestures sit on the shell rather than on tap/long-press:
+///
+///  * `onLongPress` never fired: [Tooltip] registers its own long-press
+///    recognizer and wins the arena, so the tip appeared and the menu did
+///    not.
+///  * `onDoubleTap` worked, but registering it made the InkWell's `onTap`
+///    wait out the double-tap timeout before resolving — a ~300 ms delay
+///    on *every tab switch* to pay for a rare action.
+///
+/// The tooltip uses manual trigger mode so its recognizer leaves the arena
+/// to the menu gestures; hover is unaffected — it is handled separately from
+/// the trigger mode — so a desktop still gets the tip by pointing at the
+/// tab.
+class _ChipShell extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final String tooltip;
+  final Widget leading;
+  final Widget trailing;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+
+  /// Show the tab's context menu at the given global position; null leaves
+  /// the menu gestures unbound.
+  final void Function(BuildContext context, Offset globalPosition)? onMenu;
+
+  const _ChipShell({
+    required this.label,
+    required this.selected,
+    required this.tooltip,
+    required this.leading,
+    required this.trailing,
+    required this.onTap,
+    required this.onClose,
+    this.onMenu,
+  });
+
+  /// Where to anchor a menu opened by long-press, which — unlike a
+  /// right-click — carries no position of its own.
+  Offset _chipCenter(BuildContext context) {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return Offset.zero;
+    return box.localToGlobal(box.size.center(Offset.zero));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTertiaryTapUp: (_) => onClose(),
+      onSecondaryTapUp: onMenu == null
+          ? null
+          : (details) => onMenu!(context, details.globalPosition),
+      onLongPress: onMenu == null
+          ? null
+          : () => onMenu!(context, _chipCenter(context)),
+      child: Tooltip(
+        // Manual mode yields the arena to the menu gestures above — but only
+        // when there is a menu to yield to. Without one, long-press must
+        // keep the default trigger or touch users get no tooltip at all.
+        triggerMode: onMenu == null
+            ? TooltipTriggerMode.longPress
+            : TooltipTriggerMode.manual,
+        message: tooltip,
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            height: 38,
+            padding: const EdgeInsets.only(left: 12, right: 4),
+            decoration: BoxDecoration(
+              color: selected ? scheme.surface : Colors.transparent,
+              border: Border(
+                bottom: BorderSide(
+                  color: selected ? scheme.primary : Colors.transparent,
+                  width: 2,
+                ),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                leading,
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                  ),
+                ),
+                const SizedBox(width: 2),
+                trailing,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The strip's close affordance, shared so terminal and editor tabs can only
+/// differ in the icon it shows (the editor swaps in a dirty dot).
+Widget _tabCloseButton({required Widget icon, required VoidCallback onClose}) =>
+    IconButton(
+      tooltip: 'Close tab',
+      iconSize: 15,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+      icon: icon,
+      onPressed: onClose,
+    );
+
 /// One tab in the strip. Its [label] is computed by the strip across all
 /// same-server tabs (the disambiguating suffix depends on its siblings), so
 /// the chip itself is display-only.
@@ -477,14 +692,6 @@ class _TabChip extends StatelessWidget {
     required this.onClose,
     this.onRename,
   });
-
-  /// Where to anchor a menu opened by long-press, which — unlike a right-click
-  /// — carries no position of its own.
-  Offset _chipCenter(BuildContext context) {
-    final box = context.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return Offset.zero;
-    return box.localToGlobal(box.size.center(Offset.zero));
-  }
 
   Future<void> _showMenu(BuildContext context, Offset globalPosition) async {
     // Positioning needs the overlay's box; give up rather than crash if the
@@ -537,91 +744,114 @@ class _TabChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final config = session.config;
     final metadata = session.metadata.value;
-    // Middle-click closes, matching browser/terminal tab conventions.
-    //
-    // Rename is reached through a context menu — right-click on a desktop,
-    // long-press on touch — rather than through a tab gesture directly.
-    // Both alternatives were tried and measured:
-    //
-    //  * `onLongPress` never fired: [Tooltip] registers its own long-press
-    //    recognizer and wins the arena, so the tip appeared and rename did
-    //    not.
-    //  * `onDoubleTap` worked, but registering it made the InkWell's `onTap`
-    //    wait out the double-tap timeout before resolving — a ~300 ms delay
-    //    on *every tab switch* to pay for a rare action.
-    //
-    // A menu also gives the action a name, which no bare gesture does.
-    return GestureDetector(
-      onTertiaryTapUp: (_) => onClose(),
-      onSecondaryTapUp: onRename == null
-          ? null
-          : (details) => _showMenu(context, details.globalPosition),
-      onLongPress: onRename == null
-          ? null
-          : () => _showMenu(context, _chipCenter(context)),
-      child: Tooltip(
-          // No gesture trigger, so the long-press above reaches this widget.
-          // Hover is unaffected — it is handled separately from the trigger
-          // mode — so a desktop still gets the tip by pointing at the tab.
-          // Touch keeps the same information: the menu opened by long-press
-          // carries it as the header.
-          triggerMode: TooltipTriggerMode.manual,
-          message: sessionTabTooltip(
-            ordinal: ordinal,
-            target:
-                '${config.username}@${config.host}:${config.port}',
-            customName: session.customName.value,
-            workingDirectory: metadata.workingDirectory,
-            terminalTitle: metadata.terminalTitle,
-            runningCommand: metadata.runningCommand,
-          ),
-          child: InkWell(
-            onTap: onTap,
-            child: Container(
-              height: 38,
-              padding: const EdgeInsets.only(left: 12, right: 4),
-              decoration: BoxDecoration(
-                color: selected ? scheme.surface : Colors.transparent,
-                border: Border(
-                  bottom: BorderSide(
-                    color: selected ? scheme.primary : Colors.transparent,
-                    width: 2,
-                  ),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _TabStatusDot(status: session.status),
-                  const SizedBox(width: 6),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontWeight: selected
-                          ? FontWeight.w600
-                          : FontWeight.normal,
-                    ),
-                  ),
-                  const SizedBox(width: 2),
-                  IconButton(
-                    tooltip: 'Close tab',
-                    iconSize: 15,
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 28,
-                      minHeight: 28,
-                    ),
-                    icon: const Icon(Icons.close),
-                    onPressed: onClose,
-                  ),
-                ],
-              ),
+    return _ChipShell(
+      label: label,
+      selected: selected,
+      tooltip: sessionTabTooltip(
+        ordinal: ordinal,
+        target: '${config.username}@${config.host}:${config.port}',
+        customName: session.customName.value,
+        workingDirectory: metadata.workingDirectory,
+        terminalTitle: metadata.terminalTitle,
+        runningCommand: metadata.runningCommand,
+      ),
+      onTap: onTap,
+      onClose: onClose,
+      onMenu: onRename == null ? null : _showMenu,
+      leading: _TabStatusDot(status: session.status),
+      trailing: _tabCloseButton(
+        icon: const Icon(Icons.close),
+        onClose: onClose,
+      ),
+    );
+  }
+}
+
+/// One file-editing tab in the strip: a document icon, the file's basename,
+/// and a close button that doubles as the unsaved-changes marker — a filled
+/// dot while the buffer is dirty (the macOS convention). Like [_TabChip],
+/// middle-click closes and the context menu carries the tooltip's content.
+/// Editors are named by their path, so there is no rename action.
+class _EditorTabChip extends StatelessWidget {
+  final EditorTab tab;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+
+  const _EditorTabChip({
+    required this.tab,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  Future<void> _showMenu(BuildContext context, Offset globalPosition) async {
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) return;
+    final config = tab.config;
+    final choice = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        overlay.size.width - globalPosition.dx,
+        overlay.size.height - globalPosition.dy,
+      ),
+      items: [
+        // The tooltip's content, as a menu header: on touch there is no hover
+        // to show it any other way, and this is the gesture that used to.
+        PopupMenuItem(
+          enabled: false,
+          height: 0,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: Text(
+            editorTabTooltip(
+              remotePath: tab.remotePath,
+              target: '${config.username}@${config.host}:${config.port}',
+              dirty: tab.dirty.value,
             ),
+            style: Theme.of(context).textTheme.bodySmall,
           ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'close', child: Text('Close tab')),
+      ],
+    );
+    if (choice == 'close') onClose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final config = tab.config;
+    final dirty = tab.dirty.value;
+    return _ChipShell(
+      label: label,
+      selected: selected,
+      tooltip: editorTabTooltip(
+        remotePath: tab.remotePath,
+        target: '${config.username}@${config.host}:${config.port}',
+        dirty: dirty,
+      ),
+      onTap: onTap,
+      onClose: onClose,
+      onMenu: _showMenu,
+      leading: Icon(
+        Icons.edit_document,
+        size: 13,
+        color: dirty ? scheme.primary : scheme.onSurfaceVariant,
+      ),
+      // The dot in place of the cross says "unsaved" and still closes — the
+      // confirm dialog is what follows.
+      trailing: _tabCloseButton(
+        icon: dirty
+            ? const Icon(Icons.circle, size: 9)
+            : const Icon(Icons.close),
+        onClose: onClose,
       ),
     );
   }
@@ -697,21 +927,28 @@ class SessionStatusBar extends StatelessWidget {
           if (cwd == null) return identity;
 
           // Cap long targets; let cwd reclaim unused space from short ones.
-          return LayoutBuilder(builder: (context, constraints) {
-            if (constraints.maxWidth <= _locationGap) return identity;
-            final targetLimit =
-                (constraints.maxWidth - _locationGap) * _maximumTargetShare;
-            return Row(children: [
-              ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: targetLimit),
-                child: identity,
-              ),
-              const SizedBox(width: _locationGap),
-              Expanded(
-                child: MiddleEllipsisText(sanitizeRemoteLabel(cwd), style: style),
-              ),
-            ]);
-          });
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth <= _locationGap) return identity;
+              final targetLimit =
+                  (constraints.maxWidth - _locationGap) * _maximumTargetShare;
+              return Row(
+                children: [
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: targetLimit),
+                    child: identity,
+                  ),
+                  const SizedBox(width: _locationGap),
+                  Expanded(
+                    child: MiddleEllipsisText(
+                      sanitizeRemoteLabel(cwd),
+                      style: style,
+                    ),
+                  ),
+                ],
+              );
+            },
+          );
         },
       );
 }
@@ -1060,8 +1297,7 @@ class _ConnectionLogView extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: session.logNotifier,
-      builder: (context, _) =>
-          ConnectionLogView(text: session.log.toString()),
+      builder: (context, _) => ConnectionLogView(text: session.log.toString()),
     );
   }
 }

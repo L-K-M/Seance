@@ -6,6 +6,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/app_state.dart';
 import 'package:seance_app/services/app_services.dart';
+import 'package:seance_app/services/managed_remote_file.dart';
+import 'package:seance_app/services/xterm_engine.dart';
 import 'package:seance_core/seance_core.dart';
 
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
@@ -37,47 +39,46 @@ void main() {
   });
 
   ServerConfig server(String id) => ServerConfig(
-        id: id,
-        label: id,
-        host: '$id.example.com',
-        username: 'deploy',
-        createdAt: 1,
-        updatedAt: 1,
+    id: id,
+    label: id,
+    host: '$id.example.com',
+    username: 'deploy',
+    createdAt: 1,
+    updatedAt: 1,
+  );
+
+  test(
+    'server saves advance credential versions only for credential edits',
+    () async {
+      const secret = Secret(
+        id: 'credential',
+        kind: SecretKind.password,
+        value: 'original-password',
       );
+      final config = server('a').copyWith(secretRef: secret.id, updatedAt: 100);
+      await state.saveServer(config, secret: secret);
+      expect((await services.vault.getSecret(secret.id))!.updatedAt, 100);
 
-  test('server saves advance credential versions only for credential edits',
-      () async {
-    const secret = Secret(
-      id: 'credential',
-      kind: SecretKind.password,
-      value: 'original-password',
-    );
-    final config = server('a').copyWith(
-      secretRef: secret.id,
-      updatedAt: 100,
-    );
-    await state.saveServer(config, secret: secret);
-    expect((await services.vault.getSecret(secret.id))!.updatedAt, 100);
+      // The editor supplies credential material on an ordinary server rename
+      // too. That save must not make an offline password look newly edited.
+      await state.saveServer(
+        config.copyWith(label: 'renamed', updatedAt: 200),
+        secret: secret,
+      );
+      expect((await services.vault.getSecret(secret.id))!.updatedAt, 100);
 
-    // The editor supplies credential material on an ordinary server rename
-    // too. That save must not make an offline password look newly edited.
-    await state.saveServer(
-      config.copyWith(label: 'renamed', updatedAt: 200),
-      secret: secret,
-    );
-    expect((await services.vault.getSecret(secret.id))!.updatedAt, 100);
-
-    // A clock moving backwards must not hide a real credential change.
-    await state.saveServer(
-      config.copyWith(updatedAt: 90),
-      secret: secret.copyWith(value: 'rotated-password'),
-    );
-    final reopened = await AppServices.initialize();
-    addTearDown(() => reopened.probe.dispose());
-    final saved = (await reopened.vault.getSecret(secret.id))!;
-    expect(saved.value, 'rotated-password');
-    expect(saved.updatedAt, 101);
-  });
+      // A clock moving backwards must not hide a real credential change.
+      await state.saveServer(
+        config.copyWith(updatedAt: 90),
+        secret: secret.copyWith(value: 'rotated-password'),
+      );
+      final reopened = await AppServices.initialize();
+      addTearDown(() => reopened.probe.dispose());
+      final saved = (await reopened.vault.getSecret(secret.id))!;
+      expect(saved.value, 'rotated-password');
+      expect(saved.updatedAt, 101);
+    },
+  );
 
   test('a queued call from inside a running action is refused', () async {
     // The deadlock is an action awaiting a mutation queued behind itself,
@@ -137,15 +138,130 @@ void main() {
     expect(state.servers.map((s) => s.id), containsAll(['a', 'b']));
   });
 
-  test('two callers arriving while an action is suspended are serialized',
+  test(
+    'two callers arriving while an action is suspended are serialized',
+    () async {
+      // The normal case the queue exists for, which a plain busy flag would
+      // have read as re-entry.
+      await Future.wait([
+        state.saveServer(server('a')),
+        state.saveServer(server('b')),
+        state.saveServer(server('c')),
+      ]);
+      expect(state.servers.map((s) => s.id).toSet(), {'a', 'b', 'c'});
+    },
+  );
+
+  group('editor tabs', () {
+    ManagedRemoteFile copy(
+      String editSessionId, {
+      String localPath = 'motd',
+      String remotePath = '/etc/motd',
+    }) => ManagedRemoteFile(
+      id: 'copy-$localPath-$remotePath',
+      serverId: 'a',
+      editSessionId: editSessionId,
+      remotePath: remotePath,
+      localPath: localPath,
+      remoteSnapshot: RemoteFileEntry(
+        path: remotePath,
+        name: remotePath.split('/').last,
+        type: RemoteFileType.file,
+        size: 3,
+      ),
+      baselineSha256: 'abc',
+    );
+
+    TerminalSession terminal() {
+      final engine = XtermTerminalEngine();
+      addTearDown(engine.dispose);
+      return TerminalSession(
+        id: 'term',
+        serverId: 'a',
+        config: server('a'),
+        engine: engine,
+        connecting: false,
+      );
+    }
+
+    test('openEditorTab focuses a tab beside the owner, and dedupes', () {
+      final term = terminal();
+      // No teardown for the session itself: it stays in state.tabs, so
+      // the outer tearDown's state.dispose() disposes it exactly once.
+      state.tabs.add(term);
+      state.openEditorTab(copy(term.editSessionId));
+
+      expect(state.tabs.length, 2);
+      final editor = state.tabs[1];
+      expect(editor, isA<EditorTab>());
+      expect(state.activeTab, same(editor));
+      // Context panes act on the owning terminal while the editor is shown.
+      expect(state.activeSession, same(term));
+
+      // Reopening the same checkout focuses the existing tab.
+      state.openEditorTab(copy(term.editSessionId));
+      expect(state.tabs.length, 2);
+      expect(state.activeTab, same(editor));
+
+      // A checkout recreated under another local path replaces the stale tab.
+      state.openEditorTab(copy(term.editSessionId, localPath: 'motd-2'));
+      expect(state.tabs.length, 2);
+      expect(state.activeTab, isA<EditorTab>());
+      expect(state.activeTab, isNot(same(editor)));
+    });
+
+    test('closing a terminal takes its editor tabs with it', () async {
+      final term = terminal();
+      state.tabs.add(term);
+      state.openEditorTab(copy(term.editSessionId));
+      state.openEditorTab(
+        copy(
+          term.editSessionId,
+          localPath: 'other',
+          remotePath: '/etc/other.conf',
+        ),
+      );
+      expect(state.activeTab, isA<EditorTab>());
+      expect(state.tabs.length, 3);
+
+      // The iteration must be over a snapshot: closing removes editors from
+      // the list being walked.
+      await state.closeTab(term.id);
+
+      expect(state.tabs, isEmpty);
+      expect(state.activeTabId, isNull);
+    });
+
+    test(
+      'closing an editor tab leaves its terminal and refocuses it',
       () async {
-    // The normal case the queue exists for, which a plain busy flag would
-    // have read as re-entry.
-    await Future.wait([
-      state.saveServer(server('a')),
-      state.saveServer(server('b')),
-      state.saveServer(server('c')),
-    ]);
-    expect(state.servers.map((s) => s.id).toSet(), {'a', 'b', 'c'});
+        final term = terminal();
+        state.tabs.add(term);
+        state.openEditorTab(copy(term.editSessionId));
+        final editor = state.activeTab!;
+
+        await state.closeTab(editor.id);
+
+        expect(state.tabs, [term]);
+        expect(state.activeTabId, term.id);
+      },
+    );
+
+    test('focusing a server returns to its last-used tab, editor included', () {
+      // Selecting a server row restores the tab the user was last on — when
+      // that was an editor, they land back on their file, not on a shell
+      // they had already moved away from.
+      final term = terminal();
+      state.tabs.add(term);
+      state.openEditorTab(copy(term.editSessionId));
+      final editor = state.activeTab!;
+
+      state.focusTab(term.id);
+      expect(state.activeTab, same(term));
+
+      state.focusTab(editor.id);
+      state.focusServer('a');
+      expect(state.activeTab, same(editor));
+    });
   });
 }

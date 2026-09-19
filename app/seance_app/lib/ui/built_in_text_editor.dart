@@ -184,6 +184,14 @@ class BuiltInTextEditorScreen extends StatefulWidget {
   final Future<void> Function()? onSaved;
   final Future<bool> Function()? onUpload;
 
+  /// Written with the buffer's dirty flag on every change — a hosting tab
+  /// strip draws its modified marker from it.
+  final ValueNotifier<bool>? dirtyNotifier;
+
+  /// False while another tab is front-most, so autofocus and
+  /// focus-on-activation never fight the tab that is actually showing.
+  final bool isActive;
+
   const BuiltInTextEditorScreen({
     super.key,
     required this.file,
@@ -193,14 +201,16 @@ class BuiltInTextEditorScreen extends StatefulWidget {
     this.saveDocument,
     this.onSaved,
     this.onUpload,
+    this.dirtyNotifier,
+    this.isActive = true,
   });
 
   @override
   State<BuiltInTextEditorScreen> createState() =>
-      _BuiltInTextEditorScreenState();
+      BuiltInTextEditorScreenState();
 }
 
-class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
+class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     with WidgetsBindingObserver {
   late final CodeEditingController _text = CodeEditingController(
     language: syntaxLanguageFor(widget.remotePath),
@@ -263,6 +273,12 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   );
 
   bool get _dirty => !_loading && _text.text != _savedText;
+
+  /// True while the buffer holds changes not yet written to the checkout.
+  bool get isDirty => _dirty;
+
+  /// Mirror the dirty flag into the hosting strip's notifier.
+  void _syncDirty() => widget.dirtyNotifier?.value = _dirty;
 
   /// [lineStartOffsets] for the current buffer — identity-keyed so a
   /// rebuild after only a caret move never rescans.
@@ -391,7 +407,10 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     } catch (error) {
       if (mounted) _error = error.toString();
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+        _syncDirty();
+      }
     }
   }
 
@@ -408,6 +427,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
       text: text,
       selection: const TextSelection.collapsed(offset: 0),
     );
+    _syncDirty();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _scroll.hasClients) _scroll.jumpTo(0);
     });
@@ -421,6 +441,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
       _updateSearchMatches(resetActive: false);
     }
     setState(() {});
+    _syncDirty();
   }
 
   @override
@@ -560,10 +581,9 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
         textDirection: TextDirection.ltr,
         textScaler: MediaQuery.textScalerOf(context),
       )..layout(maxWidth: textWidth > 1 ? textWidth : 1);
-      dy = painter.getOffsetForCaret(
-        TextPosition(offset: prefix.length),
-        Rect.zero,
-      ).dy;
+      dy = painter
+          .getOffsetForCaret(TextPosition(offset: prefix.length), Rect.zero)
+          .dy;
       painter.dispose();
     } else {
       var line = 0;
@@ -588,7 +608,9 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     );
   }
 
-  Future<bool> _confirmDiscard() async {
+  /// Ask whether the buffer may be dropped — runs the unsaved-changes
+  /// dialog. A hosting tab calls this from its close button.
+  Future<bool> confirmDiscard() async {
     if (!_dirty) return true;
     return await showDialog<bool>(
           context: context,
@@ -660,7 +682,10 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     } catch (error) {
       if (mounted) showTopToastIn(context, message: error.toString());
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() => _saving = false);
+        _syncDirty();
+      }
     }
   }
 
@@ -706,7 +731,10 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
     } catch (error) {
       if (mounted) showTopToastIn(context, message: error.toString());
     } finally {
-      if (mounted) setState(() => _reloading = false);
+      if (mounted) {
+        setState(() => _reloading = false);
+        _syncDirty();
+      }
     }
   }
 
@@ -718,146 +746,194 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   }
 
   @override
+  void didUpdateWidget(BuiltInTextEditorScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive) {
+      // The tab was just focused again: hand the buffer its focus back —
+      // unless the search field still owns it.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !widget.isActive) return;
+        if (!_searchFocus.hasFocus) _editorFocus.requestFocus();
+      });
+    } else if (!widget.isActive && oldWidget.isActive) {
+      // This tab went to the background: release focus so keystrokes and
+      // the on-screen keyboard follow the tab that is actually showing.
+      // Deferred like the requestFocus above — unfocus notifies listeners
+      // synchronously, and a Focus widget's listener calls setState, which
+      // must not run during this build.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || widget.isActive) return;
+        _editorFocus.unfocus();
+        _searchFocus.unfocus();
+      });
+    }
+    if (!identical(widget.dirtyNotifier, oldWidget.dirtyNotifier)) {
+      // A fresh notifier from the host starts stale — prime it immediately.
+      _syncDirty();
+    }
+    if (!identical(widget.remoteFiles, oldWidget.remoteFiles)) {
+      // The owning session was reconnected (or dropped) under this tab:
+      // re-check drift against whichever controller now answers.
+      _checkRemoteDrift();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final name = remoteBasename(widget.remotePath);
     final uploadOnSave = widget.onUpload != null;
-    return PopScope(
-      canPop: !_dirty,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop || !await _confirmDiscard() || !context.mounted) return;
-        Navigator.of(context).pop();
+    return CallbackShortcuts(
+      bindings: {
+        // ⌘S/Ctrl+S is "save and upload" for a server file; hold Shift to
+        // deliberately keep a save local-only.
+        const SingleActivator(LogicalKeyboardKey.keyS, meta: true): () =>
+            _save(upload: uploadOnSave),
+        const SingleActivator(LogicalKeyboardKey.keyS, control: true): () =>
+            _save(upload: uploadOnSave),
+        const SingleActivator(LogicalKeyboardKey.keyS, meta: true, shift: true):
+            _save,
+        const SingleActivator(
+          LogicalKeyboardKey.keyS,
+          control: true,
+          shift: true,
+        ): _save,
+        const SingleActivator(LogicalKeyboardKey.keyF, meta: true): _openSearch,
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            _openSearch,
+        const SingleActivator(LogicalKeyboardKey.keyG, meta: true): _nextMatch,
+        const SingleActivator(LogicalKeyboardKey.keyG, control: true):
+            _nextMatch,
+        const SingleActivator(LogicalKeyboardKey.keyG, meta: true, shift: true):
+            _previousMatch,
+        const SingleActivator(
+          LogicalKeyboardKey.keyG,
+          control: true,
+          shift: true,
+        ): _previousMatch,
+        const SingleActivator(LogicalKeyboardKey.f3): _nextMatch,
+        const SingleActivator(LogicalKeyboardKey.f3, shift: true):
+            _previousMatch,
+        if (_searchOpen)
+          const SingleActivator(LogicalKeyboardKey.escape): _closeSearch,
       },
-      child: CallbackShortcuts(
-        bindings: {
-          // ⌘S/Ctrl+S is "save and upload" for a server file; hold Shift to
-          // deliberately keep a save local-only.
-          const SingleActivator(LogicalKeyboardKey.keyS, meta: true): () =>
-              _save(upload: uploadOnSave),
-          const SingleActivator(LogicalKeyboardKey.keyS, control: true): () =>
-              _save(upload: uploadOnSave),
-          const SingleActivator(
-            LogicalKeyboardKey.keyS,
-            meta: true,
-            shift: true,
-          ): _save,
-          const SingleActivator(
-            LogicalKeyboardKey.keyS,
-            control: true,
-            shift: true,
-          ): _save,
-          const SingleActivator(LogicalKeyboardKey.keyF, meta: true):
-              _openSearch,
-          const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-              _openSearch,
-          const SingleActivator(LogicalKeyboardKey.keyG, meta: true):
-              _nextMatch,
-          const SingleActivator(LogicalKeyboardKey.keyG, control: true):
-              _nextMatch,
-          const SingleActivator(LogicalKeyboardKey.keyG, meta: true, shift: true):
-              _previousMatch,
-          const SingleActivator(
-            LogicalKeyboardKey.keyG,
-            control: true,
-            shift: true,
-          ): _previousMatch,
-          const SingleActivator(LogicalKeyboardKey.f3): _nextMatch,
-          const SingleActivator(LogicalKeyboardKey.f3, shift: true):
-              _previousMatch,
-          if (_searchOpen)
-            const SingleActivator(LogicalKeyboardKey.escape): _closeSearch,
-        },
-        child: Scaffold(
-          appBar: AppBar(
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                Text(
-                  widget.remotePath,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
-              ],
-            ),
-            actions: [
-              IconButton(
-                tooltip: 'Find',
-                onPressed: _loading || _error != null ? null : _openSearch,
-                icon: const Icon(Icons.search),
-              ),
-              IconButton(
-                tooltip: 'Save locally',
-                onPressed: _dirty && !_saving ? _save : null,
-                icon: const Icon(Icons.save_outlined),
-              ),
-              if (uploadOnSave)
-                IconButton(
-                  tooltip: 'Save and upload',
-                  onPressed: !_saving ? () => _save(upload: true) : null,
-                  icon: const Icon(Icons.cloud_upload_outlined),
-                ),
-            ],
-            bottom: _searchOpen
-                ? PreferredSize(
-                    preferredSize: const Size.fromHeight(52),
-                    child: _searchBar(context),
-                  )
-                : null,
-          ),
-          body: Column(
-            children: [
-              if (widget.remoteFiles != null)
-                ListenableBuilder(
-                  listenable: widget.remoteFiles!,
-                  builder: (context, _) {
-                    if (!_remoteMissing) _missingBannerDismissed = false;
-                    if (_remoteChanged != true || _missingBannerDismissed) {
-                      return const SizedBox.shrink();
-                    }
-                    return MaterialBanner(
-                      leading: const Icon(Icons.sync_problem_outlined),
-                      content: Text(
-                        _remoteMissing
-                            ? 'This file no longer exists on the server.'
-                            : 'This file changed on the server.',
-                      ),
-                      actions: [
-                        if (_remoteMissing)
-                          // Reload cannot succeed against a deleted remote;
-                          // the honest action is keeping the surviving copy.
-                          TextButton(
-                            onPressed: () => setState(
-                              () => _missingBannerDismissed = true,
-                            ),
-                            child: const Text('Keep local copy'),
-                          )
-                        else
-                          TextButton(
-                            onPressed: _reloading ? null : _reloadFromServer,
-                            child: const Text('Reload'),
-                          ),
-                      ],
-                    );
-                  },
-                ),
-              Expanded(child: _body()),
-            ],
-          ),
-          bottomNavigationBar: _loading || _error != null
-              ? null
-              : SafeArea(
-                  top: false,
-                  // The copy's dirty flag and the drift answer live on the
-                  // controller; the banner listens to it the same way.
-                  child: widget.remoteFiles == null
-                      ? _statusBar(context)
-                      : ListenableBuilder(
-                          listenable: widget.remoteFiles!,
-                          builder: (context, _) => _statusBar(context),
+      child: Scaffold(
+        body: Column(
+          children: [
+            _header(context),
+            if (_searchOpen) ...[_searchBar(context), const Divider(height: 1)],
+            if (widget.remoteFiles != null)
+              ListenableBuilder(
+                listenable: widget.remoteFiles!,
+                builder: (context, _) {
+                  if (!_remoteMissing) _missingBannerDismissed = false;
+                  if (_remoteChanged != true || _missingBannerDismissed) {
+                    return const SizedBox.shrink();
+                  }
+                  return MaterialBanner(
+                    leading: const Icon(Icons.sync_problem_outlined),
+                    content: Text(
+                      _remoteMissing
+                          ? 'This file no longer exists on the server.'
+                          : 'This file changed on the server.',
+                    ),
+                    actions: [
+                      if (_remoteMissing)
+                        // Reload cannot succeed against a deleted remote;
+                        // the honest action is keeping the surviving copy.
+                        TextButton(
+                          onPressed: () =>
+                              setState(() => _missingBannerDismissed = true),
+                          child: const Text('Keep local copy'),
+                        )
+                      else
+                        TextButton(
+                          onPressed: _reloading ? null : _reloadFromServer,
+                          child: const Text('Reload'),
                         ),
-                ),
+                    ],
+                  );
+                },
+              ),
+            Expanded(child: _body()),
+            if (!_loading && _error == null) ...[
+              const Divider(height: 1),
+              SafeArea(
+                top: false,
+                // The copy's dirty flag and the drift answer live on the
+                // controller; the banner listens to it the same way.
+                child: widget.remoteFiles == null
+                    ? _statusBar(context)
+                    : ListenableBuilder(
+                        listenable: widget.remoteFiles!,
+                        builder: (context, _) => _statusBar(context),
+                      ),
+              ),
+            ],
+          ],
         ),
+      ),
+    );
+  }
+
+  /// The in-pane title row the route's AppBar used to provide: file name,
+  /// remote path, and the find/save actions. The tab strip above carries
+  /// the close affordance.
+  Widget _header(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final uploadOnSave = widget.onUpload != null;
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+      ),
+      padding: const EdgeInsets.only(left: 12, right: 4),
+      child: Row(
+        children: [
+          Icon(Icons.edit_document, size: 18, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    remoteBasename(widget.remotePath),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  Text(
+                    widget.remotePath,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Find',
+            visualDensity: VisualDensity.compact,
+            onPressed: _loading || _error != null ? null : _openSearch,
+            icon: const Icon(Icons.search),
+          ),
+          IconButton(
+            tooltip: 'Save locally',
+            visualDensity: VisualDensity.compact,
+            onPressed: _dirty && !_saving ? _save : null,
+            icon: const Icon(Icons.save_outlined),
+          ),
+          if (uploadOnSave)
+            IconButton(
+              tooltip: 'Save and upload',
+              visualDensity: VisualDensity.compact,
+              onPressed: !_saving ? () => _save(upload: true) : null,
+              icon: const Icon(Icons.cloud_upload_outlined),
+            ),
+        ],
       ),
     );
   }
@@ -1056,7 +1132,7 @@ class _BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
                   controller: _text,
                   focusNode: _editorFocus,
                   scrollController: _scroll,
-                  autofocus: true,
+                  autofocus: widget.isActive,
                   expands: true,
                   maxLines: null,
                   minLines: null,
@@ -1130,12 +1206,12 @@ class _LineNumberGutterPainter extends CustomPainter {
     required this.dividerColor,
     required this.textScaler,
     required this.rightInset,
-  })  : assert(
-          textStyle.fontSize != null,
-          '_LineNumberGutterPainter needs a TextStyle with an explicit '
-          'fontSize.',
-        ),
-        super(repaint: repaint);
+  }) : assert(
+         textStyle.fontSize != null,
+         '_LineNumberGutterPainter needs a TextStyle with an explicit '
+         'fontSize.',
+       ),
+       super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {

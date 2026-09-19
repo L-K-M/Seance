@@ -27,10 +27,8 @@ final RegExp _invisible = RegExp(
 );
 
 /// Make remote-supplied text safe to show in one line of chrome.
-String sanitizeRemoteLabel(String value) => value
-    .replaceAll(_invisible, ' ')
-    .replaceAll(RegExp(r'\s+'), ' ')
-    .trim();
+String sanitizeRemoteLabel(String value) =>
+    value.replaceAll(_invisible, ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
 
 /// Shorten [value] to [maxLength] grapheme clusters, ellipsising the *front*
 /// so the distinguishing tail survives — the useful half of a path, or of a
@@ -106,6 +104,34 @@ String sessionTabLabel({
   return 'Session $ordinal';
 }
 
+/// The label shown on a file-editing tab: the file's basename, made safe for
+/// chrome. An editor is named by what it edits — a custom name would say
+/// less than the path does — so unlike [sessionTabLabel] there is no
+/// user-named variant.
+String editorTabLabel(String remotePath, {int maxLength = 18}) {
+  final base = posixBasename(sanitizeRemoteLabel(remotePath));
+  return shortenLabelHead(
+    base == null || base.isEmpty || base == '/' ? 'File' : base,
+    maxLength,
+  );
+}
+
+/// The tooltip for an editor's tab chip: the full remote path — the chip
+/// truncates it to a basename — the session it belongs to, and whether the
+/// buffer holds unsaved edits.
+String editorTabTooltip({
+  required String remotePath,
+  required String target,
+  bool dirty = false,
+}) {
+  final lines = <String>[
+    sanitizeRemoteLabel(remotePath),
+    sanitizeRemoteLabel(target),
+    if (dirty) 'Unsaved changes',
+  ];
+  return lines.join('\n');
+}
+
 /// Suffix duplicate labels with a small stable ordinal (`~ ·1`, `~ ·2`) so
 /// same-server tabs sitting in the same place stay tellable-apart — the floor
 /// under the whole naming scheme. Unique labels pass through untouched, and a
@@ -135,10 +161,12 @@ String sessionTabTooltip({
   String? terminalTitle,
   String? runningCommand,
 }) {
-  final lines = <String>['Session $ordinal · $target'];
   // First, and in full: the chip truncates a long name, and this is the only
-  // other place it is shown — so the untruncated text has to be reachable
-  // here or it is not reachable at all.
+  // other place it is shown — so the complete text has to stay reachable
+  // here. That is why [sanitizeRemoteLabel] may strip control characters but
+  // must never truncate: a capped sanitizer would make a long target
+  // unreachable anywhere in the UI.
+  final lines = <String>['Session $ordinal · ${sanitizeRemoteLabel(target)}'];
   final custom = customName == null ? '' : sanitizeRemoteLabel(customName);
   if (custom.isNotEmpty) lines.add(custom);
   final command = runningCommand == null

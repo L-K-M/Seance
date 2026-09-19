@@ -76,7 +76,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
           onPaste: (command) {
             if (!chat.isCurrentTurn(turn) ||
                 targetSession == null ||
-                !identical(state.sessionById(targetSession.id), targetSession) ||
+                !identical(state.tabById(targetSession.id), targetSession) ||
                 !targetSession.isConnected) {
               return;
             }

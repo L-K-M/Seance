@@ -114,10 +114,14 @@ void main() {
     expect(find.textContaining('Saved locally'), findsOneWidget);
   });
 
-  testWidgets('protects unsaved changes when leaving', (tester) async {
+  testWidgets('protects unsaved changes when its tab is closed', (
+    tester,
+  ) async {
+    final key = GlobalKey<BuiltInTextEditorScreenState>();
     await tester.pumpWidget(
       MaterialApp(
         home: BuiltInTextEditorScreen(
+          key: key,
           file: file,
           remotePath: '/etc/config.txt',
           initialText: 'one\ntwo\n',
@@ -128,12 +132,113 @@ void main() {
     await tester.enterText(find.byType(TextField), 'unsaved');
     await tester.pump();
 
-    await tester.binding.handlePopRoute();
+    // The tab strip's close button asks the editor through this call.
+    final closing = key.currentState!.confirmDiscard();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('Discard unsaved changes?'), findsOneWidget);
     expect(find.text('unsaved'), findsOneWidget);
+
+    await tester.tap(find.text('Keep editing'));
+    await tester.pumpAndSettle();
+    expect(await closing, isFalse);
+
+    final discarding = key.currentState!.confirmDiscard();
+    await tester.pump();
+    await tester.tap(find.text('Discard'));
+    await tester.pumpAndSettle();
+    expect(await discarding, isTrue);
+  });
+
+  testWidgets('a clean buffer closes without asking', (tester) async {
+    final key = GlobalKey<BuiltInTextEditorScreenState>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          key: key,
+          file: file,
+          remotePath: '/etc/config.txt',
+          initialText: 'one\ntwo\n',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(await key.currentState!.confirmDiscard(), isTrue);
+    expect(find.byType(AlertDialog), findsNothing);
+  });
+
+  testWidgets('mirrors the dirty flag into the hosting strip', (tester) async {
+    final dirty = ValueNotifier<bool>(true);
+    addTearDown(dirty.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          file: file,
+          remotePath: '/etc/config.txt',
+          initialText: 'one\ntwo\n',
+          dirtyNotifier: dirty,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(dirty.value, isFalse); // clean buffer
+
+    await tester.enterText(find.byType(TextField), 'unsaved');
+    await tester.pump();
+    expect(dirty.value, isTrue);
+  });
+
+  testWidgets('going inactive releases the editor\'s focus', (tester) async {
+    Widget host(bool active) => MaterialApp(
+      home: BuiltInTextEditorScreen(
+        file: file,
+        remotePath: '/etc/config.txt',
+        initialText: 'one\ntwo\n',
+        isActive: active,
+      ),
+    );
+
+    await tester.pumpWidget(host(true));
+    await tester.pump();
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    expect(field.focusNode!.hasFocus, isTrue);
+
+    // The tab slid into the background: its focus goes with it, or the
+    // foreground tab's keystrokes would land here.
+    await tester.pumpWidget(host(false));
+    await tester.pump();
+    expect(
+      tester
+          .widget<TextField>(find.byType(TextField).first)
+          .focusNode!
+          .hasFocus,
+      isFalse,
+    );
+  });
+
+  testWidgets('a focus restore queued before deactivation does not fire', (
+    tester,
+  ) async {
+    Widget host(bool active) => MaterialApp(
+      home: BuiltInTextEditorScreen(
+        file: file,
+        remotePath: '/etc/config.txt',
+        initialText: 'one\ntwo\n',
+        isActive: active,
+      ),
+    );
+
+    await tester.pumpWidget(host(false));
+    // Activation queues a post-frame requestFocus; the deactivation that
+    // follows it must still be the last word on who holds focus.
+    await tester.pumpWidget(host(true));
+    await tester.pumpWidget(host(false));
+    await tester.pump();
+
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    expect(field.focusNode!.hasFocus, isFalse);
   });
 
   Future<void> pressCtrlS(WidgetTester tester) async {
@@ -142,8 +247,9 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
   }
 
-  testWidgets('Ctrl-S saves and uploads a server file immediately',
-      (tester) async {
+  testWidgets('Ctrl-S saves and uploads a server file immediately', (
+    tester,
+  ) async {
     var uploads = 0;
     var saved = 0;
     String? savedText;
@@ -178,8 +284,9 @@ void main() {
     expect(find.byType(AlertDialog), findsNothing);
   });
 
-  testWidgets('Cmd-S (meta) is the same save-and-upload as Ctrl-S',
-      (tester) async {
+  testWidgets('Cmd-S (meta) is the same save-and-upload as Ctrl-S', (
+    tester,
+  ) async {
     var uploads = 0;
     await tester.pumpWidget(
       MaterialApp(
@@ -208,8 +315,9 @@ void main() {
     expect(find.text('Saved and uploaded.'), findsOneWidget);
   });
 
-  testWidgets('Ctrl-S falls back to reconciling when the upload fails',
-      (tester) async {
+  testWidgets('Ctrl-S falls back to reconciling when the upload fails', (
+    tester,
+  ) async {
     var saved = 0;
     await tester.pumpWidget(
       MaterialApp(
@@ -234,8 +342,7 @@ void main() {
     expect(find.text('Saved locally; not uploaded.'), findsOneWidget);
   });
 
-  testWidgets('Ctrl-S still reconciles when the upload throws',
-      (tester) async {
+  testWidgets('Ctrl-S still reconciles when the upload throws', (tester) async {
     var saved = 0;
     await tester.pumpWidget(
       MaterialApp(
@@ -260,8 +367,9 @@ void main() {
     expect(find.textContaining('connection lost'), findsOneWidget);
   });
 
-  testWidgets('Ctrl-S saves locally when there is no upload target',
-      (tester) async {
+  testWidgets('Ctrl-S saves locally when there is no upload target', (
+    tester,
+  ) async {
     var saved = 0;
     String? savedText;
     await tester.pumpWidget(
@@ -287,10 +395,10 @@ void main() {
     expect(find.text('Saved locally.'), findsOneWidget);
   });
 
-  testWidgets('opens scrolled to the top with the caret at the start',
-      (tester) async {
-    final longText =
-        List.generate(400, (index) => 'line $index').join('\n');
+  testWidgets('opens scrolled to the top with the caret at the start', (
+    tester,
+  ) async {
+    final longText = List.generate(400, (index) => 'line $index').join('\n');
     await tester.pumpWidget(
       MaterialApp(
         home: BuiltInTextEditorScreen(
@@ -331,8 +439,9 @@ void main() {
     expect(style?.fontFamilyFallback, contains('monospace'));
   });
 
-  testWidgets('find bar counts matches, navigates, wraps, and toggles case',
-      (tester) async {
+  testWidgets('find bar counts matches, navigates, wraps, and toggles case', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: BuiltInTextEditorScreen(
@@ -406,12 +515,12 @@ void main() {
     final editorField = find
         .byWidgetPredicate(
           (widget) =>
-              widget is TextField &&
-              widget.controller is CodeEditingController,
+              widget is TextField && widget.controller is CodeEditingController,
         )
         .first;
-    final controller = tester.widget<TextField>(editorField).controller!
-        as CodeEditingController;
+    final controller =
+        tester.widget<TextField>(editorField).controller!
+            as CodeEditingController;
     expect(controller.searchMatches, hasLength(1));
     expect(controller.searchMatches.single.start, 6);
     expect(controller.activeMatchIndex, 0);
@@ -490,17 +599,12 @@ void main() {
       );
       await _pollUntil(
         tester,
-        () => find
-            .text('This file changed on the server.')
-            .evaluate()
-            .isNotEmpty,
+        () =>
+            find.text('This file changed on the server.').evaluate().isNotEmpty,
       );
 
       // The mount-time check flags the drift without any user action.
-      expect(
-        find.text('This file changed on the server.'),
-        findsOneWidget,
-      );
+      expect(find.text('This file changed on the server.'), findsOneWidget);
 
       await tester.tap(find.text('Reload'));
       await _pollUntil(
@@ -508,10 +612,7 @@ void main() {
         () => _editorText(tester) == 'one\ntwo\nthree\n',
       );
 
-      expect(
-        find.text('This file changed on the server.'),
-        findsNothing,
-      );
+      expect(find.text('This file changed on the server.'), findsNothing);
       expect(controller.remoteChangedFor(copy.remotePath), isFalse);
     });
   });
@@ -542,10 +643,8 @@ void main() {
       );
       await _pollUntil(
         tester,
-        () => find
-            .text('This file changed on the server.')
-            .evaluate()
-            .isNotEmpty,
+        () =>
+            find.text('This file changed on the server.').evaluate().isNotEmpty,
       );
       await tester.enterText(find.byType(TextField).first, 'local edit\n');
       await tester.pump();

@@ -74,10 +74,7 @@ void main() {
     });
 
     test('bidi overrides and zero-width characters are stripped', () {
-      expect(
-        sanitizeRemoteLabel('safe\u202Egnahc\u200B\uFEFF'),
-        'safe gnahc',
-      );
+      expect(sanitizeRemoteLabel('safe\u202Egnahc\u200B\uFEFF'), 'safe gnahc');
     });
 
     test('a hostile title is sanitized before it reaches the tab', () {
@@ -164,13 +161,87 @@ void main() {
     });
   });
 
+  group('editorTabLabel', () {
+    test('names the file by its basename', () {
+      expect(editorTabLabel('/etc/nginx/nginx.conf'), 'nginx.conf');
+      expect(editorTabLabel('/var/log/app/debug.log'), 'debug.log');
+    });
+
+    test('falls back to "File" when the path has no basename', () {
+      expect(editorTabLabel('/'), 'File');
+      expect(editorTabLabel('relative/path.txt'), 'File');
+    });
+
+    test('a hostile path is sanitized before it reaches the tab', () {
+      expect(editorTabLabel('/etc/ok\nrm -rf'), 'ok rm -rf');
+    });
+
+    test('keeps the distinguishing tail when shortening', () {
+      final label = editorTabLabel(
+        '/srv/app/config/very-long-file-name.conf',
+        maxLength: 10,
+      );
+      expect(label.length, 10);
+      expect(label.startsWith('…'), isTrue);
+      expect(label.endsWith('name.conf'), isTrue);
+    });
+  });
+
+  group('editorTabTooltip', () {
+    test('names the full path and the owning session', () {
+      expect(
+        editorTabTooltip(
+          remotePath: '/etc/nginx/nginx.conf',
+          target: 'ops@web-01:22',
+        ),
+        '/etc/nginx/nginx.conf\nops@web-01:22',
+      );
+    });
+
+    test('flags unsaved changes', () {
+      expect(
+        editorTabTooltip(
+          remotePath: '/etc/hosts',
+          target: 'ops@web-01:22',
+          dirty: true,
+        ),
+        '/etc/hosts\nops@web-01:22\nUnsaved changes',
+      );
+    });
+
+    test('sanitizes the target line too', () {
+      // The target string is assembled from server config — one hostile
+      // config value must not smuggle extra lines into the tooltip.
+      expect(
+        editorTabTooltip(
+          remotePath: '/etc/hosts',
+          target: 'ops@web-01\nnot a newline',
+        ),
+        '/etc/hosts\nops@web-01 not a newline',
+      );
+    });
+
+    test('sanitizes a hostile remote path', () {
+      // Remote filenames can carry newlines; a hostile path must not be
+      // able to forge tooltip lines such as a fake "Unsaved changes" flag.
+      // CR and CRLF collapse to the same single space.
+      for (final separator in ['\n', '\r', '\r\n']) {
+        expect(
+          editorTabTooltip(
+            remotePath: '/etc/hosts${separator}Unsaved changes',
+            target: 'ops@web-01:22',
+          ),
+          '/etc/hosts Unsaved changes\nops@web-01:22',
+          reason:
+              'separator ${separator.codeUnits} must collapse to one space',
+        );
+      }
+    });
+  });
+
   group('disambiguateTabLabels', () {
     test('unique labels pass through untouched', () {
-      expect(disambiguateTabLabels(['app', 'logs', '~']), [
-        'app',
-        'logs',
-        '~',
-      ]);
+      expect(disambiguateTabLabels(['app', 'logs', '~']), ['app', 'logs', '~']);
     });
 
     test('duplicates get stable ordinals in tab order', () {
