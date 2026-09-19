@@ -220,6 +220,18 @@ void main() {
         '/etc/hosts\nops@web-01 not a newline',
       );
     });
+
+    test('sanitizes a hostile remote path', () {
+      // Remote filenames can carry newlines; a hostile path must not be
+      // able to forge tooltip lines such as a fake "Unsaved changes" flag.
+      expect(
+        editorTabTooltip(
+          remotePath: '/etc/hosts\nUnsaved changes',
+          target: 'ops@web-01:22',
+        ),
+        '/etc/hosts Unsaved changes\nops@web-01:22',
+      );
+    });
   });
 
   group('disambiguateTabLabels', () {
