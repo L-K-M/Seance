@@ -1155,9 +1155,12 @@ class _LineNumberGutterPainter extends CustomPainter {
         lo = mid + 1;
       }
     }
-    // Cheap insurance against line-height estimate error: painting one
-    // extra off-screen line gets clipped, skipping a visible one doesn't.
-    if (lo > 0) lo--;
+    // Insurance against line-height estimate error: painting extra
+    // off-screen lines is clipped, skipping a visible one isn't. Past the
+    // highlighting cap the estimate lags by one row per soft wrap above the
+    // viewport, so the backoff is sized in viewport rows, not one line.
+    lo -= (size.height / lineHeight).ceil();
+    if (lo < 0) lo = 0;
     final painter = TextPainter(
       textDirection: TextDirection.ltr,
       textScaler: textScaler,
