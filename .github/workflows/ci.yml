@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30   # first run downloads the Flutter toolchain
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -107,7 +107,7 @@ jobs:
             target: windows
             build: windows --release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Match the app's compileOptions (JavaVersion.VERSION_17) so the Gradle
       # build is deterministic rather than tracking the runner's default JDK.
       - uses: actions/setup-java@v4
@@ -166,6 +166,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image
         run: docker build -f packages/seance_sync_server/Dockerfile -t seance-sync:ci .
