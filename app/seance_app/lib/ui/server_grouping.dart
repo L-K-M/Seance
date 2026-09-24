@@ -3,24 +3,14 @@
 /// Kept free of Flutter, like [server_filter.dart], so the rules that decide
 /// what the list looks like can be unit-tested without pumping a widget.
 ///
-/// The shape of the feature is that grouping costs nothing until it is used:
-/// with no server filed anywhere, [groupServers] returns one anonymous section
-/// and the pane renders exactly the flat list it always did — no headers, no
-/// indentation, nothing to collapse.
+/// The shape is the sibling rail's (Poltergeist's plan, 10 §5): a PINNED
+/// section when anything is pinned, then SERVERS — its ungrouped servers
+/// first, then one nested disclosure row per group, sorted by name.
+/// Ungrouped servers lead so an expanded group's members, indented under it,
+/// are never followed by rows that only look like more of that group.
 library;
 
 import 'package:seance_core/seance_core.dart';
-
-/// The key of the section holding servers with no group.
-///
-/// Empty is safe as a sentinel because a real group key never is:
-/// [normalizeServerGroup] turns a blank or whitespace-only name into null,
-/// which is what puts a server in this section in the first place.
-const String kUngroupedKey = '';
-
-/// The header shown over the servers that aren't in any group. Only ever
-/// rendered when at least one *other* group exists — see [groupServers].
-const String kUngroupedLabel = 'Ungrouped';
 
 /// The key of the pinned shortlist.
 ///
@@ -30,52 +20,57 @@ const String kUngroupedLabel = 'Ungrouped';
 /// the same `collapsedServerGroups` set as every other section.
 const String kPinnedKey = ' pinned';
 
-/// The header over the pinned shortlist, which is always the first section.
+/// The key of the SERVERS section itself, collision-free for the same reason
+/// as [kPinnedKey].
+const String kServersKey = ' servers';
+
+/// The section headers' titles (drawn in caps; announced as spelled).
 const String kPinnedLabel = 'Pinned';
+const String kServersLabel = 'Servers';
 
-/// The header over everything that is *not* pinned, when nothing is grouped.
-///
-/// With real groups in play the leftovers keep [kUngroupedLabel] instead:
-/// there, "ungrouped" is what they actually are. Here it would claim a feature
-/// the user has not used.
-const String kUnpinnedLabel = 'Other servers';
-
-/// One section of the server list.
+/// One named group under SERVERS.
 class ServerGroupSection {
-  /// The group's name as the user spelled it, or null for a section that is
-  /// not a user-named group: the pinned shortlist, or the remainder.
-  final String? name;
+  /// The group's name as the user spelled it.
+  final String name;
 
   /// Members, in the order they arrived (the store sorts by label).
   final List<ServerConfig> servers;
 
-  /// The identity this section is collapsed and re-found by, stable across a
+  /// The identity this group is collapsed and re-found by, stable across a
   /// re-sort and across a member being renamed.
   final String key;
-
-  /// The text of this section's header, or null for the one anonymous section
-  /// a flat list with nothing pinned collapses to — which draws no header at
-  /// all, and so can never be collapsed into nothing.
-  ///
-  /// Resolved here rather than at the row, because only [groupServers] knows
-  /// whether the remainder is "Ungrouped" (beside real groups) or
-  /// "Other servers" (beside nothing but pins).
-  final String? header;
 
   const ServerGroupSection({
     required this.name,
     required this.servers,
     required this.key,
-    required this.header,
   });
 }
 
-/// [servers] split into sections: the pinned shortlist first, then one section
-/// per group sorted by name, with the ungrouped remainder last.
-///
-/// Returns a single unnamed section when nothing is pinned and no server
-/// carries a group, so the common case renders as a plain list rather than as
-/// one section that happens to hold everything.
+/// The rail's sections for one list of servers.
+class ServerSidebarSections {
+  /// The pinned shortlist, in the list's own order.
+  final List<ServerConfig> pinned;
+
+  /// SERVERS' members that are in no group.
+  final List<ServerConfig> ungrouped;
+
+  /// SERVERS' named groups, sorted by key.
+  final List<ServerGroupSection> groups;
+
+  const ServerSidebarSections({
+    required this.pinned,
+    required this.ungrouped,
+    required this.groups,
+  });
+
+  /// Everything under SERVERS: what its header counts while collapsed.
+  int get unpinnedCount =>
+      ungrouped.length +
+      groups.fold<int>(0, (sum, group) => sum + group.servers.length);
+}
+
+/// [servers] split into the rail's sections.
 ///
 /// Grouping is case-insensitive ([serverGroupKey]); the spelling shown is the
 /// one on the first member in [servers] order, so a group does not rename
@@ -86,49 +81,23 @@ class ServerGroupSection {
 /// be true of one row, and a duplicate row is the kind of thing a user fixes
 /// by unpinning. Its group's count drops accordingly, which is honest about
 /// what folding that group away now hides.
-List<ServerGroupSection> groupServers(
+ServerSidebarSections groupServers(
   List<ServerConfig> servers, {
   Set<String> pinnedIds = const {},
 }) {
   // Order within the shortlist is the list's own (the store sorts by label),
   // not the order things were pinned in — a shortlist that reshuffles itself
   // as you pin is harder to aim at than one that stays alphabetical.
-  final pinned = [
-    for (final server in servers)
-      if (pinnedIds.contains(server.id)) server,
-  ];
-  if (pinned.isEmpty) return _groupSections(servers, anonymous: true);
-
-  final rest = [
-    for (final server in servers)
-      if (!pinnedIds.contains(server.id)) server,
-  ];
-  return [
-    ServerGroupSection(
-      name: null,
-      servers: pinned,
-      key: kPinnedKey,
-      header: kPinnedLabel,
-    ),
-    ..._groupSections(rest, anonymous: false),
-  ];
-}
-
-/// The group sections of [servers].
-///
-/// [anonymous] is true only when this is the whole list: a list with no groups
-/// then renders headerless. With a pinned section above it the remainder needs
-/// a header of its own, or the rows after the shortlist would read as still
-/// being part of it.
-List<ServerGroupSection> _groupSections(
-  List<ServerConfig> servers, {
-  required bool anonymous,
-}) {
+  final pinned = <ServerConfig>[];
+  final ungrouped = <ServerConfig>[];
   final byKey = <String, List<ServerConfig>>{};
   final names = <String, String>{};
-  final ungrouped = <ServerConfig>[];
 
   for (final server in servers) {
+    if (pinnedIds.contains(server.id)) {
+      pinned.add(server);
+      continue;
+    }
     final group = normalizeServerGroup(server.group);
     if (group == null) {
       ungrouped.add(server);
@@ -139,52 +108,44 @@ List<ServerGroupSection> _groupSections(
     names.putIfAbsent(key, () => group);
   }
 
-  if (byKey.isEmpty) {
-    // Everything is pinned: no remainder to head. Only reachable when a
-    // pinned section already exists, so the list is never left with nothing.
-    if (servers.isEmpty && !anonymous) return const [];
-    return [
-      ServerGroupSection(
-        name: null,
-        servers: servers,
-        key: kUngroupedKey,
-        header: anonymous ? null : kUnpinnedLabel,
-      ),
-    ];
-  }
-
   final keys = byKey.keys.toList()..sort();
-  return [
-    for (final key in keys)
-      ServerGroupSection(
-        name: names[key],
-        servers: byKey[key]!,
-        key: serverGroupKey(names[key]!),
-        header: names[key],
-      ),
-    if (ungrouped.isNotEmpty)
-      ServerGroupSection(
-        name: null,
-        servers: ungrouped,
-        key: kUngroupedKey,
-        header: kUngroupedLabel,
-      ),
-  ];
+  return ServerSidebarSections(
+    pinned: pinned,
+    ungrouped: ungrouped,
+    groups: [
+      for (final key in keys)
+        ServerGroupSection(name: names[key]!, servers: byKey[key]!, key: key),
+    ],
+  );
 }
 
-/// One rendered line of the server list: either a group header or a server.
+/// One rendered line of the server list.
 sealed class ServerListRow {
   const ServerListRow();
 }
 
-/// A collapsible section header. Not emitted for a list with no groups.
-final class ServerGroupHeaderRow extends ServerListRow {
-  /// The name to show — [kUngroupedLabel] for the ungrouped section.
-  final String name;
+/// A top-level section header: PINNED or SERVERS.
+final class ServerSectionRow extends ServerListRow {
+  final String title;
   final String key;
 
-  /// Members in the section, shown beside the name so a collapsed group still
-  /// says how much it is hiding.
+  /// Members in the section, shown while it is collapsed so a folded section
+  /// still says how much it is hiding.
+  final int count;
+  final bool collapsed;
+
+  const ServerSectionRow({
+    required this.title,
+    required this.key,
+    required this.count,
+    required this.collapsed,
+  });
+}
+
+/// A group's nested disclosure row under SERVERS.
+final class ServerGroupHeaderRow extends ServerListRow {
+  final String name;
+  final String key;
   final int count;
   final bool collapsed;
 
@@ -198,35 +159,65 @@ final class ServerGroupHeaderRow extends ServerListRow {
 
 final class ServerRow extends ServerListRow {
   final ServerConfig server;
-  const ServerRow(this.server);
+
+  /// 1 under a group's disclosure row, 0 elsewhere.
+  final int depth;
+
+  const ServerRow(this.server, {this.depth = 0});
 }
 
 /// Flatten [sections] into the rows to render, dropping the members of any
-/// section whose key is in [collapsedKeys].
+/// section or group whose key is in [collapsedKeys].
 ///
-/// A section that is collapsed still emits its header — that is the only way
-/// back. A section with no header emits none, and so can never be collapsed
-/// into nothing.
+/// A collapsed section or group still emits its header — that is the only
+/// way back. A section with no members emits nothing, header included: a
+/// PINNED with nothing pinned, or a SERVERS emptied by pinning everything,
+/// would be a caption over nothing.
 List<ServerListRow> serverListRows({
-  required List<ServerGroupSection> sections,
+  required ServerSidebarSections sections,
   required Set<String> collapsedKeys,
 }) {
   final rows = <ServerListRow>[];
-  for (final section in sections) {
-    final header = section.header;
-    var collapsed = false;
-    if (header != null) {
-      collapsed = collapsedKeys.contains(section.key);
-      rows.add(ServerGroupHeaderRow(
-        name: header,
-        key: section.key,
-        count: section.servers.length,
+  if (sections.pinned.isNotEmpty) {
+    final collapsed = collapsedKeys.contains(kPinnedKey);
+    rows.add(
+      ServerSectionRow(
+        title: kPinnedLabel,
+        key: kPinnedKey,
+        count: sections.pinned.length,
         collapsed: collapsed,
-      ));
-    }
-    if (collapsed) continue;
-    for (final server in section.servers) {
-      rows.add(ServerRow(server));
+      ),
+    );
+    if (!collapsed) rows.addAll(sections.pinned.map(ServerRow.new));
+  }
+
+  final unpinned = sections.unpinnedCount;
+  if (unpinned == 0) return rows;
+  final collapsed = collapsedKeys.contains(kServersKey);
+  rows.add(
+    ServerSectionRow(
+      title: kServersLabel,
+      key: kServersKey,
+      count: unpinned,
+      collapsed: collapsed,
+    ),
+  );
+  if (collapsed) return rows;
+
+  rows.addAll(sections.ungrouped.map(ServerRow.new));
+  for (final group in sections.groups) {
+    final folded = collapsedKeys.contains(group.key);
+    rows.add(
+      ServerGroupHeaderRow(
+        name: group.name,
+        key: group.key,
+        count: group.servers.length,
+        collapsed: folded,
+      ),
+    );
+    if (folded) continue;
+    for (final server in group.servers) {
+      rows.add(ServerRow(server, depth: 1));
     }
   }
   return rows;

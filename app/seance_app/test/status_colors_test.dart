@@ -22,6 +22,7 @@ void main() {
           indicators = [
             StatusColors.online(context),
             StatusColors.offline(context),
+            StatusColors.connecting(context),
             StatusColors.unknown(context),
           ];
           return const SizedBox();
@@ -46,5 +47,60 @@ void main() {
         }
       }
     });
+  }
+
+  // The server rows' one dot (server_status_dot.dart) sits on the sibling
+  // rail's surfaces: the rail itself, its hover fill, and the selection pill
+  // of the focused session's server — and on the phone home's page surface.
+  // The dot is ringed in whatever is behind it, so the dot's colour meets
+  // exactly these.
+  for (final platform in [TargetPlatform.macOS, TargetPlatform.android]) {
+    for (final brightness in Brightness.values) {
+      final theme = brightness == Brightness.dark
+          ? SeanceTheme.dark(platform: platform)
+          : SeanceTheme.light(platform: platform);
+      testWidgets('row dots contrast on the ${brightness.name} rail, hover and '
+          'selection pill (${platform.name})', (tester) async {
+        late List<Color> dots;
+        late SeanceChrome chrome;
+        await tester.pumpWidget(MaterialApp(
+          theme: theme,
+          home: Builder(builder: (context) {
+            chrome = SeanceChrome.of(context);
+            dots = [
+              StatusColors.online(context),
+              StatusColors.connecting(context),
+              StatusColors.offline(context),
+            ];
+            return const SizedBox();
+          }),
+        ));
+        final page = theme.colorScheme.surface;
+        final surfaces = {
+          'rail': chrome.sidebarBackground,
+          'rail hover': Color.alphaBlend(
+            chrome.hoverFill,
+            chrome.sidebarBackground,
+          ),
+          'selection pill': Color.alphaBlend(
+            chrome.inactiveSelectionFill,
+            chrome.sidebarBackground,
+          ),
+          'home page': page,
+          'home hover': Color.alphaBlend(chrome.hoverFill, page),
+          'home selection pill': Color.alphaBlend(
+            chrome.inactiveSelectionFill,
+            page,
+          ),
+        };
+        for (final dot in dots) {
+          for (final MapEntry(key: name, value: surface) in surfaces.entries) {
+            expect(_contrast(dot, surface),
+                greaterThanOrEqualTo(_minimumIndicatorContrast),
+                reason: '$dot on the $name ($surface)');
+          }
+        }
+      });
+    }
   }
 }

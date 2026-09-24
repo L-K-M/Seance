@@ -129,6 +129,26 @@ void main() {
     expect(state!.activeTabId, session.id);
   });
 
+  testWidgets('back returns to the list as it was left: the filter query '
+      'survives the trip to the terminal', (tester) async {
+    await pumpNarrowShell(tester);
+    // The home list is the phone's full screen, with its "+" to add.
+    expect(find.byType(FloatingActionButton), findsOneWidget);
+    expect(ServerListPane.revealFilter(), isTrue);
+    await tester.pump();
+    final field = find.byKey(const ValueKey('servers.filter.field'));
+    await tester.enterText(field, 'bo');
+    await tester.pump();
+
+    await openTerminal(tester);
+    expect(await tester.binding.handlePopRoute(), isTrue);
+    await settle(tester);
+
+    expect(find.byType(ServerListPane), findsOneWidget);
+    expect(tester.widget<TextField>(field).controller?.text, 'bo');
+    expect(find.text('1 of 1'), findsOneWidget);
+  });
+
   testWidgets('system back on the server list is left to the platform', (
     tester,
   ) async {

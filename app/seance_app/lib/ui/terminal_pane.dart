@@ -17,6 +17,7 @@ import 'connection_log_view.dart';
 import 'files_pane.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_appearance.dart';
+import 'server_list_pane.dart';
 import 'session_label.dart';
 import 'sidebar_panel.dart';
 import 'terminal_appearance.dart';
@@ -1137,6 +1138,17 @@ class _SessionViewState extends State<_SessionView> {
     final clip = apple
         ? keys.isMetaPressed
         : (keys.isControlPressed && keys.isShiftPressed);
+    // The server filter's ⌥⌘F: ⌘ never reaches the shell, so it is safe to
+    // take here, where xterm would otherwise send the Alt+F underneath it.
+    // Off Apple platforms the chord is Ctrl+Alt+F, which a shell (or an
+    // editor running in it) may bind, so the terminal keeps it.
+    if (apple &&
+        keys.isMetaPressed &&
+        keys.isAltPressed &&
+        event.logicalKey == LogicalKeyboardKey.keyF &&
+        ServerListPane.revealFilter()) {
+      return KeyEventResult.handled;
+    }
     // Open another tab for this server: ⌘T / Ctrl+Shift+T.
     if (clip && event.logicalKey == LogicalKeyboardKey.keyT) {
       widget.state.newTab(widget.tab.config);
