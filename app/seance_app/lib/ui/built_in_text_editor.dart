@@ -144,6 +144,13 @@ Future<void> _requireRegularFile(File file) async {
 /// digested, and renamed into place, with the original held aside as a
 /// backup until the new file has landed.
 ///
+/// The checks around that swap (the regular-file test, the mode read, the
+/// digest of the set-aside original against [expectedSha256], and the
+/// empty-path test before the final rename) are a best-effort guard
+/// against another writer, not a lock. Each is its own system call, so a
+/// change that lands between two of them can still get through, and
+/// between the two renames the path briefly does not exist.
+///
 /// The temp is owner-only before its first byte (at the default umask the
 /// plaintext would otherwise sit group- and world-readable for the whole
 /// write, and a crash would strand it that way), and takes the original's
