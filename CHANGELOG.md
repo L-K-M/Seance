@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Server list: rebuilt on the sidebar Séance now shares with Poltergeist.
+  On desktop the list is a rail with no app bar: PINNED, then SERVERS with
+  groups as nested disclosure rows (folds persist), one-line rows with the
+  server's mark and one status dot (green connected, amber connecting, red
+  failed, a hollow ring for what the probe saw), a filter at eight servers
+  or on ⌥⌘F (Ctrl+Alt+F elsewhere), and a bottom bar with a "+" menu (New
+  server, Import SSH config), the sync status (a click on "Sync failed"
+  retries) and Settings. Right-click, Shift+F10 or the Menu key open a
+  row's verbs; ⌘- or Ctrl-click opens another tab. On a phone the list is
+  the home screen with 48 dp rows, a "⋮" and long-press for the same
+  verbs, and a "+" button; back to the list keeps the filter and scroll
+  position. The sidebar kit is ported from Poltergeist.
 - Android: the system back button on the narrow terminal screen returns to
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving

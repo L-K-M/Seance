@@ -7,7 +7,12 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-24. Android's system back no longer closes the app
+_Last updated: 2026-09-24. The server list is the sibling sidebar Séance
+shares with Poltergeist: a rail with PINNED and SERVERS sections, one-line
+rows with one status dot, a filter, and a bottom bar with "+", sync status
+and Settings, over a kit ported from Poltergeist (see
+[POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)); on a phone the same list
+is the home screen. Before that, Android's system back no longer closes the app
 from the narrow terminal screen (which ended every live session), and walks
 up the Files tree before leaving it; the built-in editor keeps a checkout's
 permissions when it saves and highlights CSS, Ruby, Perl and Lua (both
@@ -52,6 +57,78 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## The server list is the sibling sidebar (2026-09-24)
+
+**The kit.** Poltergeist rebuilt its sidebar (its plan, 10 §5) on
+`lib/ui/sidebar/sidebar_kit.dart`, written for Séance to copy. It is
+ported from Poltergeist 58605fa to the same relative path here, so a
+`diff` of the two files shows only the chrome seam (`_chrome()` returns
+`SeanceChrome`) and the changes listed in
+[POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit) for porting back: a
+hollow ring dot, a host-named row surface, a second line and a "⋮" for
+touch lists, a trailing standing icon, touch extents, and fixes for a
+keyboard-opened row menu the keyboard could not operate, a touch verb
+sheet capped at 9/16 of the screen, and a focus ring that shifted rows
+by 2 px. Its tests are ported with it.
+
+**The rail.** In the wide layout `ServerListPane` (posture `rail`) has no
+app bar. PINNED leads when anything is pinned; SERVERS lists its
+ungrouped servers first, then each group as a nested disclosure row
+(`server_grouping.dart`'s new `ServerSidebarSections`); folds persist in
+`collapsedServerGroups`, now including the SERVERS key. A row
+(`server_tile.dart`) is one 26 px line: the mark at 18 px (a plain glyph
+for an uncoloured server, as Poltergeist draws it; the badge for a
+coloured one, framed in the colour when an image covers the fill), one
+dot, the middle-ellipsized name, `×N` past one tab, and a cloud-off mark
+for a server kept off sync. The selection pill marks the server of the
+focused session; the ring shows only in keyboard mode. The dot
+(`server_status_dot.dart`) means the same in both apps: solid green
+connected, amber connecting, red failed, a hollow green ring when the
+probe reached a host nothing is connected to, none when unknown. The
+probe's "unreachable", which the contract leaves open, is a hollow red
+ring. Right-click opens the verbs at the pointer (Connect, Connect in new
+tab, Disconnect, Reconnect for a lone dead tab, Pin to top or Unpin,
+Edit…, Duplicate, Delete…), Shift+F10 and the Menu key open them with
+focus inside, and a connected row shows an eject glyph on hover. ⌘- or
+Ctrl-click opens another tab. The filter shows at eight servers (it was
+five), while a query is live, or on ⌥⌘F (Ctrl+Alt+F off Apple
+platforms, where the terminal keeps the chord for the shell); Esc
+clears, then closes, and Enter opens the first row shown. The bottom bar
+has a "+" menu (New server…, Import SSH config…; Séance has no group
+entities, so no New group), the sync chip ("Sync off", "Syncing…",
+"Synced · 2 min", or red "Sync failed" whose click retries), and the
+gear. The update banner stays above the list, compacted. There is no
+drag-reorder to keep: the store sorts by label.
+
+**The home.** In the narrow layout (posture `home`) the list is the full
+screen with its app bar (sync indicator, density switch, import,
+settings) and a "+" button for a new server. Rows take the platform's
+extent (48 dp on touch, with a 24 dp mark) and a visible "⋮"; a
+long-press opens the same verbs as a sheet. The density preference
+survives here only: comfortable adds the address as a second line,
+because touch has no hover to show the tooltip; the rail's rows are one
+line by the anatomy. Back from the terminal returns to the list with its
+query and scroll offset, kept in the route's page storage. The back
+handling from a938373, 6643a3b and 367e4ea is untouched and its tests
+pass.
+
+**Verification.** `server_list_capture_test.dart` renders both postures
+in both brightnesses with DejaVu Sans at 2x (written only with
+`SEANCE_CAPTURE=1`, to `SEANCE_CAPTURE_DIR`). A `flutter build linux
+--debug` run under Xvfb was driven with `xdotool`: importing hosts
+through the empty state and the "+" menu, the filter appearing at nine
+servers, a connecting then failed dot, right-click and Esc on a row
+menu, Ctrl+Alt+F filtering to "2 of 9", and the narrow home. It showed
+the focus-ring shift that the kit fix removes. Not verified: a real
+Android device (system back, TalkBack), macOS (⌥⌘F, VoiceOver),
+Windows, and a live SSH session's green dot outside tests. 812 Flutter
+tests pass (60 new) and `flutter analyze` is clean; the pure-Dart
+packages were not touched.
+
+`ServerAvatar` (the badge with a connected ring) is no longer used by
+the list; its tests stay until the editor or a sibling decides whether
+to keep it.
 
 ## Back keeps sessions; editor saves keep modes (2026-09-24)
 
@@ -804,9 +881,27 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   updates, deactivates on the last, and honors the enable/disable setting
   (including re-anchoring live sessions on re-enable); the settings field
   round-trips in `app_settings_test.dart`.
-- `app/seance_app/test/server_grouping_test.dart` — sectioning: no groups means
-  no headers, case-folded keys with the first spelling kept, ungrouped last,
-  collapse/expand, and a stale collapsed key doing nothing.
+- `app/seance_app/test/server_grouping_test.dart` — sectioning: PINNED
+  then SERVERS (ungrouped first, groups nested and sorted), case-folded
+  keys with the first spelling kept, no empty section headers, folding a
+  group, the shortlist or SERVERS itself, and a stale collapsed key doing
+  nothing.
+- `app/seance_app/test/server_status_dot_test.dart` — the shared dot
+  mapping (live session over probe; solid for sessions, ring for probe
+  observations) and the tab aggregation behind it.
+- `app/seance_app/test/server_list_pane_test.dart` — the rail (no app
+  bar; the bottom bar's "+" menu, sync chip states and gear; sections
+  and nesting; folds persisting; the filter at eight servers and on
+  ⌥⌘F / Ctrl+Alt+F with Esc clearing then closing; the selection pill;
+  pinning from a right-click; the empty state) and the home's "+" never
+  covering the last row's "⋮".
+- `app/seance_app/test/ui/sidebar/sidebar_kit_test.dart` — the ported
+  kit's tests plus Séance's additions: ring dots, the host surface, two
+  lines, the menu button on desktop and touch, touch headers, keyboard
+  focus inside a row menu, and a focus ring that does not move content.
+- `app/seance_app/test/server_list_capture_test.dart` — renders both
+  postures and brightnesses for review; writes PNGs only with
+  `SEANCE_CAPTURE=1`.
 - `app/seance_app/test/server_editor_test.dart` — Return saves from a
   one-line field, is a newline in the login script, presses a focused button
   instead, and does nothing while the form is invalid; a custom colour is
@@ -814,9 +909,11 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
 - `app/seance_app/test/server_color_picker_test.dart` — the picker returns
   the colour handed in untouched, follows a typed hex value and a dragged
   slider, flags a non-colour, keeps a hue through desaturation.
-- `app/seance_app/test/server_tile_test.dart` — the selected row is filled,
-  barred and bold; a row with a session wears the ring and one without does
-  not, at the same footprint, in both densities.
+- `app/seance_app/test/server_tile_test.dart` — a row is one 26 px line
+  with the address in its tooltip; the selected row wears the pill and a
+  semibold title without shifting; the mark per colour and mark kind;
+  every dot drawn and announced; `×N`; the hover eject; ⌘-click opening
+  a tab; the verbs by state; the touch sheet.
 - `app/seance_app/test/server_appearance_test.dart` — every colour × icon
   renders, the same accent resolves differently per brightness, and the status
   dot keeps its tooltip inside the badge.
@@ -835,14 +932,15 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   stack, the UTF-8 byte count, and the find bar (counts, wrap, case toggle,
   highlight ranges).
 - `app/seance_app/test/narrow_back_navigation_test.dart` — system back at
-  phone width: the terminal returns to the list with the session kept, an
+  phone width: the terminal returns to the list with the session kept (and
+  the list's filter query), an
   open drawer closes first, the list leaves it to the platform, and Files
   walks up to `/` before popping (or pops after a parent fails to list)
   while its app bar arrow pops at once.
 - `app/seance_app/test/server_exclude_from_sync_test.dart` — the row's
-  exclusion mark appears only for an excluded server, and describes itself as
-  a label rather than a tooltip (a `ListTile` merge keeps one tooltip and
-  every label, so a tooltip there would be silently dropped); plus when
+  exclusion mark appears only for an excluded server, and is described in
+  the row's spoken label and its tooltip (the row's visuals are excluded
+  from semantics); plus when
   excluding asks for confirmation (only when another device could lose the
   server).
 
