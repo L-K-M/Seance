@@ -68,23 +68,152 @@ void main() {
         'built-in change\n',
         expectedSha256: document.sha256,
       ),
-      throwsStateError,
+      throwsA(isA<BuiltInEditorException>()),
     );
     expect(await file.readAsString(), 'external change\n');
   });
 
   test('rejects malformed, binary, and oversized content', () async {
     await file.writeAsBytes([0xff]);
-    await expectLater(loadBuiltInTextDocument(file), throwsStateError);
+    await expectLater(
+      loadBuiltInTextDocument(file),
+      throwsA(isA<BuiltInEditorException>()),
+    );
 
     await file.writeAsBytes([0, 1, 2]);
-    await expectLater(loadBuiltInTextDocument(file), throwsStateError);
+    await expectLater(
+      loadBuiltInTextDocument(file),
+      throwsA(isA<BuiltInEditorException>()),
+    );
 
     await file.writeAsBytes([1, 2, 3]);
     await expectLater(
       loadBuiltInTextDocument(file, maximumBytes: 2),
-      throwsStateError,
+      throwsA(isA<BuiltInEditorException>()),
     );
+  });
+
+  test(
+    'refusals read as plain sentences, with no "Bad state:" prefix',
+    () async {
+      await file.writeAsBytes([0xff]);
+      Object? error;
+      try {
+        await loadBuiltInTextDocument(file);
+      } catch (caught) {
+        error = caught;
+      }
+      // The editor shows this string verbatim in its body and toasts.
+      expect('$error', 'This file is not valid UTF-8 text.');
+    },
+  );
+
+  group('saving keeps the local copy\'s permissions', () {
+    final posix = Platform.isLinux || Platform.isMacOS;
+
+    Future<int> modeOf(File file) async => (await file.stat()).mode & 0x1ff;
+
+    Future<void> chmod(File file, String mode) async {
+      final result = await Process.run('chmod', [mode, file.path]);
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+    }
+
+    test('an owner-only copy stays owner-only', () async {
+      await chmod(file, '600');
+      await saveBuiltInTextDocument(file, 'secret\n');
+      expect(await file.readAsString(), 'secret\n');
+      expect(await modeOf(file), 0x180);
+    }, skip: !posix);
+
+    test('an executable keeps its execute bits', () async {
+      await chmod(file, '755');
+      await saveBuiltInTextDocument(file, '#!/bin/sh\n');
+      expect(await modeOf(file), 0x1ed);
+    }, skip: !posix);
+
+    test(
+      'the replacement is owner-only while its content is written',
+      () async {
+        // A 0644 original: the final mode is restored from it, so only the
+        // temp's own mode can show the write was never group/world-readable.
+        await chmod(file, '644');
+        int? temporaryMode;
+        await saveBuiltInTextDocument(
+          file,
+          'secret\n',
+          observeTemporary: (temporary) async {
+            expect(await temporary.readAsString(), 'secret\n');
+            temporaryMode = await modeOf(temporary);
+          },
+        );
+        expect(temporaryMode, 0x180);
+        expect(await modeOf(file), 0x1a4);
+      },
+      skip: !posix,
+    );
+  });
+
+  group('symbolic links', () {
+    late File target;
+    late Link link;
+
+    setUp(() async {
+      target = File('${directory.path}/target.txt');
+      await target.writeAsString('target\n');
+      link = Link('${directory.path}/link.txt');
+      await link.create(target.path);
+    });
+
+    test('are refused on open', () async {
+      await expectLater(
+        loadBuiltInTextDocumentDetails(File(link.path)),
+        throwsA(
+          isA<BuiltInEditorException>().having(
+            (error) => '$error',
+            'message',
+            contains('symbolic link'),
+          ),
+        ),
+      );
+    });
+
+    test(
+      'are refused on save, leaving the link and its target alone',
+      () async {
+        await expectLater(
+          saveBuiltInTextDocument(File(link.path), 'replaced\n'),
+          throwsA(isA<BuiltInEditorException>()),
+        );
+        expect(await FileSystemEntity.isLink(link.path), isTrue);
+        expect(await target.readAsString(), 'target\n');
+        expect(await directory.list().length, 3);
+      },
+    );
+  });
+
+  test('a second BOM is content and survives a round trip', () async {
+    const bom = [0xef, 0xbb, 0xbf];
+    await file.writeAsBytes([...bom, ...bom, ...utf8.encode('A\n')]);
+    final document = await loadBuiltInTextDocumentDetails(file);
+
+    expect(document.hasUtf8Bom, isTrue);
+    expect(document.text, '\uFEFFA\n');
+
+    await saveBuiltInTextDocument(
+      file,
+      document.text,
+      hasUtf8Bom: document.hasUtf8Bom,
+      lineEnding: document.lineEnding,
+      expectedSha256: document.sha256,
+    );
+    expect(await file.readAsBytes(), [...bom, ...bom, ...utf8.encode('A\n')]);
+  });
+
+  test('a file that is only a BOM opens empty and keeps the BOM', () async {
+    await file.writeAsBytes([0xef, 0xbb, 0xbf]);
+    final document = await loadBuiltInTextDocumentDetails(file);
+    expect(document.text, isEmpty);
+    expect(document.hasUtf8Bom, isTrue);
   });
 
   testWidgets('edits, saves, and reports the local save', (tester) async {
@@ -566,6 +695,71 @@ void main() {
     );
   });
 
+  testWidgets('a save that commits after its tab closed still reconciles', (
+    tester,
+  ) async {
+    final finishSave = Completer<void>();
+    var reconciles = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          file: file,
+          remotePath: '/etc/config.txt',
+          initialText: 'one\n',
+          saveDocument: (_, text) => finishSave.future,
+          onSaved: () async => reconciles++,
+        ),
+      ),
+    );
+    await tester.enterText(find.byType(TextField), 'edited\n');
+    await tester.pump();
+    await tester.tap(find.byTooltip('Save locally'));
+    await tester.pump();
+
+    // The tab goes away while the write is still in flight.
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    finishSave.complete();
+    await tester.pump();
+
+    // The write landed on disk, so the managed copy's bookkeeping must
+    // hear about it even with no editor left to show a toast.
+    expect(reconciles, 1);
+  });
+
+  testWidgets('a save-and-upload that commits after its tab closed still '
+      'uploads', (tester) async {
+    final finishSave = Completer<void>();
+    var uploads = 0;
+    var reconciles = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          file: file,
+          remotePath: '/etc/config.txt',
+          initialText: 'one\n',
+          saveDocument: (_, text) => finishSave.future,
+          onSaved: () async => reconciles++,
+          onUpload: () async {
+            uploads++;
+            return true;
+          },
+        ),
+      ),
+    );
+    await tester.enterText(find.byType(TextField), 'edited\n');
+    await tester.pump();
+    await tester.tap(find.byTooltip('Save and upload'));
+    await tester.pump();
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    finishSave.complete();
+    await tester.pump();
+
+    expect(uploads, 1);
+    // A successful upload reconciles the copy itself.
+    expect(reconciles, 0);
+  });
+
   testWidgets('offers reload once the server copy drifts', (tester) async {
     // runAsync throughout: checkout, refresh and reload all do real file IO.
     // pumpAndSettle is unusable there (the blinking cursor never settles), so
@@ -798,6 +992,40 @@ void main() {
     await tester.pump();
     expect(find.text('Ln 3, Col 6 · 3 lines · 13 bytes'), findsOneWidget);
     expect(find.textContaining('Unsaved edits'), findsOneWidget);
+  });
+
+  testWidgets('the status bar counts UTF-8 bytes, not characters', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BuiltInTextEditorScreen(
+          file: file,
+          remotePath: '/etc/config.txt',
+          // 1 + 2 + 3 + 4 bytes: ASCII, Latin-1, BMP, and a surrogate pair.
+          initialText: 'aé€😀',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('· 10 bytes'), findsOneWidget);
+  });
+
+  test('utf8EncodedLength agrees with utf8.encode', () {
+    for (final text in [
+      '',
+      'plain ascii',
+      'aé€😀',
+      'line\r\nbreaks\n',
+      // Unpaired surrogates encode as U+FFFD (3 bytes each).
+      '\uD83D',
+      'x\uDE00y',
+      '\uDE00\uD83D',
+      '😀' * 3,
+    ]) {
+      expect(utf8EncodedLength(text), utf8.encode(text).length, reason: text);
+    }
   });
 
   testWidgets('the status bar reports CRLF endings and a UTF-8 BOM', (
