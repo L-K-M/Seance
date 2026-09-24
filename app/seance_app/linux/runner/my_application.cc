@@ -7,6 +7,14 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+// The product name, not the binary's (seance_app). GTK takes UTF-8, so the
+// accent can stay; only bundle file names need to be ASCII.
+constexpr char kWindowTitle[] = "Séance";
+
+// The first-launch size; afterwards the Dart side restores the saved window.
+constexpr int kDefaultWindowWidth = 1280;
+constexpr int kDefaultWindowHeight = 800;
+
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
@@ -45,14 +53,15 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "seance_app");
+    gtk_header_bar_set_title(header_bar, kWindowTitle);
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "seance_app");
+    gtk_window_set_title(window, kWindowTitle);
   }
 
-  gtk_window_set_default_size(window, 1800, 1600);
+  gtk_window_set_default_size(window, kDefaultWindowWidth,
+                              kDefaultWindowHeight);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
