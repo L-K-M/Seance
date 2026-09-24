@@ -155,7 +155,7 @@ void main() {
     // Initializing restores local copies from disk: real I/O.
     await tester.runAsync(files.initialize);
     session
-      ..session = _OpenSshSession()
+      ..session = _OpenSshSession(session.engine)
       ..files = files
       ..connecting = false;
     state!.notifyListeners();
@@ -250,12 +250,18 @@ void main() {
 }
 
 /// Just enough of a live SSH session for the terminal to count as connected.
+/// Closing it disposes the engine, as a real session's close does.
 class _OpenSshSession implements SshSession {
+  _OpenSshSession(this.engine);
+
+  @override
+  final TerminalEngine engine;
+
   @override
   bool get isClosed => false;
 
   @override
-  Future<void> close() async {}
+  Future<void> close() => engine.dispose();
 
   @override
   Object? noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
