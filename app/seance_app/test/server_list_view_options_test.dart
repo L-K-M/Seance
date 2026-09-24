@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,12 +10,15 @@ import 'package:seance_app/main.dart';
 import 'package:seance_app/services/app_services.dart';
 import 'package:seance_app/ui/server_grouping.dart';
 import 'package:seance_app/ui/server_list_density.dart';
+import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_app/ui/server_tile.dart';
+import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
 
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 
-/// The server list's two view options: the density switch in the app bar, and
+/// The server list's two view options: the home screen's density switch, and
 /// pinning a server to the top.
 ///
 /// Both are device-local preferences, so what is asserted here is the rendered
@@ -78,10 +82,41 @@ void main() {
         }
       });
 
-  Future<void> pumpPane(WidgetTester tester) async {
+  /// The phone home by default (the widget-test platform is Android); the
+  /// density switch lives there.
+  Future<void> pumpPane(
+    WidgetTester tester, {
+    ServerListPosture posture = ServerListPosture.home,
+    TargetPlatform? platform,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
-        home: AppScope(state: state!, child: ServerListPane(onOpen: (_) {})),
+        theme: platform == null ? null : SeanceTheme.light(platform: platform),
+        home: AppScope(
+          state: state!,
+          child: ServerListPane(posture: posture, onOpen: (_) {}),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  /// A row's merged node, read from inside it (getSemantics walks up).
+  SemanticsNode rowSemantics(WidgetTester tester) => tester.getSemantics(
+    find
+        .descendant(
+          of: find.byType(ServerTile).first,
+          matching: find.byType(Listener),
+        )
+        .first,
+  );
+
+  /// Opens a row's verbs from its visible "⋮" (a sheet, on touch).
+  Future<void> openVerbs(WidgetTester tester, String id) async {
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(ValueKey(id)),
+        matching: find.byTooltip(serverSidebarStrings.rowMenu),
       ),
     );
     await tester.pumpAndSettle();
@@ -117,7 +152,8 @@ void main() {
       expect(
         compact,
         lessThan(comfortable),
-        reason: 'the point of the mode is fitting more servers in the same '
+        reason:
+            'the point of the mode is fitting more servers in the same '
             'vertical space',
       );
       expect(
@@ -146,9 +182,30 @@ void main() {
 
       // Read off the row's merged node, which is what a screen reader is
       // handed: dropping the second line must not drop the information.
-      final semantics = tester.getSemantics(find.byType(ServerTile));
-      expect(semantics.label, contains('alpha'));
-      expect(semantics.label, contains('deploy@alpha.example.com:22'));
+      final semantics = tester.ensureSemantics();
+      try {
+        final label = rowSemantics(tester).getSemanticsData().label;
+        expect(label, contains('alpha'));
+        expect(label, contains('deploy@alpha.example.com:22'));
+      } finally {
+        semantics.dispose();
+      }
+    });
+
+    testWidgets('the rail has no density control: one line either way', (
+      tester,
+    ) async {
+      // The sibling anatomy keeps a desktop rail to one-line rows with the
+      // address in the tooltip, so the choice only shapes the home screen.
+      await boot(tester, [server('alpha')]);
+      await pumpPane(
+        tester,
+        posture: ServerListPosture.rail,
+        platform: TargetPlatform.macOS,
+      );
+      expect(find.byType(SegmentedButton<ServerListDensity>), findsNothing);
+      expect(find.text('deploy@alpha.example.com:22'), findsNothing);
+      expect(tester.getSize(find.byType(ServerTile)).height, 26);
     });
 
     testWidgets('the app-bar switch changes density and records the choice', (
@@ -189,13 +246,7 @@ void main() {
       await pumpPane(tester);
       expect(renderedLabels(tester), ['alpha', 'zulu']);
 
-      await tester.tap(
-        find.descendant(
-          of: find.byKey(const ValueKey('zulu')),
-          matching: find.byType(PopupMenuButton<String>),
-        ),
-      );
-      await tester.pumpAndSettle();
+      await openVerbs(tester, 'zulu');
       await tester.tap(find.text('Pin to top'));
       await tester.pumpAndSettle();
 
@@ -203,25 +254,17 @@ void main() {
       expect(renderedLabels(tester), ['zulu', 'alpha']);
       // Both sections are headed, or the rows after the shortlist would read
       // as still being part of it.
-      expect(find.text(kPinnedLabel), findsOneWidget);
-      expect(find.text(kUnpinnedLabel), findsOneWidget);
+      expect(find.text(kPinnedLabel.toUpperCase()), findsOneWidget);
+      expect(find.text(kServersLabel.toUpperCase()), findsOneWidget);
     });
 
-    testWidgets('the same menu unpins, and the list goes back', (
-      tester,
-    ) async {
+    testWidgets('the same menu unpins, and the list goes back', (tester) async {
       await boot(tester, [server('alpha'), server('zulu')]);
       await tester.runAsync(() => state!.toggleServerPin('zulu'));
       await pumpPane(tester);
       expect(renderedLabels(tester), ['zulu', 'alpha']);
 
-      await tester.tap(
-        find.descendant(
-          of: find.byKey(const ValueKey('zulu')),
-          matching: find.byType(PopupMenuButton<String>),
-        ),
-      );
-      await tester.pumpAndSettle();
+      await openVerbs(tester, 'zulu');
       expect(
         find.text('Pin to top'),
         findsNothing,
@@ -232,7 +275,7 @@ void main() {
 
       expect(state!.pinnedServerIds, isEmpty);
       expect(renderedLabels(tester), ['alpha', 'zulu']);
-      expect(find.text(kPinnedLabel), findsNothing);
+      expect(find.text(kPinnedLabel.toUpperCase()), findsNothing);
     });
 
     testWidgets('a pinned server leaves its group for the shortlist', (
@@ -247,12 +290,16 @@ void main() {
 
       expect(renderedLabels(tester), ['web', 'db']);
       final headers = tester
-          .widgetList<ServerGroupHeader>(find.byType(ServerGroupHeader))
+          .widgetList<SidebarSectionHeader>(find.byType(SidebarSectionHeader))
           .toList();
-      expect(headers.map((h) => h.name), [kPinnedLabel, 'Production']);
+      expect(headers.map((h) => h.title), [
+        kPinnedLabel,
+        kServersLabel,
+        'Production',
+      ]);
       // The group's count is what is left in it — one, not two — so folding
       // it away never claims to hide the row sitting at the top of the list.
-      expect(headers.map((h) => h.count), [1, 1]);
+      expect(headers.map((h) => h.count), [1, 1, 1]);
     });
 
     testWidgets('deleting a server takes its pin with it', (tester) async {
@@ -275,7 +322,16 @@ void main() {
     ) async {
       // Enough servers for the filter field to appear at all.
       await boot(tester, [
-        for (final name in ['alpha', 'bravo', 'delta', 'echo', 'zulu'])
+        for (final name in [
+          'alpha',
+          'bravo',
+          'delta',
+          'echo',
+          'golf',
+          'hotel',
+          'india',
+          'zulu',
+        ])
           server(name),
       ]);
       await tester.runAsync(() => state!.toggleServerPin('zulu'));
@@ -285,7 +341,10 @@ void main() {
         MaterialApp(
           home: AppScope(
             state: state!,
-            child: ServerListPane(onOpen: (s) => opened = s),
+            child: ServerListPane(
+              posture: ServerListPosture.home,
+              onOpen: (s) => opened = s,
+            ),
           ),
         ),
       );

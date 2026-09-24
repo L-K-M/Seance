@@ -1,224 +1,384 @@
+import 'dart:convert';
+import 'dart:ui' as ui;
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:seance_app/app_state.dart';
+import 'package:seance_app/theme.dart';
+import 'package:seance_app/ui/middle_ellipsis_text.dart';
 import 'package:seance_app/ui/server_appearance.dart';
-import 'package:seance_app/ui/server_list_density.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_app/ui/server_status_dot.dart';
+import 'package:seance_app/ui/server_tile.dart';
+import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
 
 /// What a row in the server list says about itself: which one is selected,
-/// and which have a session open. Both in both densities, since the compact
-/// row is not the comfortable one with a line removed.
+/// what state it is in, which colour it carries, and which verbs it offers.
 void main() {
-  ServerConfig server({ServerColor? color}) => ServerConfig(
+  ServerConfig server({
+    ServerColor? color,
+    ServerIcon? icon,
+    String? iconImage,
+  }) => ServerConfig(
     id: 'box',
     label: 'box',
     host: 'box.example.com',
     username: 'deploy',
     color: color,
+    icon: icon,
+    iconImage: iconImage,
     createdAt: 1,
     updatedAt: 1,
   );
 
+  /// Every callback, counted by name.
+  final calls = <String>[];
+  setUp(calls.clear);
+
   Future<void> pump(
     WidgetTester tester, {
-    required ServerListDensity density,
+    ServerConfig? config,
+    ServerDot dot = ServerDot.none,
     bool selected = false,
+    bool pinned = false,
     int tabCount = 0,
-    TerminalStatus connection = TerminalStatus.disconnected,
-    ServerColor? color,
+    bool connected = false,
+    bool reconnectable = false,
+    bool showAddress = false,
+    TargetPlatform platform = TargetPlatform.macOS,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
+        theme: SeanceTheme.light(platform: platform),
         home: Scaffold(
-          body: ServerTile(
-            density: density,
-            server: server(color: color),
-            connection: connection,
-            tabCount: tabCount,
-            reachability: ProbeStatus.unknown,
-            selected: selected,
-            onTap: () {},
-            onNewTab: () {},
-            onEdit: () {},
-            onDuplicate: () {},
-            onDelete: () {},
-            onDisconnect: () {},
-            onReconnect: null,
-            pinned: false,
-            onTogglePin: () {},
+          body: SidebarKitScope(
+            strings: serverSidebarStrings,
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 260,
+                child: ServerTile(
+                  server: config ?? server(),
+                  dot: dot,
+                  tabCount: tabCount,
+                  selected: selected,
+                  pinned: pinned,
+                  showAddress: showAddress,
+                  onOpen: () => calls.add('open'),
+                  onNewTab: () => calls.add('newTab'),
+                  onEdit: () => calls.add('edit'),
+                  onDuplicate: () => calls.add('duplicate'),
+                  onDelete: () => calls.add('delete'),
+                  onTogglePin: () => calls.add('pin'),
+                  onDisconnect: connected
+                      ? () => calls.add('disconnect')
+                      : null,
+                  onReconnect: reconnectable
+                      ? () => calls.add('reconnect')
+                      : null,
+                ),
+              ),
+            ),
           ),
         ),
       ),
     );
-    // Past the tile's own style transition, which animates a change of
-    // selection rather than cutting to it.
-    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 300));
   }
 
-  ListTile tile(WidgetTester tester) =>
-      tester.widget<ListTile>(find.byType(ListTile));
+  TextStyle? titleStyle(WidgetTester tester) => tester
+      .widget<Text>(
+        find.descendant(
+          of: find.byType(MiddleEllipsisText),
+          matching: find.byType(Text),
+        ),
+      )
+      .style;
 
-  /// The title's effective style, as the text under it is drawn.
-  TextStyle titleStyle(WidgetTester tester) =>
-      DefaultTextStyle.of(tester.element(find.text('box'))).style;
+  /// The row's own pill: the decorated box directly under its margin.
+  BoxDecoration? pill(WidgetTester tester) => tester
+      .widgetList<Container>(
+        find.descendant(
+          of: find.byType(SidebarRow),
+          matching: find.byType(Container),
+        ),
+      )
+      .map((c) => c.decoration)
+      .whereType<BoxDecoration>()
+      .firstWhere((d) => d.shape == BoxShape.rectangle);
 
-  for (final density in ServerListDensity.values) {
-    group(density.label, () {
-      testWidgets('the selected row is filled, barred and bold', (
-        tester,
-      ) async {
-        await pump(
-          tester,
-          density: density,
-          selected: true,
-          color: ServerColor.red,
-        );
-        final scheme = Theme.of(
-          tester.element(find.byType(ListTile)),
-        ).colorScheme;
-        final selected = tile(tester);
-        // Where the row's content starts. A shape border on the tile would
-        // inset this by the border's width; the bar must not move it.
-        final leadingEdge = tester
-            .getTopLeft(find.byType(ServerAccentBar))
-            .dx;
-        // Three signals, because a tinted title alone is what the eye is
-        // worst at picking out of a list of tinted badges.
-        expect(selected.selectedTileColor, scheme.secondaryContainer);
-        // The bar is a foreground decoration: the tile's own shape must stay
-        // empty even when selected, or the border would inset the content.
-        expect(selected.shape, isNull);
-        // The bar is a foreground decoration, not the tile's shape: a shape
-        // border insets the content by its width and the row would sit a few
-        // pixels right of every unselected one.
-        final bar = find.ancestor(
-          of: find.byType(ListTile),
-          matching: find.byWidgetPredicate(
-            (widget) =>
-                widget is DecoratedBox &&
-                widget.position == DecorationPosition.foreground &&
-                widget.decoration is BoxDecoration &&
-                (widget.decoration as BoxDecoration).border
-                    is BorderDirectional,
-          ),
-        );
-        expect(bar, findsOneWidget);
-        final border =
-            (tester.widget<DecoratedBox>(bar).decoration as BoxDecoration)
-                    .border!
-                as BorderDirectional;
-        expect(border.start.color, scheme.primary);
-        expect(border.start.width, greaterThan(0));
-        expect(titleStyle(tester).fontWeight, FontWeight.w600);
-
-        await pump(
-          tester,
-          density: density,
-          selected: false,
-          color: ServerColor.red,
-        );
-        expect(tile(tester).shape, isNull);
-        expect(bar, findsNothing);
-        expect(titleStyle(tester).fontWeight, isNot(FontWeight.w600));
-        expect(
-          tester.getTopLeft(find.byType(ServerAccentBar)).dx,
-          leadingEdge,
-          reason: 'selecting a row must not shift its content',
-        );
-      });
-
-      testWidgets('the row carries the server\'s colour as its bar', (
-        tester,
-      ) async {
-        // The composition the whole treatment rests on. The badge carries
-        // the same colour as a fill, so a tint that stopped reaching the bar
-        // would take the one carrier an image mark cannot cover out of the
-        // list while the bar's own tests, and the badge's, stayed green.
-        const red = ServerTint(named: ServerColor.red);
-        await pump(tester, density: density, color: ServerColor.red);
-        final bar = find.byType(ServerAccentBar);
-        expect(tester.widget<ServerAccentBar>(bar).tint, red);
-        final painted = tester.widget<DecoratedBox>(
-          find.descendant(of: bar, matching: find.byType(DecoratedBox)),
-        );
-        expect(
-          (painted.decoration as BoxDecoration).color,
-          serverAccent(tester.element(bar), red)!.line,
-        );
-        // As tall as the whole mark beside it, ring included, at either
-        // density — the two read as one block or as two stray shapes.
-        expect(
-          tester.getSize(bar).height,
-          ServerAvatar.extentFor(tester.getSize(find.byType(ServerBadge)).width),
-        );
-
-        // No colour: nothing painted, but the slot stays, so the marks of
-        // coloured and uncoloured rows line up in one column.
-        await pump(tester, density: density);
-        expect(
-          find.descendant(of: bar, matching: find.byType(DecoratedBox)),
-          findsNothing,
-        );
-        expect(tester.getSize(bar).width, ServerAccentBar.width);
-      });
-
-      testWidgets('a row with a session wears the ring, others do not', (
-        tester,
-      ) async {
-        await pump(
-          tester,
-          density: density,
-          tabCount: 1,
-          connection: TerminalStatus.connected,
-        );
-        expect(find.byTooltip('connected'), findsOneWidget);
-        final ringed = tester.getSize(find.byType(ServerAvatar));
-
-        // A dropped session is not connected: no ring. The footprint is
-        // reserved either way, so rows do not shift as sessions come and go.
-        await pump(tester, density: density, tabCount: 1);
-        expect(find.byTooltip('connected'), findsNothing);
-        expect(find.byTooltip('disconnected'), findsNothing);
-        expect(tester.getSize(find.byType(ServerAvatar)), ringed);
-
-        // Nor is a connecting one: no ring, no sweep, no tooltip.
-        await pump(
-          tester,
-          density: density,
-          tabCount: 1,
-          connection: TerminalStatus.connecting,
-        );
-        expect(find.byTooltip('connected'), findsNothing);
-        expect(find.byTooltip('connecting'), findsNothing);
-        expect(tester.getSize(find.byType(ServerAvatar)), ringed);
-
-        await pump(tester, density: density);
-        expect(find.byTooltip('connected'), findsNothing);
-        expect(find.byTooltip('disconnected'), findsNothing);
-        expect(tester.getSize(find.byType(ServerAvatar)), ringed);
-      });
-    });
-  }
-
-  testWidgets('the compact ring is smaller than the comfortable one', (
+  testWidgets('one 26 px line on desktop: the name, no address line', (
     tester,
   ) async {
-    // The ring scales with the badge rather than swallowing a small one.
-    await pump(
-      tester,
-      density: ServerListDensity.comfortable,
-      tabCount: 1,
-      connection: TerminalStatus.connected,
+    await pump(tester);
+    expect(tester.getSize(find.byType(SidebarRow)).height, 26);
+    expect(find.text('box'), findsOneWidget);
+    expect(find.text('deploy@box.example.com:22'), findsNothing);
+    // Not lost: the tooltip carries it for a pointer.
+    expect(find.byTooltip('deploy@box.example.com:22'), findsOneWidget);
+  });
+
+  testWidgets('the selected row wears the pill and a semibold title', (
+    tester,
+  ) async {
+    await pump(tester, selected: true);
+    final chrome = SeanceChrome.of(tester.element(find.byType(SidebarRow)));
+    final markEdge = tester.getTopLeft(find.byType(ServerRailMark)).dx;
+    expect(pill(tester)?.color, chrome.inactiveSelectionFill);
+    expect(pill(tester)?.borderRadius, isNotNull);
+    expect(titleStyle(tester)?.fontWeight, FontWeight.w600);
+
+    await pump(tester);
+    expect(pill(tester)?.color, isNull);
+    expect(titleStyle(tester)?.fontWeight, FontWeight.w400);
+    expect(
+      tester.getTopLeft(find.byType(ServerRailMark)).dx,
+      markEdge,
+      reason: 'selecting a row must not shift its content',
     );
-    final comfortable = tester.getSize(find.byType(ServerAvatar));
-    await pump(
+  });
+
+  group('the mark', () {
+    testWidgets('an uncoloured glyph draws alone, like the sibling rail', (
       tester,
-      density: ServerListDensity.compact,
-      tabCount: 1,
-      connection: TerminalStatus.connected,
-    );
-    final compact = tester.getSize(find.byType(ServerAvatar));
-    expect(compact.width, lessThan(comfortable.width));
+    ) async {
+      await pump(tester, config: server(icon: ServerIcon.database));
+      expect(find.byType(ServerBadge), findsNothing);
+      expect(find.byIcon(serverIconData(ServerIcon.database)), findsOneWidget);
+    });
+
+    testWidgets('a coloured server gets its badge, at the mark extent', (
+      tester,
+    ) async {
+      await pump(tester, config: server(color: ServerColor.red));
+      final badge = tester.widget<ServerBadge>(find.byType(ServerBadge));
+      expect(badge.tint, const ServerTint(named: ServerColor.red));
+      expect(badge.size, 18);
+
+      // Touch rows are 48 dp and the mark grows with them.
+      await pump(
+        tester,
+        config: server(color: ServerColor.red),
+        platform: TargetPlatform.android,
+      );
+      expect(tester.widget<ServerBadge>(find.byType(ServerBadge)).size, 24);
+    });
+
+    testWidgets('a coloured image mark is framed in the colour', (
+      tester,
+    ) async {
+      // An image covers the badge's fill, so without the frame the colour
+      // would have nowhere to show at 18 px.
+      final png = await tester.runAsync(() async {
+        final recorder = ui.PictureRecorder();
+        ui.Canvas(recorder).drawRect(
+          const ui.Rect.fromLTWH(0, 0, 8, 8),
+          ui.Paint()..color = const ui.Color(0xFF00FF00),
+        );
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(8, 8);
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        picture.dispose();
+        image.dispose();
+        return base64Encode(data!.buffer.asUint8List());
+      });
+      await pump(
+        tester,
+        config: server(color: ServerColor.red, iconImage: png),
+      );
+      final frame = tester.widget<DecoratedBox>(
+        find.descendant(
+          of: find.byType(ServerRailMark),
+          matching: find.byWidgetPredicate(
+            (w) =>
+                w is DecoratedBox &&
+                w.position == DecorationPosition.foreground,
+          ),
+        ),
+      );
+      final border = (frame.decoration as BoxDecoration).border! as Border;
+      expect(
+        border.top.color,
+        serverAccent(
+          tester.element(find.byType(ServerRailMark)),
+          const ServerTint(named: ServerColor.red),
+        )!.line,
+      );
+    });
+  });
+
+  group('the dot', () {
+    for (final dot in ServerDot.values) {
+      testWidgets('$dot is drawn and announced', (tester) async {
+        final semantics = tester.ensureSemantics();
+        try {
+          await pump(tester, dot: dot);
+          final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
+          final context = tester.element(find.byType(SidebarRow));
+          expect(row.statusColor, dot.color(context));
+          expect(row.statusStyle, dot.style);
+          // Read off a widget inside the row's container node: getSemantics
+          // walks up to the nearest node, which from the row widget itself
+          // would be the route above it.
+          final label = tester
+              .getSemantics(
+                find
+                    .descendant(
+                      of: find.byType(SidebarRow),
+                      matching: find.byType(Listener),
+                    )
+                    .first,
+              )
+              .getSemanticsData()
+              .label;
+          expect(label, startsWith('box'));
+          expect(label, contains('deploy@box.example.com:22'));
+          if (dot.description case final said?) {
+            expect(label, contains(said));
+          }
+        } finally {
+          semantics.dispose();
+        }
+      });
+    }
+  });
+
+  testWidgets('×N shows only past one tab', (tester) async {
+    await pump(tester, tabCount: 1);
+    expect(find.textContaining('×'), findsNothing);
+    await pump(tester, tabCount: 3);
+    expect(find.text('×3'), findsOneWidget);
+  });
+
+  testWidgets('a connected row offers the disconnect glyph on hover', (
+    tester,
+  ) async {
+    await pump(tester, connected: true, tabCount: 2, dot: ServerDot.connected);
+    final glyph = find.byKey(const ValueKey('server.disconnect.box'));
+    expect(glyph, findsNothing);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(find.byType(SidebarRow)));
+    await tester.pump();
+    expect(find.byTooltip('Disconnect all'), findsOneWidget);
+    await tester.tap(glyph);
+    expect(calls, ['disconnect']);
+
+    // Nothing connected, nothing to eject.
+    await pump(tester);
+    await mouse.moveTo(Offset.zero);
+    await mouse.moveTo(tester.getCenter(find.byType(SidebarRow)));
+    await tester.pump();
+    expect(glyph, findsNothing);
+  });
+
+  group('activation', () {
+    testWidgets('a click opens; ⌘- or Ctrl-click opens another tab', (
+      tester,
+    ) async {
+      await pump(tester);
+      await tester.tap(find.byType(SidebarRow));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.tap(find.byType(SidebarRow));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.tap(find.byType(SidebarRow));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      // Enter from the keyboard is always the plain open.
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      expect(calls, ['open', 'newTab', 'newTab', 'open']);
+    });
+  });
+
+  group('the menu', () {
+    Future<void> openMenu(WidgetTester tester) async {
+      await tester.tap(
+        find.byType(SidebarRow),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    MenuItemButton verb(WidgetTester tester, String label) =>
+        tester.widget<MenuItemButton>(
+          find.ancestor(
+            of: find.text(label),
+            matching: find.byType(MenuItemButton),
+          ),
+        );
+
+    testWidgets('right-click opens the verbs the tile always offered', (
+      tester,
+    ) async {
+      await pump(tester);
+      await openMenu(tester);
+      for (final label in [
+        'Connect',
+        'Connect in new tab',
+        'Disconnect',
+        'Pin to top',
+        'Edit…',
+        'Duplicate',
+        'Delete…',
+      ]) {
+        expect(find.text(label), findsOneWidget, reason: label);
+      }
+      // Nothing connected: Disconnect stays, greyed, so the menu keeps its
+      // shape; Reconnect is only for a lone dead tab.
+      expect(verb(tester, 'Disconnect').onPressed, isNull);
+      expect(find.text('Reconnect'), findsNothing);
+
+      for (final (label, call) in [
+        ('Connect', 'open'),
+        ('Connect in new tab', 'newTab'),
+        ('Pin to top', 'pin'),
+        ('Edit…', 'edit'),
+        ('Duplicate', 'duplicate'),
+        ('Delete…', 'delete'),
+      ]) {
+        if (label != 'Connect') await openMenu(tester);
+        await tester.tap(find.text(label));
+        await tester.pumpAndSettle();
+        expect(calls.last, call, reason: label);
+      }
+    });
+
+    testWidgets('the verbs follow the row\'s state', (tester) async {
+      await pump(tester, pinned: true, connected: true, tabCount: 2);
+      await openMenu(tester);
+      expect(find.text('Unpin'), findsOneWidget);
+      expect(find.text('Pin to top'), findsNothing);
+      expect(verb(tester, 'Disconnect all').onPressed, isNotNull);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await pump(tester, tabCount: 1, reconnectable: true);
+      await openMenu(tester);
+      await tester.tap(find.text('Reconnect'));
+      await tester.pumpAndSettle();
+      expect(calls, ['reconnect']);
+    });
+
+    testWidgets('on touch a long-press opens the same verbs as a sheet', (
+      tester,
+    ) async {
+      await pump(tester, platform: TargetPlatform.android, showAddress: true);
+      // The touch home spells the address out, and is 48 dp or more.
+      expect(find.text('deploy@box.example.com:22'), findsOneWidget);
+      expect(
+        tester.getSize(find.byType(SidebarRow)).height,
+        greaterThanOrEqualTo(48),
+      );
+      await tester.longPress(find.byType(SidebarRow));
+      await tester.pumpAndSettle();
+      expect(find.byType(BottomSheet), findsOneWidget);
+      await tester.tap(find.text('Duplicate'));
+      await tester.pumpAndSettle();
+      expect(calls, ['duplicate']);
+    });
   });
 }

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../app_state.dart';
 import '../main.dart';
 import 'command_generator.dart';
+import 'server_list_pane.dart';
 import 'settings_screen.dart';
 import 'top_toast.dart';
 
@@ -83,6 +84,22 @@ void terminalSelectAll(TerminalSession tab) {
   );
 }
 
+/// The server filter's chord (Poltergeist's plan, 10 §5): ⌥⌘F on Apple
+/// platforms, Ctrl+Alt+F elsewhere.
+SingleActivator serverFilterActivator(TargetPlatform platform) =>
+    switch (platform) {
+      TargetPlatform.macOS || TargetPlatform.iOS => const SingleActivator(
+        LogicalKeyboardKey.keyF,
+        meta: true,
+        alt: true,
+      ),
+      _ => const SingleActivator(
+        LogicalKeyboardKey.keyF,
+        control: true,
+        alt: true,
+      ),
+    };
+
 /// Cross-platform keyboard shortcuts for the menu commands. On macOS the native
 /// menu (wired in MainFlutterWindow.swift) owns ⌘T, ⌘, and ⌘K; this also covers
 /// Linux/Windows, where there is no system menu bar. The native menu and these
@@ -96,6 +113,8 @@ class AppMenus extends StatelessWidget {
     final state = AppScope.of(context);
     return CallbackShortcuts(
       bindings: {
+        serverFilterActivator(Theme.of(context).platform): () =>
+            ServerListPane.revealFilter(),
         const SingleActivator(LogicalKeyboardKey.keyT, meta: true): () =>
             openNewTab(state),
         const SingleActivator(LogicalKeyboardKey.keyT, control: true): () =>

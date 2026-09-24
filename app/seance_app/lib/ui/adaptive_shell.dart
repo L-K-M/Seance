@@ -56,7 +56,10 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
               utilityWidth: utilityWidth,
             ),
           ),
-          listPane: ServerListPane(onOpen: (s) => _open(state, s)),
+          listPane: ServerListPane(
+            posture: ServerListPosture.rail,
+            onOpen: (s) => _open(state, s),
+          ),
           terminalPane: const TerminalPane(showAppBar: false),
           // The utility panel (Assistant + Snippets) is always available;
           // Snippets works without an LLM configured.
@@ -90,6 +93,7 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
               )
             : ServerListPane(
                 key: const ValueKey('list'),
+                posture: ServerListPosture.home,
                 onOpen: (s) => _open(state, s),
               ),
       ),

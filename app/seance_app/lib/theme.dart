@@ -244,6 +244,24 @@ class SeanceTheme {
         space: 1,
         thickness: 1,
       ),
+      // The sibling apps' menus (the sidebar kit's context menus): 8 px
+      // corners like every other surface, and on desktop the compact rows
+      // Poltergeist's theme gives them, rather than touch-height items in
+      // a pointer menu.
+      menuTheme: MenuThemeData(
+        style: MenuStyle(
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+        ),
+      ),
+      menuButtonTheme: desktop
+          ? MenuButtonThemeData(
+              style: MenuItemButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+              ),
+            )
+          : null,
       tooltipTheme: TooltipThemeData(
         waitDuration: const Duration(milliseconds: 500),
         decoration: BoxDecoration(
@@ -266,7 +284,7 @@ class SeanceTheme {
   ];
 }
 
-/// Colors for the online/offline/unknown indicator dots.
+/// Colors for the online/offline/connecting/unknown indicator dots.
 class StatusColors {
   // Darken light-theme indicators to stay legible on tinted containers too.
   static Color online(BuildContext context) =>
@@ -278,6 +296,13 @@ class StatusColors {
       Theme.of(context).brightness == Brightness.light
           ? const Color(0xFFCF222E)
           : const Color(0xFFFF7B72);
+
+  /// A session still negotiating: amber, the sibling apps' "in progress"
+  /// dot (Poltergeist's plan, 10 §5).
+  static Color connecting(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.light
+          ? const Color(0xFFB06E00)
+          : const Color(0xFFD29922);
 
   static Color unknown(BuildContext context) =>
       Theme.of(context).brightness == Brightness.light
