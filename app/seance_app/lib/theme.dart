@@ -195,10 +195,15 @@ class SeanceTheme {
   /// server colour picker starts from it when no accent is chosen yet.
   static const Color seed = Color(0xFF6B5BD2);
 
-  static ThemeData light() => _base(Brightness.light);
-  static ThemeData dark() => _base(Brightness.dark);
+  /// [platform] overrides the host platform the type ramp and row extents
+  /// are chosen for — tests and captures render the desktop rail and the
+  /// phone home from one host.
+  static ThemeData light({TargetPlatform? platform}) =>
+      _base(Brightness.light, platform);
+  static ThemeData dark({TargetPlatform? platform}) =>
+      _base(Brightness.dark, platform);
 
-  static ThemeData _base(Brightness brightness) {
+  static ThemeData _base(Brightness brightness, TargetPlatform? override) {
     final n = brightness == Brightness.dark ? _dark : _light;
     final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: brightness)
         .copyWith(
@@ -221,9 +226,13 @@ class SeanceTheme {
           secondaryContainer: n.secondaryContainer,
           onSecondaryContainer: n.onSecondaryContainer,
         );
-    final platform = defaultTargetPlatform;
+    final platform = override ?? defaultTargetPlatform;
     final desktop = _isDesktop(platform);
-    final base = ThemeData(colorScheme: scheme, useMaterial3: true);
+    final base = ThemeData(
+      colorScheme: scheme,
+      useMaterial3: true,
+      platform: override,
+    );
     return base.copyWith(
       visualDensity: VisualDensity.comfortable,
       scaffoldBackgroundColor: scheme.surface,
