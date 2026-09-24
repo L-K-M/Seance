@@ -283,8 +283,34 @@ void main() {
       );
     });
 
-    test('perl: hash comments anywhere, keywords, strings', () {
-      const text = 'my \$x = 1;# tail\nsub f { print "hi" }\n';
+    test('perl: # glued to a sigil or delimiter is not a comment', () {
+      // The last index of an array, `#` as a quote or regex delimiter, and
+      // `#` inside a regex: each used to grey out the rest of its line.
+      for (final line in [
+        r'for my $i (0..$#list) { print $i }',
+        r's#/usr#/opt#;',
+        r'my @w = qw#a b#;',
+        r'$line =~ s/#.*//;',
+      ]) {
+        final tokens = tokenizeSyntax('$line\n', SyntaxLanguages.perl);
+        expect(
+          _ofType(tokens, SyntaxTokenType.comment),
+          isEmpty,
+          reason: line,
+        );
+      }
+      const index = r'for my $i (0..$#list) { print $i }';
+      expect(
+        _ofType(
+          tokenizeSyntax(index, SyntaxLanguages.perl),
+          SyntaxTokenType.keyword,
+        ).map((t) => _slice(index, t)),
+        ['for', 'my', 'print'],
+      );
+    });
+
+    test('perl: hash comments after whitespace, keywords, strings', () {
+      const text = 'my \$x = 1; # tail\nsub f { print "hi" }\n';
       final tokens = tokenizeSyntax(text, SyntaxLanguages.perl);
       expect(
         _ofType(tokens, SyntaxTokenType.comment).map((t) => _slice(text, t)),

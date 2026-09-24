@@ -314,8 +314,12 @@ class SyntaxLanguages {
     strings: const ["'", '"'],
   );
 
-  /// Perl. `#` starts a comment anywhere; POD (`=pod` … `=cut`) is left out
-  /// for the same start-of-line reason as Ruby's `=begin`.
+  /// Perl. A `#` counts as a comment only at a line start or after
+  /// whitespace, as for Ruby: glued to a sigil or a delimiter it is syntax
+  /// (`$#list`, `s#a#b#`, `qw#a b#`, `s/#.*//`), and without the boundary
+  /// each greyed out the rest of its line. The cost is that a comment
+  /// glued to code (`1;# note`) renders as code. POD (`=pod` … `=cut`) is
+  /// left out for the same start-of-line reason as Ruby's `=begin`.
   static final perl = SyntaxLanguage(
     id: 'perl',
     keywords: const {
@@ -329,6 +333,7 @@ class SyntaxLanguages {
       'lt', 'gt', 'le', 'ge', 'cmp',
     },
     lineComments: const ['#'],
+    lineCommentNeedsBoundary: true,
     strings: const ["'", '"'],
   );
 
