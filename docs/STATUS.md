@@ -7,7 +7,12 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-19. The built-in file editor opens as a tab in the
+_Last updated: 2026-09-24. Android's system back no longer closes the app
+from the narrow terminal screen (which ended every live session), and walks
+up the Files tree before leaving it; the built-in editor keeps a checkout's
+permissions when it saves and highlights CSS, Ruby, Perl and Lua (both
+ported from Poltergeist); the Linux window is titled Séance. Before that,
+the built-in file editor opens as a tab in the
 owning server's strip — beside the terminals the file was browsed through —
 instead of a route that covered the whole app; an unsaved buffer marks the
 tab and is confirmed away, and the tab follows its session across a
@@ -47,6 +52,67 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Back keeps sessions; editor saves keep modes (2026-09-24)
+
+**Android back.** The narrow layout switches to the terminal with a state
+flag, not a pushed route, and nothing handled a system back there. It
+reached the root route, bubbled to `SystemNavigator.pop`, and
+`FlutterActivity` answered with `finish()`; `MainActivity.onDestroy` then
+stopped the keep-alive service, so one back press ended every live SSH
+session. `AdaptiveShell` now wraps the narrow panes in a `PopScope` that
+blocks the pop while the terminal shows and returns to the server list, as
+the app bar arrow does. A blocking `PopScope` outranks the route's local
+history, so the handler lets an open drawer close first. On the server list
+the back stays the platform's. On the pushed Files screen, system back
+climbs one folder per press (`RemoteFilesController.canGoUp`, shared with
+the header's Up button) and leaves at `/`; the app bar arrow pops outright
+from any folder. The manifest sets `android:enableOnBackInvokedCallback`, so
+Android 13+ hands a back to Flutter only while one of these scopes wants it.
+`narrow_back_navigation_test.dart` drives real system backs through
+`handlePopRoute` at 400 px wide; the terminal and Files cases failed before
+the fix (the back went to the platform, and Files popped instead of going
+up). Not verified on a device. On Android 12L and older, back on the server
+list still reaches `finish()` and ends sessions, as it did before; on 13+
+the system's own back-to-home should background the app instead.
+
+**Editor saves (ported from Poltergeist).** Poltergeist's hardened copy of
+the built-in editor's document I/O
+(`packages/poltergeist_core/lib/src/editor/built_in_text_document.dart`)
+fixed defects this file still had, and they are ported back. The temp file
+was created at the default umask and renamed over the checkout, so a save
+turned a 0600 checkout into 0644 and dropped a script's execute bits. The
+temp is now owner-only before its first byte and takes the original's
+permission bits (`applyPermissionBits`, beside `restrictFileToOwner`) just
+before the rename. A symlinked checkout is refused on open as well as on
+save, and a failed digest read in the conflict guard restores the original.
+Refusals are `BuiltInEditorException`, whose text is the bare sentence, so
+the editor no longer shows `Bad state:` prefixes. A save whose write
+committed after its tab closed used to skip the reconcile or upload; it now
+runs them, as Poltergeist's editor does.
+
+One deliberate divergence: Poltergeist strips the BOM from the bytes and
+decodes the rest, but `Utf8Decoder` drops a BOM at the start of whatever it
+is handed, so a file that starts with two BOMs loses the second, which is
+content. Séance skips every leading BOM and restores all but the first as
+U+FEFF, so such a file round-trips byte for byte. Worth porting the other
+way.
+
+**Syntax parity (ported from Poltergeist).** CSS/SCSS/LESS, Ruby, Perl and
+Lua families, `.htaccess`/`.htpasswd` as ini, Ruby/Perl/Lua shebangs,
+`multilineStringPairs` for Lua's `[[ ]]`, and a guard for optional meta
+groups (which threw before). The palette stays Séance's. Language detection
+now takes the basename after `\` as well as `/`. Poltergeist lists
+`font-face` as a CSS keyword; keywords are single identifiers that stop at
+`-`, so it can never match and is left out here.
+
+The status bar's byte count is cached per text instance and counted without
+encoding the buffer. The Linux runner titles its window Séance (it said
+`seance_app`) and opens at 1280x800; a `flutter build linux --debug` run
+under Xvfb reported exactly that through `xdotool`.
+
+751 Flutter tests pass (29 new) and `flutter analyze` is clean; the
+pure-Dart packages were not touched and analyze clean.
 
 ## The editor is a tab, not a screen (2026-09-19)
 
@@ -754,14 +820,23 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   renders, the same accent resolves differently per brightness, and the status
   dot keeps its tooltip inside the badge.
 - `app/seance_app/test/editor_syntax_test.dart` — language detection
-  (extension/basename/shebang), tokenizer per family (comments, strings with
-  escapes, numbers, keywords, meta), non-overlap invariant, search matching
-  and caps, and search-over-syntax span layering that reassembles the text.
+  (extension/basename/shebang, either path separator), tokenizer per family
+  (comments, strings with escapes, numbers, keywords, meta; CSS, Ruby, Perl,
+  Lua), optional meta groups, non-overlap invariant, search matching and
+  caps, and search-over-syntax span layering that reassembles the text.
 - `app/seance_app/test/built_in_text_editor_test.dart` — atomic save
-  round-trips, BOM/CRLF preservation, external-change refusal, and the editor
+  round-trips, BOM/CRLF preservation (a second BOM survives), external-change
+  refusal, typed refusals without prefixes, symlink refusal, permission
+  bits kept across a save with an owner-only temp, and the editor
   screen: Ctrl-S save-and-upload (immediate, no dialog; reconcile fallback on
-  failure), local-only save without an upload target, open-at-top, monospace
-  stack, and the find bar (counts, wrap, case toggle, highlight ranges).
+  failure), local-only save without an upload target, reconcile or upload
+  after the tab closed mid-save, open-at-top, monospace
+  stack, the UTF-8 byte count, and the find bar (counts, wrap, case toggle,
+  highlight ranges).
+- `app/seance_app/test/narrow_back_navigation_test.dart` — system back at
+  phone width: the terminal returns to the list with the session kept, an
+  open drawer closes first, the list leaves it to the platform, and Files
+  walks up to `/` before popping while its app bar arrow pops at once.
 - `app/seance_app/test/server_exclude_from_sync_test.dart` — the row's
   exclusion mark appears only for an excluded server, and describes itself as
   a label rather than a tooltip (a `ListTile` merge keeps one tooltip and
