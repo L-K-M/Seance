@@ -48,6 +48,90 @@ void main() {
         isNull,
       );
     });
+
+    test('takes the basename after a backslash as well as a slash', () {
+      expect(syntaxLanguageFor(r'C:\Users\me\.bashrc')?.id, 'shell');
+      expect(syntaxLanguageFor(r'C:\srv\app\Dockerfile')?.id, 'dockerfile');
+      expect(syntaxLanguageFor(r'C:\srv\app\Makefile')?.id, 'shell');
+      expect(syntaxLanguageFor(r'C:\ProgramData\ssh\sshd_config')?.id, 'ini');
+      expect(syntaxLanguageFor(r'/srv/mixed\dir/.htaccess')?.id, 'ini');
+      // A dot in a directory name is not the file's extension.
+      expect(syntaxLanguageFor(r'C:\site.py\README'), isNull);
+    });
+
+    test('css covers .css, .scss and .less', () {
+      expect(syntaxLanguageFor('site.css')?.id, 'css');
+      expect(syntaxLanguageFor('theme.scss')?.id, 'css');
+      expect(syntaxLanguageFor('legacy.less')?.id, 'css');
+    });
+
+    test('ruby covers extensions, convention basenames and shebangs', () {
+      for (final path in [
+        'app.rb',
+        'tasks.rake',
+        'my.gemspec',
+        'Gemfile',
+        'Rakefile',
+        'config.ru',
+      ]) {
+        expect(syntaxLanguageFor(path)?.id, 'ruby', reason: path);
+      }
+      for (final shebang in ['#!/usr/bin/ruby', '#!/usr/bin/env ruby']) {
+        expect(
+          syntaxLanguageFor('/usr/local/bin/tool', firstLine: shebang)?.id,
+          'ruby',
+          reason: shebang,
+        );
+      }
+    });
+
+    test('perl covers .pl, .pm and shebangs', () {
+      expect(syntaxLanguageFor('script.pl')?.id, 'perl');
+      expect(syntaxLanguageFor('Module.pm')?.id, 'perl');
+      for (final shebang in ['#!/usr/bin/perl', '#!/usr/bin/env perl']) {
+        expect(
+          syntaxLanguageFor('/usr/local/bin/tool', firstLine: shebang)?.id,
+          'perl',
+          reason: shebang,
+        );
+      }
+    });
+
+    test('lua covers .lua and the known interpreter spellings only', () {
+      expect(syntaxLanguageFor('init.lua')?.id, 'lua');
+      for (final interpreter in [
+        'lua',
+        'luajit',
+        'lua5.1',
+        'lua5.2',
+        'lua5.3',
+        'lua5.4',
+      ]) {
+        for (final shebang in [
+          '#!/usr/bin/$interpreter',
+          '#!/usr/bin/env $interpreter',
+        ]) {
+          expect(
+            syntaxLanguageFor('/usr/local/bin/tool', firstLine: shebang)?.id,
+            'lua',
+            reason: shebang,
+          );
+        }
+      }
+      // Names that merely start with "lua" are not claimed.
+      for (final shebang in ['#!/usr/bin/lua5.5', '#!/usr/bin/luabridge']) {
+        expect(
+          syntaxLanguageFor('/usr/local/bin/tool', firstLine: shebang),
+          isNull,
+          reason: shebang,
+        );
+      }
+    });
+
+    test('Apache dot-configs map to ini', () {
+      expect(syntaxLanguageFor('/srv/www/.htaccess')?.id, 'ini');
+      expect(syntaxLanguageFor('/srv/www/.htpasswd')?.id, 'ini');
+    });
   });
 
   group('tokenizer', () {
@@ -154,6 +238,97 @@ void main() {
       expect(
         _ofType(tokens, SyntaxTokenType.keyword).map((t) => _slice(text, t)),
         containsAll(['FROM', 'run']),
+      );
+    });
+
+    test('css: block comments, property meta, at-rule keywords', () {
+      const text = '/* note */\n@media screen {\n  color: red;\n}\n';
+      final tokens = tokenizeSyntax(text, SyntaxLanguages.css);
+      expect(
+        _ofType(tokens, SyntaxTokenType.comment).map((t) => _slice(text, t)),
+        ['/* note */'],
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.meta).map((t) => _slice(text, t)),
+        contains('color'),
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.keyword).map((t) => _slice(text, t)),
+        contains('media'),
+      );
+    });
+
+    test('ruby: bounded hash comments, keywords, strings', () {
+      const text = '# note\ndef greet\n  puts "hi"\nend\n';
+      final tokens = tokenizeSyntax(text, SyntaxLanguages.ruby);
+      expect(
+        _ofType(tokens, SyntaxTokenType.comment).map((t) => _slice(text, t)),
+        ['# note'],
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.keyword).map((t) => _slice(text, t)),
+        containsAll(['def', 'end', 'puts']),
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.string).map((t) => _slice(text, t)),
+        ['"hi"'],
+      );
+      // `x#y` is not a comment start in Ruby.
+      expect(
+        _ofType(
+          tokenizeSyntax('x#y\n', SyntaxLanguages.ruby),
+          SyntaxTokenType.comment,
+        ),
+        isEmpty,
+      );
+    });
+
+    test('perl: hash comments anywhere, keywords, strings', () {
+      const text = 'my \$x = 1;# tail\nsub f { print "hi" }\n';
+      final tokens = tokenizeSyntax(text, SyntaxLanguages.perl);
+      expect(
+        _ofType(tokens, SyntaxTokenType.comment).map((t) => _slice(text, t)),
+        ['# tail'],
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.keyword).map((t) => _slice(text, t)),
+        containsAll(['my', 'sub', 'print']),
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.string).map((t) => _slice(text, t)),
+        ['"hi"'],
+      );
+    });
+
+    test('lua: --[[ ]] comments and [[ ]] strings span lines', () {
+      const text = '--[[ block\ncomment ]]\nlocal s = [[ multi\nline ]]\n'
+          '-- tail\nlocal open = [[ unterminated';
+      final tokens = tokenizeSyntax(text, SyntaxLanguages.lua);
+      expect(
+        _ofType(tokens, SyntaxTokenType.comment).map((t) => _slice(text, t)),
+        ['--[[ block\ncomment ]]', '-- tail'],
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.string).map((t) => _slice(text, t)),
+        ['[[ multi\nline ]]', '[[ unterminated'],
+      );
+      expect(
+        _ofType(tokens, SyntaxTokenType.keyword).map((t) => _slice(text, t)),
+        contains('local'),
+      );
+    });
+
+    test('an optional meta group that does not match adds no token', () {
+      final language = SyntaxLanguage(
+        id: 'test',
+        metaPattern: RegExp(r'key(=\w+)?'),
+        metaGroup: 1,
+      );
+      const text = 'key key=value';
+      final tokens = tokenizeSyntax(text, language);
+      expect(
+        _ofType(tokens, SyntaxTokenType.meta).map((t) => _slice(text, t)),
+        ['=value'],
       );
     });
 
