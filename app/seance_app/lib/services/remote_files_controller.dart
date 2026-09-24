@@ -187,6 +187,13 @@ class RemoteFilesController extends ChangeNotifier {
     }
   }
 
+  /// Whether [goUp] has somewhere to go: false at the root, and before the
+  /// first listing has landed.
+  bool get canGoUp {
+    final path = currentPath;
+    return path != null && remoteParent(path) != path;
+  }
+
   Future<void> goUp() {
     final path = currentPath;
     return path == null ? Future.value() : navigate(remoteParent(path));

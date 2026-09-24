@@ -69,19 +69,42 @@ class _AdaptiveShellState extends State<AdaptiveShell> {
 
   Widget _buildNarrow(AppState state) {
     final showTerminal = _viewingTerminal && state.activeServerId != null;
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 200),
-      child: showTerminal
-          ? TerminalPane(
-              key: const ValueKey('terminal'),
-              showAssistantAffordance: true,
-              onBack: () => setState(() => _viewingTerminal = false),
-            )
-          : ServerListPane(
-              key: const ValueKey('list'),
-              onOpen: (s) => _open(state, s),
-            ),
+    // The terminal is a state flag here, not a pushed route, so an unhandled
+    // system back would reach the root route and go to the platform. On
+    // Android that finishes the activity, and the engine and every live SSH
+    // session die with it. While the terminal shows, back does what the app
+    // bar's arrow does; on the list it stays the platform's.
+    return PopScope(
+      canPop: !showTerminal,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _backFromTerminal();
+      },
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: showTerminal
+            ? TerminalPane(
+                key: const ValueKey('terminal'),
+                showAssistantAffordance: true,
+                onBack: () => setState(() => _viewingTerminal = false),
+              )
+            : ServerListPane(
+                key: const ValueKey('list'),
+                onOpen: (s) => _open(state, s),
+              ),
+      ),
     );
+  }
+
+  void _backFromTerminal() {
+    // A blocking PopScope outranks the route's local history, so an open
+    // drawer would otherwise be skipped. Let the route close it first: the
+    // imperative pop removes the history entry and leaves the route in place.
+    if (ModalRoute.of(context)?.willHandlePopInternally ?? false) {
+      Navigator.of(context).pop();
+      return;
+    }
+    setState(() => _viewingTerminal = false);
   }
 
   Future<void> _open(AppState state, ServerConfig server) async {
