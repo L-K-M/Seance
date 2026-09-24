@@ -248,9 +248,11 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
   /// On the pushed Files screen, system back climbs one folder at a time the
   /// way a file manager's does, and leaves the screen once it reaches the
   /// root. The app bar's arrow still leaves from anywhere (see [FilesScreen]).
+  /// After a failed listing (a parent the user may not read, say) back
+  /// leaves too, so it can never get stuck retrying the same folder.
   Widget _systemBackGoesUp(RemoteFilesController controller, Widget child) {
     return PopScope(
-      canPop: !controller.canGoUp,
+      canPop: !controller.canGoUp || controller.error != null,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) unawaited(controller.goUp());
       },

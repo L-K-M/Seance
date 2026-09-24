@@ -141,10 +141,12 @@ void main() {
   /// the terminal's Files button pushes the Files screen.
   Future<RemoteFilesController> connectFiles(
     WidgetTester tester,
-    TerminalSession session,
-  ) async {
+    TerminalSession session, {
+    RemoteFileSystem? fileSystem,
+  }) async {
+    final remote = fileSystem ?? _TreeFileSystem();
     final files = RemoteFilesController(
-      () async => _TreeFileSystem(),
+      () async => remote,
       shellDirectory: session.engine.workingDirectory,
       managedFileStore: services!.managedRemoteFiles,
       serverId: session.serverId,
@@ -185,6 +187,33 @@ void main() {
       expect(find.byType(TerminalPane), findsOneWidget);
     },
   );
+
+  testWidgets('system back in Files leaves after a parent fails to list', (
+    tester,
+  ) async {
+    final session = await pumpNarrowShell(tester);
+    final files = await connectFiles(
+      tester,
+      session,
+      fileSystem: _TreeFileSystem(unreadable: {'/home'}),
+    );
+    await openTerminal(tester);
+    await tester.tap(find.byTooltip('Remote files'));
+    await settle(tester);
+
+    // The parent cannot be listed: the browser stays put and says so.
+    expect(await tester.binding.handlePopRoute(), isTrue);
+    await settle(tester);
+    expect(files.currentPath, '/home/test');
+    expect(files.error, isNotNull);
+    expect(find.byType(FilesScreen), findsOneWidget);
+
+    // Retrying would fail the same way, so the next back leaves.
+    expect(await tester.binding.handlePopRoute(), isTrue);
+    await settle(tester);
+    expect(find.byType(FilesScreen), findsNothing);
+    expect(find.byType(TerminalPane), findsOneWidget);
+  });
 
   testWidgets('the Files app bar arrow leaves the screen from any folder', (
     tester,
@@ -233,7 +262,13 @@ class _OpenSshSession implements SshSession {
 }
 
 /// `/home/test` with its ancestors, each holding the next directory down.
+/// Listing a path in [unreadable] fails the way SFTP reports a directory
+/// the user may not read.
 class _TreeFileSystem implements RemoteFileSystem {
+  _TreeFileSystem({this.unreadable = const {}});
+
+  final Set<String> unreadable;
+
   static const _children = {
     '/': [
       RemoteFileEntry(
@@ -264,8 +299,17 @@ class _TreeFileSystem implements RemoteFileSystem {
       path == '.' ? '/home/test' : path;
 
   @override
-  Future<List<RemoteFileEntry>> listDirectory(String path) async =>
-      _children[path] ?? const [];
+  Future<List<RemoteFileEntry>> listDirectory(String path) async {
+    if (unreadable.contains(path)) {
+      throw RemoteFileException(
+        kind: RemoteFileErrorKind.permissionDenied,
+        operation: 'list',
+        path: path,
+        message: 'Permission denied',
+      );
+    }
+    return _children[path] ?? const [];
+  }
 
   @override
   Object? noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

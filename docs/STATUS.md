@@ -66,8 +66,9 @@ the app bar arrow does. A blocking `PopScope` outranks the route's local
 history, so the handler lets an open drawer close first. On the server list
 the back stays the platform's. On the pushed Files screen, system back
 climbs one folder per press (`RemoteFilesController.canGoUp`, shared with
-the header's Up button) and leaves at `/`; the app bar arrow pops outright
-from any folder. The manifest sets `android:enableOnBackInvokedCallback`, so
+the header's Up button) and leaves at `/`, or once a listing has failed so
+an unreadable parent cannot trap it; the app bar arrow pops outright from
+any folder. The manifest sets `android:enableOnBackInvokedCallback`, so
 Android 13+ hands a back to Flutter only while one of these scopes wants it.
 `narrow_back_navigation_test.dart` drives real system backs through
 `handlePopRoute` at 400 px wide; the terminal and Files cases failed before
@@ -111,7 +112,7 @@ encoding the buffer. The Linux runner titles its window Séance (it said
 `seance_app`) and opens at 1280x800; a `flutter build linux --debug` run
 under Xvfb reported exactly that through `xdotool`.
 
-751 Flutter tests pass (29 new) and `flutter analyze` is clean; the
+752 Flutter tests pass (29 new) and `flutter analyze` is clean; the
 pure-Dart packages were not touched and analyze clean.
 
 ## The editor is a tab, not a screen (2026-09-19)
@@ -836,7 +837,8 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
 - `app/seance_app/test/narrow_back_navigation_test.dart` — system back at
   phone width: the terminal returns to the list with the session kept, an
   open drawer closes first, the list leaves it to the platform, and Files
-  walks up to `/` before popping while its app bar arrow pops at once.
+  walks up to `/` before popping (or pops after a parent fails to list)
+  while its app bar arrow pops at once.
 - `app/seance_app/test/server_exclude_from_sync_test.dart` — the row's
   exclusion mark appears only for an excluded server, and describes itself as
   a label rather than a tooltip (a `ListTile` merge keeps one tooltip and
