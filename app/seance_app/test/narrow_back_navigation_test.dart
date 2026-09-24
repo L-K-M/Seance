@@ -29,9 +29,13 @@ void main() {
   AppServices? services;
   AppState? state;
 
+  // The fixtures are nulled as they are released, so a test whose setup
+  // fails before assigning them cannot dispose the previous test's again.
   tearDown(() async {
     state?.dispose();
+    state = null;
     await services?.probe.dispose();
+    services = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_pathChannel, null);
     FlutterSecureStorage.setMockInitialValues({});
@@ -40,6 +44,7 @@ void main() {
     } on FileSystemException {
       // Deliberately ignored: the OS reaps system temp dirs.
     }
+    directory = null;
   });
 
   ServerConfig server(String id) => ServerConfig(
