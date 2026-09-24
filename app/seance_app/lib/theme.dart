@@ -146,11 +146,72 @@ class SeanceChrome extends ThemeExtension<SeanceChrome> {
   }
 
   @override
-  SeanceChrome copyWith() => this;
+  SeanceChrome copyWith({
+    Color? sidebarBackground,
+    Color? headerBackground,
+    Color? paneBackground,
+    Color? inspectorBackground,
+    Color? separator,
+    Color? hoverFill,
+    Color? capsuleFill,
+    Color? selectionFill,
+    Color? onSelection,
+    Color? inactiveSelectionFill,
+    Color? activePaneIndicator,
+    Color? secondaryText,
+    double? headerHeight,
+    double? rowExtent,
+    double? sidebarRowExtent,
+  }) {
+    return SeanceChrome(
+      sidebarBackground: sidebarBackground ?? this.sidebarBackground,
+      headerBackground: headerBackground ?? this.headerBackground,
+      paneBackground: paneBackground ?? this.paneBackground,
+      inspectorBackground: inspectorBackground ?? this.inspectorBackground,
+      separator: separator ?? this.separator,
+      hoverFill: hoverFill ?? this.hoverFill,
+      capsuleFill: capsuleFill ?? this.capsuleFill,
+      selectionFill: selectionFill ?? this.selectionFill,
+      onSelection: onSelection ?? this.onSelection,
+      inactiveSelectionFill:
+          inactiveSelectionFill ?? this.inactiveSelectionFill,
+      activePaneIndicator: activePaneIndicator ?? this.activePaneIndicator,
+      secondaryText: secondaryText ?? this.secondaryText,
+      headerHeight: headerHeight ?? this.headerHeight,
+      rowExtent: rowExtent ?? this.rowExtent,
+      sidebarRowExtent: sidebarRowExtent ?? this.sidebarRowExtent,
+    );
+  }
 
+  /// Colors blend so chrome regions fade with the rest of a theme change.
+  /// The metrics step instead: they differ by platform, not brightness, so
+  /// a light/dark switch never moves them, and a half-way row height would
+  /// only reflow the lists mid-animation.
   @override
-  SeanceChrome lerp(SeanceChrome? other, double t) =>
-      other == null || t < 0.5 ? this : other;
+  SeanceChrome lerp(SeanceChrome? other, double t) {
+    if (other == null) return this;
+    return SeanceChrome(
+      sidebarBackground:
+          Color.lerp(sidebarBackground, other.sidebarBackground, t)!,
+      headerBackground: Color.lerp(headerBackground, other.headerBackground, t)!,
+      paneBackground: Color.lerp(paneBackground, other.paneBackground, t)!,
+      inspectorBackground:
+          Color.lerp(inspectorBackground, other.inspectorBackground, t)!,
+      separator: Color.lerp(separator, other.separator, t)!,
+      hoverFill: Color.lerp(hoverFill, other.hoverFill, t)!,
+      capsuleFill: Color.lerp(capsuleFill, other.capsuleFill, t)!,
+      selectionFill: Color.lerp(selectionFill, other.selectionFill, t)!,
+      onSelection: Color.lerp(onSelection, other.onSelection, t)!,
+      inactiveSelectionFill:
+          Color.lerp(inactiveSelectionFill, other.inactiveSelectionFill, t)!,
+      activePaneIndicator:
+          Color.lerp(activePaneIndicator, other.activePaneIndicator, t)!,
+      secondaryText: Color.lerp(secondaryText, other.secondaryText, t)!,
+      headerHeight: t < 0.5 ? headerHeight : other.headerHeight,
+      rowExtent: t < 0.5 ? rowExtent : other.rowExtent,
+      sidebarRowExtent: t < 0.5 ? sidebarRowExtent : other.sidebarRowExtent,
+    );
+  }
 }
 
 SeanceChrome _chromeFor(Brightness brightness, TargetPlatform platform) {
