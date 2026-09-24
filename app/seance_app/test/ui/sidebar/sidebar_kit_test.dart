@@ -500,6 +500,41 @@ void main() {
       expect(find.text('kit-one'), findsNothing);
     });
 
+    testWidgets('the keyboard focus ring does not move what it frames', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.folder, size: 16),
+          title: 'Docs',
+          onActivate: (_) {},
+        ),
+      );
+      final title = find.text('Docs');
+      final before = tester.getTopLeft(title);
+      Container? ringed() => tester
+          .widgetList<Container>(
+            find.descendant(
+              of: find.byKey(const ValueKey('r')),
+              matching: find.byType(Container),
+            ),
+          )
+          .where((c) => c.foregroundDecoration != null)
+          .firstOrNull;
+      expect(ringed(), isNull);
+
+      // A click focuses without a ring; the next key hands the ring back.
+      await tester.tap(find.byKey(const ValueKey('r')));
+      await tester.pump();
+      expect(ringed(), isNull);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(ringed(), isNotNull);
+      expect(tester.getTopLeft(title), before);
+    });
+
     testWidgets('on touch the row is 48 dp and the menu button opens the '
         'sheet', (tester) async {
       var opened = 0;

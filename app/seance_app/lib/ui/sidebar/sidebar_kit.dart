@@ -210,6 +210,13 @@ mixin _KeyboardFocusRing<T extends StatefulWidget> on State<T> {
   }
 }
 
+/// The keyboard focus ring (and a row's drop-into outline): painted as a
+/// foreground decoration so it never moves what it frames.
+BoxDecoration _focusRing(Color color) => BoxDecoration(
+  borderRadius: BorderRadius.circular(_pillRadius),
+  border: Border.all(color: color, width: 2),
+);
+
 /// A row's height after text scaling: the token is the floor, and scaled
 /// text grows the row rather than clipping (D20).
 double _scaledExtent(BuildContext context, double extent) =>
@@ -555,10 +562,13 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
                         ? chrome.hoverFill
                         : (nested && _hovering ? chrome.hoverFill : null),
                     borderRadius: BorderRadius.circular(_pillRadius),
-                    border: focused
-                        ? Border.all(color: theme.colorScheme.primary, width: 2)
-                        : null,
                   ),
+                  // Painted over the content, not around it: a border in
+                  // the decoration insets the child by its width, and the
+                  // title would jump 2 px whenever focus arrived.
+                  foregroundDecoration: focused
+                      ? _focusRing(theme.colorScheme.primary)
+                      : null,
                   child: Row(
                     children: [
                       if (nested) ...[
@@ -1009,10 +1019,12 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
       decoration: BoxDecoration(
         color: fill,
         borderRadius: BorderRadius.circular(_pillRadius),
-        border: focused || dropInto
-            ? Border.all(color: theme.colorScheme.primary, width: 2)
-            : null,
       ),
+      // Over the content, as on the header: a decoration border would
+      // shift the mark and title by its width while focused.
+      foregroundDecoration: focused || dropInto
+          ? _focusRing(theme.colorScheme.primary)
+          : null,
       child: Row(
         children: [
           _SidebarMark(
