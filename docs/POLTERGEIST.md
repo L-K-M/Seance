@@ -240,6 +240,14 @@ tests in the kit test):
 Séance's theme also gives the kit's menus 8 px corners and compact
 desktop items, which Poltergeist gets from its app-wide compact density.
 
+**Converged (Poltergeist 4ba7851).** Poltergeist ported every change above
+back, and Séance in turn adopted Poltergeist's one change: a row's dot is
+one `SidebarRow.status: SidebarStatusDot?` value (colour plus
+`SidebarDotStyle`) instead of separate `statusColor` and `statusStyle`
+fields, so a style without a colour cannot be expressed. The two kit files
+now differ only in this header, the theme import, and `_chrome()`; keep
+them that way by porting any kit change to both.
+
 ## Cross-app behaviors worth knowing about
 
 - In shared-account mode Poltergeist reads `serverConfig` records

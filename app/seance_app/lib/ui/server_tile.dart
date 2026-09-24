@@ -93,8 +93,10 @@ class ServerTile extends StatelessWidget {
     return SidebarRow(
       mark: ServerRailMark(server: server),
       title: server.label,
-      statusColor: dot.color(context),
-      statusStyle: dot.style,
+      status: switch (dot.color(context)) {
+        final color? => SidebarStatusDot(color, style: dot.style),
+        null => null,
+      },
       subtitle: showAddress ? _address : null,
       trailingIcon: excluded ? Icons.cloud_off_outlined : null,
       trailingText: tabCount > 1 ? '×$tabCount' : null,

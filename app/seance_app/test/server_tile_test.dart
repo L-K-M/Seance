@@ -217,8 +217,8 @@ void main() {
           await pump(tester, dot: dot);
           final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
           final context = tester.element(find.byType(SidebarRow));
-          expect(row.statusColor, dot.color(context));
-          expect(row.statusStyle, dot.style);
+          expect(row.status?.color, dot.color(context));
+          if (row.status != null) expect(row.status!.style, dot.style);
           // Read off a widget inside the row's container node: getSemantics
           // walks up to the nearest node, which from the row widget itself
           // would be the route above it.

@@ -1,5 +1,7 @@
 // Ported from Poltergeist app/poltergeist_app/lib/ui/sidebar/sidebar_kit.dart
-// @ 58605fa; see docs/POLTERGEIST.md ("The sidebar kit").
+// @ 58605fa, with Séance's changes ported back and Poltergeist's
+// SidebarStatusDot adopted (Poltergeist 4ba7851); see docs/POLTERGEIST.md
+// ("The sidebar kit").
 
 /// The sibling sidebar kit (10 §5, §10's contract): the section header,
 /// the one-line row, the filter field, and the bottom bar Séance and
@@ -726,6 +728,26 @@ final class SidebarRowAction {
 /// lesser mark of the same colour rather than a second dot.
 enum SidebarDotStyle { solid, ring }
 
+/// The one status dot a row composes into its mark's corner (10 §5): its
+/// colour and how it is drawn, as one value — a style without a colour
+/// cannot be expressed.
+@immutable
+final class SidebarStatusDot {
+  const SidebarStatusDot(this.color, {this.style = SidebarDotStyle.solid});
+
+  final Color color;
+  final SidebarDotStyle style;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SidebarStatusDot &&
+      other.color == color &&
+      other.style == style;
+
+  @override
+  int get hashCode => Object.hash(color, style);
+}
+
 /// One sidebar row (10 §5): the chrome's `sidebarRowExtent` tall, an 18 px
 /// [mark] with ONE composed 7 px status dot, a 13 px middle-ellipsis
 /// [title], and trailing 11 px tabular [trailingText] or, on hover,
@@ -741,8 +763,7 @@ class SidebarRow extends StatefulWidget {
     super.key,
     required this.mark,
     required this.title,
-    this.statusColor,
-    this.statusStyle = SidebarDotStyle.solid,
+    this.status,
     this.italic = false,
     this.subtitle,
     this.trailingIcon,
@@ -763,8 +784,7 @@ class SidebarRow extends StatefulWidget {
   final String title;
 
   /// The one status dot composed into the mark's corner; null draws none.
-  final Color? statusColor;
-  final SidebarDotStyle statusStyle;
+  final SidebarStatusDot? status;
 
   /// Unsaved rows (a live Quick Connect session) set their title in
   /// italics.
@@ -1027,12 +1047,7 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
           : null,
       child: Row(
         children: [
-          _SidebarMark(
-            mark: widget.mark,
-            dot: widget.statusColor,
-            style: widget.statusStyle,
-            ring: ring,
-          ),
+          _SidebarMark(mark: widget.mark, dot: widget.status, ring: ring),
           SizedBox(width: _touch(context) ? 12 : 6),
           Expanded(child: label),
           if (trailingIcon != null) ...[
@@ -1138,13 +1153,11 @@ class _SidebarMark extends StatelessWidget {
   const _SidebarMark({
     required this.mark,
     required this.dot,
-    required this.style,
     required this.ring,
   });
 
   final Widget mark;
-  final Color? dot;
-  final SidebarDotStyle style;
+  final SidebarStatusDot? dot;
   final Color ring;
 
   @override
@@ -1152,7 +1165,7 @@ class _SidebarMark extends StatelessWidget {
     final extent = sidebarMarkExtent(context);
     final dotExtent = _touch(context) ? _touchDotExtent : _dotExtent;
     final dot = this.dot;
-    final hollow = style == SidebarDotStyle.ring;
+    final hollow = dot?.style == SidebarDotStyle.ring;
     return SizedBox(
       width: extent,
       height: extent,
@@ -1170,7 +1183,7 @@ class _SidebarMark extends StatelessWidget {
                 decoration: BoxDecoration(
                   // A ring's hole shows the row, not the mark under it:
                   // the cut-out colour fills it.
-                  color: hollow ? ring : dot,
+                  color: hollow ? ring : dot.color,
                   shape: BoxShape.circle,
                   border: Border.all(color: ring, width: _dotRing),
                 ),
@@ -1178,7 +1191,10 @@ class _SidebarMark extends StatelessWidget {
                     ? DecoratedBox(
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          border: Border.all(color: dot, width: _hollowStroke),
+                          border: Border.all(
+                            color: dot.color,
+                            width: _hollowStroke,
+                          ),
                         ),
                       )
                     : null,

@@ -264,7 +264,7 @@ void main() {
         const SidebarRow(
           mark: Icon(Icons.dns_outlined, size: 16),
           title: 'demo',
-          statusColor: Colors.green,
+          status: SidebarStatusDot(Colors.green),
         ),
       );
       final chrome = SeanceChrome.of(tester.element(find.byType(SidebarRow)));
@@ -365,8 +365,10 @@ void main() {
         const SidebarRow(
           mark: Icon(Icons.dns_outlined, size: 16),
           title: 'demo',
-          statusColor: Colors.green,
-          statusStyle: SidebarDotStyle.ring,
+          status: SidebarStatusDot(
+            Colors.green,
+            style: SidebarDotStyle.ring,
+          ),
         ),
       );
       final chrome = SeanceChrome.of(tester.element(find.byType(SidebarRow)));
@@ -388,7 +390,7 @@ void main() {
         const SidebarRow(
           mark: Icon(Icons.dns_outlined, size: 16),
           title: 'demo',
-          statusColor: Colors.green,
+          status: SidebarStatusDot(Colors.green),
         ),
         background: surface,
       );
