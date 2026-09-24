@@ -173,8 +173,8 @@ Future<String> saveBuiltInTextDocument(
   RandomAccessFile? handle;
   try {
     await temporary.create(exclusive: true);
-    _setPermissions(
-      () => restrictFileToOwner(temporary),
+    await _setPermissions(
+      () async => restrictFileToOwner(temporary),
       'Could not restrict the edited file to its owner.',
     );
     handle = await temporary.open(mode: FileMode.writeOnly);
@@ -213,8 +213,8 @@ Future<String> saveBuiltInTextDocument(
           'The local copy changed while it was being saved.',
         );
       }
-      _setPermissions(
-        () => applyPermissionBits(temporary, originalMode),
+      await _setPermissions(
+        () async => applyPermissionBits(temporary, originalMode),
         "Could not keep the local copy's file permissions.",
       );
       await temporary.rename(file.path);
@@ -240,9 +240,17 @@ Future<String> saveBuiltInTextDocument(
 /// Runs a permission change, turning its platform failure into a refusal
 /// the editor can show. Either step failing aborts the save: the content
 /// lands with the intended mode or not at all.
-void _setPermissions(void Function() change, String failure) {
+///
+/// The helpers are synchronous today, but the change is awaited anyway: a
+/// `void Function()` accepts a closure returning a Future without a word,
+/// so a helper that turned asynchronous would be dropped (bytes written
+/// before the restriction, its failure unhandled) with no lint to say so.
+Future<void> _setPermissions(
+  Future<void> Function() change,
+  String failure,
+) async {
   try {
-    change();
+    await change();
   } on Exception {
     throw BuiltInEditorException(failure);
   }
