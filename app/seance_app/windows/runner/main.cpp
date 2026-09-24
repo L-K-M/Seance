@@ -26,8 +26,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1800, 1600);
-  if (!window.Create(L"seance_app", origin, size)) {
+  // The first-launch size matches the Linux runner; the window-state
+  // service restores the user's own frame after that. The title is
+  // spelled with an escape so the source stays ASCII for MSVC.
+  Win32Window::Size size(1280, 800);
+  if (!window.Create(L"S\u00e9ance", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
