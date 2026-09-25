@@ -446,6 +446,9 @@ Do not "simplify" these away — they are load-bearing:
   destroyed while the app runs; and `FlView` hooks its window's
   `delete-event` to ask Dart whether the *application* should quit — so the
   settings window's own handler, connected before the view, runs first.
+  On macOS every engine makes itself the app delegate's termination
+  handler, the last one started winning, so the window's isolate forwards
+  exit requests to the app's (`RemoteSettingsBackend.requestAppExit`).
   On macOS the window's controller is `SeanceFlutterViewController`, for the
   accessibility guard (§3).
 

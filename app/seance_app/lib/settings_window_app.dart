@@ -20,7 +20,7 @@ Future<void> runSettingsWindow() async {
   runApp(SettingsWindowApp(backend: backend, error: error));
 }
 
-class SettingsWindowApp extends StatelessWidget {
+class SettingsWindowApp extends StatefulWidget {
   const SettingsWindowApp({super.key, required this.backend, this.error});
 
   /// Null when the app did not answer, in which case [error] says why.
@@ -28,8 +28,35 @@ class SettingsWindowApp extends StatelessWidget {
   final Object? error;
 
   @override
+  State<SettingsWindowApp> createState() => _SettingsWindowAppState();
+}
+
+class _SettingsWindowAppState extends State<SettingsWindowApp> {
+  /// Hands a request to quit the application to the app's isolate, which
+  /// decides it: see [RemoteSettingsBackend.requestAppExit].
+  AppLifecycleListener? _exitRequests;
+
+  @override
+  void initState() {
+    super.initState();
+    final backend = widget.backend;
+    if (backend != null) {
+      _exitRequests = AppLifecycleListener(
+        onExitRequested: backend.requestAppExit,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _exitRequests?.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final backend = this.backend;
+    final backend = widget.backend;
+    final error = widget.error;
     return MaterialApp(
       title: 'Séance Settings',
       theme: SeanceTheme.light(),

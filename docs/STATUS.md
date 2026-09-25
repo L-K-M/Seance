@@ -121,6 +121,15 @@ needs its own `delete-event` handler, connected before the view: `FlView`
 hooks its window's and asks Dart whether the whole application should
 quit, which the framework answers yes.
 
+**Quitting stays the app's call.** On macOS every engine makes itself the
+app delegate's termination handler when it starts, so once the window
+exists ⌘Q asks the window's isolate, whose framework answers "exit" with
+no observer to ask. The window forwards the request over the link and
+the app's isolate answers with its own `handleRequestAppExit`. Séance
+registers no exit observer today, so nothing changes for it now; the
+forwarding keeps it that way when one is added (Poltergeist's quit guard
+is one).
+
 **Verified.** Dart: the link end to end over an in-memory relay
 (`settings_window_test.dart`: hello, writes, results and errors crossing,
 snapshots, hide/show, tab switching, the no-host and no-window cases), the

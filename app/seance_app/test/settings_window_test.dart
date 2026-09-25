@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -230,6 +231,29 @@ void main() {
 
     expect(tabs, [SettingsTab.assistant]);
     expect(window.page.value?.generation, 0);
+  });
+
+  test('a request to quit is the app\'s to answer', () async {
+    host.dispose();
+    var asked = 0;
+    host = SettingsWindowHost(
+      state,
+      control: _control,
+      link: _appLink,
+      requestAppExit: () async {
+        asked++;
+        return AppExitResponse.cancel;
+      },
+    );
+    final window = await openWindow();
+    addTearDown(window.dispose);
+
+    expect(await window.requestAppExit(), AppExitResponse.cancel);
+    expect(asked, 1);
+
+    // With no app left to ask, quitting is not held up.
+    messenger.setMockMessageHandler(_windowLink.name, (_) async => null);
+    expect(await window.requestAppExit(), AppExitResponse.exit);
   });
 
   test('a window with no app to answer fails to connect', () async {

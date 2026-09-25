@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 import '../app_state.dart';
 import '../ui/terminal_appearance.dart';
@@ -68,6 +70,7 @@ abstract final class _Link {
   static const setSyncPrefs = 'setSyncPrefs';
   static const enrollSync = 'enrollSync';
   static const syncNow = 'syncNow';
+  static const requestAppExit = 'requestAppExit';
 
   // App → window.
   static const snapshot = 'snapshot';
@@ -92,7 +95,10 @@ class SettingsWindowHost {
     this._state, {
     this._control = settingsWindowControlChannel,
     this._link = settingsWindowLinkChannel,
-  }) : _backend = LocalSettingsBackend(_state) {
+    @visibleForTesting Future<AppExitResponse> Function()? requestAppExit,
+  }) : _backend = LocalSettingsBackend(_state),
+       _requestAppExit =
+           requestAppExit ?? WidgetsBinding.instance.handleRequestAppExit {
     _control.setMethodCallHandler(_handleControl);
     _link.setMethodCallHandler(_handleLink);
     _state.addListener(_scheduleSnapshot);
@@ -102,6 +108,9 @@ class SettingsWindowHost {
   final LocalSettingsBackend _backend;
   final MethodChannel _control;
   final MethodChannel _link;
+
+  /// The app's answer to "may the application quit?": its own observers'.
+  final Future<AppExitResponse> Function() _requestAppExit;
 
   /// Whether the window's engine has said hello. It is never torn down, so
   /// this stays true once set, unless the link stops answering.
@@ -265,6 +274,8 @@ class SettingsWindowHost {
         await _backend.enrollSync(SyncEnrollment.fromJson(map()));
       case _Link.syncNow:
         return (await _backend.syncNow()).toJson();
+      case _Link.requestAppExit:
+        return (await _requestAppExit()).name;
       default:
         throw MissingPluginException('No settings method $method');
     }
@@ -460,6 +471,24 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   @override
   Future<SyncCounts> syncNow() async =>
       SyncCounts.fromJson(_map(await _call(_Link.syncNow)));
+
+  /// Whether the application may quit, as the app's isolate decides it.
+  ///
+  /// The window's engine can be the one asked. On macOS every engine makes
+  /// itself the app delegate's termination handler when it starts, so once
+  /// this window exists ⌘Q — and the app's own quit, which goes through
+  /// `NSApp.terminate` — asks this isolate, whose framework answers "exit"
+  /// for want of any observer; the app's exit handling would never run.
+  /// Forwarded, the app's observers decide, as they did before the window.
+  /// With no app left to ask, quitting is not held up.
+  Future<AppExitResponse> requestAppExit() async {
+    try {
+      final name = await _call(_Link.requestAppExit);
+      return AppExitResponse.values.byName(name! as String);
+    } on SettingsBackendException {
+      return AppExitResponse.exit;
+    }
+  }
 
   @override
   void dispose() {
