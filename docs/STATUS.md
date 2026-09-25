@@ -174,6 +174,9 @@ status colour at 3:1, four distinct status colours, the selected row's
 label at 4.5:1, and the terminal's text at 4.5:1 with its normal ANSI
 colours at 3:1 (Paper's at 4.5:1, all sixteen). Bubblegum's accent is a
 shade deeper than Vervellum's #FF59AD, which is 2.7:1 on its own surface.
+The family glyph hues (see "Colour that means something" below) keep
+3:1 on every preset's surface and rail too, in both modes; they follow
+the drawn brightness, not the palette.
 
 **Not ported.** Vervellum's `backdrop` (glass, frosted, solid) has no
 Flutter equivalent without a vibrancy plugin; `fontDesign` (system,

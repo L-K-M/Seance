@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:seance_app/family_hues.dart';
 import 'package:seance_app/theme.dart';
 import 'package:seance_app/theme/contrast.dart';
 import 'package:seance_app/theme/theme_palette.dart';
@@ -148,4 +149,29 @@ void main() {
       }
     });
   }
+
+  // The family hues (lib/family_hues.dart) are tuned against the default
+  // neutrals; a preset moves the surfaces they sit on, so every preset is
+  // held to the same 3:1 non-text floor for every hue.
+  test('the family glyph hues keep 3:1 on every preset', () {
+    for (final preset in ThemePresets.all) {
+      for (final brightness in Brightness.values) {
+        final theme = SeanceTheme.build(preset, brightness);
+        final hues = theme.extension<FamilyPalette>()!;
+        final chrome = theme.extension<SeanceChrome>()!;
+        for (final hue in FamilyHue.values) {
+          for (final surface in [
+            theme.colorScheme.surface,
+            chrome.sidebarBackground,
+          ]) {
+            expect(
+              contrastRatio(hues.glyph(hue), surface),
+              greaterThanOrEqualTo(_mark),
+              reason: '${preset.name} ${brightness.name} ${hue.name}',
+            );
+          }
+        }
+      }
+    }
+  });
 }
