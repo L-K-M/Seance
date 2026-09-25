@@ -14,13 +14,15 @@ import 'package:seance_app/services/xterm_engine.dart';
 import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/server_list_density.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
 
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 
 /// Real-font captures of the server list for visual review, in both
-/// postures and both brightnesses: the desktop rail (Poltergeist's plan,
-/// 10 §5) and the phone home (§9). The widget-test default font draws
+/// postures, both densities and both brightnesses: the desktop rail
+/// (Poltergeist's plan, 10 §5), a tablet's touch rail, and the phone home
+/// (§9). The widget-test default font draws
 /// boxes, so a real face is loaded when the host has one.
 ///
 /// Nothing is written unless SEANCE_CAPTURE=1; the PNGs then land in
@@ -286,21 +288,30 @@ void main() {
     File('$_captureDir/$name.png').writeAsBytesSync(png);
   }
 
+  Future<void> useDensity(WidgetTester tester, ServerListDensity density) =>
+      tester.runAsync(() => state!.setServerListDensity(density));
+
   for (final brightness in Brightness.values) {
     final tone = brightness.name;
 
     testWidgets('captures the desktop rail ($tone)', (tester) async {
       await boot(tester);
+      // Comfortable, the default: two-line rows under 32 px badges.
       final boundary = await pumpPane(
         tester,
         brightness: brightness,
         posture: ServerListPosture.rail,
-        size: const Size(280, 620),
+        size: const Size(280, 720),
       );
       expect(find.text('PINNED'), findsOneWidget);
       expect(find.text('Production'), findsOneWidget);
       expect(find.text('×2'), findsOneWidget);
-      await capture(tester, boundary, 'rail-$tone');
+      expect(find.text('deploy@web-01.example.com'), findsOneWidget);
+      expect(
+        find.text('Connection failed · deploy@build-runner.example.com'),
+        findsOneWidget,
+      );
+      await capture(tester, boundary, 'rail-comfortable-$tone');
 
       // Hover a connected row: the disconnect glyph replaces `×2`.
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
@@ -326,40 +337,101 @@ void main() {
         'prod',
       );
       await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('3 of 11 · ↵ opens the first'), findsOneWidget);
       await capture(tester, boundary, 'rail-filter-$tone');
+
+      await tester.enterText(
+        find.byKey(const ValueKey('servers.filter.field')),
+        '',
+      );
+      await useDensity(tester, ServerListDensity.compact);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('deploy@web-01.example.com'), findsNothing);
+      await capture(tester, boundary, 'rail-compact-$tone');
+
+      // Fold the group holding a live session: its row keeps the dot.
+      await useDensity(tester, ServerListDensity.comfortable);
+      await tester.tap(find.text('Production'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('prod-worker'), findsNothing);
+      expect(
+        tester
+            .widgetList<SidebarSectionHeader>(find.byType(SidebarSectionHeader))
+            .where((header) => header.status != null)
+            .map((header) => header.title),
+        ['Production'],
+      );
+      await capture(tester, boundary, 'rail-folded-$tone');
     });
 
-    testWidgets('captures the phone home ($tone)', (tester) async {
-      await boot(tester);
-      if (brightness == Brightness.light) {
-        await tester.runAsync(
-          () => state!.setServerListDensity(ServerListDensity.compact),
+    for (final density in ServerListDensity.values) {
+      testWidgets('captures the rail at its narrowest (${density.name}, '
+          '$tone)', (tester) async {
+        // The shell's minimum list width: the bottom bar's chip gives way
+        // before anything overflows.
+        await boot(tester);
+        await useDensity(tester, density);
+        final boundary = await pumpPane(
+          tester,
+          brightness: brightness,
+          posture: ServerListPosture.rail,
+          size: const Size(200, 620),
         );
-      }
-      final boundary = await pumpPane(
-        tester,
-        brightness: brightness,
-        posture: ServerListPosture.home,
-        size: const Size(390, 844),
-      );
-      expect(find.byType(FloatingActionButton), findsOneWidget);
-      await capture(tester, boundary, 'home-phone-$tone');
-    });
+        expect(find.byType(SidebarDensitySwitch), findsOneWidget);
+        await capture(tester, boundary, 'rail-narrow-${density.name}-$tone');
+      });
 
-    testWidgets('captures a narrow desktop window ($tone)', (tester) async {
-      // Below the wide breakpoint a desktop window gets the home screen
-      // too, at the desktop's row extents.
-      await boot(tester);
-      final boundary = await pumpPane(
+      testWidgets('captures a tablet rail (${density.name}, $tone)', (
         tester,
-        brightness: brightness,
-        posture: ServerListPosture.home,
-        size: const Size(520, 640),
-        phone: false,
-      );
-      expect(find.byType(FloatingActionButton), findsOneWidget);
-      await capture(tester, boundary, 'home-desktop-$tone');
-    });
+      ) async {
+        // A touch window at the wide breakpoint gets the rail, drawn at
+        // touch sizes, with the "⋮" in view at either density.
+        await boot(tester);
+        await useDensity(tester, density);
+        final boundary = await pumpPane(
+          tester,
+          brightness: brightness,
+          posture: ServerListPosture.rail,
+          size: const Size(320, 900),
+          phone: true,
+        );
+        expect(find.byTooltip('More actions'), findsWidgets);
+        await capture(tester, boundary, 'tablet-${density.name}-$tone');
+      });
+
+      testWidgets('captures the phone home (${density.name}, $tone)', (
+        tester,
+      ) async {
+        await boot(tester);
+        await useDensity(tester, density);
+        final boundary = await pumpPane(
+          tester,
+          brightness: brightness,
+          posture: ServerListPosture.home,
+          size: const Size(390, 844),
+        );
+        expect(find.byType(FloatingActionButton), findsOneWidget);
+        expect(find.byType(SidebarDensitySwitch), findsOneWidget);
+        await capture(tester, boundary, 'home-phone-${density.name}-$tone');
+      });
+
+      testWidgets('captures a narrow desktop window (${density.name}, '
+          '$tone)', (tester) async {
+        // Below the wide breakpoint a desktop window gets the home screen
+        // too, at the desktop's row extents.
+        await boot(tester);
+        await useDensity(tester, density);
+        final boundary = await pumpPane(
+          tester,
+          brightness: brightness,
+          posture: ServerListPosture.home,
+          size: const Size(520, 720),
+          phone: false,
+        );
+        expect(find.byType(FloatingActionButton), findsOneWidget);
+        await capture(tester, boundary, 'home-desktop-${density.name}-$tone');
+      });
+    }
 
     testWidgets('captures the empty rail ($tone)', (tester) async {
       await boot(tester, empty: true);
