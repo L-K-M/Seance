@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -445,6 +446,85 @@ void main() {
       expect(state!.pinnedServerIds, {'zulu'});
       expect(rendered(tester), ['zulu', 'alpha']);
       expect(find.text('PINNED'), findsOneWidget);
+    });
+
+    testWidgets('the arrows and Tab get past the SERVERS header and its +', (
+      tester,
+    ) async {
+      await boot(tester, [server('alpha'), server('zulu')]);
+      final opened = <String>[];
+      await pumpRail(tester, onOpen: (config) => opened.add(config.id));
+      Future<void> press(LogicalKeyboardKey key) async {
+        await tester.sendKeyEvent(key);
+        await tester.pumpAndSettle();
+      }
+
+      await tester.tap(find.text('alpha'));
+      await tester.pumpAndSettle();
+      opened.clear();
+
+      // Up lands on the header (its "+" drawn for the keyboard); Down
+      // comes straight back to the row rather than bouncing off the "+".
+      await press(LogicalKeyboardKey.arrowUp);
+      await press(LogicalKeyboardKey.arrowDown);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['alpha']);
+      opened.clear();
+
+      // Tab takes the header's "+" as a stop of its own, then the row.
+      await press(LogicalKeyboardKey.arrowUp);
+      await press(LogicalKeyboardKey.tab);
+      final add = find.descendant(
+        of: find.byKey(const ValueKey('servers.section.add')),
+        matching: find.byIcon(Icons.add),
+      );
+      expect(Focus.of(tester.element(add)).hasPrimaryFocus, isTrue);
+      await press(LogicalKeyboardKey.tab);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['alpha']);
+    });
+
+    testWidgets('a row\'s verbs reach a screen reader', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await boot(tester, [server('alpha')]);
+      await pumpRail(tester);
+
+      // Its verbs are the row's own semantics actions, pointer or not; a
+      // verb greyed out in the menu is not offered.
+      final row = find.semantics.byLabel(RegExp(r'^alpha, '));
+      final ids = row
+          .evaluate()
+          .single
+          .getSemanticsData()
+          .customSemanticsActionIds;
+      final labels = [
+        for (final id in ids ?? const <int>[])
+          CustomSemanticsAction.getAction(id)!.label,
+      ];
+      expect(labels, [
+        'Connect',
+        'Connect in new tab',
+        'Pin to top',
+        'Edit…',
+        'Duplicate',
+        'Delete…',
+      ]);
+      tester.semantics.customAction(
+        row,
+        const CustomSemanticsAction(label: 'Pin to top'),
+      );
+      await tester.pumpAndSettle();
+      expect(state!.pinnedServerIds, {'alpha'});
+
+      // And an open menu's verbs are nodes a screen reader can reach.
+      await tester.tap(
+        find.text('alpha'),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.semantics.byLabel('Duplicate'), findsOne);
+      semantics.dispose();
     });
 
     testWidgets('no servers: the onboarding state, with no filter', (

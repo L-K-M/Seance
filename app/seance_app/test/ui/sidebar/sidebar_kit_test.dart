@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/theme.dart';
@@ -675,6 +676,204 @@ void main() {
         tester.element(find.text('kit-synced')),
       ).colorScheme;
       expect(label.style?.color, scheme.error);
+    });
+  });
+
+  // Reach without a pointer: the header's "+" has to be operable from the
+  // keyboard.
+  group('keyboard reach', () {
+    Widget section({required VoidCallback onAdd}) => Column(
+      children: [
+        SidebarSectionHeader(
+          headerKey: const ValueKey('h'),
+          title: 'Servers',
+          count: 2,
+          collapsed: false,
+          onToggle: () {},
+          onAdd: onAdd,
+          addKey: const ValueKey('add'),
+          addTooltip: 'kit-add-server',
+        ),
+        for (final name in ['alpha', 'beta'])
+          SidebarRow(
+            mark: const Icon(Icons.dns_outlined, size: 16),
+            title: name,
+            onActivate: (_) {},
+          ),
+      ],
+    );
+
+    Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
+      await tester.sendKeyEvent(key);
+      await tester.pump();
+    }
+
+    testWidgets('Tab reaches a header\'s + and leaves it; the arrows walk '
+        'past it', (tester) async {
+      var adds = 0;
+      await _pump(tester, section(onAdd: () => adds++));
+      FocusNode nodeOf(Finder finder) => Focus.of(tester.element(finder));
+      final header = nodeOf(find.byKey(const ValueKey('h')));
+      final add = nodeOf(find.byIcon(Icons.add));
+      final alpha = nodeOf(find.text('alpha'));
+      final beta = nodeOf(find.text('beta'));
+      bool addShown() => tester
+          .widget<Visibility>(
+            find
+                .ancestor(
+                  of: find.byKey(const ValueKey('add')),
+                  matching: find.byType(Visibility),
+                )
+                .first,
+          )
+          .visible;
+
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(header.hasPrimaryFocus, isTrue);
+
+      // Tab lands on the "+", which stays drawn while it holds focus (it
+      // used to hide as the header lost focus, and focus bounced back).
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(add.hasPrimaryFocus, isTrue);
+      expect(addShown(), isTrue);
+      await press(tester, LogicalKeyboardKey.enter);
+      expect(adds, 1);
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(alpha.hasPrimaryFocus, isTrue);
+      expect(addShown(), isFalse);
+
+      // The arrows walk headers and rows: the "+" is Tab's stop only.
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      expect(header.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(alpha.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(beta.hasPrimaryFocus, isTrue);
+
+      // From the "+", the arrows rejoin the walk.
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(add.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(alpha.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      await press(tester, LogicalKeyboardKey.tab);
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      expect(header.hasPrimaryFocus, isTrue);
+    });
+
+    testWidgets('a clicked header still hands Tab to its +', (tester) async {
+      await _pump(tester, section(onAdd: () {}));
+      await tester.tap(find.byKey(const ValueKey('h')));
+      await tester.pump();
+      // The pointer is gone, so nothing but focus can reveal the "+".
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(
+        Focus.of(tester.element(find.byIcon(Icons.add))).hasPrimaryFocus,
+        isTrue,
+      );
+    });
+
+  });
+
+  // A row's verbs have to reach a screen reader, which has no pointer to
+  // hover or right-click with.
+  group('screen-reader reach', () {
+    testWidgets('a row offers its verbs and its hover action as semantics '
+        'actions', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final picked = <String>[];
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: 'demo',
+          onActivate: (_) {},
+          hoverAction: SidebarRowAction(
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () => picked.add('disconnect'),
+          ),
+          menuEntries: () => [
+            SidebarMenuAction(
+              label: 'kit-open',
+              onSelected: () => picked.add('open'),
+            ),
+            const SidebarMenuDivider(),
+            const SidebarMenuAction(label: 'kit-off', onSelected: null),
+            SidebarMenuAction(
+              label: 'kit-disconnect',
+              onSelected: () => picked.add('disconnect'),
+            ),
+          ],
+        ),
+      );
+      // No hover needed: a screen reader's cursor is not a pointer. A
+      // disabled verb is not offered, and the hover action and the verb
+      // it repeats are one action.
+      final row = find.semantics.byLabel('demo');
+      final ids = row
+          .evaluate()
+          .single
+          .getSemanticsData()
+          .customSemanticsActionIds;
+      expect([
+        for (final id in ids ?? const <int>[])
+          CustomSemanticsAction.getAction(id)!.label,
+      ], unorderedEquals(['kit-open', 'kit-disconnect']));
+      tester.semantics.customAction(
+        row,
+        const CustomSemanticsAction(label: 'kit-open'),
+      );
+      tester.semantics.customAction(
+        row,
+        const CustomSemanticsAction(label: 'kit-disconnect'),
+      );
+      expect(picked, ['open', 'disconnect']);
+      semantics.dispose();
+    });
+
+    testWidgets('an open menu, the hover action and the menu button are in '
+        'the semantics tree', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: 'demo',
+          onActivate: (_) {},
+          showMenuButton: true,
+          hoverAction: SidebarRowAction(
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () {},
+          ),
+          menuEntries: () => [
+            SidebarMenuAction(label: 'kit-rename', onSelected: () {}),
+          ],
+        ),
+      );
+      SemanticsFinder button(String tooltip) => find.semantics.byPredicate(
+        (node) =>
+            node.tooltip == tooltip &&
+            node.getSemanticsData().hasAction(SemanticsAction.tap),
+      );
+      expect(button('kit-more'), findsOne);
+
+      await _hover(tester, find.byKey(const ValueKey('r')));
+      expect(button('kit-disconnect'), findsOne);
+
+      await tester.tap(
+        find.byKey(const ValueKey('r')),
+        buttons: kSecondaryButton,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('kit-rename'), findsOneWidget);
+      expect(find.semantics.byLabel('kit-rename'), findsOne);
+      semantics.dispose();
     });
   });
 }

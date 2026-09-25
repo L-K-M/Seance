@@ -20,6 +20,7 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 import 'package:flutter/services.dart';
 
 import '../../theme.dart';
@@ -362,6 +363,27 @@ List<Widget> sidebarMenuWidgets(
   ];
 }
 
+/// A row's verbs as custom semantics actions (TalkBack's and VoiceOver's
+/// actions menus), with its hover [action]: a screen reader's cursor is
+/// no pointer, so a verb that waits for a hover or a right-click would be
+/// out of its reach. Enabled top-level verbs only — a submenu's live in
+/// the menu and the sheet — and a hover action repeating a verb of the
+/// same name is one action. Null when there is none, so a verbless row
+/// does not advertise an empty actions menu.
+Map<CustomSemanticsAction, VoidCallback>? _semanticsActions(
+  List<SidebarMenuEntry>? verbs,
+  SidebarRowAction? action,
+) {
+  final actions = <CustomSemanticsAction, VoidCallback>{
+    for (final entry in verbs ?? const <SidebarMenuEntry>[])
+      if (entry case SidebarMenuAction(:final label, :final onSelected?))
+        CustomSemanticsAction(label: label): onSelected,
+    if (action != null)
+      CustomSemanticsAction(label: action.tooltip): action.onPressed,
+  };
+  return actions.isEmpty ? null : actions;
+}
+
 /// The touch rendering of [entries]: a modal bottom sheet headed by
 /// [title]. A submenu's verbs list under its label, indented — a sheet
 /// has no room for flyouts.
@@ -452,7 +474,8 @@ Future<void> showSidebarMenuSheet(
 ///
 /// The count shows only while collapsed; the chevron and the optional
 /// "+" appear on hover or keyboard focus (a nested row keeps its
-/// chevron: it is the disclosure affordance there).
+/// chevron: it is the disclosure affordance there). The "+" is Tab's stop
+/// after its header but not the arrows': they walk headers and rows.
 class SidebarSectionHeader extends StatefulWidget {
   const SidebarSectionHeader({
     super.key,
@@ -497,12 +520,39 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     with _KeyboardFocusRing {
   bool _hovering = false;
 
+  /// The "+". It skips traversal, so the arrows (and a row's ↑ from
+  /// below) pass it by; the header hands it Tab instead (see [_onKey]).
+  final _addFocus = FocusNode(
+    debugLabel: 'SidebarSectionHeader add',
+    skipTraversal: true,
+  );
+
+  /// The "+" holds focus: it stays drawn, or hiding it would drop the
+  /// focus it just took and leave the keyboard nowhere.
+  bool _addFocused = false;
+
+  @override
+  void dispose() {
+    _addFocus.dispose();
+    super.dispose();
+  }
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     noteKey();
     final key = event.logicalKey;
+    final keys = HardwareKeyboard.instance;
+    if (key == LogicalKeyboardKey.tab &&
+        widget.onAdd != null &&
+        !keys.isShiftPressed &&
+        !keys.isControlPressed &&
+        !keys.isMetaPressed &&
+        !keys.isAltPressed) {
+      _addFocus.requestFocus();
+      return KeyEventResult.handled;
+    }
     if (key == LogicalKeyboardKey.arrowDown) {
       node.nextFocus();
       return KeyEventResult.handled;
@@ -527,6 +577,25 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     return KeyEventResult.ignored;
   }
 
+  /// Keys on the "+": the arrows rejoin the walk it sits outside of. Tab
+  /// and Shift+Tab need nothing here — traversal moves on from the node
+  /// that holds focus even though it skips traversal itself.
+  KeyEventResult _onAddKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp) {
+      focusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      _addFocus.nextFocus();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final chrome = _chrome(context);
@@ -538,7 +607,7 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     // drawn there: hidden until a hover that never comes, the disclosure
     // would have no visible affordance at all.
     final list = _list(context);
-    final revealed = _hovering || focused || touch || list;
+    final revealed = _hovering || focused || _addFocused || touch || list;
     final nested = widget.nested;
     final inset = list ? _listInset : _railInset;
     final radius = _radius(context);
@@ -710,14 +779,25 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
             maintainAnimation: true,
             maintainSize: true,
             maintainInteractivity: false,
-            child: MouseRegion(
-              onEnter: (_) => setState(() => _hovering = true),
-              child: Center(
-                child: _KitIconButton(
-                  key: widget.addKey,
-                  icon: Icons.add,
-                  tooltip: widget.addTooltip,
-                  onPressed: onAdd,
+            // Focusable while hidden, so a header that holds focus without
+            // drawing it (a click's) can still hand Tab over: the focus it
+            // takes is what draws it.
+            maintainFocusability: true,
+            child: Focus(
+              canRequestFocus: false,
+              skipTraversal: true,
+              onKeyEvent: _onAddKey,
+              onFocusChange: (focused) => setState(() => _addFocused = focused),
+              child: MouseRegion(
+                onEnter: (_) => setState(() => _hovering = true),
+                child: Center(
+                  child: _KitIconButton(
+                    key: widget.addKey,
+                    icon: Icons.add,
+                    tooltip: widget.addTooltip,
+                    focusNode: _addFocus,
+                    onPressed: onAdd,
+                  ),
                 ),
               ),
             ),
@@ -736,11 +816,13 @@ class _KitIconButton extends StatelessWidget {
     required this.icon,
     required this.onPressed,
     this.tooltip,
+    this.focusNode,
   });
 
   final IconData icon;
   final VoidCallback? onPressed;
   final String? tooltip;
+  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -765,6 +847,7 @@ class _KitIconButton extends StatelessWidget {
               ),
       ),
       tooltip: tooltip,
+      focusNode: focusNode,
       onPressed: onPressed,
       icon: Icon(icon, color: chrome.secondaryText),
     );
@@ -1071,9 +1154,18 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
           )
         : (widget.trailingText == null
               ? null
-              : Text(widget.trailingText!, maxLines: 1, style: captionStyle));
+              : ExcludeSemantics(
+                  child: Text(
+                    widget.trailingText!,
+                    maxLines: 1,
+                    style: captionStyle,
+                  ),
+                ));
     final trailingIcon = widget.trailingIcon;
     final entries = widget.menuEntries;
+    // Built once per frame: the menu and the row's semantics actions list
+    // the same verbs.
+    final verbs = entries?.call();
     final menuButton = widget.showMenuButton && entries != null
         ? Builder(
             builder: (buttonContext) => _KitIconButton(
@@ -1135,11 +1227,20 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
       foregroundDecoration: focused || dropInto
           ? _focusRing(theme.colorScheme.primary, radius)
           : null,
+      // The painted parts are excluded one by one, not the whole row: the
+      // row's label says what they show, but its buttons (the hover action,
+      // the "⋮") announce and act on themselves.
       child: Row(
         children: [
-          _SidebarMark(mark: widget.mark, dot: widget.status, ring: ring),
+          ExcludeSemantics(
+            child: _SidebarMark(
+              mark: widget.mark,
+              dot: widget.status,
+              ring: ring,
+            ),
+          ),
           SizedBox(width: list ? _listMarkGap : (_touch(context) ? 12 : 6)),
-          Expanded(child: label),
+          Expanded(child: ExcludeSemantics(child: label)),
           if (trailingIcon != null) ...[
             const SizedBox(width: 6),
             Icon(
@@ -1161,6 +1262,8 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
         // Hover still shows it (the mode never gates mice); touch's
         // long-press belongs to the verb sheet, not the tooltip.
         triggerMode: TooltipTriggerMode.manual,
+        // The host folds what a screen reader needs into the label.
+        excludeFromSemantics: true,
         child: content,
       );
     }
@@ -1194,13 +1297,14 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
         button: widget.onActivate != null,
         selected: selected,
         label: widget.semanticLabel ?? widget.title,
+        customSemanticsActions: _semanticsActions(verbs, action),
         child: Focus(
           focusNode: focusNode,
           onKeyEvent: _onKey,
           onFocusChange: onFocusChanged,
-          // The detector sits OUTSIDE ExcludeSemantics so its tap reaches
-          // the semantics tree — an announced button a screen reader
-          // cannot activate is WCAG 4.1.2's failure.
+          // The detector's tap and long-press reach the row's node — an
+          // announced button a screen reader cannot activate is WCAG
+          // 4.1.2's failure.
           child: Listener(
             onPointerDown: (event) => _lastPointer = event.kind,
             child: GestureDetector(
@@ -1222,20 +1326,21 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
               onLongPress: entries == null && widget.onActivate == null
                   ? null
                   : _onLongPress,
-              child: ExcludeSemantics(
-                child: entries == null
-                    ? content
-                    : MenuAnchor(
-                        controller: _menu,
-                        // Focus returns to the row when the menu closes.
-                        childFocusNode: focusNode,
-                        menuChildren: sidebarMenuWidgets(
-                          entries(),
-                          firstFocus: _firstVerbFocus,
-                        ),
-                        child: content,
+              // The anchor's overlay sits here in the semantics tree, so
+              // nothing above it may exclude semantics: an open menu's
+              // verbs would have no nodes at all.
+              child: verbs == null
+                  ? content
+                  : MenuAnchor(
+                      controller: _menu,
+                      // Focus returns to the row when the menu closes.
+                      childFocusNode: focusNode,
+                      menuChildren: sidebarMenuWidgets(
+                        verbs,
+                        firstFocus: _firstVerbFocus,
                       ),
-              ),
+                      child: content,
+                    ),
             ),
           ),
         ),
