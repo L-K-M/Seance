@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'family_hues.dart';
+
 /// The sibling design tokens Séance shares with Poltergeist (Poltergeist
 /// D32 §10): the same slate-dark and Finder-light neutrals, 13 px desktop
 /// type and dense rows, with Séance's own violet accent — so the two
@@ -330,7 +332,10 @@ class SeanceTheme {
           borderRadius: BorderRadius.circular(6),
         ),
       ),
-      extensions: [_chromeFor(brightness, platform)],
+      extensions: [
+        _chromeFor(brightness, platform),
+        FamilyPalette.forBrightness(brightness),
+      ],
     );
   }
 

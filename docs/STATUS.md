@@ -153,6 +153,36 @@ fields get the native actions. Closing the window discards what was typed
 into its fields and not saved, the API keys included; a reopened window
 starts from the settings as saved.
 
+## Colour that means something (2026-09-25)
+
+The owner found both apps' glyphs too bland to tell apart and asked for
+the colour-coded icons of iTunes, Postbox and the old Finder sidebar.
+Poltergeist's D34 records the shared vocabulary;
+[POLTERGEIST.md](POLTERGEIST.md#the-colour-vocabulary) has this side's
+record.
+
+- **Palette:** `lib/family_hues.dart`, identical to Poltergeist's, with
+  the `FamilyPalette` extension in `SeanceTheme`.
+- **Side panel:** each tab's glyph in its hue over its label (the
+  labels had been clipping at the panel's usual width), the underline
+  blending to the open tab's hue as it slides.
+- **Files:** kind glyphs from `lib/ui/file_kinds.dart` (ported from
+  Poltergeist); Home blue, downloads and uploads cyan, a finished
+  transfer green and a failed one red.
+- **Git:** the header, repo folder and branch glyphs, a clean tree's
+  check, Stage in green and Discard in red; the status letters are
+  unchanged.
+- **Elsewhere:** the assistant's sparkle and the wand purple, the
+  snippets teal with a yellow suggestions bulb, and the Settings tabs.
+- **Tests:** `family_hues_test.dart` (every hue at 3:1 on every chrome
+  surface and the tab strip, at rest and hovered, and every tile glyph
+  on its fill), `file_kinds_test.dart`, and
+  `family_hues_capture_test.dart`, which checks the tab hues and the
+  underline and writes before/after PNGs with `SEANCE_CAPTURE=1`; this
+  change's pair is in `docs/captures/d34-colour/`.
+- **Not verified here:** the running app on a device or desktop; the
+  captures are real-font widget renders on Linux.
+
 ## Two views of the server list again (2026-09-25)
 
 The owner's call after the kit port below: aligning the two sidebars

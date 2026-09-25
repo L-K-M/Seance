@@ -299,6 +299,39 @@ are the host's, like the title, and the line break is how a merged
 node already joins its parts, so the kit writes no punctuation of its
 own. The change landed in both kit files at once.
 
+## The colour vocabulary
+
+Poltergeist's D34 (its `docs/plan/00-OVERVIEW.md`, "Colour that means
+something") gives both apps one set of twelve family hues, each with
+one meaning: blue for places and folders, cyan for motion, teal for
+saved recipes, green for go, yellow for attention, orange for code, red
+for destruction and PDF, pink for images, purple for audio, video and
+the assistant, indigo for sync, brown for cargo, graphite for the rest.
+The owner asked for it for both apps at once: the chrome's glyphs had
+become too bland to tell apart.
+
+- **The table** is `lib/family_hues.dart` here and
+  `lib/theme/family_hues.dart` in Poltergeist, byte-identical:
+  `FamilyHue`, a `FamilyPalette` theme extension with per-theme glyph
+  tints (registered in `SeanceTheme`), and `FamilyHueTile`. Change it
+  in both, in the same pair of changes.
+- **The rule** is D11's quiet chrome with colour on glyphs only: the
+  surfaces, the accent and the status dots are untouched, text stays in
+  the ink, and a coloured verb keeps its colour only while it is live.
+- **The kind table** in `lib/ui/file_kinds.dart` is a port of
+  Poltergeist's `pane_format.dart` classifier and `kind_glyph.dart`
+  glyphs, so a folder, a photo or a script reads the same in both
+  Files views.
+- **Here it colours** the side panel's tabs (the Assistant purple,
+  Snippets teal, Files blue, Git orange, each glyph over its label, the
+  underline in the open tab's hue), the Files listing's kinds and its
+  Home, download, upload and finished-transfer glyphs, the Git pane's
+  glyphs and its Stage (green) and Discard (red) verbs, the assistant's
+  sparkle and the command generator's wand, the snippets' glyph and
+  their suggestions' bulb, and the Settings tabs. Git's status letters
+  are text and keep their colours: the family green is below 4.5:1 on
+  the light panel.
+
 ## Cross-app behaviors worth knowing about
 
 - In shared-account mode Poltergeist reads `serverConfig` records

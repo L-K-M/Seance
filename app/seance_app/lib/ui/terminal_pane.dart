@@ -7,6 +7,7 @@ import 'package:seance_core/seance_core.dart';
 import 'package:xterm/xterm.dart';
 
 import '../app_state.dart';
+import '../family_hues.dart';
 import '../main.dart';
 import '../services/web_links.dart';
 import '../services/xterm_engine.dart';
@@ -267,7 +268,10 @@ class TerminalPane extends StatelessWidget {
           Builder(
             builder: (context) => IconButton(
               tooltip: 'Assistant & snippets',
-              icon: const Icon(Icons.auto_awesome_outlined),
+              icon: Icon(
+                Icons.auto_awesome,
+                color: FamilyPalette.of(context).glyph(FamilyHue.purple),
+              ),
               onPressed: () => Scaffold.of(context).openEndDrawer(),
             ),
           ),
@@ -456,7 +460,11 @@ class TerminalTabStrip extends StatelessWidget {
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 40, minHeight: 38),
-            icon: const Icon(Icons.auto_fix_high),
+            // The assistant's purple (Poltergeist's D34).
+            icon: Icon(
+              Icons.auto_fix_high,
+              color: FamilyPalette.of(context).glyph(FamilyHue.purple),
+            ),
             onPressed: onGenerateCommand,
           ),
         ],

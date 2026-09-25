@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
+import '../family_hues.dart';
 import '../services/external_file_opener.dart';
 import '../services/settings_backend.dart';
 import '../services/system_fonts.dart';
@@ -204,15 +205,27 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   @override
   Widget build(BuildContext context) {
+    final palette = FamilyPalette.of(context);
+    // Each section in its family hue (Poltergeist's D34): the assistant
+    // purple, files blue, sync indigo; General stays in the tab bar's ink.
     final tabBar = TabBar(
       controller: _tabs,
       isScrollable: true,
       tabAlignment: TabAlignment.start,
-      tabs: const [
-        Tab(icon: Icon(Icons.tune_outlined), text: 'General'),
-        Tab(icon: Icon(Icons.auto_awesome_outlined), text: 'Assistant'),
-        Tab(icon: Icon(Icons.folder_open_outlined), text: 'Files'),
-        Tab(icon: Icon(Icons.cloud_sync_outlined), text: 'Sync'),
+      tabs: [
+        const Tab(icon: Icon(Icons.tune_outlined), text: 'General'),
+        Tab(
+          icon: Icon(Icons.auto_awesome, color: palette.glyph(FamilyHue.purple)),
+          text: 'Assistant',
+        ),
+        Tab(
+          icon: Icon(Icons.folder_open, color: palette.glyph(FamilyHue.blue)),
+          text: 'Files',
+        ),
+        Tab(
+          icon: Icon(Icons.cloud_sync, color: palette.glyph(FamilyHue.indigo)),
+          text: 'Sync',
+        ),
       ],
     );
     return Scaffold(
