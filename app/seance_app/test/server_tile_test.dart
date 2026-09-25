@@ -313,6 +313,29 @@ void main() {
     }
   });
 
+  testWidgets('only a connected row wears the green ring around its mark, '
+      'in either density, beside its dot', (tester) async {
+    for (final density in SidebarKitDensity.values) {
+      await pump(tester, dot: ServerDot.connected, density: density);
+      final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
+      final online = StatusColors.online(
+        tester.element(find.byType(SidebarRow)),
+      );
+      expect(row.markRing, online, reason: density.name);
+      expect(row.status?.color, online, reason: 'the ring joins the dot');
+
+      for (final dot in ServerDot.values) {
+        if (dot == ServerDot.connected) continue;
+        await pump(tester, dot: dot, density: density);
+        expect(
+          tester.widget<SidebarRow>(find.byType(SidebarRow)).markRing,
+          isNull,
+          reason: '$dot, ${density.name}',
+        );
+      }
+    }
+  });
+
   testWidgets('×N shows only past one tab', (tester) async {
     await pump(tester, tabCount: 1);
     expect(find.textContaining('×'), findsNothing);

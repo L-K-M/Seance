@@ -110,6 +110,12 @@ class ServerTile extends StatelessWidget {
       // The colour's line tone: four pixels of the pastel fill tone would
       // be a smudge, not a mark (ServerAccentBar's reasoning).
       accent: serverAccent(context, ServerTint.of(server))?.line,
+      // The ring changes the badge's silhouette, which the eye picks out of
+      // a list better than a dot's colour; only a live connection draws it,
+      // so a framed badge always means "connected".
+      markRing: dot == ServerDot.connected
+          ? StatusColors.online(context)
+          : null,
       title: server.label,
       status: switch (dot.color(context)) {
         final color? => SidebarStatusDot(color, style: dot.style),
