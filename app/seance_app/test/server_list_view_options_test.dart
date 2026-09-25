@@ -18,8 +18,8 @@ import 'package:seance_core/seance_core.dart';
 
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 
-/// The server list's two view options: the home screen's density switch, and
-/// pinning a server to the top.
+/// The server list's two view options: the row density (the rail's and the
+/// home screen's switch), and pinning a server to the top.
 ///
 /// Both are device-local preferences, so what is asserted here is the rendered
 /// list and the in-memory settings the pane writes through — the JSON these
@@ -257,18 +257,31 @@ void main() {
       await boot(tester, [server('alpha')]);
       await pumpPane(tester);
 
-      // Both choices in view, one tap apart; the current one is the selected
-      // segment, so the mode is readable without counting row heights.
-      final control = find.byType(SegmentedButton<ServerListDensity>);
-      Set<ServerListDensity> selected() =>
-          tester.widget<SegmentedButton<ServerListDensity>>(control).selected;
-      expect(selected(), {ServerListDensity.comfortable});
-      expect(find.byIcon(Icons.density_medium), findsOneWidget);
-      expect(find.byIcon(Icons.density_small), findsOneWidget);
-      // Each segment says what it is, for a pointer and a screen reader.
-      expect(find.byTooltip(ServerListDensity.compact.label), findsOneWidget);
+      // The kit's switch, as the rail's bottom bar draws it: both choices
+      // in view, one tap apart, each half saying what it is for a pointer
+      // and a screen reader.
+      final control = find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byType(SidebarDensitySwitch),
+      );
+      expect(control, findsOneWidget);
+      SidebarKitDensity shown() =>
+          SidebarKitScope.densityOf(tester.element(control));
+      expect(shown(), SidebarKitDensity.comfortable);
+      expect(
+        find.descendant(
+          of: control,
+          matching: find.byTooltip(serverSidebarStrings.comfortableRows),
+        ),
+        findsOneWidget,
+      );
 
-      await tester.tap(find.byIcon(Icons.density_small));
+      await tester.tap(
+        find.descendant(
+          of: control,
+          matching: find.byTooltip(serverSidebarStrings.compactRows),
+        ),
+      );
       await tester.pumpAndSettle();
 
       expect(state!.serverListDensity, ServerListDensity.compact);
@@ -277,7 +290,43 @@ void main() {
         ServerListDensity.compact,
         reason: 'the choice has to reach the settings the next launch loads',
       );
-      expect(selected(), {ServerListDensity.compact});
+      expect(shown(), SidebarKitDensity.compact);
+    });
+
+    testWidgets('the rail\'s bottom bar carries the same switch', (
+      tester,
+    ) async {
+      await boot(tester, [server('alpha')]);
+      await pumpPane(
+        tester,
+        posture: ServerListPosture.rail,
+        platform: TargetPlatform.macOS,
+      );
+      final control = find.descendant(
+        of: find.byType(SidebarBottomBar),
+        matching: find.byType(SidebarDensitySwitch),
+      );
+      expect(control, findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: control,
+          matching: find.byTooltip(serverSidebarStrings.compactRows),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(services!.settings.serverListDensity, ServerListDensity.compact);
+      expect(tester.getSize(find.byType(ServerTile)).height, 26);
+
+      await tester.tap(
+        find.descendant(
+          of: control,
+          matching: find.byTooltip(serverSidebarStrings.comfortableRows),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(state!.serverListDensity, ServerListDensity.comfortable);
+      expect(tester.getSize(find.byType(ServerTile)).height, 52);
     });
   });
 

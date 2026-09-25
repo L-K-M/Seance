@@ -268,9 +268,24 @@ class _ServerListPaneState extends State<ServerListPane> {
             builder: (context, _) =>
                 _SyncIndicator(state: state, onRetry: () => _syncNow(state)),
           ),
+          // The kit's switch, as the rail's bottom bar draws it. The app
+          // bar sits outside the list's scope, so it gets one of its own
+          // for the switch's strings and the current density.
           ListenableBuilder(
             listenable: state,
-            builder: (context, _) => _DensitySwitch(state: state),
+            builder: (context, _) => SidebarKitScope(
+              strings: serverSidebarStrings,
+              density: state.serverListDensity.kit,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Center(
+                  child: SidebarDensitySwitch(
+                    key: const ValueKey('servers.density'),
+                    onChanged: (density) => _setDensity(state, density),
+                  ),
+                ),
+              ),
+            ),
           ),
           IconButton(
             tooltip: 'Import SSH config',
@@ -363,6 +378,8 @@ class _ServerListPaneState extends State<ServerListPane> {
               ),
             ],
             sync: _syncChip(state),
+            onDensityChanged: (density) => _setDensity(state, density),
+            densityKey: const ValueKey('servers.density'),
             onSettings: () => _openSettings(context),
           ),
       ],
@@ -532,6 +549,11 @@ class _ServerListPaneState extends State<ServerListPane> {
       onReconnect: dead ? () => state.reconnect(terminals.single.id) : null,
     );
   }
+
+  /// The switch's pick, persisted on this device (the list rebuilds from
+  /// the state it notifies).
+  void _setDensity(AppState state, SidebarKitDensity density) =>
+      unawaited(state.setServerListDensity(ServerListDensity.fromKit(density)));
 
   /// One sync round now: the chip's retry. The outcome lands in the shared
   /// sync status the chip repaints from, so nothing is lost by not awaiting
@@ -870,57 +892,6 @@ class _UpdateBanner extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The home screen's view control: whether a row spells its address out on a
-/// second line.
-///
-/// A segmented button rather than a menu: both choices are in view, the
-/// current one is the filled segment, and switching is one tap. A third
-/// density would be a third segment, which is why the segments are built
-/// from the enum rather than written out. The rail has no such control: its
-/// rows are one line by the sibling anatomy, with the address in the tooltip.
-class _DensitySwitch extends StatelessWidget {
-  final AppState state;
-  const _DensitySwitch({required this.state});
-
-  /// A switch rather than a ternary because a third density is addable: a
-  /// ternary would draw it with the comfortable icon while its own tooltip
-  /// said otherwise, and nothing would complain.
-  static IconData _icon(ServerListDensity density) => switch (density) {
-    ServerListDensity.comfortable => Icons.density_medium,
-    ServerListDensity.compact => Icons.density_small,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Center(
-        child: SegmentedButton<ServerListDensity>(
-          segments: [
-            for (final density in ServerListDensity.values)
-              ButtonSegment(
-                value: density,
-                icon: Icon(_icon(density)),
-                // The label, as a tooltip: icons alone fit the app bar, and
-                // the tooltip is also what a screen reader gets.
-                tooltip: density.label,
-              ),
-          ],
-          selected: {state.serverListDensity},
-          showSelectedIcon: false,
-          // Tightened to the app bar: at its default size the button is as
-          // tall as the bar's icons' tap targets and visibly heavier. The
-          // tap target itself is left to the theme, which pads it to 48 on
-          // touch platforms and shrink-wraps it on desktop.
-          style: const ButtonStyle(visualDensity: VisualDensity.compact),
-          onSelectionChanged: (selection) =>
-              state.setServerListDensity(selection.single),
         ),
       ),
     );

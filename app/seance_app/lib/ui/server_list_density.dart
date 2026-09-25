@@ -30,10 +30,4 @@ enum ServerListDensity {
         SidebarKitDensity.comfortable => ServerListDensity.comfortable,
         SidebarKitDensity.compact => ServerListDensity.compact,
       };
-
-  /// What the view menu calls this.
-  String get label => switch (this) {
-    ServerListDensity.comfortable => 'Comfortable',
-    ServerListDensity.compact => 'Compact',
-  };
 }
