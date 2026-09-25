@@ -536,6 +536,18 @@ void main() {
       await tester.pump();
       expect(ringed(), isNotNull);
       expect(tester.getTopLeft(title), before);
+
+      // A click on the row that already holds focus takes the ring away
+      // too. Focus does not move, and the pointer is already hovering, so
+      // nothing else would repaint the row.
+      final mouse = await _hover(tester, find.byKey(const ValueKey('r')));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(ringed(), isNotNull);
+      await mouse.down(tester.getCenter(find.byKey(const ValueKey('r'))));
+      await mouse.up();
+      await tester.pump();
+      expect(ringed(), isNull);
     });
 
     testWidgets('on touch the row is 48 dp and the menu button opens the '
@@ -773,6 +785,30 @@ void main() {
         Focus.of(tester.element(find.byIcon(Icons.add))).hasPrimaryFocus,
         isTrue,
       );
+    });
+
+    testWidgets('a pointer leaving from the + hides it again', (tester) async {
+      await _pump(tester, section(onAdd: () {}));
+      bool addShown() => tester
+          .widget<Visibility>(
+            find
+                .ancestor(
+                  of: find.byKey(const ValueKey('add')),
+                  matching: find.byType(Visibility),
+                )
+                .first,
+          )
+          .visible;
+      final mouse = await _hover(tester, find.byKey(const ValueKey('h')));
+      expect(addShown(), isTrue);
+      await mouse.moveTo(tester.getCenter(find.byKey(const ValueKey('add'))));
+      await tester.pump();
+      expect(addShown(), isTrue);
+      // Straight down onto the row, never crossing the header again: the
+      // "+" sits over the header, so only its own exit can clear the hover.
+      await mouse.moveTo(tester.getCenter(find.text('alpha')));
+      await tester.pump();
+      expect(addShown(), isFalse);
     });
 
   });

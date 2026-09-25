@@ -239,8 +239,12 @@ mixin _KeyboardFocusRing<T extends StatefulWidget> on State<T> {
   }
 
   /// A pointer took focus: no ring until a key arrives.
+  ///
+  /// Through setState: a widget that already holds focus gets no focus
+  /// change from the request, and that change is what would otherwise
+  /// repaint it without its ring.
   void focusFromPointer() {
-    _pointerFocused = true;
+    if (!_pointerFocused) setState(() => _pointerFocused = true);
     focusNode.requestFocus();
   }
 
@@ -788,8 +792,13 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
               skipTraversal: true,
               onKeyEvent: _onAddKey,
               onFocusChange: (focused) => setState(() => _addFocused = focused),
+              // Its own exit as well as its enter: the "+" sits over the
+              // header, so the header's region has already reported the
+              // pointer gone, and a pointer leaving from here straight onto
+              // a row would otherwise leave the header revealed.
               child: MouseRegion(
                 onEnter: (_) => setState(() => _hovering = true),
+                onExit: (_) => setState(() => _hovering = false),
                 child: Center(
                   child: _KitIconButton(
                     key: widget.addKey,
