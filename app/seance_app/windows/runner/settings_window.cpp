@@ -22,7 +22,7 @@ constexpr char kLinkChannel[] = "seance/settings_link";
 constexpr char kWindowArgument[] = "--seance-settings-window";
 
 // Spelled with an escape so the source stays ASCII for MSVC, like main.cpp.
-constexpr wchar_t kWindowTitle[] = L"Séance Settings";
+constexpr wchar_t kWindowTitle[] = L"S\u00e9ance Settings";
 constexpr unsigned int kDefaultWidth = 760;
 constexpr unsigned int kDefaultHeight = 640;
 
@@ -69,8 +69,8 @@ class SettingsFlutterWindow : public Win32Window {
     if (!controller_->engine() || !controller_->view()) {
       return false;
     }
-    // Before the message loop runs again, which is when the window's Dart
-    // side — whose first act is to say hello over the link — is heard.
+    // Before the message loop runs again: that is when the window's Dart
+    // side is heard, and its first act is to say hello over the link.
     flutter::BinaryMessenger* main = main_messenger_;
     controller_->engine()->messenger()->SetMessageHandler(
         kLinkChannel, [main](const uint8_t* message, size_t message_size,
