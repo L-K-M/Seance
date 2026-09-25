@@ -8,6 +8,9 @@ class MainFlutterWindow: NSWindow {
   private var filesChannel: FlutterMethodChannel?
   private var bookmarksChannel: FlutterMethodChannel?
 
+  /// Settings in a window of its own (SettingsWindow.swift).
+  private var settingsWindow: SettingsWindowHost?
+
   /// URLs currently inside a startAccessingSecurityScopedResource grant,
   /// keyed by an opaque per-grant token (NOT by path: two overlapping grants
   /// on the same file must each balance their own start with a stop).
@@ -29,8 +32,9 @@ class MainFlutterWindow: NSWindow {
   private var densityTitle: String?
 
   override func awakeFromNib() {
-    // Séance is single-window; disabling automatic window tabbing stops AppKit
-    // from injecting a View menu full of tab commands ("Show Tab Bar", etc.).
+    // Séance's windows never tab (the app's, and Settings' with its own
+    // `tabbingMode`); disabling automatic window tabbing stops AppKit from
+    // injecting a View menu full of tab commands ("Show Tab Bar", etc.).
     NSWindow.allowsAutomaticWindowTabbing = false
 
     let flutterViewController = SeanceFlutterViewController()
@@ -150,6 +154,10 @@ class MainFlutterWindow: NSWindow {
       self?.handleBookmarkCall(call, result: result)
     }
 
+    settingsWindow = SettingsWindowHost(
+      mainWindow: self,
+      messenger: flutterViewController.engine.binaryMessenger)
+
     RegisterGeneratedPlugins(registry: flutterViewController)
 
     // The main menu is loaded from the storyboard; augment it once it's set.
@@ -158,6 +166,14 @@ class MainFlutterWindow: NSWindow {
     }
 
     super.awakeFromNib()
+  }
+
+  /// The Settings window closes with this one, so closing the app's window
+  /// still leaves no window open and quits the app
+  /// (AppDelegate.applicationShouldTerminateAfterLastWindowClosed).
+  override func close() {
+    settingsWindow?.close()
+    super.close()
   }
 
   /// Keep the window invisible while Dart puts it back where it was closed:
@@ -244,6 +260,10 @@ class MainFlutterWindow: NSWindow {
   /// actions (keeping their ⌘C/⌘V/⌘A key equivalents from the storyboard). When
   /// a terminal is focused we forward to Dart; otherwise we re-dispatch the
   /// original selector so a focused text field copies/pastes natively as before.
+  ///
+  /// "A terminal is focused" is this window's focus: with the Settings window
+  /// key, its text fields get the native actions even though a terminal
+  /// behind it still holds focus in this window.
   private func retargetEditMenu(_ mainMenu: NSMenu) {
     let copySel = NSSelectorFromString("copy:")
     let pasteSel = NSSelectorFromString("paste:")
@@ -265,8 +285,10 @@ class MainFlutterWindow: NSWindow {
     }
   }
 
+  private var routesEditToTerminal: Bool { terminalFocused && isKeyWindow }
+
   @objc private func editCopy(_ sender: Any?) {
-    if terminalFocused {
+    if routesEditToTerminal {
       menuChannel?.invokeMethod("editCopy", arguments: nil)
     } else {
       _ = NSApp.sendAction(NSSelectorFromString("copy:"), to: nil, from: sender)
@@ -274,7 +296,7 @@ class MainFlutterWindow: NSWindow {
   }
 
   @objc private func editPaste(_ sender: Any?) {
-    if terminalFocused {
+    if routesEditToTerminal {
       menuChannel?.invokeMethod("editPaste", arguments: nil)
     } else {
       _ = NSApp.sendAction(NSSelectorFromString("paste:"), to: nil, from: sender)
@@ -282,7 +304,7 @@ class MainFlutterWindow: NSWindow {
   }
 
   @objc private func editSelectAll(_ sender: Any?) {
-    if terminalFocused {
+    if routesEditToTerminal {
       menuChannel?.invokeMethod("editSelectAll", arguments: nil)
     } else {
       _ = NSApp.sendAction(NSSelectorFromString("selectAll:"), to: nil, from: sender)

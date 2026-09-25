@@ -433,6 +433,25 @@ Do not "simplify" these away — they are load-bearing:
   setups their "logical" spaces disagree — physical is the one space both map
   into exactly (`WindowStateSnapshot` doc has the details).
 
+- **A second window is a second engine.** Flutter stable has no
+  multi-window API (the framework's is `@internal`, master-channel only in
+  3.47, and macOS admits a second view on one engine only after a private
+  `enableMultiView`), so the Settings window is a second
+  `FlutterViewController`/`FlView` with its own isolate, and everything it
+  does crosses `seance/settings_link`, which the runners relay between the
+  engines (`lib/services/settings_window.dart`). Two traps shaped the
+  runners: on Linux, disposing an engine `eglTerminate`s the EGL display
+  every engine in the process shares, which kills the app's window with a
+  GLX `BadAccess` — so the settings window is hidden on close, never
+  destroyed while the app runs; and `FlView` hooks its window's
+  `delete-event` to ask Dart whether the *application* should quit — so the
+  settings window's own handler, connected before the view, runs first.
+  On macOS every engine makes itself the app delegate's termination
+  handler, the last one started winning, so the window's isolate forwards
+  exit requests to the app's (`RemoteSettingsBackend.requestAppExit`).
+  On macOS the window's controller is `SeanceFlutterViewController`, for the
+  accessibility guard (§3).
+
 ---
 
 ## 7. The seams (extend here, don't fork)
@@ -450,6 +469,13 @@ Do not "simplify" these away — they are load-bearing:
   the keystore actually holds, at startup and on every unlock. Staging never
   writes `vault.json`, so a damaged or unmatched sidecar is moved aside rather
   than being allowed to wedge the vault. In-memory stores need none of it.
+- `SettingsBackend` — everything the Settings screen reads and does.
+  `LocalSettingsBackend` holds the logic (the assistant save's guards, the
+  sync switches' rollbacks) over `AppState`, for the route and for the
+  window's host; `RemoteSettingsBackend` forwards each call over the link
+  from the settings window's isolate. A new setting is a backend method plus
+  a `_Link` case, not an edit to `settings` from the screen — the window's
+  `settings` is a copy.
 - `LlmProvider` — `AnthropicProvider` and `OpenAiCompatibleProvider` (the latter
   covers Ollama/LM Studio/etc. via `base_url`).
 - `SystemFonts` — `SfntSystemFonts` reads the host's font directories,

@@ -5,7 +5,11 @@
 - On phones and tablets, the server filter field is full height again
   instead of a thin strip above an empty gap, and compact server rows
   are 40 dp instead of 48.
-
+- Settings opens in a window of its own on macOS, Linux and Windows,
+  instead of covering the app. Choosing Settings again (⌘, or Ctrl+,, the
+  gear, "Sync off") brings it forward on that tab; closing it keeps the
+  app as it was. Phones and tablets keep the full-screen Settings. A
+  change on General or Files that cannot be saved now says so.
 - Colour that means something, shared with Poltergeist: each colour
   names one kind of thing in both apps, so you find things by colour
   before you read them. The side panel's tabs are the Assistant purple,
