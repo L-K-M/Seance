@@ -1151,12 +1151,12 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       await _backend.setKeepSessionsAlive(requested);
     } catch (e) {
-      if (mounted) {
-        showTopToastIn(context, message: 'Keep sessions alive not saved — $e');
-      }
+      // A newer toggle governs the switch now, and reports for itself.
       if (_keepSessionsAlive != requested) return;
       _keepSessionsAlive = !requested;
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      setState(() {});
+      showTopToastIn(context, message: 'Keep sessions alive not saved — $e');
     }
   }
 
