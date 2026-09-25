@@ -171,12 +171,32 @@ void main() {
   });
 
   group('the mark', () {
-    testWidgets('an uncoloured glyph draws alone, like the sibling rail', (
-      tester,
-    ) async {
+    testWidgets('compact: an uncoloured glyph draws alone, like the sibling '
+        'rail', (tester) async {
       await pump(tester, config: server(icon: ServerIcon.database));
       expect(find.byType(ServerBadge), findsNothing);
       expect(find.byIcon(serverIconData(ServerIcon.database)), findsOneWidget);
+    });
+
+    testWidgets('comfortable: every server gets its 32 px badge, a neutral '
+        'tile behind an uncoloured glyph', (tester) async {
+      await pump(
+        tester,
+        config: server(icon: ServerIcon.database),
+        density: SidebarKitDensity.comfortable,
+      );
+      final badge = tester.widget<ServerBadge>(find.byType(ServerBadge));
+      expect(badge.size, 32);
+      expect(badge.tint, ServerTint.none);
+
+      // A tablet's comfortable rail draws the same badge.
+      await pump(
+        tester,
+        config: server(icon: ServerIcon.database),
+        density: SidebarKitDensity.comfortable,
+        platform: TargetPlatform.android,
+      );
+      expect(tester.widget<ServerBadge>(find.byType(ServerBadge)).size, 32);
     });
 
     testWidgets('a coloured server gets its badge, at the mark extent', (
@@ -194,49 +214,67 @@ void main() {
         platform: TargetPlatform.android,
       );
       expect(tester.widget<ServerBadge>(find.byType(ServerBadge)).size, 24);
-    });
 
-    testWidgets('a coloured image mark is framed in the colour', (
-      tester,
-    ) async {
-      // An image covers the badge's fill, so without the frame the colour
-      // would have nowhere to show at 18 px.
-      final png = await tester.runAsync(() async {
-        final recorder = ui.PictureRecorder();
-        ui.Canvas(recorder).drawRect(
-          const ui.Rect.fromLTWH(0, 0, 8, 8),
-          ui.Paint()..color = const ui.Color(0xFF00FF00),
-        );
-        final picture = recorder.endRecording();
-        final image = await picture.toImage(8, 8);
-        final data = await image.toByteData(format: ui.ImageByteFormat.png);
-        picture.dispose();
-        image.dispose();
-        return base64Encode(data!.buffer.asUint8List());
-      });
       await pump(
         tester,
-        config: server(color: ServerColor.red, iconImage: png),
+        config: server(color: ServerColor.red),
+        density: SidebarKitDensity.comfortable,
       );
-      final frame = tester.widget<DecoratedBox>(
-        find.descendant(
-          of: find.byType(ServerRailMark),
-          matching: find.byWidgetPredicate(
-            (w) =>
-                w is DecoratedBox &&
-                w.position == DecorationPosition.foreground,
-          ),
-        ),
-      );
-      final border = (frame.decoration as BoxDecoration).border! as Border;
-      expect(
-        border.top.color,
-        serverAccent(
-          tester.element(find.byType(ServerRailMark)),
-          const ServerTint(named: ServerColor.red),
-        )!.line,
-      );
+      expect(tester.widget<ServerBadge>(find.byType(ServerBadge)).size, 32);
     });
+
+    for (final density in SidebarKitDensity.values) {
+      testWidgets('${density.name}: the colour runs down the row as its '
+          'accent line, image marks included', (tester) async {
+        // An image covers the badge's fill; the line is the carrier every
+        // kind of mark keeps, so an image needs no frame of its own.
+        final png = await tester.runAsync(() async {
+          final recorder = ui.PictureRecorder();
+          ui.Canvas(recorder).drawRect(
+            const ui.Rect.fromLTWH(0, 0, 8, 8),
+            ui.Paint()..color = const ui.Color(0xFF00FF00),
+          );
+          final picture = recorder.endRecording();
+          final image = await picture.toImage(8, 8);
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          picture.dispose();
+          image.dispose();
+          return base64Encode(data!.buffer.asUint8List());
+        });
+        for (final config in [
+          server(color: ServerColor.red),
+          server(color: ServerColor.red, iconImage: png),
+        ]) {
+          await pump(tester, config: config, density: density);
+          final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
+          expect(
+            row.accent,
+            serverAccent(
+              tester.element(find.byType(SidebarRow)),
+              const ServerTint(named: ServerColor.red),
+            )!.line,
+          );
+          expect(
+            find.descendant(
+              of: find.byType(ServerRailMark),
+              matching: find.byWidgetPredicate(
+                (w) =>
+                    w is DecoratedBox &&
+                    w.position == DecorationPosition.foreground,
+              ),
+            ),
+            findsNothing,
+            reason: 'the line carries the colour; a frame would say it twice',
+          );
+        }
+
+        await pump(tester, density: density);
+        expect(
+          tester.widget<SidebarRow>(find.byType(SidebarRow)).accent,
+          isNull,
+        );
+      });
+    }
   });
 
   group('the dot', () {

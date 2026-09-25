@@ -107,6 +107,9 @@ class ServerTile extends StatelessWidget {
     final excluded = server.excludeFromSync;
     return SidebarRow(
       mark: ServerRailMark(server: server),
+      // The colour's line tone: four pixels of the pastel fill tone would
+      // be a smudge, not a mark (ServerAccentBar's reasoning).
+      accent: serverAccent(context, ServerTint.of(server))?.line,
       title: server.label,
       status: switch (dot.color(context)) {
         final color? => SidebarStatusDot(color, style: dot.style),
@@ -214,21 +217,19 @@ class ServerTile extends StatelessWidget {
   ];
 }
 
-/// A server's mark at the rail's size (see [sidebarMarkExtent]).
+/// A server's mark at the kit's size for the row (see [sidebarMarkExtent]).
 ///
-/// A server with no colour and a built-in glyph draws the glyph alone, like
-/// every other rail row in the sibling apps (Poltergeist draws the same
-/// server the same way), rather than a grey tile around it. A coloured
-/// server gets its badge, whose fill is the colour. An imported image
-/// covers that fill, so a coloured image mark is framed in the colour's
-/// line tone instead: at 18 px there is no room for the accent bar the
-/// larger rows carried beside the badge.
+/// Comfortable, every server gets its 32 px badge, as the list drew it
+/// before the kit: a coloured one on its colour, an uncoloured one on the
+/// neutral tile, so the badges make one column. Compact, a server with no
+/// colour and a built-in glyph draws the glyph alone, like every other
+/// compact row in the sibling apps (Poltergeist draws the same server the
+/// same way), and a coloured server keeps its badge. The colour itself
+/// runs down the row as the accent line ([SidebarRow.accent]) in both, so
+/// an imported image, which covers the badge's fill, needs no frame.
 class ServerRailMark extends StatelessWidget {
   final ServerConfig server;
   const ServerRailMark({super.key, required this.server});
-
-  /// The frame around a coloured image mark.
-  static const double _frameWidth = 1.5;
 
   /// The Android list's glyph size inside its 40 dp disc — the same
   /// proportions Poltergeist's Home uses.
@@ -246,27 +247,20 @@ class ServerRailMark extends StatelessWidget {
     if (SidebarKitScope.layoutOf(context) == SidebarKitLayout.list) {
       return ExcludeSemantics(child: _disc(context, extent, tint, accent));
     }
+    final comfortable =
+        SidebarKitScope.densityOf(context) == SidebarKitDensity.comfortable;
     // Decorative: the row announces the server's name itself.
-    if (mark is ServerGlyphMark && accent == null) {
+    if (!comfortable && mark is ServerGlyphMark && accent == null) {
       return ExcludeSemantics(
         child: Icon(
           serverIconData(mark.icon),
-          size: extent - 2,
+          size: sidebarGlyphSize(context),
           color: SeanceChrome.of(context).secondaryText,
         ),
       );
     }
-    final badge = ExcludeSemantics(
+    return ExcludeSemantics(
       child: ServerBadge(tint: tint, mark: mark, size: extent),
-    );
-    if (mark is! ServerImageMark || accent == null) return badge;
-    return DecoratedBox(
-      position: DecorationPosition.foreground,
-      decoration: BoxDecoration(
-        border: Border.all(color: accent.line, width: _frameWidth),
-        borderRadius: BorderRadius.circular(extent * ServerBadge.cornerRatio),
-      ),
-      child: badge,
     );
   }
 
