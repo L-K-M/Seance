@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 import '../app_state.dart';
+import '../theme/app_appearance.dart';
+import '../theme/theme_palette.dart';
 import '../ui/terminal_appearance.dart';
 import 'app_settings.dart';
 import 'external_file_opener.dart';
@@ -63,6 +65,7 @@ abstract final class _Link {
   static const setKeepSessionsAlive = 'setKeepSessionsAlive';
   static const setCommandSuggestions = 'setCommandSuggestions';
   static const setTerminalAppearance = 'setTerminalAppearance';
+  static const setAppearance = 'setAppearance';
   static const setEditorRegistry = 'setEditorRegistry';
   static const pickEditor = 'pickEditor';
   static const fetchModels = 'fetchModels';
@@ -266,6 +269,12 @@ class SettingsWindowHost {
           fontFamily: json['fontFamily'] as String,
           palette: TerminalPalette.values.byName(json['palette'] as String),
         );
+      case _Link.setAppearance:
+        final json = map();
+        await _backend.setAppearance(
+          ThemePalette.decodeStored(json['palette']),
+          ThemeModePreference.values.byName(json['mode'] as String),
+        );
       case _Link.setEditorRegistry:
         await _backend.setEditorRegistry(EditorRegistry.fromJson(argument));
       case _Link.pickEditor:
@@ -329,6 +338,16 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   /// What the window shows; see [SettingsWindowPage].
   late final ValueNotifier<SettingsWindowPage?> page;
 
+  /// The theme the window draws itself in: the app's, from the latest
+  /// snapshot. Its own notifier for the reason [AppState.appearance] is
+  /// one — every snapshot notifies, and the window's MaterialApp rebuilds
+  /// only for the ones that change the theme, so an edit on the Appearance
+  /// tab re-themes the window it is made in as well as the app.
+  ValueListenable<AppAppearance> get appearance => _appearance;
+  final ValueNotifier<AppAppearance> _appearance = ValueNotifier(
+    AppAppearance.initial,
+  );
+
   /// Tabs the app asks a showing window to switch to (Settings chosen again
   /// from a menu, or "Sync off" pressed while the window is behind).
   Stream<SettingsTab> get tabRequests => _tabRequests.stream;
@@ -370,6 +389,10 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   void _apply(Map<String, dynamic> snapshot) {
     _settings = AppSettings.fromJson(
       (snapshot['settings'] as Map).cast<String, dynamic>(),
+    );
+    _appearance.value = AppAppearance(
+      palette: _settings.themePalette,
+      mode: _settings.themeMode,
     );
     _llmConfigVersion = snapshot['llmConfigVersion'] as int;
     _syncStatus = SyncStatus.fromJson(
@@ -448,6 +471,13 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   });
 
   @override
+  Future<void> setAppearance(ThemePalette palette, ThemeModePreference mode) =>
+      _call(_Link.setAppearance, {
+        'palette': palette.toJson(),
+        'mode': mode.name,
+      });
+
+  @override
   Future<void> setEditorRegistry(EditorRegistry registry) =>
       _call(_Link.setEditorRegistry, registry.toJson());
 
@@ -514,6 +544,7 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
     _link.setMethodCallHandler(null);
     unawaited(_tabRequests.close());
     page.dispose();
+    _appearance.dispose();
     super.dispose();
   }
 }

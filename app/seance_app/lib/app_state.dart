@@ -17,6 +17,7 @@ import 'services/remote_files_controller.dart';
 import 'services/remote_git_controller.dart';
 import 'services/server_duplication.dart';
 import 'services/xterm_engine.dart';
+import 'theme/app_appearance.dart';
 import 'ui/built_in_text_editor.dart';
 import 'ui/server_list_density.dart';
 import 'ui/session_label.dart';
@@ -2026,6 +2027,28 @@ class AppState extends ChangeNotifier {
   /// (the settings screen owns the write; this only refreshes the views).
   void terminalAppearanceChanged() => notifyListeners();
 
+  /// The theme the app is drawn in, as the settings hold it.
+  ///
+  /// A notifier of its own, not a field read on every [notifyListeners]:
+  /// the MaterialApp listens to this alone, so the whole app is re-themed
+  /// when the theme changes and never merely because a session connected or
+  /// a probe came back — which is most of what this state notifies for.
+  ValueListenable<AppAppearance> get appearance => _appearance;
+  late final ValueNotifier<AppAppearance> _appearance = ValueNotifier(
+    _appearanceOf(services.settings),
+  );
+
+  static AppAppearance _appearanceOf(AppSettings settings) =>
+      AppAppearance(palette: settings.themePalette, mode: settings.themeMode);
+
+  /// Re-theme the app after the theme settings changed in place (the
+  /// settings backend owns the write). Notifies too, which is what sends an
+  /// open settings window its snapshot — and with it the new theme.
+  void appearanceChanged() {
+    _appearance.value = _appearanceOf(services.settings);
+    notifyListeners();
+  }
+
   /// Dismiss the update affordance for this session (a fresh launch re-checks).
   void dismissUpdateNotice() {
     if (updateInfo == null) return;
@@ -2234,6 +2257,7 @@ class AppState extends ChangeNotifier {
     // Teardown is in flight and does not read this list; clearing it makes the
     // contract explicit — nothing may reach a session after this point.
     tabs.clear();
+    _appearance.dispose();
     super.dispose();
   }
 }

@@ -295,9 +295,14 @@ double sidebarMarkExtent(BuildContext context) => _metrics(context).markExtent;
 /// comfortable 20 and 22, 24 in the list layout.
 double sidebarGlyphSize(BuildContext context) => _metrics(context).glyphSize;
 
-/// The pill's corner radius (and the focus ring's) for the layout.
+/// The pill's corner radius (and the focus ring's) for the layout, as the
+/// theme scales corners (the chrome's `corner`).
 double _radius(BuildContext context) =>
-    _list(context) ? _listPillRadius : _pillRadius;
+    _chrome(context).corner(_list(context) ? _listPillRadius : _pillRadius);
+
+/// The desktop pill's corner on the kit's other rounded shapes (the icon
+/// buttons, the filter field, the sync chip), scaled the same way.
+double _pill(BuildContext context) => _chrome(context).corner(_pillRadius);
 
 /// The copy the kit renders, injected so the kit authors none.
 @immutable
@@ -1137,7 +1142,7 @@ class _KitIconButton extends StatelessWidget {
         shape: list
             ? const CircleBorder()
             : RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(_pillRadius),
+                borderRadius: BorderRadius.circular(_pill(context)),
               ),
       ),
       tooltip: tooltip,
@@ -2087,7 +2092,7 @@ class _SidebarFilterFieldState extends State<SidebarFilterField> {
                       onPressed: () => widget.onChanged(''),
                     ),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(_pillRadius),
+                borderRadius: BorderRadius.circular(_pill(context)),
                 borderSide: BorderSide.none,
               ),
             ),
@@ -2273,7 +2278,7 @@ class _SyncChip extends StatelessWidget {
         visualDensity: VisualDensity.compact,
         foregroundColor: color,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(_pillRadius),
+          borderRadius: BorderRadius.circular(_pill(context)),
         ),
       ),
       child: iconOnly

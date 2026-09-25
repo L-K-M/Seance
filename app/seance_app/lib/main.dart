@@ -12,6 +12,7 @@ import 'services/settings_window.dart';
 import 'services/window_state.dart';
 import 'settings_window_app.dart';
 import 'theme.dart';
+import 'theme/app_appearance.dart';
 import 'ui/adaptive_shell.dart';
 import 'ui/app_menus.dart';
 import 'ui/host_key_dialog.dart';
@@ -81,6 +82,12 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
   AppState? _state;
   Object? _error;
 
+  /// The theme until the state exists to say otherwise: the settings are
+  /// read during bootstrap, so the spinner is drawn in the default theme.
+  final ValueNotifier<AppAppearance> _bootAppearance = ValueNotifier(
+    AppAppearance.initial,
+  );
+
   @override
   void initState() {
     super.initState();
@@ -91,6 +98,7 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _bootAppearance.dispose();
     super.dispose();
   }
 
@@ -234,14 +242,24 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
     } else {
       home = const AppMenus(child: AdaptiveShell());
     }
-    return MaterialApp(
-      title: 'Séance',
-      navigatorKey: navigatorKey,
-      theme: SeanceTheme.light(),
-      darkTheme: SeanceTheme.dark(),
-      themeMode: ThemeMode.system,
-      builder: (context, child) => AppScope(state: _state, child: child!),
-      home: home,
+    // Rebuilt for a theme change and nothing else: AppState notifies for
+    // every connection, probe and tab change, and this widget never listens
+    // to it, only to the appearance notifier, which moves when the
+    // Appearance tab writes.
+    return ValueListenableBuilder<AppAppearance>(
+      valueListenable: _state?.appearance ?? _bootAppearance,
+      builder: (context, appearance, _) {
+        final themes = SeanceTheme.forAppearance(appearance);
+        return MaterialApp(
+          title: 'Séance',
+          navigatorKey: navigatorKey,
+          theme: themes.theme,
+          darkTheme: themes.darkTheme,
+          themeMode: themes.themeMode,
+          builder: (context, child) => AppScope(state: _state, child: child!),
+          home: home,
+        );
+      },
     );
   }
 }

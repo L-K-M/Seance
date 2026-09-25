@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
+import '../theme/app_appearance.dart';
+import '../theme/theme_palette.dart';
 import '../ui/sync_enrollment_validation.dart';
 import '../ui/terminal_appearance.dart';
 import 'app_settings.dart';
@@ -95,6 +97,21 @@ class LocalSettingsBackend implements SettingsBackend {
     _s.terminalFontFamily = fontFamily;
     // Terminals read the settings during build, so they need a nudge.
     _state.terminalAppearanceChanged();
+    await _state.services.saveSettings();
+  }
+
+  /// Applied before the write, like the terminal's appearance: the screen
+  /// writes through on every change, and the app repainting only after the
+  /// disk had caught up would make each edit lag by a save.
+  @override
+  Future<void> setAppearance(
+    ThemePalette palette,
+    ThemeModePreference mode,
+  ) async {
+    if (_s.themePalette == palette && _s.themeMode == mode) return;
+    _s.themePalette = palette;
+    _s.themeMode = mode;
+    _state.appearanceChanged();
     await _state.services.saveSettings();
   }
 

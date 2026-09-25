@@ -10,6 +10,9 @@ import 'package:seance_app/services/external_file_opener.dart';
 import 'package:seance_app/services/local_settings_backend.dart';
 import 'package:seance_app/services/secure_master_key.dart';
 import 'package:seance_app/services/settings_backend.dart';
+import 'package:seance_app/theme/app_appearance.dart';
+import 'package:seance_app/theme/theme_palette.dart';
+import 'package:seance_app/theme/theme_presets.dart';
 import 'package:seance_core/seance_core.dart';
 
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
@@ -300,6 +303,67 @@ void main() {
 
     await expectLater(backend.setKeepSessionsAlive(!before), throwsA(anything));
     expect(backend.settings.keepSessionsAliveInBackground, before);
+  });
+
+  group('setAppearance', () {
+    test('re-themes the app and lands on disk', () async {
+      final themes = <AppAppearance>[];
+      state.appearance.addListener(() => themes.add(state.appearance.value));
+      var notified = 0;
+      state.addListener(() => notified++);
+
+      await backend.setAppearance(
+        ThemePresets.midnight,
+        ThemeModePreference.dark,
+      );
+
+      expect(themes, [
+        AppAppearance(
+          palette: ThemePresets.midnight,
+          mode: ThemeModePreference.dark,
+        ),
+      ]);
+      // The state notifies too: that is what sends an open settings window
+      // its snapshot.
+      expect(notified, 1);
+      expect(backend.settings.themePalette, ThemePresets.midnight);
+      expect(
+        ThemePalette.decodeStored(onDisk()['themePalette']),
+        ThemePresets.midnight,
+      );
+      expect(onDisk()['themeMode'], 'dark');
+    });
+
+    test('writing what is already there does nothing', () async {
+      await backend.setAppearance(
+        ThemePresets.paper,
+        ThemeModePreference.light,
+      );
+      var notified = 0;
+      state.appearance.addListener(() => notified++);
+      state.addListener(() => notified++);
+      final modified = settingsFile().lastModifiedSync();
+
+      await backend.setAppearance(
+        ThemePalette.decodeStored(ThemePresets.paper.toJson()),
+        ThemeModePreference.light,
+      );
+
+      expect(notified, 0);
+      expect(settingsFile().lastModifiedSync(), modified);
+    });
+
+    test('a failed write still re-themes, and says so', () async {
+      await breakSettingsWrites();
+
+      await expectLater(
+        backend.setAppearance(ThemePresets.vapor, ThemeModePreference.system),
+        throwsA(anything),
+      );
+      // Applied before the write, like the terminal's appearance: the app
+      // shows what the screen shows, and the next save carries it.
+      expect(state.appearance.value.palette, ThemePresets.vapor);
+    });
   });
 
   test(

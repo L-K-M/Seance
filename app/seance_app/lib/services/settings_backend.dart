@@ -1,14 +1,17 @@
 import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
 
+import '../theme/app_appearance.dart';
+import '../theme/theme_palette.dart';
 import '../ui/sync_enrollment_validation.dart';
 import '../ui/terminal_appearance.dart';
 import 'app_settings.dart';
 import 'external_file_opener.dart';
 
-/// The Settings screen's tabs. Here rather than beside the screen because the
-/// settings window's opener names one across the isolate boundary.
-enum SettingsTab { general, assistant, files, sync }
+/// The Settings screen's tabs, in the order the screen shows them. Here
+/// rather than beside the screen because the settings window's opener names
+/// one across the isolate boundary.
+enum SettingsTab { general, appearance, assistant, files, sync }
 
 /// Everything the Settings screen reads and does, apart from where it runs.
 ///
@@ -55,6 +58,10 @@ abstract class SettingsBackend implements Listenable {
     required String fontFamily,
     required TerminalPalette palette,
   });
+
+  /// Persists the theme and re-themes the app — and an open settings
+  /// window, through its next snapshot. A no-op when nothing changed.
+  Future<void> setAppearance(ThemePalette palette, ThemeModePreference mode);
 
   Future<void> setEditorRegistry(EditorRegistry registry);
 

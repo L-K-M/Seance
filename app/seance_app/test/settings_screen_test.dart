@@ -1,13 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
     show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/services/app_settings.dart';
 import 'package:seance_app/services/external_file_opener.dart';
 import 'package:seance_app/services/settings_backend.dart';
 import 'package:seance_app/services/system_fonts.dart';
+import 'package:seance_app/theme.dart';
+import 'package:seance_app/theme/app_appearance.dart';
+import 'package:seance_app/theme/theme_palette.dart';
+import 'package:seance_app/theme/theme_presets.dart';
 import 'package:seance_app/ui/settings_screen.dart';
 import 'package:seance_app/ui/terminal_appearance.dart';
 import 'package:seance_core/seance_core.dart';
@@ -51,6 +57,15 @@ class _FakeBackend extends ChangeNotifier implements SettingsBackend {
     required String fontFamily,
     required TerminalPalette palette,
   }) => _write('setTerminalAppearance($fontSize, $fontFamily, $palette)');
+
+  /// Every theme written, in order.
+  final List<(ThemePalette, ThemeModePreference)> appearances = [];
+
+  @override
+  Future<void> setAppearance(ThemePalette palette, ThemeModePreference mode) {
+    appearances.add((palette, mode));
+    return _write('setAppearance');
+  }
 
   @override
   Future<void> setEditorRegistry(EditorRegistry registry) =>
@@ -298,5 +313,333 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Last sync failed: server down'), findsOneWidget);
+  });
+
+  group('Appearance', () {
+    /// Tall enough that the whole tab is built at once.
+    Future<void> pumpAppearance(WidgetTester tester) async {
+      await pumpScreen(tester, tab: SettingsTab.appearance);
+      tester.view.physicalSize = const Size(1000, 4200);
+      await tester.pumpAndSettle();
+    }
+
+    ThemePalette lastPalette() => backend.appearances.last.$1;
+
+    Finder automatic(String label) => find.byWidgetPredicate(
+      (w) => w is Checkbox && w.semanticLabel == '$label: Automatic',
+    );
+
+    /// What the clipboard holds, as the platform channel answers for it.
+    String? clipboard;
+    setUp(() => clipboard = null);
+
+    void mockClipboard(WidgetTester tester) {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          switch (call.method) {
+            case 'Clipboard.setData':
+              clipboard = (call.arguments as Map)['text'] as String?;
+            case 'Clipboard.getData':
+              return clipboard == null ? null : {'text': clipboard};
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+    }
+
+    testWidgets('sits second, after General', (tester) async {
+      await pumpScreen(tester);
+      final tabs = tester.widget<TabBar>(find.byType(TabBar)).tabs;
+      expect(tabs.map((tab) => (tab as Tab).text), [
+        'General',
+        'Appearance',
+        'Assistant',
+        'Files',
+        'Sync',
+      ]);
+      expect(SettingsTab.values.map((tab) => tab.name), [
+        'general',
+        'appearance',
+        'assistant',
+        'files',
+        'sync',
+      ]);
+    });
+
+    testWidgets('picking a preset writes that preset', (tester) async {
+      await pumpAppearance(tester);
+      expect(find.text('Using Séance.'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Use the Midnight theme'));
+      await tester.pumpAndSettle();
+
+      expect(backend.appearances, [
+        (ThemePresets.midnight, ThemeModePreference.system),
+      ]);
+      expect(find.text('Using Midnight.'), findsOneWidget);
+      // A surface of its own decides the brightness, so the mode is moot.
+      final mode = tester.widget<SegmentedButton<ThemeModePreference>>(
+        find.byType(SegmentedButton<ThemeModePreference>),
+      );
+      expect(mode.onSelectionChanged, isNull);
+      expect(find.textContaining('always dark'), findsOneWidget);
+    });
+
+    testWidgets('the selected preset says so to a screen reader', (
+      tester,
+    ) async {
+      backend.settings.themePalette = ThemePresets.paper;
+      final handle = tester.ensureSemantics();
+      await pumpAppearance(tester);
+
+      expect(
+        tester.getSemantics(find.byTooltip('Use the Paper theme')),
+        matchesSemantics(
+          label: 'Paper',
+          tooltip: 'Use the Paper theme',
+          isButton: true,
+          hasSelectedState: true,
+          isSelected: true,
+          isFocusable: true,
+          hasTapAction: true,
+          hasFocusAction: true,
+        ),
+      );
+      handle.dispose();
+    });
+
+    testWidgets('the mode writes through while the surface is Automatic', (
+      tester,
+    ) async {
+      await pumpAppearance(tester);
+
+      await tester.tap(find.text('Dark'));
+      await tester.pumpAndSettle();
+
+      expect(backend.appearances.last.$2, ThemeModePreference.dark);
+      expect(lastPalette(), ThemePresets.initial);
+    });
+
+    testWidgets('Automatic hands a colour back, and back again restores it', (
+      tester,
+    ) async {
+      backend.settings.themePalette = ThemePresets.paper;
+      await pumpAppearance(tester);
+
+      await tester.tap(automatic('Sidebar'));
+      await tester.pumpAndSettle();
+      expect(lastPalette().sidebar, isNull);
+      expect(lastPalette().name, ThemePalette.customName);
+      expect(find.text('Using your own colours.'), findsOneWidget);
+
+      await tester.tap(automatic('Sidebar'));
+      await tester.pumpAndSettle();
+      expect(lastPalette().sidebar, ThemePresets.paper.sidebar);
+      // Back to exactly the preset, it is the preset again.
+      expect(lastPalette(), ThemePresets.paper);
+    });
+
+    testWidgets('leaving Automatic starts from the colour drawn now', (
+      tester,
+    ) async {
+      await pumpAppearance(tester);
+
+      await tester.tap(automatic('Text'));
+      await tester.pumpAndSettle();
+
+      // The test's platform is light, so Automatic text is the light
+      // table's, not black and not the dark table's.
+      expect(
+        lastPalette().text,
+        SeanceTheme.resolvedSlots(
+          ThemePresets.initial,
+          Brightness.light,
+        )[ThemeSlot.text],
+      );
+    });
+
+    testWidgets('a swatch opens the picker and writes what it returns', (
+      tester,
+    ) async {
+      await pumpAppearance(tester);
+
+      await tester.tap(find.byTooltip('Choose the Accent colour'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(AlertDialog, 'Accent'), findsOneWidget);
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        '1e90ff',
+      );
+      await tester.tap(find.text('Use colour'));
+      await tester.pumpAndSettle();
+
+      expect(lastPalette().accent, const Color(0xFF1E90FF));
+      expect(lastPalette().name, ThemePalette.customName);
+    });
+
+    testWidgets('the lines colour may be translucent', (tester) async {
+      await pumpAppearance(tester);
+
+      await tester.tap(find.byTooltip('Choose a Lines colour (now Automatic)'));
+      await tester.pumpAndSettle();
+      // Hue, saturation, brightness and opacity.
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(Slider),
+        ),
+        findsNWidgets(4),
+      );
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        '11223380',
+      );
+      await tester.tap(find.text('Use colour'));
+      await tester.pumpAndSettle();
+
+      expect(lastPalette().hairline, const Color(0x80112233));
+    });
+
+    testWidgets('the terminal switch starts from the built-in colours', (
+      tester,
+    ) async {
+      await pumpAppearance(tester);
+      expect(find.text('Normal'), findsNothing);
+
+      await tester.tap(find.text("Use the theme's terminal colours"));
+      await tester.pumpAndSettle();
+
+      expect(
+        lastPalette().terminal,
+        SeanceTerminalThemes.toColors(SeanceTerminalThemes.light),
+      );
+      expect(find.text('Normal'), findsOneWidget);
+      expect(find.byTooltip('Choose the Bright cyan colour'), findsOneWidget);
+
+      await tester.tap(find.text("Use the theme's terminal colours"));
+      await tester.pumpAndSettle();
+      expect(lastPalette().terminal, isNull);
+    });
+
+    testWidgets('the corners slider writes the scale', (tester) async {
+      await pumpAppearance(tester);
+      final slider = find.byWidgetPredicate(
+        (w) => w is Slider && w.max == ThemePalette.maxCornerScale,
+      );
+
+      await tester.drag(slider, Offset(-tester.getSize(slider).width, 0));
+      await tester.pumpAndSettle();
+
+      expect(lastPalette().cornerScale, 0);
+      expect(find.text('Square'), findsWidgets);
+    });
+
+    testWidgets('reset asks first, and keeps the mode', (tester) async {
+      backend.settings
+        ..themePalette = ThemePresets.vapor
+        ..themeMode = ThemeModePreference.dark;
+      await pumpAppearance(tester);
+
+      await tester.tap(find.text('Reset to Séance'));
+      await tester.pumpAndSettle();
+      expect(find.text('Reset the theme?'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(backend.appearances, isEmpty);
+
+      await tester.tap(find.text('Reset to Séance'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Reset'));
+      await tester.pumpAndSettle();
+      expect(backend.appearances, [
+        (ThemePresets.initial, ThemeModePreference.dark),
+      ]);
+    });
+
+    testWidgets('copy puts the theme on the clipboard as JSON', (tester) async {
+      mockClipboard(tester);
+      backend.settings.themePalette = ThemePresets.solarized;
+      await pumpAppearance(tester);
+
+      await tester.tap(find.text('Copy theme'));
+      await tester.pumpAndSettle();
+
+      expect(
+        ThemePalette.decodeStored(jsonDecode(clipboard!)),
+        ThemePresets.solarized,
+      );
+      expect(find.text('Theme copied.'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+    });
+
+    testWidgets('pasting something that is not a theme changes nothing', (
+      tester,
+    ) async {
+      mockClipboard(tester);
+      clipboard = 'ssh deploy@web.example.com';
+      await pumpAppearance(tester);
+
+      await tester.tap(find.text('Paste theme'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('The clipboard does not hold a theme'),
+        findsOneWidget,
+      );
+      expect(backend.appearances, isEmpty);
+      await tester.pump(const Duration(seconds: 5));
+    });
+
+    testWidgets('pasting a theme adopts it whole', (tester) async {
+      mockClipboard(tester);
+      clipboard = jsonEncode(ThemePresets.terminal.toJson());
+      await pumpAppearance(tester);
+
+      await tester.tap(find.text('Paste theme'));
+      await tester.pumpAndSettle();
+
+      expect(lastPalette(), ThemePresets.terminal);
+      expect(find.text('Using Terminal.'), findsOneWidget);
+    });
+
+    testWidgets('fits a phone', (tester) async {
+      backend.settings.themePalette = ThemePresets.paper;
+      await pumpScreen(tester, tab: SettingsTab.appearance);
+      tester.view.physicalSize = const Size(360, 4200);
+      await tester.pumpAndSettle();
+
+      // Two presets to a row, and every section drawn without overflowing.
+      final first = tester.getRect(find.byTooltip('Use the Séance theme'));
+      final second = tester.getRect(find.byTooltip('Use the Graphite theme'));
+      final third = tester.getRect(find.byTooltip('Use the Paper theme'));
+      expect(second.top, first.top);
+      expect(third.top, greaterThan(first.bottom));
+      expect(find.byTooltip('Choose the Bright white colour'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a failed write says so', (tester) async {
+      backend.failWrites = const SettingsBackendException('disk full');
+      await pumpAppearance(tester);
+
+      await tester.tap(find.byTooltip('Use the Graphite theme'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Appearance not saved: disk full'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+    });
   });
 }
