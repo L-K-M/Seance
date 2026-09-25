@@ -20,6 +20,7 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 import 'package:flutter/services.dart';
 
 import '../../theme.dart';
@@ -360,6 +361,27 @@ List<Widget> sidebarMenuWidgets(
         ),
       },
   ];
+}
+
+/// A row's verbs as custom semantics actions (TalkBack's and VoiceOver's
+/// actions menus), with its hover [action]: a screen reader's cursor is
+/// no pointer, so a verb that waits for a hover or a right-click would be
+/// out of its reach. Enabled top-level verbs only — a submenu's live in
+/// the menu and the sheet — and a hover action repeating a verb of the
+/// same name is one action. Null when there is none, so a verbless row
+/// does not advertise an empty actions menu.
+Map<CustomSemanticsAction, VoidCallback>? _semanticsActions(
+  List<SidebarMenuEntry>? verbs,
+  SidebarRowAction? action,
+) {
+  final actions = <CustomSemanticsAction, VoidCallback>{
+    for (final entry in verbs ?? const <SidebarMenuEntry>[])
+      if (entry case SidebarMenuAction(:final label, :final onSelected?))
+        CustomSemanticsAction(label: label): onSelected,
+    if (action != null)
+      CustomSemanticsAction(label: action.tooltip): action.onPressed,
+  };
+  return actions.isEmpty ? null : actions;
 }
 
 /// The touch rendering of [entries]: a modal bottom sheet headed by
@@ -1132,9 +1154,18 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
           )
         : (widget.trailingText == null
               ? null
-              : Text(widget.trailingText!, maxLines: 1, style: captionStyle));
+              : ExcludeSemantics(
+                  child: Text(
+                    widget.trailingText!,
+                    maxLines: 1,
+                    style: captionStyle,
+                  ),
+                ));
     final trailingIcon = widget.trailingIcon;
     final entries = widget.menuEntries;
+    // Built once per frame: the menu and the row's semantics actions list
+    // the same verbs.
+    final verbs = entries?.call();
     final menuButton = widget.showMenuButton && entries != null
         ? Builder(
             builder: (buttonContext) => _KitIconButton(
@@ -1196,11 +1227,20 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
       foregroundDecoration: focused || dropInto
           ? _focusRing(theme.colorScheme.primary, radius)
           : null,
+      // The painted parts are excluded one by one, not the whole row: the
+      // row's label says what they show, but its buttons (the hover action,
+      // the "⋮") announce and act on themselves.
       child: Row(
         children: [
-          _SidebarMark(mark: widget.mark, dot: widget.status, ring: ring),
+          ExcludeSemantics(
+            child: _SidebarMark(
+              mark: widget.mark,
+              dot: widget.status,
+              ring: ring,
+            ),
+          ),
           SizedBox(width: list ? _listMarkGap : (_touch(context) ? 12 : 6)),
-          Expanded(child: label),
+          Expanded(child: ExcludeSemantics(child: label)),
           if (trailingIcon != null) ...[
             const SizedBox(width: 6),
             Icon(
@@ -1222,6 +1262,8 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
         // Hover still shows it (the mode never gates mice); touch's
         // long-press belongs to the verb sheet, not the tooltip.
         triggerMode: TooltipTriggerMode.manual,
+        // The host folds what a screen reader needs into the label.
+        excludeFromSemantics: true,
         child: content,
       );
     }
@@ -1255,13 +1297,14 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
         button: widget.onActivate != null,
         selected: selected,
         label: widget.semanticLabel ?? widget.title,
+        customSemanticsActions: _semanticsActions(verbs, action),
         child: Focus(
           focusNode: focusNode,
           onKeyEvent: _onKey,
           onFocusChange: onFocusChanged,
-          // The detector sits OUTSIDE ExcludeSemantics so its tap reaches
-          // the semantics tree — an announced button a screen reader
-          // cannot activate is WCAG 4.1.2's failure.
+          // The detector's tap and long-press reach the row's node — an
+          // announced button a screen reader cannot activate is WCAG
+          // 4.1.2's failure.
           child: Listener(
             onPointerDown: (event) => _lastPointer = event.kind,
             child: GestureDetector(
@@ -1283,20 +1326,21 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
               onLongPress: entries == null && widget.onActivate == null
                   ? null
                   : _onLongPress,
-              child: ExcludeSemantics(
-                child: entries == null
-                    ? content
-                    : MenuAnchor(
-                        controller: _menu,
-                        // Focus returns to the row when the menu closes.
-                        childFocusNode: focusNode,
-                        menuChildren: sidebarMenuWidgets(
-                          entries(),
-                          firstFocus: _firstVerbFocus,
-                        ),
-                        child: content,
+              // The anchor's overlay sits here in the semantics tree, so
+              // nothing above it may exclude semantics: an open menu's
+              // verbs would have no nodes at all.
+              child: verbs == null
+                  ? content
+                  : MenuAnchor(
+                      controller: _menu,
+                      // Focus returns to the row when the menu closes.
+                      childFocusNode: focusNode,
+                      menuChildren: sidebarMenuWidgets(
+                        verbs,
+                        firstFocus: _firstVerbFocus,
                       ),
-              ),
+                      child: content,
+                    ),
             ),
           ),
         ),

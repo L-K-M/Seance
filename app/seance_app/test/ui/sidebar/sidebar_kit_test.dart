@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/theme.dart';
@@ -774,5 +775,105 @@ void main() {
       );
     });
 
+  });
+
+  // A row's verbs have to reach a screen reader, which has no pointer to
+  // hover or right-click with.
+  group('screen-reader reach', () {
+    testWidgets('a row offers its verbs and its hover action as semantics '
+        'actions', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final picked = <String>[];
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: 'demo',
+          onActivate: (_) {},
+          hoverAction: SidebarRowAction(
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () => picked.add('disconnect'),
+          ),
+          menuEntries: () => [
+            SidebarMenuAction(
+              label: 'kit-open',
+              onSelected: () => picked.add('open'),
+            ),
+            const SidebarMenuDivider(),
+            const SidebarMenuAction(label: 'kit-off', onSelected: null),
+            SidebarMenuAction(
+              label: 'kit-disconnect',
+              onSelected: () => picked.add('disconnect'),
+            ),
+          ],
+        ),
+      );
+      // No hover needed: a screen reader's cursor is not a pointer. A
+      // disabled verb is not offered, and the hover action and the verb
+      // it repeats are one action.
+      final row = find.semantics.byLabel('demo');
+      final ids = row
+          .evaluate()
+          .single
+          .getSemanticsData()
+          .customSemanticsActionIds;
+      expect([
+        for (final id in ids ?? const <int>[])
+          CustomSemanticsAction.getAction(id)!.label,
+      ], unorderedEquals(['kit-open', 'kit-disconnect']));
+      tester.semantics.customAction(
+        row,
+        const CustomSemanticsAction(label: 'kit-open'),
+      );
+      tester.semantics.customAction(
+        row,
+        const CustomSemanticsAction(label: 'kit-disconnect'),
+      );
+      expect(picked, ['open', 'disconnect']);
+      semantics.dispose();
+    });
+
+    testWidgets('an open menu, the hover action and the menu button are in '
+        'the semantics tree', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: 'demo',
+          onActivate: (_) {},
+          showMenuButton: true,
+          hoverAction: SidebarRowAction(
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () {},
+          ),
+          menuEntries: () => [
+            SidebarMenuAction(label: 'kit-rename', onSelected: () {}),
+          ],
+        ),
+      );
+      SemanticsFinder button(String tooltip) => find.semantics.byPredicate(
+        (node) =>
+            node.tooltip == tooltip &&
+            node.getSemanticsData().hasAction(SemanticsAction.tap),
+      );
+      expect(button('kit-more'), findsOne);
+
+      await _hover(tester, find.byKey(const ValueKey('r')));
+      expect(button('kit-disconnect'), findsOne);
+
+      await tester.tap(
+        find.byKey(const ValueKey('r')),
+        buttons: kSecondaryButton,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('kit-rename'), findsOneWidget);
+      expect(find.semantics.byLabel('kit-rename'), findsOne);
+      semantics.dispose();
+    });
   });
 }
