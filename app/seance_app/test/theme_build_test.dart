@@ -122,7 +122,7 @@ void main() {
           expect(chrome.secondaryText, scheme.onSurfaceVariant);
           expect(chrome.headerHeight, desktop ? 52 : 56);
           expect(chrome.rowExtent, desktop ? 22 : 48);
-          expect(chrome.sidebarRowExtent, desktop ? 26 : 48);
+          expect(chrome.sidebarRowExtent, desktop ? 26 : 40);
           expect(chrome.cornerScale, 1);
 
           final light = brightness == Brightness.light;

@@ -164,7 +164,7 @@ void main() {
       () => state!.setServerListDensity(ServerListDensity.compact),
     );
     await tester.pumpAndSettle();
-    expect(rowHeight(), 48);
+    expect(rowHeight(), 40);
     expect(markSize(), lessThan(40));
 
     await tester.runAsync(

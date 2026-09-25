@@ -413,7 +413,7 @@ SeanceChrome _chromeFor(
     secondaryText: n.onSurfaceVariant,
     headerHeight: platform == TargetPlatform.macOS ? 52 : (desktop ? 44 : 56),
     rowExtent: desktop ? 22 : 48,
-    sidebarRowExtent: desktop ? 26 : 48,
+    sidebarRowExtent: desktop ? 26 : 40,
     cornerScale: cornerScale,
   );
 }
