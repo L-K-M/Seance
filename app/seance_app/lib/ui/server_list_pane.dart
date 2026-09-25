@@ -375,6 +375,12 @@ class _ServerListPaneState extends State<ServerListPane> {
       // being broken rather than as the list being tidy.
       collapsedKeys: _query.isEmpty ? state.collapsedServerGroups : const {},
     );
+    // What each header folds or filters out of view, measured against the
+    // whole list, so a hidden live session still shows on its header.
+    final hidden = hiddenByHeader(
+      sections: _sections(state, state.servers),
+      rows: rows,
+    );
     // The home screen lets the ListView take the ambient insets (the
     // gesture-nav bar on Android) and extends the bottom one by the floating
     // button's clearance; an explicit EdgeInsets must neither drop the
@@ -410,6 +416,7 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: title,
                 count: count,
                 collapsed: collapsed,
+                status: _hiddenLiveDot(context, state, hidden[key]),
                 onToggle: () => state.toggleServerGroup(key),
                 // SERVERS' "+" adds to it; the shortlist is filled from a
                 // row's menu, so PINNED has none. The home screen's floating
@@ -433,6 +440,7 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: name,
                 count: count,
                 collapsed: collapsed,
+                status: _hiddenLiveDot(context, state, hidden[key]),
                 onToggle: () => state.toggleServerGroup(key),
               ),
             ServerRow(:final server, :final depth) => _tile(
@@ -444,6 +452,30 @@ class _ServerListPaneState extends State<ServerListPane> {
           },
       ],
     );
+  }
+
+  /// A header's dot for the live sessions it keeps out of view: green while
+  /// one of [servers] is connected, amber while one is connecting. A
+  /// failure is left to its row: folding a group is a choice not to look,
+  /// and what must not vanish with it is a connection still open.
+  SidebarStatusDot? _hiddenLiveDot(
+    BuildContext context,
+    AppState state,
+    List<ServerConfig>? servers,
+  ) {
+    if (servers == null) return null;
+    final live = {
+      for (final server in servers)
+        for (final tab in state.tabsForServer(server.id))
+          if (tab is TerminalSession) tab.status,
+    };
+    final dot = live.contains(TerminalStatus.connected)
+        ? ServerDot.connected
+        : live.contains(TerminalStatus.connecting)
+        ? ServerDot.connecting
+        : null;
+    if (dot == null) return null;
+    return SidebarStatusDot(dot.color(context)!, style: dot.style);
   }
 
   Widget _tile(

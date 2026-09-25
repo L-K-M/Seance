@@ -223,6 +223,57 @@ List<ServerListRow> serverListRows({
   return rows;
 }
 
+/// The servers of [sections] that each header in [rows] keeps out of view,
+/// by the header's key, so a folded group or a filter never hides a live
+/// connection without a trace.
+///
+/// [sections] is the whole list, [rows] what is drawn: a collapsed
+/// section's or group's members are hidden, and so are the ones a filter
+/// left out when [rows] were built from a filtered list. Each server goes
+/// under the innermost header still on screen that holds it (its group's
+/// row, else SERVERS), so a folded group's server marks that group and not
+/// SERVERS as well; one whose every header is gone goes nowhere.
+Map<String, List<ServerConfig>> hiddenByHeader({
+  required ServerSidebarSections sections,
+  required List<ServerListRow> rows,
+}) {
+  final shown = <String>{};
+  final headers = <String>{};
+  for (final row in rows) {
+    switch (row) {
+      case ServerRow(:final server):
+        shown.add(server.id);
+      case ServerSectionRow(:final key):
+        headers.add(key);
+      case ServerGroupHeaderRow(:final key):
+        headers.add(key);
+    }
+  }
+
+  final hidden = <String, List<ServerConfig>>{};
+  void hide(ServerConfig server, List<String> keys) {
+    if (shown.contains(server.id)) return;
+    for (final key in keys) {
+      if (!headers.contains(key)) continue;
+      (hidden[key] ??= []).add(server);
+      return;
+    }
+  }
+
+  for (final server in sections.pinned) {
+    hide(server, const [kPinnedKey]);
+  }
+  for (final server in sections.ungrouped) {
+    hide(server, const [kServersKey]);
+  }
+  for (final group in sections.groups) {
+    for (final server in group.servers) {
+      hide(server, [group.key, kServersKey]);
+    }
+  }
+  return hidden;
+}
+
 /// The distinct group names in [servers], sorted, for offering existing groups
 /// in the editor instead of making the user retype (and misspell) one.
 List<String> existingServerGroups(List<ServerConfig> servers) {

@@ -12,6 +12,7 @@ import 'package:seance_app/services/app_services.dart';
 import 'package:seance_app/services/xterm_engine.dart';
 import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/app_menus.dart';
+import 'package:seance_app/ui/server_grouping.dart';
 import 'package:seance_app/ui/server_list_density.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
 import 'package:seance_app/ui/server_status_dot.dart';
@@ -20,6 +21,23 @@ import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
 
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+/// A session the app believes is open, without a network.
+class _OpenSshSession implements SshSession {
+  _OpenSshSession(this.engine);
+
+  @override
+  final TerminalEngine engine;
+
+  @override
+  bool get isClosed => false;
+
+  @override
+  Future<void> close() => engine.dispose();
+
+  @override
+  Object? noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 /// The pane in its two postures: the desktop rail (the sibling sidebar
 /// anatomy, Poltergeist's plan 10 §5) and the phone home (§9), whose
@@ -479,6 +497,59 @@ void main() {
           tile.server.label: tile.dot,
       };
       expect(dots, {'alpha': ServerDot.blocked, 'bravo': ServerDot.failed});
+    });
+
+    testWidgets('a folded group or a filter keeps a live connection in '
+        'view, as a dot on the header that hides it', (tester) async {
+      await boot(tester, [
+        server('db', group: 'Production'),
+        server('web', group: 'Production'),
+        server('alpha'),
+        server('bravo'),
+      ]);
+      final tab = TerminalSession(
+        id: 't',
+        serverId: 'db',
+        config: state!.servers.firstWhere((s) => s.id == 'db'),
+        engine: XtermTerminalEngine(),
+        connecting: false,
+      );
+      tab.session = _OpenSshSession(tab.engine);
+      state!.tabs.add(tab);
+      await pumpRail(tester);
+      final online = StatusColors.online(
+        tester.element(find.byType(ServerListPane)),
+      );
+      SidebarStatusDot? dotOn(String key) =>
+          tester.widget<SidebarSectionHeader>(find.byKey(ValueKey(key))).status;
+      final production = 'servers.group.${serverGroupKey('Production')}';
+      const servers = 'servers.section.$kServersKey';
+
+      // In view, the row carries its own dot; the headers carry none.
+      expect(dotOn(production), isNull);
+      expect(dotOn(servers), isNull);
+
+      await tester.tap(find.text('Production'));
+      await tester.pumpAndSettle();
+      expect(dotOn(production)?.color, online);
+      expect(
+        dotOn(servers),
+        isNull,
+        reason: 'the group row already shows it; SERVERS would say it twice',
+      );
+
+      await tester.tap(find.text('Production'));
+      await tester.pumpAndSettle();
+      expect(ServerListPane.revealFilter(), isTrue);
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('servers.filter.field')),
+        'alpha',
+      );
+      await tester.pumpAndSettle();
+      // The filter dropped db and its group's row: SERVERS holds the dot.
+      expect(find.text('Production'), findsNothing);
+      expect(dotOn(servers)?.color, online);
     });
 
     testWidgets('the sync chip says what sync is doing', (tester) async {
