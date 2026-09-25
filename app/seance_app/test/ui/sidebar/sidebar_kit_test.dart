@@ -1632,8 +1632,9 @@ void main() {
       );
       expect(find.text('3'), findsOneWidget);
 
-      // Compact keeps them for hover, focus, or a folded section.
-      await _pump(tester, header());
+      // Compact hides them at rest (hover, focus and a folded section
+      // draw them again), so these check Visibility, not absence.
+      await _pump(tester, header(), density: SidebarKitDensity.compact);
       expect(find.text('3'), findsNothing);
       expect(
         visibilityOf(tester, find.byIcon(Icons.expand_more)).visible,

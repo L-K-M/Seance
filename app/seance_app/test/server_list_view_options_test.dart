@@ -326,6 +326,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(state!.serverListDensity, ServerListDensity.comfortable);
+      expect(
+        services!.settings.serverListDensity,
+        ServerListDensity.comfortable,
+      );
       expect(tester.getSize(find.byType(ServerTile)).height, 52);
     });
   });

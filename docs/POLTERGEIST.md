@@ -231,9 +231,9 @@ tests in the kit test):
 6. **The row surface.** `SidebarKitScope.background`: the dot's cut-out
    ring took `sidebarBackground` even on another surface (a phone's home
    list on the page surface), which drew a halo.
-7. **Row options.** `subtitle` (a second line, first for touch lists,
-   which have no hover tooltip; since the two densities below, hosts
-   always pass one and the kit draws it only when comfortable),
+7. **Row options.** `subtitle` (a second line, at first only for touch
+   lists, which have no hover tooltip; since the two densities below,
+   hosts always pass one and the kit draws it only when comfortable),
    `trailingIcon` (a standing mark, Séance's excluded-from-sync cloud),
    and `showMenuButton` (a visible "⋮" opening the menu at the button on
    desktop, the sheet on touch). `SidebarKitStrings` gains a required

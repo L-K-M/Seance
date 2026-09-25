@@ -303,10 +303,11 @@ class SshConnectException implements Exception {
   /// [SSHAuthAbortError] whose `reason` is the host-key error. The bare form
   /// is accepted too, for a dartssh2 that stops wrapping it.
   ///
-  /// A key-exchange signature that fails to verify is not promised here:
-  /// dartssh2 raises the same host-key error for RSA and ECDSA keys, but its
-  /// ed25519 verifier throws a plain exception, which reaches this layer as
-  /// an internal error.
+  /// A key-exchange signature that fails to verify lands here too for RSA
+  /// and ECDSA host keys, which dartssh2 reports with the same host-key
+  /// error (its ed25519 verifier throws a plain exception instead, which
+  /// reaches this layer as an internal error). So this getter alone does
+  /// not prove the user declined a key; only the prompt's verdict does.
   bool get isHostKeyRefusal {
     final cause = this.cause;
     final reason = cause is SSHAuthAbortError ? cause.reason : cause;

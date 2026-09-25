@@ -94,6 +94,23 @@ void main() {
       );
       expect(visibility.visible, isTrue, reason: '$icon at rest');
     }
+
+    await pump(
+      tester,
+      name: 'Servers',
+      count: 5,
+      collapsed: true,
+      nested: false,
+      onAdd: () {},
+      density: SidebarKitDensity.comfortable,
+    );
+    expect(find.text('5'), findsOneWidget);
+    for (final icon in [Icons.chevron_right, Icons.add]) {
+      final visibility = tester.widget<Visibility>(
+        find.ancestor(of: find.byIcon(icon), matching: find.byType(Visibility)),
+      );
+      expect(visibility.visible, isTrue, reason: '$icon folded');
+    }
   });
 
   testWidgets('a section header draws caps and announces the spelling', (

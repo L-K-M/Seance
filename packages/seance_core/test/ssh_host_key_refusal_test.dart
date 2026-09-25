@@ -90,10 +90,11 @@ void main() {
     });
 
     test('a first-use key the user declines is a host-key refusal', () async {
+      final store = InMemoryHostKeyStore();
       final verdicts = <HostKeyVerdict>[];
 
       final failure = await _connectExpectingFailure(
-        InMemoryHostKeyStore(),
+        store,
         onHostKey: (decision) async {
           verdicts.add(decision.verdict);
           return false;
@@ -102,6 +103,9 @@ void main() {
 
       expect(verdicts, [HostKeyVerdict.firstUse]);
       expect(failure.isHostKeyRefusal, isTrue);
+      // TOFU pins only what the user accepts: the app reads a pinned key
+      // as "changed", so a declined stranger must leave the store empty.
+      expect(await store.get(_host, _port), isNull);
     });
 
     test(
