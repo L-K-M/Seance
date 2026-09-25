@@ -1,25 +1,43 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
-import '../app_state.dart';
 import '../family_hues.dart';
-import '../main.dart';
-import '../services/app_settings.dart';
-import '../services/assistant_settings_sync.dart';
 import '../services/external_file_opener.dart';
+import '../services/settings_backend.dart';
 import '../services/system_fonts.dart';
 import 'font_picker.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
 import 'top_toast.dart';
 
+export '../services/settings_backend.dart' show SettingsTab;
+
+/// Where the screen is shown, which decides its chrome.
+enum SettingsPresentation {
+  /// A route over the app: an app bar with the title and a back button.
+  route,
+
+  /// The desktop settings window, whose own title bar names it and closes
+  /// it: the tabs alone.
+  window,
+}
+
 /// Settings: LLM provider (the assistant is always on — this only picks which
 /// model), the web-search backend, secret redaction, and sync enrolment.
-enum SettingsTab { general, assistant, files, sync }
-
+///
+/// Reads and writes through [backend] only, so the same screen runs as a
+/// route in the app and in the desktop settings window's own isolate.
 class SettingsScreen extends StatefulWidget {
+  final SettingsBackend backend;
   final SettingsTab initialTab;
+  final SettingsPresentation presentation;
+
+  /// Tabs to switch to while open: the settings window receives these when
+  /// Settings is chosen again with a different tab.
+  final Stream<SettingsTab>? tabRequests;
 
   /// Test seam: the source of installed font families behind the terminal
   /// font picker. Defaults to the host's own collection, which a widget test
@@ -29,7 +47,10 @@ class SettingsScreen extends StatefulWidget {
 
   const SettingsScreen({
     super.key,
+    required this.backend,
     this.initialTab = SettingsTab.general,
+    this.presentation = SettingsPresentation.route,
+    this.tabRequests,
     this.systemFonts,
   });
 
@@ -37,12 +58,9 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-/// Keystore entry name for the Z.AI search key. A constant rather than a typed
-/// value: settings hold key *names*, never keys.
-const String _zaiKeyRef = 'zai';
-
-class _SettingsScreenState extends State<SettingsScreen> {
-  /// Shown by both of `_save`'s refusals, which are one message about one
+class _SettingsScreenState extends State<SettingsScreen>
+    with SingleTickerProviderStateMixin {
+  /// Shown by both of Save's refusals, which are one message about one
   /// situation: written twice, a wording fix or a translation reaches one of
   /// them and the drift is invisible in review.
   static const String _adoptedMidSave =
@@ -60,6 +78,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _syncEncryptionPassphrase = TextEditingController();
   final _syncEncryptionPassphraseConfirm = TextEditingController();
 
+  late final TabController _tabs = TabController(
+    length: SettingsTab.values.length,
+    initialIndex: widget.initialTab.index,
+    vsync: this,
+  );
+  StreamSubscription<SettingsTab>? _tabRequests;
+
   late LlmProviderKind _kind;
   late bool _zai;
   late bool _syncAssistant;
@@ -69,7 +94,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _commandSuggestions;
   late bool _checkForUpdates;
   late bool _keepSessionsAlive;
+
+  /// This screen's own copy, edited here and handed to the backend whole:
+  /// the settings window's [SettingsBackend.settings] is itself a copy, and
+  /// editing the route's in place would change the live settings before the
+  /// write that is supposed to carry the change.
   late EditorRegistry _editorRegistry;
+
   /// A getter, not a `late final` field: the service caches its directory
   /// walk, so reading this per build is free, and a field initialized once
   /// would pin the test seam to whatever the first widget instance carried.
@@ -87,69 +118,73 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loadingModels = false;
   String? _modelsError;
 
-  @override
-  void initState() {
-    super.initState();
-    // Deferred to didChangeDependencies to read AppScope.
-  }
-
-  /// Load the assistant half of [settings] into this screen's fields.
+  /// Load the assistant half of the settings into this screen's fields.
   ///
   /// Separate from the rest of the load because it is the one half another
   /// device can rewrite while the screen is open: turning assistant sync on
   /// adopts the account's configuration into `settings`, and a Save made
   /// afterwards would otherwise write these stale values back over it — and
   /// stamp them, so the revert would win everywhere.
-  void _loadAssistantFields(AppSettings s) {
-    _kind = s.llmKind;
-    _baseUrl.text = s.llmBaseUrl;
-    _model.text = s.llmModel;
-    _searxng.text = s.searxngUrl ?? '';
-    // Only whether it is on — never the key itself, which stays in the OS
-    // keystore and is not something a settings screen should be able to show.
-    // Trimmed, like `buildSearchProvider` reads it: a hand-edited or synced
-    // `settings.json` holding `"   "` would otherwise show the switch on for
-    // a backend every search silently skips.
-    _zai = (s.zaiApiKeyRef ?? '').trim().isNotEmpty;
-    _redaction = s.redactionEnabled;
+  void _loadAssistantFields(AssistantFields f) {
+    _kind = f.kind;
+    _baseUrl.text = f.baseUrl;
+    _model.text = f.model;
+    _searxng.text = f.searxngUrl;
+    _zai = f.zaiEnabled;
+    _redaction = f.redactionEnabled;
   }
 
-  /// [AppState.llmConfigVersion] as of the last [_loadAssistantFields]: a
-  /// sync round that adopts another device's configuration bumps it, and
-  /// that is how [_save] tells that the fields it holds are stale.
+  /// [SettingsBackend.llmConfigVersion] as of the last [_loadAssistantFields]:
+  /// a sync round that adopts another device's configuration bumps it, and
+  /// that is how Save tells that the fields it holds are stale.
   int _assistantVersionSeen = 0;
 
   /// [_loadAssistantFields], and remember which configuration it loaded.
-  void _syncAssistantFields(AppState state) {
-    _loadAssistantFields(state.services.settings);
-    _assistantVersionSeen = state.llmConfigVersion;
+  void _syncAssistantFields(AssistantFields fields, int version) {
+    _loadAssistantFields(fields);
+    _assistantVersionSeen = version;
   }
 
-  bool _initialized = false;
+  SettingsBackend get _backend => widget.backend;
+
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_initialized) return;
-    _initialized = true;
-    final state = AppScope.of(context);
-    final s = state.services.settings;
-    _syncAssistantFields(state);
+  void initState() {
+    super.initState();
+    final s = _backend.settings;
+    _syncAssistantFields(AssistantFields.of(s), _backend.llmConfigVersion);
     _autoSync = s.autoSync;
     _syncSecrets = s.syncSecrets;
     _syncAssistant = s.syncAssistant;
     _commandSuggestions = s.commandSuggestions;
     _checkForUpdates = s.checkForUpdates;
     _keepSessionsAlive = s.keepSessionsAliveInBackground;
-    _editorRegistry = s.editorRegistry;
+    _editorRegistry = EditorRegistry.fromJson(s.editorRegistry.toJson());
     _terminalFontSize = clampTerminalFontSize(s.terminalFontSize);
     _terminalPalette = s.terminalPalette;
     _terminalFont.text = s.terminalFontFamily;
     _syncUrl.text = s.syncBaseUrl ?? '';
     _syncUser.text = s.syncUsername ?? '';
+    _listenForTabRequests();
+  }
+
+  void _listenForTabRequests() {
+    _tabRequests = widget.tabRequests?.listen(
+      (tab) => _tabs.animateTo(tab.index),
+    );
+  }
+
+  @override
+  void didUpdateWidget(SettingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.tabRequests == oldWidget.tabRequests) return;
+    unawaited(_tabRequests?.cancel());
+    _listenForTabRequests();
   }
 
   @override
   void dispose() {
+    unawaited(_tabRequests?.cancel());
+    _tabs.dispose();
     for (final c in [
       _baseUrl,
       _model,
@@ -170,59 +205,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final state = AppScope.of(context);
     final palette = FamilyPalette.of(context);
-    return DefaultTabController(
-      length: SettingsTab.values.length,
-      initialIndex: widget.initialTab.index,
-      child: Scaffold(
-        appBar: AppBar(
+    // Each section in its family hue (Poltergeist's D34): the assistant
+    // purple, files blue, sync indigo; General stays in the tab bar's ink.
+    final tabBar = TabBar(
+      controller: _tabs,
+      isScrollable: true,
+      tabAlignment: TabAlignment.start,
+      tabs: [
+        const Tab(icon: Icon(Icons.tune_outlined), text: 'General'),
+        Tab(
+          icon: Icon(Icons.auto_awesome, color: palette.glyph(FamilyHue.purple)),
+          text: 'Assistant',
+        ),
+        Tab(
+          icon: Icon(Icons.folder_open, color: palette.glyph(FamilyHue.blue)),
+          text: 'Files',
+        ),
+        Tab(
+          icon: Icon(Icons.cloud_sync, color: palette.glyph(FamilyHue.indigo)),
+          text: 'Sync',
+        ),
+      ],
+    );
+    return Scaffold(
+      appBar: switch (widget.presentation) {
+        SettingsPresentation.route => AppBar(
           title: const Text('Settings'),
-          // Each section in its family hue (Poltergeist's D34): the
-          // assistant purple, files blue, sync indigo; General stays in
-          // the tab bar's ink.
-          bottom: TabBar(
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
-            tabs: [
-              const Tab(icon: Icon(Icons.tune_outlined), text: 'General'),
-              Tab(
-                icon: Icon(
-                  Icons.auto_awesome,
-                  color: palette.glyph(FamilyHue.purple),
-                ),
-                text: 'Assistant',
-              ),
-              Tab(
-                icon: Icon(
-                  Icons.folder_open,
-                  color: palette.glyph(FamilyHue.blue),
-                ),
-                text: 'Files',
-              ),
-              Tab(
-                icon: Icon(
-                  Icons.cloud_sync,
-                  color: palette.glyph(FamilyHue.indigo),
-                ),
-                text: 'Sync',
-              ),
-            ],
-          ),
+          bottom: tabBar,
         ),
-        body: TabBarView(
-          children: [
-            _generalTab(state),
-            _assistantTab(state),
-            _filesTab(state),
-            _syncTab(state),
-          ],
+        SettingsPresentation.window => AppBar(
+          automaticallyImplyLeading: false,
+          toolbarHeight: 0,
+          bottom: tabBar,
         ),
+      },
+      body: TabBarView(
+        controller: _tabs,
+        children: [_generalTab(), _assistantTab(), _filesTab(), _syncTab()],
       ),
     );
   }
 
-  Widget _assistantTab(AppState state) => _settingsPage(
+  Widget _assistantTab() => _settingsPage(
     key: const PageStorageKey('assistant-settings'),
     children: [
       _section(
@@ -278,7 +303,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : OutlinedButton.icon(
-                  onPressed: () => _fetchModels(state),
+                  onPressed: _fetchModels,
                   icon: const Icon(Icons.playlist_add_check, size: 18),
                   label: const Text('Fetch models'),
                 );
@@ -400,13 +425,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       const SizedBox(height: 8),
       FilledButton(
-        onPressed: _saving ? null : () => _save(state),
+        onPressed: _saving ? null : () => _save(),
         child: const Text('Save assistant settings'),
       ),
     ],
   );
 
-  Widget _generalTab(AppState state) => _settingsPage(
+  Widget _generalTab() => _settingsPage(
     key: const PageStorageKey('general-settings'),
     children: [
       _section(
@@ -424,7 +449,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         value: _checkForUpdates,
         onChanged: (value) {
           setState(() => _checkForUpdates = value);
-          _persistCheckForUpdates(state);
+          _persistCheckForUpdates();
         },
       ),
       // Android freezes cached processes, killing every live SSH connection
@@ -443,7 +468,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           value: _keepSessionsAlive,
           onChanged: (value) {
             setState(() => _keepSessionsAlive = value);
-            _persistKeepSessionsAlive(state);
+            _persistKeepSessionsAlive();
           },
         ),
       ],
@@ -473,9 +498,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       .round(),
               value: _terminalFontSize,
               label: '${_terminalFontSize.round()} pt',
-              onChanged: (value) =>
-                  setState(() => _terminalFontSize = clampTerminalFontSize(value)),
-              onChangeEnd: (_) => _persistTerminalAppearance(state),
+              onChanged: (value) => setState(
+                () => _terminalFontSize = clampTerminalFontSize(value),
+              ),
+              onChangeEnd: (_) => _persistTerminalAppearance(),
             ),
           ),
           SizedBox(
@@ -501,17 +527,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ? IconButton(
                   tooltip: 'Choose an installed font',
                   icon: const Icon(Icons.font_download_outlined),
-                  onPressed: () => _pickTerminalFont(state),
+                  onPressed: _pickTerminalFont,
                 )
               : null,
         ),
-        onSubmitted: (_) => _persistTerminalAppearance(state),
+        onSubmitted: (_) => _persistTerminalAppearance(),
         onTapOutside: (_) {
           // Overriding onTapOutside replaces TextField's default handler, so
           // the dismissal it would have done has to be done here — otherwise
           // the soft keyboard stays up after tapping away on mobile.
           FocusManager.instance.primaryFocus?.unfocus();
-          _persistTerminalAppearance(state);
+          _persistTerminalAppearance();
         },
       ),
       const SizedBox(height: 16),
@@ -535,7 +561,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         onChanged: (value) {
           if (value == null) return;
           setState(() => _terminalPalette = value);
-          _persistTerminalAppearance(state);
+          _persistTerminalAppearance();
         },
       ),
       const Divider(height: 40),
@@ -555,13 +581,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         value: _commandSuggestions,
         onChanged: (value) {
           setState(() => _commandSuggestions = value);
-          _persistCommandSuggestions(state);
+          _persistCommandSuggestions();
         },
       ),
     ],
   );
 
-  Widget _filesTab(AppState state) {
+  Widget _filesTab() {
     final defaultItems = <DropdownMenuItem<String>>[
       const DropdownMenuItem(
         value: EditorRegistry.builtInId,
@@ -604,7 +630,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           onChanged: (value) {
             if (value == null) return;
             setState(() => _editorRegistry.defaultEditorId = value);
-            _persistEditorRegistry(state);
+            _persistEditorRegistry();
           },
         ),
         const SizedBox(height: 24),
@@ -613,7 +639,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Expanded(child: _section('External editors')),
             if (currentEditorHostPlatform != null)
               OutlinedButton.icon(
-                onPressed: () => _addEditor(state),
+                onPressed: _addEditor,
                 icon: const Icon(Icons.add),
                 label: const Text('Add editor'),
               ),
@@ -648,12 +674,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
-              onTap: () => _editEditor(state, editor),
+              onTap: () => _editEditor(editor),
               trailing: PopupMenuButton<String>(
                 tooltip: 'Editor actions',
                 onSelected: (action) {
-                  if (action == 'edit') _editEditor(state, editor);
-                  if (action == 'remove') _removeEditor(state, editor);
+                  if (action == 'edit') _editEditor(editor);
+                  if (action == 'remove') _removeEditor(editor);
                 },
                 itemBuilder: (context) => const [
                   PopupMenuItem(value: 'edit', child: Text('Edit…')),
@@ -665,7 +691,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _syncTab(AppState state) => _settingsPage(
+  Widget _syncTab() => _settingsPage(
     key: const PageStorageKey('sync-settings'),
     children: [
       _section(
@@ -727,7 +753,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? null
             : (value) {
                 setState(() => _autoSync = value);
-                _persistSyncPrefs(state);
+                _persistSyncPrefs();
               },
       ),
       SwitchListTile(
@@ -741,7 +767,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? null
             : (value) {
                 setState(() => _syncSecrets = value);
-                _persistSyncPrefs(state);
+                _persistSyncPrefs();
               },
       ),
       SwitchListTile(
@@ -762,7 +788,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? null
             : (value) {
                 setState(() => _syncAssistant = value);
-                _persistSyncPrefs(state);
+                _persistSyncPrefs();
               },
       ),
       const SizedBox(height: 8),
@@ -818,7 +844,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         runSpacing: 8,
         children: [
           FilledButton(
-            onPressed: _saving ? null : () => _sync(state, mode: _syncMode),
+            onPressed: _saving ? null : () => _sync(mode: _syncMode),
             child: Text(
               _syncMode == SyncEnrollmentMode.register
                   ? 'Create sync account'
@@ -826,7 +852,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           FilledButton.tonal(
-            onPressed: _saving ? null : () => _syncNow(state),
+            onPressed: _saving ? null : () => _syncNow(),
             child: const Text('Sync now'),
           ),
         ],
@@ -839,8 +865,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       Padding(
         padding: const EdgeInsets.only(top: 8),
         child: ListenableBuilder(
-          listenable: state,
-          builder: (context, _) => _SyncStatusLine(state: state),
+          listenable: _backend,
+          builder: (context, _) => _SyncStatusLine(status: _backend.syncStatus),
         ),
       ),
     ],
@@ -893,30 +919,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// the form if present, otherwise the stored one; keyless local endpoints
   /// (Ollama) need none. The manual field remains the fallback if this fails or
   /// the list omits the model the user wants.
-  Future<void> _fetchModels(AppState state) async {
+  Future<void> _fetchModels() async {
     setState(() {
       _loadingModels = true;
       _modelsError = null;
     });
     try {
-      final ref = _kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
-      final key = _apiKey.text.isNotEmpty
-          ? _apiKey.text
-          : (await state.services.masterKeys.getApiKey(ref) ?? '');
-      final baseUrl = _baseUrl.text.trim();
-      final LlmProvider provider = _kind == LlmProviderKind.anthropic
-          ? AnthropicProvider(
-              apiKey: key,
-              baseUrl: baseUrl,
-              model: _model.text.trim(),
-            )
-          : OpenAiCompatibleProvider(
-              baseUrl: baseUrl,
-              apiKey: key,
-              model: _model.text.trim(),
-            );
-      final models = await provider.listModels();
-      models.sort();
+      final models = await _backend.fetchModels(
+        ModelQuery(
+          kind: _kind,
+          baseUrl: _baseUrl.text,
+          model: _model.text,
+          typedApiKey: _apiKey.text,
+        ),
+      );
+      if (!mounted) return;
       setState(() {
         _models = models;
         if (models.isEmpty) {
@@ -924,60 +941,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
       });
     } catch (e) {
-      setState(() => _modelsError = 'Could not fetch models: $e');
+      if (mounted) setState(() => _modelsError = 'Could not fetch models: $e');
     } finally {
       if (mounted) setState(() => _loadingModels = false);
     }
   }
 
-  Future<void> _save(AppState state) async {
-    // The toggle-on path reloads these fields after adopting, but a periodic
-    // round adopts too, and this screen may be open while it does. Saving
-    // the fields it loaded earlier would write the pre-adoption values back
-    // over the adopted ones — and stamp them, so the revert would win on
-    // every device. Refused before anything is written: the adopted values
-    // are loaded instead, and the user saves again from what is actually
-    // configured. Typed keys are left in their fields; only the assistant
-    // half is reloaded.
-    if (state.llmConfigVersion != _assistantVersionSeen) {
-      setState(() => _syncAssistantFields(state));
-      showTopToastIn(
-        context,
-        message: _adoptedMidSave,
-      );
-      return;
-    }
-    // For the re-check at the end: the guard above sees an adoption that
-    // landed before this Save, not one that lands during its awaits.
-    final versionAtEntry = state.llmConfigVersion;
-    // Before the keystore writes below, which await: the fields stay editable
-    // while a Save is in flight, and `putApiKey` reads the controller at the
-    // moment it is called. Taken afterwards, these would count text typed
-    // during those awaits — text the store never saw — and the equality check
-    // at the end would then clear it from the field as if it had been saved.
-    // Taken here they can only lag what was stored, which fails that check
-    // and leaves the text where the user can save it again.
-    final enteredLlmKey = _apiKey.text;
-    final enteredZaiKey = _zaiApiKey.text;
-    final keyEntered =
-        enteredLlmKey.trim().isNotEmpty || enteredZaiKey.trim().isNotEmpty;
+  Future<void> _save() async {
+    // A draft loaded before another device's configuration was adopted is
+    // refused by the backend, against the app's live version — not here,
+    // against [SettingsBackend.llmConfigVersion]: in the settings window that
+    // arrives with a snapshot, which can trail the version a save result has
+    // just handed this screen, and a check against it would read the lag as
+    // an adoption and reload the fields from the older settings.
+    //
+    // Everything the save uses is read here, once, before the `setState`
+    // that disables the form: the fields stay editable while a save is in
+    // flight, and the keystore writes it waits on are exactly where it
+    // stalls, since an OS keyring can put a prompt in front of one. Anything
+    // read later would fold text typed during that stall into the save
+    // already running — and the key fields would then be cleared as if text
+    // the store never saw had been stored.
+    final draft = AssistantDraft(
+      fields: AssistantFields(
+        kind: _kind,
+        baseUrl: _baseUrl.text,
+        model: _model.text,
+        searxngUrl: _searxng.text,
+        zaiEnabled: _zai,
+        redactionEnabled: _redaction,
+      ),
+      llmApiKey: _apiKey.text,
+      zaiApiKey: _zaiApiKey.text,
+      versionSeen: _assistantVersionSeen,
+    );
     setState(() => _saving = true);
-    // Every await below can throw — the keystore reads, `saveSettings`, and
-    // the provider reload. Without this, one of them escaping leaves `_saving`
-    // set, and it is what disables Save *and* all three sync switches, the
-    // Z.AI switch, the mode selector and both sync buttons: a transient disk
-    // failure would lock the whole assistant section of this screen until it
-    // is closed and reopened.
+    // What `_saving` disables — Save, all three sync switches, the Z.AI
+    // switch, the mode selector and both sync buttons — must come back
+    // whatever the save does, or a transient disk failure would lock the
+    // whole assistant section until the screen is closed and reopened.
     try {
-      await _saveInner(state, versionAtEntry, enteredLlmKey, enteredZaiKey,
-          keyEntered);
+      final result = await _backend.saveAssistant(draft);
+      if (mounted) _applySaveResult(draft, result);
     } catch (e) {
-      // The keystore writes and the publish are caught where they happen, but
-      // `saveSettings` and `reloadLlmProvider` are not — and this method is
-      // called from `onPressed` without an awaiter, so one escaping is an
-      // unhandled async error and the user sees a Save that reports nothing
-      // at all. The settings may well not be on disk, which is the one
-      // outcome silence must not cover.
+      // The settings write itself failed (or the settings window lost the
+      // app). The settings may well not be on disk, which is the one outcome
+      // silence must not cover.
       if (mounted) {
         showTopToastIn(context, message: 'Settings not saved — $e');
       }
@@ -986,468 +995,201 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _saveInner(
-    AppState state,
-    int versionAtEntry,
-    String enteredLlmKey,
-    String enteredZaiKey,
-    bool keyEntered,
-  ) async {
-    final s = state.services.settings;
-    // Store the API key under a per-provider name.
-    //
-    // Snapshotted with the key fields below, and for the same reason: the
-    // keystore writes are awaits and the provider dropdown is not frozen
-    // while one runs. `ref` was taken from `_kind` here and `s.llmKind` read
-    // it again afterwards, so a flip in between wrote a provider with the
-    // *other* provider's key reference beside it — `openaiCompatible`
-    // holding `'anthropic'` — which authenticates against nothing until the
-    // user notices and saves again. Reading it once also stops the invariant
-    // depending on a widget six hundred lines up keeping its `onChanged`
-    // gated on `_saving`.
-    final kind = _kind;
-    final ref = kind == LlmProviderKind.anthropic ? 'anthropic' : 'openai';
-
-    // Keys first, settings after. A keystore failure returns without saving,
-    // and the settings object is the one the running app reads — leaving it
-    // mutated to say "Z.AI is on" behind a key that never landed would make
-    // the failed save take effect anyway, until the next launch.
-    // Snapshotted before the writes below, and before any await: the fields
-    // stay editable while a save is in flight, so what is cleared afterwards
-    // has to be what this save actually stored rather than whatever the box
-    // holds by then.
-    //
-    // And read from below, not just cleared against: the LLM key's own write
-    // sits *after* the Z.AI keystore write's `await`, so reading the live
-    // controller there stores whatever the box holds by then. A user
-    // correcting a typo while the Z.AI key is being written had the
-    // half-typed value persisted, and the clear check then failed — leaving
-    // plaintext in the field and the assistant authenticating with the
-    // fragment until the next save. Same fix as the Z.AI switch (round 23)
-    // and the provider dropdown (round 24): read once, up here.
-    //
-    // The two key fields are read one frame earlier still, in `_save`, and
-    // arrive as parameters — this branch needs `keyEntered` before the
-    // `setState` that disables the form, and re-reading the controllers here
-    // would have shadowed the parameters with values the caller never saw.
-    // The Z.AI merge brought the reads back as locals; keeping both would
-    // leave two of the parameters dead.
-    // The rest of the form, for the same reason and in the same place. Round
-    // 25 snapshotted the two key fields and left these four reading live at
-    // assignment time, several awaits later — and a keystore write is
-    // exactly where a save stalls, since an OS keyring can put a prompt in
-    // front of it. Text typed into the endpoint box during that stall was
-    // folded into the save already in flight and handed straight to
-    // `reloadLlmProvider`. It also made the comment on the Z.AI switch
-    // ("the text fields' mid-save edits are already snapshotted") false for
-    // every field but the two it was written about.
-    final enteredBaseUrl = _baseUrl.text.trim();
-    final enteredModel = _model.text.trim();
-    final enteredSearxng = _searxng.text.trim();
-    final enteredRedaction = _redaction;
-    // The switch too, and this is the last live read in the method. It is
-    // safe today only because the `SwitchListTile` six hundred lines up is
-    // gated on `_saving` — which is exactly the external dependency the
-    // provider snapshot beside it was added to remove. Make that switch
-    // responsive during a save, a natural thing to want, and the split-brain
-    // returns: one save writing the key while writing `zaiApiKeyRef: null`,
-    // or setting the ref with nothing stored behind it.
-    final zaiEnabled = _zai;
-    if (zaiEnabled && enteredZaiKey.trim().isNotEmpty) {
-      try {
-        await state.services.masterKeys.putApiKey(
-          _zaiKeyRef,
-          // Trimmed like every other field here: a key pasted from a password
-          // manager carries a trailing newline more often than not, and it
-          // authenticates as garbage that CompositeSearch swallows into a log
-          // line.
-          enteredZaiKey.trim(),
-        );
-      } catch (e) {
-        if (!mounted) return;
-        // Named like the LLM key's failure below: the same class of error
-        // otherwise produced a bare `KeystoreException` string with nothing
-        // saying which of the two keys failed to save.
+  void _applySaveResult(AssistantDraft draft, AssistantSaveResult result) {
+    switch (result.status) {
+      case AssistantSaveStatus.adoptedBeforeSave:
+        setState(() => _syncAssistantFields(result.current, result.version));
+        showTopToastIn(context, message: _adoptedMidSave);
+        return;
+      case AssistantSaveStatus.keystoreFailed:
+        // Named per key: the same class of error otherwise produced a bare
+        // `KeystoreException` string with nothing saying which of the two
+        // keys failed to save.
+        final which = result.failedKey == AssistantKey.zai
+            ? 'the Z.AI key'
+            : 'the API key';
         showTopToastIn(
           context,
-          message: 'Settings not saved — could not store the Z.AI key: $e',
+          message:
+              'Settings not saved — could not store $which: '
+              '${result.error}',
         );
         return;
-      }
+      case AssistantSaveStatus.saved:
+        break;
     }
-    // Trimmed and tested trimmed, for the same reason as the Z.AI key above —
-    // and it matters more here: a search backend that authenticates as
-    // garbage leaves the others working, while this key is the assistant's
-    // only one. A whitespace-only paste is no key at all, so it does not
-    // overwrite the stored one.
-    if (enteredLlmKey.trim().isNotEmpty) {
-      try {
-        await state.services.masterKeys.putApiKey(ref, enteredLlmKey.trim());
-      } catch (e) {
-        // KeystoreException: the OS keyring is unavailable — don't report
-        // "Saved" for a key that never landed.
-        if (!mounted) return;
-        showTopToastIn(
-          context,
-          message: 'Settings not saved — could not store the API key: $e',
-        );
-        return;
-      }
+    if (result.publishError != null) {
+      showTopToastIn(
+        context,
+        message: 'Assistant sync: ${result.publishError}',
+      );
     }
-
-    // Ordered deliberately, and the two halves came from different
-    // branches: the Z.AI keystore read below is an `await`, and the
-    // adoption guard after it is written to be the last thing before the
-    // assignments. Put the read second and an adoption landing inside it
-    // lands *after* the guard has passed, which is the race the guard
-    // exists for. Read first, then guard, then assign.
-    // Parenthesized: `await` does bind tighter than `==`, but the form
-    // readers misparse is one edit away from being the form that compiles and
-    // is always false.
-    //
-    // Read before the assignments below rather than between them and
-    // `saveSettings`: this method's rule is keys first, settings after, so
-    // that nothing can leave `s` mutated and unsaved. `getApiKey` answers
-    // null on a locked keyring rather than throwing, so the old position was
-    // sound — but only because of that, and it is the one await that had to
-    // stay sound for a reason outside this file.
-    final zaiWithoutKey =
-        zaiEnabled &&
-            (await state.services.masterKeys.getApiKey(_zaiKeyRef)) == null;
-
-    // Both taken before the assignments below, and before any `await`, so a
-    // Save that changes nothing does not stamp: see
-    // [assistantSyncFingerprint]. The fields stay editable while a Save is in
-    // flight, so reading `keyEntered` after the keystore and settings writes
-    // would count text typed during them — text that is then cleared below
-    // without ever having been stored, since the storing already happened.
-    //
-    // A key typed into *any* of these fields counts even when every other
-    // field matched: the keys travel in the record too, under refs that do not
-    // change when the value behind them is rotated, so nothing about a
-    // re-entered key moves the fingerprint. Trimmed on both sides, because
-    // whitespace is not a key and treating it as one stamps a write with no
-    // edit behind it.
-    // The guard at the top of this method cannot see an adoption that landed
-    // during the keystore writes above. Assigning over it would put the
-    // pre-adoption fields back and republish them stamped `now` — the revert
-    // that wins on every device, which is the whole reason for the guard.
-    // Refused here too, before anything is assigned to `s`; a key stored
-    // above stays stored, since refs are per provider and adoption keeps
-    // them.
-    if (state.llmConfigVersion != versionAtEntry) {
-      if (mounted) {
-        setState(() => _syncAssistantFields(state));
-        showTopToastIn(
-          context,
-          message: _adoptedMidSave,
-        );
-      }
-      return;
-    }
-    final before = assistantSyncFingerprint(s);
-    s.llmKind = kind;
-    s.llmBaseUrl = enteredBaseUrl;
-    s.llmModel = enteredModel;
-    s.llmApiKeyRef = ref;
-    s.redactionEnabled = enteredRedaction;
-    s.searxngUrl = enteredSearxng.isEmpty ? null : enteredSearxng;
-    // The reference is what switches the backend on; turning it off leaves the
-    // key in the keystore rather than deleting it, like every other key here.
-    s.zaiApiKeyRef = zaiEnabled ? _zaiKeyRef : null;
-    // Turning the switch on with the field left blank and nothing stored is
-    // the one way to end up with a backend that reads as on and is silently
-    // skipped on every search. Reported rather than blocked: the rest of this
-    // page has been saved, and a locked keyring — which also answers null —
-    // is not a reason to refuse a model change.
-    await state.services.saveSettings();
-    // Stamp and publish: this is the edit the synced record's timestamp is
-    // supposed to move for. A no-op when assistant sync is off.
-    //
-    // Re-checked against `versionAtEntry`, because the guard before the
-    // assignments does not cover this. `saveSettings` is a plain disk write
-    // and not queued behind the mutation lock, so a periodic round can adopt
-    // during that await — which is the same window `adoptedMeanwhile` below
-    // exists to notice. Noticing it there is too late for the record: the
-    // publish has already stamped `now` on this Save's pre-adoption values,
-    // and `now` beats the adopted record on every device. That is the revert
-    // the guard above calls "the whole reason for the guard", reachable one
-    // await further down. Skipping the publish loses nothing the arithmetic
-    // below does not already handle — `assistantSettingsEdited` never
-    // touches the counter, so `adoptedMeanwhile` still reads true, reloads
-    // the fields and asks for the Save to be made again.
-    if (state.llmConfigVersion == versionAtEntry &&
-        (keyEntered || assistantSyncFingerprint(s) != before)) {
-      try {
-        await state.assistantSettingsEdited();
-      } catch (e) {
-        // The settings are already on disk. A failed publish must not skip
-        // the provider rebuild below and surface as an unhandled async error
-        // that reads like Save itself broke.
-        if (mounted) {
-          showTopToastIn(context, message: 'Assistant sync: $e');
-        }
-      }
-    }
-    // `mounted` first: these are `TextEditingController`s owned by this
-    // widget, and the awaits above give the user time to leave the screen.
-    // Clearing a disposed one throws — an unhandled async error from a Save
-    // that otherwise succeeded, and there is nothing left to clear anyway.
-    if (keyEntered && mounted) {
+    if (result.keysStored) {
       // Cleared once stored, or the text left in the field makes every later
       // Save on this screen look like a key change: it would stamp `now` and
       // republish, and on last-write-wins that beats a genuinely newer edit
       // from another device with content that did not change. The field is
       // write-only anyway — it is never populated from the keystore.
       //
-      // Only what this Save stored, though: the fields stay editable during
-      // the awaits above, and text typed into one meanwhile was never
-      // persisted — clearing it would discard it without a trace.
-      if (_apiKey.text == enteredLlmKey) _apiKey.clear();
-      // `zaiEnabled` as well, because the write above is gated on it — the
-      // same snapshot, so the clear cannot decide on a switch position the
-      // write never saw. A key typed with the switch off is never stored,
-      // and clearing it would discard it without a trace, which is exactly
-      // what the paragraph above promises not to do. The LLM key needs no
-      // equivalent; its write is gated only on the text being non-blank, and
-      // blank is nothing to lose.
-      if (zaiEnabled && _zaiApiKey.text == enteredZaiKey) _zaiApiKey.clear();
+      // Only what this Save stored, though: text typed into a field while
+      // the save ran was never persisted, and clearing it would discard it
+      // without a trace. The Z.AI key is stored only with its switch on, so
+      // its clear follows the switch position the draft carried.
+      if (_apiKey.text == draft.llmApiKey) _apiKey.clear();
+      if (draft.fields.zaiEnabled && _zaiApiKey.text == draft.zaiApiKey) {
+        _zaiApiKey.clear();
+      }
     }
-    // Rebuild the chat provider (new key/model) and refresh sidebar
-    // visibility.
-    //
-    // Caught rather than left to `_save`'s handler: everything above is past
-    // the point of no return — the keystores, `settings.json` and the
-    // published record are all written — so letting this escape reported
-    // "Settings not saved" for a save that succeeded, and told the user to
-    // re-enter secrets that are on disk. The failure still surfaces, as the
-    // rebuild failure it is. Catching it also keeps the version arithmetic
-    // below correct rather than breaking it: `reloadLlmProvider` does
-    // `llmConfigVersion++` as its first statement, before any await, so the
-    // one bump `bumpsThisSaveMakes` accounts for has already landed even
-    // when a later step throws. Letting the error escape would skip that
-    // arithmetic entirely and leave `_assistantVersionSeen` stale.
-    Object? reloadError;
-    try {
-      await state.reloadLlmProvider();
-    } catch (e) {
-      reloadError = e;
-    }
-    // This Save is the configuration the fields now show — unless a periodic
-    // round adopted another device's configuration during the awaits above,
-    // past the guard at the top. The reload just made is one bump; any other
-    // is an adoption, and blessing this version would let the next Save
-    // revert it silently, with a fresh stamp. The fields are reloaded instead,
-    // as the guard does, and the user saves again from what is configured.
-    // The reload just above is this Save's own bump, and the only one it
-    // makes: `assistantSettingsEdited` does not touch the counter. Anything
-    // else is an adoption that landed while the awaits ran.
-    const bumpsThisSaveMakes = 1; // reloadLlmProvider
-    final adoptedMeanwhile =
-        state.llmConfigVersion != versionAtEntry + bumpsThisSaveMakes;
-    if (adoptedMeanwhile) {
-      if (mounted) setState(() => _syncAssistantFields(state));
+    // An adoption during the save means these fields are not what is
+    // configured any more; blessing the version would let the next Save
+    // revert it silently, with a fresh stamp. Reloaded instead, as the
+    // refusal does, and the user saves again from what is configured.
+    if (result.adoptedMeanwhile) {
+      setState(() => _syncAssistantFields(result.current, result.version));
     } else {
-      _assistantVersionSeen = state.llmConfigVersion;
+      _assistantVersionSeen = result.version;
     }
-    if (mounted) {
-      showTopToastIn(
-        context,
-        // Ordered by what the user has to act on. An adoption means this
-        // Save's values are not what is configured any more and it has to be
-        // made again — nothing else matters until that is done. A reload
-        // failure is next: the assistant in this process is still the old
-        // one. The Z.AI notice is last, about a key the next search reads.
-        message: adoptedMeanwhile
-            ? 'Saved — but the assistant settings changed on another device '
-                  'meanwhile. The fields show what is configured now; review '
-                  'them and save again.'
-            : reloadError != null
-                ? 'Saved — but the assistant could not be reloaded, so it is '
-                      'still running the previous configuration: $reloadError'
-                : zaiWithoutKey
-                    ? 'Saved — but no Z.AI key could be read (none stored, or '
-                          'the keyring is locked), so Z.AI search will be '
-                          'skipped.'
-                    : 'Saved',
-      );
-    }
+    showTopToastIn(
+      context,
+      // Ordered by what the user has to act on. An adoption means this Save's
+      // values are not what is configured any more and it has to be made
+      // again — nothing else matters until that is done. A reload failure is
+      // next: the assistant in this process is still the old one. The Z.AI
+      // notice is last, about a key the next search reads.
+      message: result.adoptedMeanwhile
+          ? 'Saved — but the assistant settings changed on another device '
+                'meanwhile. The fields show what is configured now; review '
+                'them and save again.'
+          : result.reloadError != null
+          ? 'Saved — but the assistant could not be reloaded, so it is '
+                'still running the previous configuration: '
+                '${result.reloadError}'
+          : result.zaiWithoutKey
+          ? 'Saved — but no Z.AI key could be read (none stored, or '
+                'the keyring is locked), so Z.AI search will be '
+                'skipped.'
+          : 'Saved',
+    );
   }
 
   /// Persist the sync preference toggles and (re)start the auto-sync timer.
-  Future<void> _persistSyncPrefs(AppState state) async {
-    // The same flag Save sets, for the same reason it exists: these handlers
-    // await a disk write and, on switch-on, a whole sync round, and the
-    // switches are only disabled while it is set. Without it the user can
-    // press Save — or flip a second toggle — while adoption is rewriting the
-    // very `settings` object this method assigns to and rolls back, so a
-    // rollback here can undo a sibling's persisted choice and `_save`'s
-    // assignments can interleave with adoption's.
+  Future<void> _persistSyncPrefs() async {
+    // The same flag Save sets, for the same reason it exists: this awaits a
+    // disk write and, on switch-on, a whole sync round, and the switches are
+    // only disabled while it is set. Without it the user can press Save — or
+    // flip a second toggle — while adoption is rewriting the very settings
+    // this write assigns to and rolls back.
     if (_saving) return;
     setState(() => _saving = true);
     try {
-      await _persistSyncPrefsInner(state);
+      final result = await _backend.setSyncPrefs(
+        autoSync: _autoSync,
+        syncSecrets: _syncSecrets,
+        syncAssistant: _syncAssistant,
+      );
+      if (!mounted) return;
+      setState(() {
+        _autoSync = result.autoSync;
+        _syncSecrets = result.syncSecrets;
+        _syncAssistant = result.syncAssistant;
+        // Adoption rewrites the assistant half of the settings, and this
+        // screen loaded its fields once; without this the next Save writes
+        // the pre-adoption values back — with a fresh stamp, so the revert
+        // wins on every device. Only when adoption actually ran: otherwise
+        // this would overwrite what the user had typed but not yet saved.
+        if (result.adopted) {
+          _syncAssistantFields(result.current, result.version);
+        }
+      });
+      if (result.saveError != null) {
+        showTopToastIn(
+          context,
+          message: 'Sync preferences: ${result.saveError}',
+        );
+      } else if (result.assistantSyncError != null) {
+        showTopToastIn(
+          context,
+          message: 'Assistant sync: ${result.assistantSyncError}',
+        );
+      }
+    } catch (e) {
+      // Only the settings window gets here, when it lost the app: the local
+      // backend reports every failure in the result. What is persisted is
+      // unknown, so show what this screen last knew.
+      if (mounted) {
+        final s = _backend.settings;
+        setState(() {
+          _autoSync = s.autoSync;
+          _syncSecrets = s.syncSecrets;
+          _syncAssistant = s.syncAssistant;
+        });
+        showTopToastIn(context, message: 'Sync preferences: $e');
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
-  Future<void> _persistSyncPrefsInner(AppState state) async {
-    final s = state.services.settings;
-    final wasAutoSync = s.autoSync;
-    final wasSyncSecrets = s.syncSecrets;
-    final wasSyncingAssistant = s.syncAssistant;
-    s.autoSync = _autoSync;
-    s.syncSecrets = _syncSecrets;
-    s.syncAssistant = _syncAssistant;
+  /// A write the General and Files tabs make on each change, which reports
+  /// its own failure: these are fired from `onChanged` without an awaiter, so
+  /// an escaping error would be an unhandled async error behind a control
+  /// that looks saved.
+  Future<void> _persist(String what, Future<void> Function() write) async {
     try {
-      await state.services.saveSettings();
+      await write();
     } catch (e) {
-      // Fired without await from `onChanged`: a disk failure here would be an
-      // unhandled async error with the switch left visually on. Say so, and
-      // do not go on to adopt for a switch that was not persisted.
-      //
-      // And roll the flag back: left on in memory, the next successful save
-      // of anything on this page would persist it, switching on a sync that
-      // carries API keys without the adopt-first step this failure skipped.
-      //
-      // All three, not only the assistant's: the other two are left in memory
-      // by the same failed write, and the next successful save of anything on
-      // this page would persist them without the user asking again — the same
-      // reasoning, one switch over.
-      s.syncAssistant = wasSyncingAssistant;
-      s.autoSync = wasAutoSync;
-      s.syncSecrets = wasSyncSecrets;
-      if (mounted) {
-        setState(() {
-          _syncAssistant = wasSyncingAssistant;
-          _autoSync = wasAutoSync;
-          _syncSecrets = wasSyncSecrets;
-        });
-        showTopToastIn(context, message: 'Sync preferences: $e');
-      }
-      return;
-    }
-    state.ensureAutoSyncTimer();
-    // Switching it on adopts what the account already has, and publishes what
-    // this device has only when there was nothing to adopt.
-    if (_syncAssistant && !wasSyncingAssistant) {
-      // Taken immediately before the round, not from `_assistantVersionSeen`,
-      // which is the version this screen loaded its fields at. A periodic
-      // round that adopted earlier in the screen's life also moves the counter
-      // away from that baseline, and on the publish path — where this round
-      // itself bumps nothing — it would satisfy the check below and reload the
-      // fields, discarding whatever the user had typed into them. Only this
-      // round's own bump means "adopted".
-      final versionBeforeRound = state.llmConfigVersion;
-      try {
-        await state.assistantSyncSwitchedOn();
-      } catch (e) {
-        // Fire-and-forget from `onChanged`, so without this the failure is an
-        // unhandled async error and the switch reads as "on and adopted".
-        //
-        // Rolled back for the same reason the failed `saveSettings` above is:
-        // both mean the adopt-first step did not run, and leaving the toggle
-        // on lets the next Save stamp `now` and publish this device's
-        // configuration over the account's newer record — the clobber
-        // adopting first exists to prevent. Turning it on again retries.
-        s.syncAssistant = false;
-        try {
-          await state.services.saveSettings();
-        } catch (_) {
-          // The original failure is the one worth telling; the in-memory
-          // flag and the switch below still agree with each other.
-        }
-        if (mounted) setState(() => _syncAssistant = false);
-        if (mounted) showTopToastIn(context, message: 'Assistant sync: $e');
-        // And stop here. The reload below exists to show what adoption wrote,
-        // and this branch is the one where adoption did not run — reloading
-        // anyway would overwrite whatever the user had typed into the
-        // assistant fields with the stored values, as a side effect of a
-        // network failure they did not cause.
-        return;
-      }
-      // Adoption rewrites the assistant half of `settings`, and this screen
-      // loaded its fields once. Without this, the next Save writes the
-      // pre-adoption values back — with a fresh stamp, so the revert wins on
-      // every device. (A periodic round can adopt too; `_save` checks for
-      // that itself.)
-      //
-      // Only when adoption actually ran, though. The switch adopts when the
-      // account already holds a record and otherwise *publishes*, which
-      // rewrites nothing here — and reloading then overwrites whatever the
-      // user had typed into the assistant fields but not yet saved, from a
-      // toggle whose subtitle promises it only changes what is shared. The
-      // version counter is what separates the two: `_runSyncAndRefresh`
-      // reloads the provider, and so bumps it, only when the round adopted.
-      if (mounted && state.llmConfigVersion != versionBeforeRound) {
-        setState(() => _syncAssistantFields(state));
-      }
+      if (mounted) showTopToastIn(context, message: '$what not saved — $e');
     }
   }
 
   /// Persist the command-suggestions toggle and refresh the current list.
-  Future<void> _persistCommandSuggestions(AppState state) async {
-    state.services.settings.commandSuggestions = _commandSuggestions;
-    await state.services.saveSettings();
-    state.refreshSuggestions();
-  }
+  Future<void> _persistCommandSuggestions() => _persist(
+    'Command suggestions',
+    () => _backend.setCommandSuggestions(_commandSuggestions),
+  );
 
   /// Persist the update-check toggle; turning it off also clears any banner
   /// already showing this session.
-  Future<void> _persistCheckForUpdates(AppState state) async {
-    state.services.settings.checkForUpdates = _checkForUpdates;
-    await state.services.saveSettings();
-    if (!_checkForUpdates) state.dismissUpdateNotice();
-  }
+  Future<void> _persistCheckForUpdates() => _persist(
+    'Update check',
+    () => _backend.setCheckForUpdates(_checkForUpdates),
+  );
 
   /// Persist the background keep-alive toggle and apply it to live sessions.
-  /// A failed save reverts the switch and the in-memory setting — unless the
-  /// user toggled again while the save was in flight, in which case the newer
-  /// choice is authoritative and stands.
-  Future<void> _persistKeepSessionsAlive(AppState state) async {
+  /// A failed save reverts the switch — unless the user toggled again while
+  /// the save was in flight, in which case the newer choice is authoritative
+  /// and stands.
+  Future<void> _persistKeepSessionsAlive() async {
     final requested = _keepSessionsAlive;
-    state.services.settings.keepSessionsAliveInBackground = requested;
     try {
-      await state.services.saveSettings();
-      // A newer toggle may have landed while this save was in flight; its
-      // own persist owns the apply, and this stale one must not clobber it.
+      await _backend.setKeepSessionsAlive(requested);
+    } catch (e) {
+      // A newer toggle governs the switch now, and reports for itself.
       if (_keepSessionsAlive != requested) return;
-      state.setKeepSessionsAliveEnabled(requested);
-    } catch (_) {
-      if (_keepSessionsAlive != requested) return;
-      // Revert the field and the in-memory setting even if this screen is
-      // gone by the time the save fails; only the rebuild is conditional.
       _keepSessionsAlive = !requested;
-      state.services.settings.keepSessionsAliveInBackground = _keepSessionsAlive;
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      setState(() {});
+      showTopToastIn(context, message: 'Keep sessions alive not saved — $e');
     }
   }
 
   /// Persist terminal appearance and repaint every live session. Called on
   /// slider release and on each discrete choice, so the General tab keeps its
   /// "saves immediately" contract.
-  Future<void> _persistTerminalAppearance(AppState state) async {
-    final settings = state.services.settings;
-    final family = _terminalFont.text.trim();
-    if (settings.terminalFontSize == _terminalFontSize &&
-        settings.terminalPalette == _terminalPalette &&
-        settings.terminalFontFamily == family) {
-      return;
-    }
-    settings.terminalFontSize = _terminalFontSize;
-    settings.terminalPalette = _terminalPalette;
-    settings.terminalFontFamily = family;
-    // Terminals read the settings during build, so they need a nudge.
-    state.terminalAppearanceChanged();
-    await state.services.saveSettings();
-  }
+  Future<void> _persistTerminalAppearance() => _persist(
+    'Terminal appearance',
+    () => _backend.setTerminalAppearance(
+      fontSize: _terminalFontSize,
+      fontFamily: _terminalFont.text.trim(),
+      palette: _terminalPalette,
+    ),
+  );
 
   /// Opens the installed-font picker and applies what it returns.
   ///
   /// A dismissal leaves the field alone; the built-in-stack choice clears it,
   /// which is what a blank family already means to [TerminalAppearance].
-  Future<void> _pickTerminalFont(AppState state) async {
+  Future<void> _pickTerminalFont() async {
     final chosen = await showFontPicker(
       context,
       fonts: _systemFonts,
@@ -1455,19 +1197,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (chosen == null || !mounted) return;
     _terminalFont.text = chosen;
-    await _persistTerminalAppearance(state);
+    await _persistTerminalAppearance();
   }
 
-  Future<void> _persistEditorRegistry(AppState state) async {
-    state.services.settings.editorRegistry = _editorRegistry;
-    await state.services.saveSettings();
-  }
+  Future<void> _persistEditorRegistry() => _persist(
+    'Editor settings',
+    () => _backend.setEditorRegistry(_editorRegistry),
+  );
 
-  Future<void> _addEditor(AppState state) async {
+  Future<void> _addEditor() async {
     try {
-      final picked = await const ExternalFileOpener().pickEditor();
+      final picked = await _backend.pickEditor();
       if (picked == null || !mounted) return;
-      await _editEditor(state, picked, adding: true);
+      await _editEditor(picked, adding: true);
     } catch (error) {
       if (!mounted) return;
       showTopToastIn(context, message: error.toString());
@@ -1475,7 +1217,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _editEditor(
-    AppState state,
     ExternalEditorDefinition editor, {
     bool adding = false,
   }) async {
@@ -1556,13 +1297,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     extensions.dispose();
     if (updated == null || !mounted) return;
     setState(() => _editorRegistry.put(updated));
-    await _persistEditorRegistry(state);
+    await _persistEditorRegistry();
   }
 
-  Future<void> _removeEditor(
-    AppState state,
-    ExternalEditorDefinition editor,
-  ) async {
+  Future<void> _removeEditor(ExternalEditorDefinition editor) async {
     final remove = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1587,10 +1325,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (remove != true || !mounted) return;
     setState(() => _editorRegistry.remove(editor.id));
-    await _persistEditorRegistry(state);
+    await _persistEditorRegistry();
   }
 
-  Future<void> _sync(AppState state, {required SyncEnrollmentMode mode}) async {
+  Future<void> _sync({required SyncEnrollmentMode mode}) async {
     final register = mode == SyncEnrollmentMode.register;
     final validationError = validateSyncEnrollment(
       mode: mode,
@@ -1610,28 +1348,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _syncStatus = register ? 'Registering…' : 'Logging in…';
     });
     try {
-      if (register) {
-        await state.services.registerSync(
+      await _backend.enrollSync(
+        SyncEnrollment(
+          mode: mode,
           baseUrl: _syncUrl.text.trim(),
           username: _syncUser.text.trim(),
           password: _syncPassword.text,
           encryptionPassphrase: _syncEncryptionPassphrase.text,
-        );
-      } else {
-        await state.services.loginSync(
-          baseUrl: _syncUrl.text.trim(),
-          username: _syncUser.text.trim(),
-          password: _syncPassword.text,
-          encryptionPassphrase: _syncEncryptionPassphrase.text,
-        );
-      }
-      // Schedule periodic sync if enabled, then always verify enrollment with
-      // one immediate round.
-      state.ensureAutoSyncTimer();
+        ),
+      );
+      // Always verify enrollment with one immediate round.
       if (mounted) {
         setState(() => _syncStatus = 'Connected. Synchronizing…');
       }
-      await state.syncNow();
+      await _backend.syncNow();
       if (mounted) setState(() => _syncStatus = 'Connected and synced.');
     } catch (e) {
       if (mounted) setState(() => _syncStatus = 'Failed: $e');
@@ -1640,13 +1370,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _syncNow(AppState state) async {
+  Future<void> _syncNow() async {
     setState(() {
       _saving = true;
       _syncStatus = 'Syncing…';
     });
     try {
-      final outcome = await state.syncNow();
+      final outcome = await _backend.syncNow();
       if (mounted) {
         setState(
           () => _syncStatus =
@@ -1719,14 +1449,14 @@ class SyncEnrollmentFields extends StatelessWidget {
 /// A live, one-line reflection of the app-wide sync state (also updated by
 /// automatic background syncs, not just the buttons above).
 class _SyncStatusLine extends StatelessWidget {
-  final AppState state;
-  const _SyncStatusLine({required this.state});
+  final SyncStatus status;
+  const _SyncStatusLine({required this.status});
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final style = Theme.of(context).textTheme.bodySmall;
-    if (state.syncing) {
+    if (status.syncing) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1740,14 +1470,14 @@ class _SyncStatusLine extends StatelessWidget {
         ],
       );
     }
-    if (state.lastSyncError != null) {
+    if (status.lastSyncError != null) {
       return Text(
-        'Last sync failed: ${state.lastSyncError}',
+        'Last sync failed: ${status.lastSyncError}',
         style: style?.copyWith(color: scheme.error),
       );
     }
-    if (state.lastSyncAt != null) {
-      return Text('Last synced ${_ago(state.lastSyncAt!)}.', style: style);
+    if (status.lastSyncAt != null) {
+      return Text('Last synced ${_ago(status.lastSyncAt!)}.', style: style);
     }
     return const SizedBox.shrink();
   }

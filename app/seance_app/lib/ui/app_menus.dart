@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../main.dart';
+import '../services/local_settings_backend.dart';
 import 'command_generator.dart';
 import 'server_list_density.dart';
 import 'server_list_pane.dart';
@@ -13,10 +14,36 @@ import 'top_toast.dart';
 
 bool _settingsRouteOpen = false;
 
-/// Open Settings as a route on the root navigator. Safe to call from menu
-/// callbacks and shortcuts (needs no [BuildContext]); guards against stacking
-/// duplicate Settings routes when triggered repeatedly.
+/// Open Settings on [initialTab]: in its own window on desktop, as a route on
+/// the root navigator elsewhere — and on desktop too when the runner cannot
+/// open the window. Safe to call from menu callbacks and shortcuts (needs no
+/// [BuildContext]); choosing Settings again brings the open window forward on
+/// the new tab rather than opening a second one.
 void openSettings([SettingsTab initialTab = SettingsTab.general]) {
+  final host = settingsWindowHost;
+  if (host == null) {
+    _openSettingsRoute(initialTab);
+    return;
+  }
+  unawaited(
+    host
+        .open(initialTab)
+        .then(
+          (opened) {
+            if (!opened) _openSettingsRoute(initialTab);
+          },
+          onError: (Object error) {
+            // The runner refused to open it; Settings must still be reachable.
+            debugPrint('Settings window failed to open: $error');
+            _openSettingsRoute(initialTab);
+          },
+        ),
+  );
+}
+
+/// Settings as a route; guards against stacking duplicate Settings routes
+/// when triggered repeatedly.
+void _openSettingsRoute(SettingsTab initialTab) {
   if (_settingsRouteOpen) return;
   final nav = navigatorKey.currentState;
   if (nav == null) return;
@@ -24,7 +51,10 @@ void openSettings([SettingsTab initialTab = SettingsTab.general]) {
   nav
       .push(
         MaterialPageRoute(
-          builder: (_) => SettingsScreen(initialTab: initialTab),
+          builder: (context) => SettingsScreen(
+            backend: LocalSettingsBackend(AppScope.of(context)),
+            initialTab: initialTab,
+          ),
         ),
       )
       .whenComplete(() => _settingsRouteOpen = false);
