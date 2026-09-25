@@ -74,6 +74,13 @@ Future<void> _pump(
   await tester.pumpAndSettle();
 }
 
+/// WCAG contrast between two opaque colours.
+double _contrast(Color a, Color b) {
+  final (la, lb) = (a.computeLuminance(), b.computeLuminance());
+  final (hi, lo) = la > lb ? (la, lb) : (lb, la);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 Future<TestGesture> _hover(WidgetTester tester, Finder target) async {
   final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
   await mouse.addPointer(location: Offset.zero);
@@ -1180,6 +1187,251 @@ void main() {
       expect(find.byTooltip('kit-more'), findsOneWidget);
     });
 
+    testWidgets('the accent is a 4 px rounded line leading the mark, in both '
+        'densities, and moves nothing', (tester) async {
+      const accent = Color(0xFF00897B);
+      Finder line(String key) => find.descendant(
+        of: find.byKey(ValueKey(key)),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is DecoratedBox &&
+              widget.decoration is BoxDecoration &&
+              (widget.decoration as BoxDecoration).color == accent,
+        ),
+      );
+      for (final (density, extent) in [
+        (SidebarKitDensity.compact, 18.0),
+        (SidebarKitDensity.comfortable, 32.0),
+      ]) {
+        await _pump(
+          tester,
+          Column(
+            children: [
+              SidebarRow(
+                key: const ValueKey('a'),
+                mark: probe(),
+                title: 'accented',
+                accent: accent,
+                depth: 1,
+              ),
+              const SidebarRow(
+                key: ValueKey('b'),
+                mark: Icon(Icons.dns_outlined),
+                title: 'plain',
+                depth: 1,
+              ),
+            ],
+          ),
+          density: density,
+        );
+        final reason = density.name;
+        expect(line('a'), findsOneWidget, reason: reason);
+        expect(line('b'), findsNothing, reason: reason);
+        expect(tester.getSize(line('a')), Size(4, extent), reason: reason);
+        final decoration =
+            tester.widget<DecoratedBox>(line('a')).decoration as BoxDecoration;
+        expect(decoration.borderRadius, BorderRadius.circular(2));
+        final mark = find.byKey(const ValueKey('mark'));
+        // Leading the mark, level with it, inside the row's pill.
+        expect(
+          tester.getTopRight(line('a')).dx,
+          lessThan(tester.getTopLeft(mark).dx),
+          reason: reason,
+        );
+        expect(
+          tester.getCenter(line('a')).dy,
+          tester.getCenter(mark).dy,
+          reason: reason,
+        );
+        expect(
+          tester.getTopLeft(line('a')).dx,
+          greaterThanOrEqualTo(6),
+          reason: reason,
+        );
+        // A coloured row and a plain one keep one column of titles.
+        expect(
+          tester.getTopLeft(titleOf('a')).dx,
+          tester.getTopLeft(titleOf('b')).dx,
+          reason: reason,
+        );
+      }
+    });
+
+    testWidgets('the connected ring frames the mark in both densities, '
+        'sized to each, and moves nothing', (tester) async {
+      const green = Color(0xFF2E7D32);
+      Finder ring(String key) => find.descendant(
+        of: find.byKey(ValueKey(key)),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is DecoratedBox &&
+              widget.decoration is BoxDecoration &&
+              (widget.decoration as BoxDecoration).color == null &&
+              ((widget.decoration as BoxDecoration).border as Border?)
+                      ?.top
+                      .color ==
+                  green,
+        ),
+      );
+      for (final (density, layout, platform, outer, stroke, shape) in [
+        (
+          SidebarKitDensity.compact,
+          SidebarKitLayout.rail,
+          TargetPlatform.macOS,
+          23.0,
+          1.5,
+          BoxShape.rectangle,
+        ),
+        (
+          SidebarKitDensity.comfortable,
+          SidebarKitLayout.rail,
+          TargetPlatform.macOS,
+          40.0,
+          2.0,
+          BoxShape.rectangle,
+        ),
+        (
+          SidebarKitDensity.comfortable,
+          SidebarKitLayout.list,
+          TargetPlatform.android,
+          48.0,
+          2.0,
+          BoxShape.circle,
+        ),
+      ]) {
+        await _pump(
+          tester,
+          Column(
+            children: [
+              SidebarRow(
+                key: const ValueKey('a'),
+                mark: probe(),
+                title: 'up',
+                markRing: green,
+                status: const SidebarStatusDot(green),
+              ),
+              const SidebarRow(
+                key: ValueKey('b'),
+                mark: Icon(Icons.dns_outlined),
+                title: 'down',
+              ),
+            ],
+          ),
+          platform: platform,
+          layout: layout,
+          density: density,
+        );
+        final reason = '${layout.name} ${density.name}';
+        expect(ring('a'), findsOneWidget, reason: reason);
+        expect(ring('b'), findsNothing, reason: reason);
+        expect(tester.getSize(ring('a')), Size(outer, outer), reason: reason);
+        expect(
+          tester.getCenter(ring('a')),
+          tester.getCenter(find.byKey(const ValueKey('mark'))),
+          reason: reason,
+        );
+        final decoration =
+            tester.widget<DecoratedBox>(ring('a')).decoration as BoxDecoration;
+        expect(
+          (decoration.border! as Border).top.width,
+          stroke,
+          reason: reason,
+        );
+        expect(decoration.shape, shape, reason: reason);
+        expect(
+          tester.getTopLeft(titleOf('a')).dx,
+          tester.getTopLeft(titleOf('b')).dx,
+          reason: reason,
+        );
+      }
+    });
+
+    testWidgets('a blocked dot is the no-entry sign: the solid dot crossed by '
+        'a bar cut out of it, at 3:1 on the rail and on the pill', (
+      tester,
+    ) async {
+      for (final brightness in Brightness.values) {
+        for (final selected in [false, true]) {
+          late Color error;
+          await _pump(
+            tester,
+            Builder(
+              builder: (context) {
+                error = Theme.of(context).colorScheme.error;
+                return SidebarRow(
+                  key: const ValueKey('r'),
+                  mark: const Icon(Icons.dns_outlined, size: 16),
+                  title: 'demo',
+                  selected: selected,
+                  status: SidebarStatusDot(
+                    error,
+                    style: SidebarDotStyle.blocked,
+                  ),
+                );
+              },
+            ),
+            brightness: brightness,
+          );
+          final reason = '${brightness.name}${selected ? ', selected' : ''}';
+          final dotFinder = find.descendant(
+            of: find.byKey(const ValueKey('r')),
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is Container &&
+                  widget.decoration is BoxDecoration &&
+                  (widget.decoration as BoxDecoration).shape ==
+                      BoxShape.circle &&
+                  (widget.decoration as BoxDecoration).color == error,
+            ),
+          );
+          expect(dotFinder, findsOneWidget, reason: reason);
+          final dot = tester.widget<Container>(dotFinder);
+          final cutOut =
+              ((dot.decoration! as BoxDecoration).border! as Border).top.color;
+          final barFinder = find.descendant(
+            of: dotFinder,
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is DecoratedBox &&
+                  widget.decoration is BoxDecoration &&
+                  (widget.decoration as BoxDecoration).color == cutOut,
+            ),
+          );
+          expect(barFinder, findsOneWidget, reason: reason);
+          final bar = tester.getSize(barFinder);
+          expect(bar.width, greaterThan(bar.height * 2), reason: reason);
+          expect(
+            _contrast(error, cutOut),
+            greaterThanOrEqualTo(3),
+            reason: reason,
+          );
+        }
+      }
+
+      // A failed dot is the plain disc: nothing crosses it.
+      await _pump(
+        tester,
+        const SidebarRow(
+          key: ValueKey('r'),
+          mark: Icon(Icons.dns_outlined, size: 16),
+          title: 'demo',
+          status: SidebarStatusDot(Colors.red),
+        ),
+      );
+      final solid = tester.widget<Container>(
+        find.descendant(
+          of: find.byKey(const ValueKey('r')),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Container &&
+                widget.decoration is BoxDecoration &&
+                (widget.decoration as BoxDecoration).color == Colors.red,
+          ),
+        ),
+      );
+      expect(solid.child, isNull);
+    });
+
     testWidgets('the long-press sheet shows the subtitle under its title, '
         'whatever the row draws', (tester) async {
       await _pump(
@@ -1266,6 +1518,62 @@ void main() {
         visibilityOf(tester, find.byKey(const ValueKey('add'))).visible,
         isFalse,
       );
+    });
+
+    testWidgets('a header carries a status dot for rows it hides', (
+      tester,
+    ) async {
+      const green = Color(0xFF2E7D32);
+      Iterable<Container> dots(WidgetTester tester) => tester
+          .widgetList<Container>(
+            find.descendant(
+              of: find.byType(SidebarSectionHeader),
+              matching: find.byType(Container),
+            ),
+          )
+          .where(
+            (box) =>
+                box.decoration is BoxDecoration &&
+                (box.decoration! as BoxDecoration).shape == BoxShape.circle &&
+                (box.decoration! as BoxDecoration).color == green,
+          );
+      for (final nested in [false, true]) {
+        await _pump(
+          tester,
+          SidebarSectionHeader(
+            title: 'Production',
+            count: 3,
+            collapsed: true,
+            nested: nested,
+            onToggle: () {},
+            status: const SidebarStatusDot(green),
+          ),
+        );
+        expect(dots(tester), hasLength(1), reason: 'nested: $nested');
+        // Beside the count it summarises, after the title.
+        expect(
+          tester.getTopLeft(find.byWidget(dots(tester).single)).dx,
+          greaterThanOrEqualTo(
+            tester
+                .getTopRight(
+                  find.textContaining(
+                    RegExp('production', caseSensitive: false),
+                  ),
+                )
+                .dx,
+          ),
+        );
+      }
+      await _pump(
+        tester,
+        SidebarSectionHeader(
+          title: 'Production',
+          count: 3,
+          collapsed: true,
+          onToggle: () {},
+        ),
+      );
+      expect(dots(tester), isEmpty);
     });
   });
 

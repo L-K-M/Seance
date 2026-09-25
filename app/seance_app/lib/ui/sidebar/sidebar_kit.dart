@@ -35,6 +35,21 @@ SeanceChrome _chrome(BuildContext context) => SeanceChrome.of(context);
 /// a pill starts at the density's [_RowMetrics.contentInset].
 const double _railInset = 6;
 
+/// The accent line down a coloured row's leading edge
+/// ([SidebarRow.accent]): as wide as the `ServerAccentBar` both apps'
+/// rows carried before the kit, and as tall as the mark it belongs to.
+const double _accentWidth = 4;
+
+/// The corner of the badge a connected ring frames (`ServerBadge`'s
+/// corner ratio in both apps), so the ring reads as a frame around that
+/// shape rather than as a box dropped over it.
+const double _markCornerRatio = 0.28;
+
+/// A blocked dot's bar, as fractions of the dot: long and thick enough to
+/// read as the no-entry sign at 7 px.
+const double _blockedBarLength = 0.65;
+const double _blockedBarThickness = 0.25;
+
 const double _sectionHeaderExtent = 22;
 const double _sectionLeadIn = 4;
 const double _bottomBarExtent = 30;
@@ -64,8 +79,8 @@ const double _listIconSize = 24;
 const double _listPillRadius = 12;
 
 /// A row's geometry at one density on one kind of screen: the box its
-/// mark gets, the dot composed into that box's corner, and the gaps
-/// around them.
+/// mark gets, the dot composed into that box's corner, the gaps around
+/// them, and the ring and line drawn about the mark without moving it.
 @immutable
 final class _RowMetrics {
   const _RowMetrics({
@@ -78,6 +93,9 @@ final class _RowMetrics {
     required this.contentInset,
     required this.markGap,
     required this.depthIndent,
+    required this.ringStroke,
+    required this.ringGap,
+    required this.accentGap,
   });
 
   /// The row's height before text scaling. Null is the chrome's
@@ -105,10 +123,19 @@ final class _RowMetrics {
 
   /// One nesting level (a group's members) indents by this much.
   final double depthIndent;
+
+  /// The connected ring ([SidebarRow.markRing]) and the air between it
+  /// and the mark.
+  final double ringStroke;
+  final double ringGap;
+
+  /// Between the accent line ([SidebarRow.accent]) and the mark's box:
+  /// the ring fits in it with air on both sides.
+  final double accentGap;
 }
 
 /// The compact desktop rail (10 §5): one 26 px line, an 18 px mark with a
-/// 7 px dot.
+/// 7 px dot, and the accent line flush with the pill's edge.
 const _compactDesktop = _RowMetrics(
   rowExtent: null,
   markExtent: 18,
@@ -119,6 +146,9 @@ const _compactDesktop = _RowMetrics(
   contentInset: 8,
   markGap: 6,
   depthIndent: 8,
+  ringStroke: 1.5,
+  ringGap: 1,
+  accentGap: 4,
 );
 
 /// Compact on touch: Material's 48 dp rows, the mark and dot scaled with
@@ -133,11 +163,14 @@ const _compactTouch = _RowMetrics(
   contentInset: 8,
   markGap: 12,
   depthIndent: 8,
+  ringStroke: 1.5,
+  ringGap: 1,
+  accentGap: 4,
 );
 
 /// Comfortable on desktop: the proportions of Séance's old comfortable
-/// rows (a 32 px badge) at the desktop ramp's 14 px title over a 12 px
-/// second line.
+/// rows (a 32 px badge, its ring 2 px out with 2 px of air) at the
+/// desktop ramp's 14 px title over a 12 px second line.
 const _comfortableDesktop = _RowMetrics(
   rowExtent: 52,
   markExtent: 32,
@@ -148,6 +181,9 @@ const _comfortableDesktop = _RowMetrics(
   contentInset: 12,
   markGap: 10,
   depthIndent: 16,
+  ringStroke: 2,
+  ringGap: 2,
+  accentGap: 8,
 );
 
 /// Comfortable on a touch rail (a tablet): the desktop's mark in a row
@@ -162,12 +198,16 @@ const _comfortableTouch = _RowMetrics(
   contentInset: 12,
   markGap: 12,
   depthIndent: 16,
+  ringStroke: 2,
+  ringGap: 2,
+  accentGap: 8,
 );
 
 /// The [SidebarKitLayout.list]: Material's list item (56 dp whether or
 /// not it has a second line, a 40 dp leading mark 16 dp from the edge and
 /// from the text). The composed dot grows with the mark so it still reads
-/// at arm's length.
+/// at arm's length, and the accent line sits in the margin before the
+/// pill, where Material's 16 dp inset leaves it room.
 const _listMetrics = _RowMetrics(
   rowExtent: 56,
   markExtent: 40,
@@ -178,6 +218,9 @@ const _listMetrics = _RowMetrics(
   contentInset: 8,
   markGap: 16,
   depthIndent: 16,
+  ringStroke: 2,
+  ringGap: 2,
+  accentGap: 8,
 );
 
 /// How the kit lays itself out, set once on [SidebarKitScope]. [rail] is
@@ -666,12 +709,18 @@ class SidebarSectionHeader extends StatefulWidget {
     this.addKey,
     this.dropHighlight = false,
     this.headerKey,
+    this.status,
   });
 
   final String title;
   final int count;
   final bool collapsed;
   final VoidCallback onToggle;
+
+  /// A status dot beside the count, for live rows the header keeps out of
+  /// view: a folded group's connected server, or one a filter hides. The
+  /// host decides when; null draws none.
+  final SidebarStatusDot? status;
 
   /// A group's disclosure row rather than a section header.
   final bool nested;
@@ -815,6 +864,7 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     final Color? fill = widget.dropHighlight
         ? chrome.hoverFill
         : (nested && _hovering ? chrome.hoverFill : null);
+    final background = _railBackground(context);
 
     final titleStyle = switch ((list, nested)) {
       (true, false) => theme.textTheme.titleSmall?.copyWith(
@@ -922,6 +972,16 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
                           style: titleStyle,
                         ),
                       ),
+                      if (widget.status case final status?) ...[
+                        _StatusDotMark(
+                          dot: status,
+                          metrics: metrics,
+                          cutOut: fill == null
+                              ? background
+                              : Color.alphaBlend(fill, background),
+                        ),
+                        SizedBox(width: list ? 8 : 4),
+                      ],
                       if (widget.collapsed || comfortable) ...[
                         count,
                         SizedBox(width: list ? 8 : 4),
@@ -1093,9 +1153,14 @@ final class SidebarRowAction {
 
 /// How a row's status dot is drawn. [solid] is live truth (connected,
 /// connecting, failed); [ring] is a weaker, observed fact — a probe that
-/// found the host reachable with nothing connected — so it reads as a
-/// lesser mark of the same colour rather than a second dot.
-enum SidebarDotStyle { solid, ring }
+/// found the host reachable (or not) with nothing connected — so it reads
+/// as a lesser mark of the same colour rather than a second dot.
+/// [blocked] is a refusal the user has to act on (a host key that no
+/// longer matches): the solid dot crossed by a bar cut out of it, the
+/// no-entry sign, so it never passes for a plain failure of the same
+/// colour. The bar takes the cut-out colour, so it stands off the dot by
+/// the same contrast the dot stands off the row.
+enum SidebarDotStyle { solid, ring, blocked }
 
 /// The one status dot a row composes into its mark's corner (10 §5): its
 /// colour and how it is drawn, as one value — a style without a colour
@@ -1123,6 +1188,7 @@ final class SidebarStatusDot {
 /// tall (26 px on desktop) with an 18 px mark, a 7 px dot and a 13 px
 /// title; comfortable, it is 52 px (56 on touch) with a 32 px mark, a
 /// larger title, and [subtitle] beneath it (see [SidebarKitDensity]).
+/// An [accent] line and a connected [markRing] frame the mark in either.
 ///
 /// Hover fills; [selected] draws the rounded pill (the location the active
 /// pane shows) with a semibold title; the focus ring shows only in keyboard
@@ -1141,6 +1207,8 @@ class SidebarRow extends StatefulWidget {
     this.trailingText,
     this.hoverAction,
     this.showMenuButton,
+    this.accent,
+    this.markRing,
     this.selected = false,
     this.depth = 0,
     this.onActivate,
@@ -1181,6 +1249,16 @@ class SidebarRow extends StatefulWidget {
   /// keyboard on a compact desktop rail. A host passes true or false to
   /// decide for itself.
   final bool? showMenuButton;
+
+  /// The row's own colour (a server's), as a 4 px rounded line leading
+  /// the mark, as tall as it. It takes no room: marks and titles line up
+  /// with rows that have none. Null draws none.
+  final Color? accent;
+
+  /// A ring around the mark in this colour: a server with a live
+  /// connection, beside the status dot. Drawn about the mark's box, so it
+  /// moves nothing when it comes and goes. Null draws none.
+  final Color? markRing;
   final bool selected;
 
   /// Nesting under a group disclosure row.
@@ -1489,6 +1567,8 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
               mark: widget.mark,
               dot: widget.status,
               cutOut: ring,
+              accent: widget.accent,
+              markRing: widget.markRing,
             ),
           ),
           SizedBox(width: metrics.markGap),
@@ -1601,12 +1681,16 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
 }
 
 /// The mark with its one corner dot, ringed in the colour behind the row
-/// so the dot reads as cut out of the mark (10 §5).
+/// so the dot reads as cut out of the mark (10 §5), and the two things
+/// drawn about the mark without taking room from the row: the accent line
+/// before it and the connected ring around it.
 class _SidebarMark extends StatelessWidget {
   const _SidebarMark({
     required this.mark,
     required this.dot,
     required this.cutOut,
+    this.accent,
+    this.markRing,
   });
 
   final Widget mark;
@@ -1614,19 +1698,61 @@ class _SidebarMark extends StatelessWidget {
 
   /// The colour behind the row: the dot's cut-out.
   final Color cutOut;
+  final Color? accent;
+  final Color? markRing;
 
   @override
   Widget build(BuildContext context) {
     final metrics = _metrics(context);
     final extent = metrics.markExtent;
+    final list = _list(context);
     final dot = this.dot;
+    final accent = this.accent;
+    final markRing = this.markRing;
+    final ringOutset = metrics.ringStroke + metrics.ringGap;
     return SizedBox(
       width: extent,
       height: extent,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
+          if (accent != null)
+            PositionedDirectional(
+              start: -(metrics.accentGap + _accentWidth),
+              top: 0,
+              bottom: 0,
+              width: _accentWidth,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: accent,
+                  borderRadius: BorderRadius.circular(_accentWidth / 2),
+                ),
+              ),
+            ),
           Center(child: mark),
+          // Concentric with the badge it frames: a circle round a list's
+          // disc, a rounded square round the rail's badge.
+          if (markRing != null)
+            Positioned(
+              left: -ringOutset,
+              top: -ringOutset,
+              right: -ringOutset,
+              bottom: -ringOutset,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  shape: list ? BoxShape.circle : BoxShape.rectangle,
+                  borderRadius: list
+                      ? null
+                      : BorderRadius.circular(
+                          extent * _markCornerRatio + ringOutset,
+                        ),
+                  border: Border.all(
+                    color: markRing,
+                    width: metrics.ringStroke,
+                  ),
+                ),
+              ),
+            ),
           // On a list's round mark the corner puts the dot's centre on
           // the circle's edge: the avatar badge Material draws presence
           // with.
@@ -1643,7 +1769,8 @@ class _SidebarMark extends StatelessWidget {
 }
 
 /// One status dot at [metrics]' size inside a ring of [cutOut], the
-/// colour behind it, composed into a row's mark.
+/// colour behind it: composed into a row's mark, or standing beside a
+/// header's count.
 class _StatusDotMark extends StatelessWidget {
   const _StatusDotMark({
     required this.dot,
@@ -1665,6 +1792,20 @@ class _StatusDotMark extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           border: Border.all(color: dot.color, width: metrics.hollowStroke),
+        ),
+      ),
+      SidebarDotStyle.blocked => Center(
+        child: SizedBox(
+          width: extent * _blockedBarLength,
+          height: extent * _blockedBarThickness,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: cutOut,
+              borderRadius: BorderRadius.circular(
+                extent * _blockedBarThickness / 2,
+              ),
+            ),
+          ),
         ),
       ),
     };
