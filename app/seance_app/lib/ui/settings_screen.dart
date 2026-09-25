@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
+import '../family_hues.dart';
 import '../main.dart';
 import '../services/app_settings.dart';
 import '../services/assistant_settings_sync.dart';
@@ -170,20 +171,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
+    final palette = FamilyPalette.of(context);
     return DefaultTabController(
       length: SettingsTab.values.length,
       initialIndex: widget.initialTab.index,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Settings'),
-          bottom: const TabBar(
+          // Each section in its family hue (Poltergeist's D34): the
+          // assistant purple, files blue, sync indigo; General stays in
+          // the tab bar's ink.
+          bottom: TabBar(
             isScrollable: true,
             tabAlignment: TabAlignment.start,
             tabs: [
-              Tab(icon: Icon(Icons.tune_outlined), text: 'General'),
-              Tab(icon: Icon(Icons.auto_awesome_outlined), text: 'Assistant'),
-              Tab(icon: Icon(Icons.folder_open_outlined), text: 'Files'),
-              Tab(icon: Icon(Icons.cloud_sync_outlined), text: 'Sync'),
+              const Tab(icon: Icon(Icons.tune_outlined), text: 'General'),
+              Tab(
+                icon: Icon(
+                  Icons.auto_awesome,
+                  color: palette.glyph(FamilyHue.purple),
+                ),
+                text: 'Assistant',
+              ),
+              Tab(
+                icon: Icon(
+                  Icons.folder_open,
+                  color: palette.glyph(FamilyHue.blue),
+                ),
+                text: 'Files',
+              ),
+              Tab(
+                icon: Icon(
+                  Icons.cloud_sync,
+                  color: palette.glyph(FamilyHue.indigo),
+                ),
+                text: 'Sync',
+              ),
             ],
           ),
         ),

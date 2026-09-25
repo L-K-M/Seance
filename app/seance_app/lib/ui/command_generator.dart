@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
+import '../family_hues.dart';
 import 'top_toast.dart';
 
 /// The inline command generator: a focused "describe a task → get one command"
@@ -146,7 +147,11 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.auto_fix_high, size: 20),
+                  Icon(
+                    Icons.auto_fix_high,
+                    size: 20,
+                    color: FamilyPalette.of(context).glyph(FamilyHue.purple),
+                  ),
                   const SizedBox(width: 8),
                   Text(
                     'Generate a command',

@@ -461,6 +461,13 @@ Do not "simplify" these away — they are load-bearing:
   and still draws the glyph every mark keeps beside it; `ServerMark.stored` is
   the inverse, so an editor holds one mark and writes the three. The app maps
   glyph names to `IconData` in `ui/server_appearance.dart`, and only there.
+- `FamilyHue` (`lib/family_hues.dart`) is the colour vocabulary shared with
+  Poltergeist (its D34): twelve hues, each with one meaning, painted on glyphs
+  only. The file is byte-identical to Poltergeist's
+  `lib/theme/family_hues.dart`, so change both together. A new glyph takes its
+  colour from `FamilyPalette.of(context).glyph(hue)`, never an ad-hoc colour;
+  file kinds come from `ui/file_kinds.dart` (see
+  [POLTERGEIST.md](docs/POLTERGEIST.md#the-colour-vocabulary)).
 - Record model: `EncryptedRecord` is what the server sees (`kind` is *inside* the
   ciphertext); `DecryptedRecord` is app-side. Conflicts resolve by
   `Lww.resolve` = `(updatedAt, deviceId, seq)`; the server assigns `seq`.

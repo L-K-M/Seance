@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
+import '../family_hues.dart';
 import '../services/chat_session.dart';
 import '../main.dart';
 
@@ -155,7 +156,11 @@ class _ChatSidebarState extends State<ChatSidebar> {
       padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
       child: Row(
         children: [
-          const Icon(Icons.auto_awesome_outlined, size: 20),
+          Icon(
+            Icons.auto_awesome,
+            size: 20,
+            color: FamilyPalette.of(context).glyph(FamilyHue.purple),
+          ),
           const SizedBox(width: 8),
           Text('Assistant', style: Theme.of(context).textTheme.titleMedium),
           const Spacer(),
@@ -352,7 +357,11 @@ class _ChatEmpty extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.auto_awesome_outlined, size: 36),
+            Icon(
+              Icons.auto_awesome,
+              size: 36,
+              color: FamilyPalette.of(context).glyph(FamilyHue.purple),
+            ),
             const SizedBox(height: 12),
             Text(
               'Describe what you want to do',
