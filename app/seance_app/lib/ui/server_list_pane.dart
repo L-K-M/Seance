@@ -23,12 +23,12 @@ import 'top_toast.dart';
 enum ServerListPosture {
   /// The wide layout's left rail: the sibling sidebar anatomy (Poltergeist's
   /// plan, 10 §5) with no app bar, a filter field at the top and the bottom
-  /// bar's "+" menu, sync status and gear at the foot.
+  /// bar's "+" menu, sync status, density switch and gear at the foot.
   rail,
 
   /// The narrow layout's home screen, full screen (10 §9, §10.6): an app
-  /// bar, the same sections and rows at the platform's row extent, and a
-  /// "+" button that adds a server.
+  /// bar with the density switch, the same sections and rows at the
+  /// platform's row extent, and a "+" button that adds a server.
   home,
 }
 
