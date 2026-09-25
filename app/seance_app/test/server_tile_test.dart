@@ -537,6 +537,35 @@ void main() {
       );
     });
 
+    testWidgets('the sheet names the server and its second line, even '
+        'where the row drew only one', (tester) async {
+      // A compact touch row has no second line and no hover tooltip: the
+      // sheet is where the address can still be read.
+      await pump(
+        tester,
+        platform: TargetPlatform.android,
+        dot: ServerDot.failed,
+      );
+      expect(
+        find.text('Connection failed · deploy@box.example.com'),
+        findsNothing,
+      );
+      await tester.longPress(find.byType(SidebarRow));
+      await tester.pumpAndSettle();
+      final sheet = find.byType(BottomSheet);
+      expect(
+        find.descendant(of: sheet, matching: find.text('box')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: sheet,
+          matching: find.text('Connection failed · deploy@box.example.com'),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('on touch a long-press opens the same verbs as a sheet', (
       tester,
     ) async {
