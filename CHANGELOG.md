@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Themes: Settings has an Appearance tab. Pick one of ten themes
+  (Séance, Graphite, Paper, Newsprint, Solarized, Midnight, Terminal,
+  Vapor, Bubblegum, High contrast) as a starting point, then change any
+  colour, the status colours, the terminal's colours, the interface font
+  and how round the corners are; the app repaints as you go. Colours left
+  on Automatic follow light or dark as you choose. Copy theme and Paste
+  theme carry a theme between devices; themes do not sync. An existing
+  install looks exactly as before.
 - On phones and tablets, the server filter field is full height again
   instead of a thin strip above an empty gap, and compact server rows
   are 40 dp instead of 48.

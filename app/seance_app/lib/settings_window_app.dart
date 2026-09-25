@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'services/settings_window.dart';
 import 'theme.dart';
+import 'theme/app_appearance.dart';
 import 'ui/settings_screen.dart';
 
 /// The settings window's whole app. Its engine starts the same `main` as the
@@ -57,34 +58,52 @@ class _SettingsWindowAppState extends State<SettingsWindowApp> {
   Widget build(BuildContext context) {
     final backend = widget.backend;
     final error = widget.error;
+    if (backend == null) {
+      return _app(
+        AppAppearance.initial,
+        Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('Settings could not reach Séance:\n$error'),
+            ),
+          ),
+        ),
+      );
+    }
+    // Outside the theme's builder, which then only swaps the MaterialApp's
+    // themes: the screen showing is the one the edit came from, and it
+    // keeps its state through the change.
+    final home = ValueListenableBuilder<SettingsWindowPage?>(
+      valueListenable: backend.page,
+      builder: (context, page, _) => page == null
+          // Hidden: no screen, so nothing typed into it outlives the
+          // window being closed.
+          ? const Scaffold()
+          : SettingsScreen(
+              key: ValueKey(page.generation),
+              backend: backend,
+              initialTab: page.tab,
+              tabRequests: backend.tabRequests,
+              presentation: SettingsPresentation.window,
+            ),
+    );
+    // Drawn in the app's theme, from the snapshots: the window is part of
+    // the app, and the Appearance tab is judged by looking at it.
+    return ValueListenableBuilder<AppAppearance>(
+      valueListenable: backend.appearance,
+      builder: (context, appearance, _) => _app(appearance, home),
+    );
+  }
+
+  static Widget _app(AppAppearance appearance, Widget home) {
+    final themes = SeanceTheme.forAppearance(appearance);
     return MaterialApp(
       title: 'Séance Settings',
-      theme: SeanceTheme.light(),
-      darkTheme: SeanceTheme.dark(),
-      themeMode: ThemeMode.system,
-      home: backend == null
-          ? Scaffold(
-              body: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text('Settings could not reach Séance:\n$error'),
-                ),
-              ),
-            )
-          : ValueListenableBuilder<SettingsWindowPage?>(
-              valueListenable: backend.page,
-              builder: (context, page, _) => page == null
-                  // Hidden: no screen, so nothing typed into it outlives the
-                  // window being closed.
-                  ? const Scaffold()
-                  : SettingsScreen(
-                      key: ValueKey(page.generation),
-                      backend: backend,
-                      initialTab: page.tab,
-                      tabRequests: backend.tabRequests,
-                      presentation: SettingsPresentation.window,
-                    ),
-            ),
+      theme: themes.theme,
+      darkTheme: themes.darkTheme,
+      themeMode: themes.themeMode,
+      home: home,
     );
   }
 }

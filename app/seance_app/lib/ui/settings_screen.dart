@@ -8,8 +8,10 @@ import '../family_hues.dart';
 import '../services/external_file_opener.dart';
 import '../services/settings_backend.dart';
 import '../services/system_fonts.dart';
+import 'appearance_settings.dart';
 import 'font_picker.dart';
 import 'selected_tab_view.dart';
+import 'settings_layout.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
 import 'top_toast.dart';
@@ -27,7 +29,8 @@ enum SettingsPresentation {
 }
 
 /// Settings: LLM provider (the assistant is always on — this only picks which
-/// model), the web-search backend, secret redaction, and sync enrolment.
+/// model), the web-search backend, secret redaction, sync enrolment, and the
+/// app's theme (its own file, `appearance_settings.dart`).
 ///
 /// Reads and writes through [backend] only, so the same screen runs as a
 /// route in the app and in the desktop settings window's own isolate.
@@ -208,13 +211,15 @@ class _SettingsScreenState extends State<SettingsScreen>
   Widget build(BuildContext context) {
     final palette = FamilyPalette.of(context);
     // Each section in its family hue (Poltergeist's D34): the assistant
-    // purple, files blue, sync indigo; General stays in the tab bar's ink.
+    // purple, files blue, sync indigo; General and Appearance stay in the
+    // tab bar's ink.
     final tabBar = TabBar(
       controller: _tabs,
       isScrollable: true,
       tabAlignment: TabAlignment.start,
       tabs: [
         const Tab(icon: Icon(Icons.tune_outlined), text: 'General'),
+        const Tab(icon: Icon(Icons.palette_outlined), text: 'Appearance'),
         Tab(
           icon: Icon(Icons.auto_awesome, color: palette.glyph(FamilyHue.purple)),
           text: 'Assistant',
@@ -243,15 +248,21 @@ class _SettingsScreenState extends State<SettingsScreen>
       },
       body: SelectedTabView(
         controller: _tabs,
-        children: [_generalTab(), _assistantTab(), _filesTab(), _syncTab()],
+        children: [
+          _generalTab(),
+          AppearanceSettings(backend: _backend, systemFonts: _systemFonts),
+          _assistantTab(),
+          _filesTab(),
+          _syncTab(),
+        ],
       ),
     );
   }
 
-  Widget _assistantTab() => _settingsPage(
-    key: const PageStorageKey('assistant-settings'),
+  Widget _assistantTab() => SettingsPage(
+    storageKey: const PageStorageKey('assistant-settings'),
     children: [
-      _section(
+      SettingsSectionHeader(
         'Assistant',
         helpTitle: 'Assistant privacy and providers',
         help:
@@ -368,7 +379,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         ),
       ),
       const SizedBox(height: 16),
-      _section(
+      SettingsSectionHeader(
         'Web search (chat tool)',
         helpTitle: 'Web search backends',
         help:
@@ -432,10 +443,10 @@ class _SettingsScreenState extends State<SettingsScreen>
     ],
   );
 
-  Widget _generalTab() => _settingsPage(
-    key: const PageStorageKey('general-settings'),
+  Widget _generalTab() => SettingsPage(
+    storageKey: const PageStorageKey('general-settings'),
     children: [
-      _section(
+      SettingsSectionHeader(
         'General',
         helpTitle: 'General preferences',
         help:
@@ -474,7 +485,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         ),
       ],
       const Divider(height: 40),
-      _section(
+      SettingsSectionHeader(
         'Terminal',
         helpTitle: 'Terminal appearance',
         help:
@@ -566,7 +577,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         },
       ),
       const Divider(height: 40),
-      _section(
+      SettingsSectionHeader(
         'Snippets',
         helpTitle: 'Command suggestions',
         help:
@@ -611,10 +622,10 @@ class _SettingsScreenState extends State<SettingsScreen>
           ),
         ),
     ];
-    return _settingsPage(
-      key: const PageStorageKey('files-settings'),
+    return SettingsPage(
+      storageKey: const PageStorageKey('files-settings'),
       children: [
-        _section(
+        SettingsSectionHeader(
           'Remote file editing',
           helpTitle: 'How remote editing works',
           help:
@@ -637,7 +648,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         const SizedBox(height: 24),
         Row(
           children: [
-            Expanded(child: _section('External editors')),
+            Expanded(child: SettingsSectionHeader('External editors')),
             if (currentEditorHostPlatform != null)
               OutlinedButton.icon(
                 onPressed: _addEditor,
@@ -692,10 +703,10 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
-  Widget _syncTab() => _settingsPage(
-    key: const PageStorageKey('sync-settings'),
+  Widget _syncTab() => SettingsPage(
+    storageKey: const PageStorageKey('sync-settings'),
     children: [
-      _section(
+      SettingsSectionHeader(
         'Sync (optional)',
         helpTitle: 'Account and vault credentials',
         help:
@@ -871,49 +882,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         ),
       ),
     ],
-  );
-
-  Widget _settingsPage({required Key key, required List<Widget> children}) =>
-      Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: FocusTraversalGroup(
-            child: ListView(
-              key: key,
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-              children: children,
-            ),
-          ),
-        ),
-      );
-
-  Widget _section(String title, {String? helpTitle, String? help}) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(title, style: Theme.of(context).textTheme.titleMedium),
-        ),
-        if (help != null)
-          IconButton(
-            tooltip: 'About $title',
-            icon: const Icon(Icons.help_outline, size: 20),
-            onPressed: () => showDialog<void>(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: Text(helpTitle ?? title),
-                content: SingleChildScrollView(child: Text(help)),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Close'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-      ],
-    ),
   );
 
   /// Ask the configured endpoint which models it offers. Uses the key typed in

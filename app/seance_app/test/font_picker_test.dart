@@ -127,6 +127,41 @@ void main() {
     expect(picked, [kBuiltInFontStack]);
   });
 
+  testWidgets('the interface font\'s picker lists every family', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () async => picked.add(
+                await showFontPicker(
+                  context,
+                  fonts: const _FakeFonts(families),
+                  current: '',
+                  title: 'Interface font',
+                  filter: FontPickerFilter.all,
+                  builtInLabel: 'Use system default',
+                ),
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Interface font'), findsOneWidget);
+    expect(find.text('Cantarell'), findsOneWidget);
+    expect(find.text('Hack'), findsOneWidget);
+    await tester.tap(find.text('Use system default'));
+    await tester.pumpAndSettle();
+    expect(picked, [kBuiltInFontStack]);
+  });
+
   testWidgets('cancelling changes nothing', (tester) async {
     await open(tester, current: 'Hack');
     await tester.tap(find.text('Cancel'));

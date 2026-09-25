@@ -56,5 +56,15 @@ void main() {
     }
     expect(copy.headerHeight, light.headerHeight);
     expect(copy.sidebarRowExtent, light.sidebarRowExtent);
+    expect(copy.cornerScale, light.cornerScale);
+  });
+
+  // Material's own shapes lerp through a theme change, so the hand-drawn
+  // corners that follow the same scale blend with them.
+  test('the corner scale blends like the shapes it follows', () {
+    final square = light.copyWith(cornerScale: 0);
+    final round = light.copyWith(cornerScale: 2);
+    expect(square.lerp(round, 0.25).cornerScale, 0.5);
+    expect(round.corner(6), 12);
   });
 }

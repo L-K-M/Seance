@@ -1,8 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/services/app_settings.dart';
+import 'package:seance_app/services/assistant_settings_sync.dart';
 import 'package:seance_app/services/external_file_opener.dart';
+import 'package:seance_app/theme/app_appearance.dart';
+import 'package:seance_app/theme/theme_presets.dart';
 import 'package:seance_app/ui/server_list_density.dart';
 
 void main() {
@@ -315,6 +319,58 @@ void main() {
       expect(restored.paneListWidth, isNull, reason: '$bad');
       expect(restored.paneUtilityWidth, isNull, reason: '$bad');
     }
+  });
+
+  test('the theme defaults to the first preset, following the system', () {
+    final settings = AppSettings();
+    expect(settings.themePalette, ThemePresets.initial);
+    expect(settings.themeMode, ThemeModePreference.system);
+
+    // A settings file from before themes existed reads the same.
+    final legacy = AppSettings.fromJson({'deviceId': 'abc'});
+    expect(legacy.themePalette, ThemePresets.initial);
+    expect(legacy.themeMode, ThemeModePreference.system);
+  });
+
+  test('the theme and its mode round-trip through the settings file', () {
+    final settings = AppSettings(
+      themePalette: ThemePresets.solarized.copyWith(cornerScale: 0.3),
+      themeMode: ThemeModePreference.dark,
+    );
+    final restored = AppSettings.fromJson(
+      jsonDecode(jsonEncode(settings.toJson())) as Map<String, dynamic>,
+    );
+    expect(restored.themePalette, settings.themePalette);
+    expect(restored.themeMode, ThemeModePreference.dark);
+  });
+
+  test('a garbage theme reads as the default and costs nothing else', () {
+    for (final bad in <Object?>[
+      'solarized',
+      7,
+      const [1, 2],
+      null,
+    ]) {
+      final restored = AppSettings.fromJson({
+        'themePalette': bad,
+        'themeMode': 'sepia',
+        'deviceId': 'abc',
+        'terminalFontSize': 17,
+      });
+      expect(restored.themePalette, ThemePresets.initial, reason: '$bad');
+      expect(restored.themeMode, ThemeModePreference.system, reason: '$bad');
+      expect(restored.deviceId, 'abc');
+      expect(restored.terminalFontSize, 17);
+    }
+  });
+
+  test('the theme is device-local: not part of the assistant record', () {
+    final settings = AppSettings();
+    final before = assistantSyncFingerprint(settings);
+    settings
+      ..themePalette = ThemePresets.vapor
+      ..themeMode = ThemeModePreference.light;
+    expect(assistantSyncFingerprint(settings), before);
   });
 
   test(

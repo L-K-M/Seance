@@ -9,6 +9,8 @@ import 'package:seance_app/app_state.dart';
 import 'package:seance_app/services/app_services.dart';
 import 'package:seance_app/services/settings_backend.dart';
 import 'package:seance_app/services/settings_window.dart';
+import 'package:seance_app/theme/app_appearance.dart';
+import 'package:seance_app/theme/theme_presets.dart';
 import 'package:seance_app/ui/sync_enrollment_validation.dart';
 import 'package:seance_app/ui/terminal_appearance.dart';
 
@@ -126,6 +128,39 @@ void main() {
     expect(services.settings.terminalFontFamily, 'Mono Test');
     final reread = await services.settingsStore.load();
     expect(reread.terminalPalette, TerminalPalette.alwaysDark);
+  });
+
+  test('a theme set in the window re-themes the app and the window', () async {
+    final window = await openWindow();
+    addTearDown(window.dispose);
+    expect(window.appearance.value, AppAppearance.initial);
+    final palette = ThemePresets.bubblegum.copyWith(cornerScale: 0.35);
+
+    await window.setAppearance(palette, ThemeModePreference.light);
+
+    expect(state.appearance.value.palette, palette);
+    expect(state.appearance.value.mode, ThemeModePreference.light);
+    expect((await services.settingsStore.load()).themePalette, palette);
+    // The window's own theme follows through the snapshot that write sent.
+    await pumpEventQueue();
+    expect(
+      window.appearance.value,
+      AppAppearance(palette: palette, mode: ThemeModePreference.light),
+    );
+  });
+
+  test('a snapshot that moves no theme leaves the window\'s alone', () async {
+    final window = await openWindow();
+    addTearDown(window.dispose);
+    var rethemed = 0;
+    window.appearance.addListener(() => rethemed++);
+
+    services.settings.terminalFontSize = 21;
+    state.terminalAppearanceChanged();
+    await pumpEventQueue();
+
+    expect(window.settings.terminalFontSize, 21);
+    expect(rethemed, 0);
   });
 
   test('results cross back intact', () async {

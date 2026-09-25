@@ -7,7 +7,9 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-25. On desktop, Settings opens in a window of its
+_Last updated: 2026-09-25. Séance has themes: one editable palette per
+device, started from ten presets and changed live on a new Appearance tab
+in Settings. Before that, on desktop, Settings opens in a window of its
 own instead of covering the app: a second native window on a second
 Flutter engine, which reaches the app's state over a link the runners
 relay between the two engines; closing it hides it. Before that, the
@@ -67,6 +69,135 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Themes (2026-09-25)
+
+Vervellum's theming model, ported to the app: one editable theme per
+device, not a library of saved ones. Settings has an Appearance tab
+(second, after General) with ten presets (Séance, Graphite, Paper,
+Newsprint, Solarized, Midnight, Terminal, Vapor, Bubblegum, High
+contrast). A preset is a starting point, not a mode: picking one copies
+its values in, and every value then stays editable, with the app and the
+settings window repainting on each change. There is no Save button.
+
+**The model.** `ThemePalette` (`lib/theme/theme_palette.dart`) is one
+JSON object under `themePalette` in `settings.json`, with the mode under
+`themeMode` (`ThemeModePreference`: system, light, dark). Both are
+device-local like the terminal's appearance and never sync; a test pins
+that neither reaches the assistant record's fingerprint. The decode is
+lenient: a missing or unreadable accent or corner scale takes the default
+preset's, an unreadable Automatic-able colour is Automatic, a terminal
+block is taken whole or not at all, and garbage under the key is the
+default. Colours read `#RGB`, `#RGBA`, `#RRGGBB` and `#RRGGBBAA` (alpha
+last, as CSS writes it; `#` or `0x` optional) and write `#RRGGBB`, or
+eight digits when translucent. Only the lines and the selection keep an
+alpha; every other colour is stored opaque. A preset is recognised by its
+values, not its name (`matchingPreset`), and every edit renames the
+palette to the preset it now matches or "Custom".
+
+**Automatic.** Every slot but the accent can be Automatic (null). The
+default preset leaves all of them Automatic and its accent is the violet
+seed, which keeps the tables' hand-tuned primary family, so an install
+that never opens the tab draws exactly what it did:
+`theme_build_test.dart` compares the colour scheme, the chrome, the
+status colours, the type ramp and the component themes with the theme as
+it was built before, from the tables written out in the test, at both
+brightnesses on desktop and mobile. While the surface is Automatic,
+Automatic slots are the sibling tables for the mode's brightness. Once a
+palette sets its own surface, that surface decides the brightness (by
+`ThemeData.estimateBrightnessForColor`: dark below a relative luminance
+of about 0.34, Material's cut-off, which leans toward light text), the
+mode control is disabled with a line saying why, and the Automatic slots
+are mixed from that surface and the palette's text instead: the tables'
+slate rail beside a Solarized pane would be neither theme. Mixed from
+the dark table's own surface and text, the ratios land within 6 units
+per channel of its container ladder and lines (within 18 of its bluer
+secondary text and outline). Any accent other than the seed is drawn as
+picked; an Automatic selection pill for it is the accent darkened until
+white text clears 4.5:1, and the pill's label (`onSelection`) is white or
+black by contrast.
+
+**Where it lands.** `SeanceTheme.build(palette, brightness)` builds the
+ThemeData; `light()`/`dark()` are the default palette. The chrome takes
+its colours from the resolved palette, the four status colours moved to
+a `SeanceStatusColors` theme extension that `StatusColors` reads (their
+old brightness-aware values are the Automatic ones), and the corner scale
+(0 to 2) reaches the dialog, card, menu, popup menu, tooltip, input,
+filled/outlined/text button, segmented button, chip, bottom sheet and
+snack bar shapes. At exactly 1 those components keep Material's own
+shapes, stadium buttons included. `SeanceChrome.cornerScale` and
+`corner(base)` carry it to hand-drawn shapes: the sidebar kit's pills,
+focus rings, icon buttons, filter field and sync chip. The interface font
+is a family name handed to the platform (null for its own), picked from
+the installed-font picker without the monospace filter; terminals and
+code keep their monospace stack. A terminal whose Colors setting is
+"Follow the app theme" uses the palette's terminal block when it has one
+(search highlights derived from its yellow and cursor); "Always dark" and
+"Always light" keep the built-in palettes.
+
+**Rebuilding.** The app's MaterialApp listens to
+`AppState.appearance` (a `ValueListenable<AppAppearance>`) and to nothing
+else, so it rebuilds for a theme change and never for the connection,
+probe and tab changes AppState notifies for (`bootstrap_test.dart`).
+`LocalSettingsBackend.setAppearance` applies before it saves, like the
+terminal's appearance, and is a no-op when nothing changed; the link has
+a `setAppearance` case both ways. The settings window's MaterialApp
+listens to `RemoteSettingsBackend.appearance`, which each snapshot
+updates and which notifies only when the theme in it changed. The tab
+coalesces its writes: one in flight at a time, and changes made meanwhile
+fold into one write of whatever is current after it, so a corner drag is
+not dozens of saves and round trips.
+
+**The tab.** Theme (the preset grid, each tile drawn in its preset's
+surface, text, accent, status colours and corners), Mode, Colours (accent
+plus seven slots, each with an Automatic box), Status colours, Terminal
+colours (a switch, background, text, cursor, selection, the 16 ANSI
+colours as two rows of eight, and a preview), Shape and type (interface
+font, corners), Share (Copy theme puts pretty JSON on the clipboard;
+Paste theme decodes leniently, and text that is not a theme at all shows
+a toast and changes nothing) and Start over (Reset to Séance, confirmed;
+the mode is kept). A colour handed back to Automatic is remembered for
+the session, so unticking Automatic again restores it; otherwise a slot
+leaves Automatic at the colour it draws right now, never black. The
+colour picker is `lib/ui/color_picker.dart`, generalised from the server
+colour picker (which is now a thin wrapper with its badge preview) with
+an optional preview and an optional opacity slider.
+
+**The presets.** Vervellum's colours, with every slot Séance needs
+derived for the eight that bring their own surface: rail, headers, lines,
+selection, four status colours and a terminal palette (Solarized's is the
+official one). `theme_presets_test.dart` holds each, at every brightness
+it can draw at, to: text on the surface and on the rail at 4.5:1,
+secondary text at 4.5:1 (Solarized at 3:1: its hierarchy puts secondary
+text below base0, itself 4.7:1 on base03), the accent as drawn and every
+status colour at 3:1, four distinct status colours, the selected row's
+label at 4.5:1, and the terminal's text at 4.5:1 with its normal ANSI
+colours at 3:1 (Paper's at 4.5:1, all sixteen). Bubblegum's accent is a
+shade deeper than Vervellum's #FF59AD, which is 2.7:1 on its own surface.
+The family glyph hues (see "Colour that means something" below) keep
+3:1 on every preset's surface and rail too, in both modes; they follow
+the drawn brightness, not the palette.
+
+**Not ported.** Vervellum's `backdrop` (glass, frosted, solid) has no
+Flutter equivalent without a vibrancy plugin; `fontDesign` (system,
+serif, rounded, monospaced) cannot be addressed portably by name and is
+replaced by the font family; its verdict colours are Séance's four
+status colours; its scrim and card fill are panel-specific.
+
+**Known limits.** Editor syntax colours still follow the brightness, not
+the palette. Server badge fills and accent lines are derived per
+brightness as before, not per palette. The bootstrap spinner draws in the
+default theme, because the settings are read during bootstrap, and the
+user's theme fades in when the shell appears. The sidebar kit's corner
+change is Séance-only for now (see
+[POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)). Verified by the test
+suite only: the tab has not been driven in a built app on any platform.
+
+**Poltergeist.** It should get the same model: its
+`lib/theme/app_theme.dart` keeps "the tables in step" with Séance's
+`lib/theme.dart`, so the palette, the presets, the Automatic rules and
+the tab port with the chrome's rename, and its kit copy then takes the
+corner change.
 
 ## Settings in its own window (2026-09-25)
 

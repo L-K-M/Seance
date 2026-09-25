@@ -28,31 +28,61 @@ SystemFonts? _hostFonts;
 
 /// What [showFontPicker] returns for "no family — use the app's own monospace
 /// stack", which is what an empty `AppSettings.terminalFontFamily` means.
+/// For the interface font, the same empty answer means the platform's own
+/// face.
 const String kBuiltInFontStack = '';
+
+/// Which families the picker lists when it opens.
+enum FontPickerFilter {
+  /// Fixed-pitch faces only, for the terminal; the chip can widen it.
+  monospace,
+
+  /// Every family, for the interface; the chip can still narrow it.
+  all,
+}
 
 /// Picks an installed font family, previewing each one in its own face.
 ///
-/// Returns the chosen family, [kBuiltInFontStack] for the built-in stack, or
-/// null if the picker was dismissed. Deliberately a companion to the free-text
-/// field rather than a replacement: what the OS has registered and what the
-/// engine will actually render are not quite the same set (see [SystemFonts]),
-/// so a family this cannot offer must stay typeable.
+/// Returns the chosen family, [kBuiltInFontStack] for the built-in choice
+/// ([builtInLabel]), or null if the picker was dismissed. Deliberately a
+/// companion to the free-text field rather than a replacement: what the OS
+/// has registered and what the engine will actually render are not quite the
+/// same set (see [SystemFonts]), so a family this cannot offer must stay
+/// typeable. The defaults are the terminal font's picker.
 Future<String?> showFontPicker(
   BuildContext context, {
   required SystemFonts fonts,
   required String current,
+  String title = 'Terminal font',
+  FontPickerFilter filter = FontPickerFilter.monospace,
+  String builtInLabel = 'Use built-in stack',
 }) {
   return showDialog<String>(
     context: context,
-    builder: (_) => _FontPickerDialog(fonts: fonts, current: current),
+    builder: (_) => _FontPickerDialog(
+      fonts: fonts,
+      current: current,
+      title: title,
+      filter: filter,
+      builtInLabel: builtInLabel,
+    ),
   );
 }
 
 class _FontPickerDialog extends StatefulWidget {
   final SystemFonts fonts;
   final String current;
+  final String title;
+  final FontPickerFilter filter;
+  final String builtInLabel;
 
-  const _FontPickerDialog({required this.fonts, required this.current});
+  const _FontPickerDialog({
+    required this.fonts,
+    required this.current,
+    required this.title,
+    required this.filter,
+    required this.builtInLabel,
+  });
 
   @override
   State<_FontPickerDialog> createState() => _FontPickerDialogState();
@@ -61,10 +91,10 @@ class _FontPickerDialog extends StatefulWidget {
 class _FontPickerDialogState extends State<_FontPickerDialog> {
   final _search = TextEditingController();
 
-  /// A terminal wants a fixed-pitch face, so the list starts filtered. The
+  /// A terminal wants a fixed-pitch face, so its list starts filtered. The
   /// flag the filter reads is the font's own declaration and some faces get it
   /// wrong, which is why it can be turned off rather than being the only view.
-  bool _monospaceOnly = true;
+  late bool _monospaceOnly = widget.filter == FontPickerFilter.monospace;
 
   /// The scan, with its failure logged once.
   ///
@@ -117,7 +147,7 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Terminal font'),
+      title: Text(widget.title),
       // Bounded so the dialog is the same shape whether the host has four
       // fonts or four hundred, and so the list scrolls rather than the dialog
       // growing past the screen.
@@ -185,7 +215,7 @@ class _FontPickerDialogState extends State<_FontPickerDialog> {
         ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(kBuiltInFontStack),
-          child: const Text('Use built-in stack'),
+          child: Text(widget.builtInLabel),
         ),
       ],
     );

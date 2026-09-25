@@ -1,12 +1,17 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart' show TerminalStyle, TerminalTheme;
 
 import '../services/app_settings.dart';
 import '../theme.dart';
+import '../theme/contrast.dart';
+import '../theme/theme_palette.dart';
 
 /// How the terminal picks its colors.
 enum TerminalPalette {
-  /// Dark when the app is dark, light when it is light.
+  /// The app theme's terminal colours when it has its own; otherwise dark
+  /// when the app is dark, light when it is light.
   followApp,
   alwaysDark,
   alwaysLight,
@@ -82,6 +87,81 @@ class SeanceTerminalThemes {
     searchHitBackgroundCurrent: Color(0xFFB9AFEE),
     searchHitForeground: Color(0xFF2A2733),
   );
+
+  /// The built-in palette for [brightness]: what a theme with no terminal
+  /// colours of its own draws.
+  static TerminalTheme builtIn(Brightness brightness) =>
+      brightness == Brightness.dark ? dark : light;
+
+  /// A theme's terminal colours as xterm's palette.
+  ///
+  /// A theme names no search-highlight colours, so they are derived: matches
+  /// in the ANSI yellow, the current one in the cursor's colour, both under
+  /// text in whichever of the theme's background and foreground reads
+  /// better on the two. The background alone would put near-white text on
+  /// a light theme's pale yellow.
+  static TerminalTheme fromColors(ThemeTerminalColors colors) {
+    final ansi = colors.ansi;
+    final hits = [ansi[ThemeTerminalColors.yellowIndex], colors.cursor];
+    double worst(Color text) =>
+        hits.map((hit) => contrastRatio(text, hit)).reduce(math.min);
+    final hitText = worst(colors.background) >= worst(colors.foreground)
+        ? colors.background
+        : colors.foreground;
+    return TerminalTheme(
+      cursor: colors.cursor,
+      selection: colors.selection,
+      foreground: colors.foreground,
+      background: colors.background,
+      black: ansi[0],
+      red: ansi[1],
+      green: ansi[2],
+      yellow: ansi[3],
+      blue: ansi[4],
+      magenta: ansi[5],
+      cyan: ansi[6],
+      white: ansi[7],
+      brightBlack: ansi[8],
+      brightRed: ansi[9],
+      brightGreen: ansi[10],
+      brightYellow: ansi[11],
+      brightBlue: ansi[12],
+      brightMagenta: ansi[13],
+      brightCyan: ansi[14],
+      brightWhite: ansi[15],
+      searchHitBackground: ansi[ThemeTerminalColors.yellowIndex],
+      searchHitBackgroundCurrent: colors.cursor,
+      searchHitForeground: hitText,
+    );
+  }
+
+  /// xterm's palette as a theme's terminal colours: where the Appearance
+  /// tab starts when a theme first takes terminal colours of its own.
+  static ThemeTerminalColors toColors(TerminalTheme theme) =>
+      ThemeTerminalColors(
+        background: theme.background,
+        foreground: theme.foreground,
+        cursor: theme.cursor,
+        selection: theme.selection,
+        ansi: [
+          theme.black,
+          theme.red,
+          theme.green,
+          theme.yellow,
+          theme.blue,
+          theme.magenta,
+          theme.cyan,
+          theme.white,
+          theme.brightBlack,
+          theme.brightRed,
+          theme.brightGreen,
+          theme.brightYellow,
+          theme.brightBlue,
+          theme.brightMagenta,
+          theme.brightCyan,
+          theme.brightWhite,
+        ],
+      );
 }
 
 /// The resolved terminal look for one build: the text style and the palette.
@@ -96,7 +176,10 @@ class TerminalAppearance {
   ///
   /// An empty [AppSettings.terminalFontFamily] means "use the app's own
   /// monospace stack" ([SeanceTheme.monoFallback]) rather than xterm's, so the
-  /// terminal matches the code shown elsewhere in the app.
+  /// terminal matches the code shown elsewhere in the app. Following the app,
+  /// the colours are the theme's own terminal colours when its palette
+  /// ([AppSettings.themePalette]) has them; the two pinned choices keep the
+  /// built-in palettes whatever the theme says.
   factory TerminalAppearance.resolve(
     AppSettings settings,
     Brightness brightness,
@@ -114,9 +197,10 @@ class TerminalAppearance {
       theme: switch (settings.terminalPalette) {
         TerminalPalette.alwaysDark => SeanceTerminalThemes.dark,
         TerminalPalette.alwaysLight => SeanceTerminalThemes.light,
-        TerminalPalette.followApp => brightness == Brightness.dark
-            ? SeanceTerminalThemes.dark
-            : SeanceTerminalThemes.light,
+        TerminalPalette.followApp => switch (settings.themePalette.terminal) {
+          final colors? => SeanceTerminalThemes.fromColors(colors),
+          null => SeanceTerminalThemes.builtIn(brightness),
+        },
       },
     );
   }

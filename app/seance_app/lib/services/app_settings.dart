@@ -5,6 +5,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:seance_core/seance_core.dart';
 
+import '../theme/app_appearance.dart';
+import '../theme/theme_palette.dart';
+import '../theme/theme_presets.dart';
 import '../ui/server_list_density.dart';
 import '../ui/terminal_appearance.dart';
 import 'atomic_file.dart';
@@ -215,6 +218,16 @@ class AppSettings {
   String terminalFontFamily;
   TerminalPalette terminalPalette;
 
+  /// The app's theme. Device-local like the terminal's appearance and for
+  /// the same reason: a theme is chosen for the screen and the room in
+  /// front of you, so it never syncs — and a theme is the one setting
+  /// people paste to each other, which the Appearance tab's Copy and Paste
+  /// already carry between devices on request.
+  ThemePalette themePalette;
+
+  /// What the palette's Automatic colours follow.
+  ThemeModePreference themeMode;
+
   /// Stable per-device id used in synced records' conflict resolution.
   String deviceId;
 
@@ -254,9 +267,12 @@ class AppSettings {
     this.terminalFontSize = kDefaultTerminalFontSize,
     this.terminalFontFamily = '',
     this.terminalPalette = TerminalPalette.followApp,
+    ThemePalette? themePalette,
+    this.themeMode = ThemeModePreference.system,
     this.deviceId = '',
     this.snippetsSeeded = false,
   }) : editorRegistry = editorRegistry ?? EditorRegistry(),
+       themePalette = themePalette ?? ThemePresets.initial,
        remotePathBookmarks = remotePathBookmarks ?? {},
        remoteShowHidden = remoteShowHidden ?? {},
        identityFileBookmarks = identityFileBookmarks ?? {},
@@ -310,6 +326,8 @@ class AppSettings {
     'terminalFontSize': terminalFontSize,
     'terminalFontFamily': terminalFontFamily,
     'terminalPalette': terminalPalette.name,
+    'themePalette': themePalette.toJson(),
+    'themeMode': themeMode.name,
     'deviceId': deviceId,
     'snippetsSeeded': snippetsSeeded,
   };
@@ -363,6 +381,13 @@ class AppSettings {
     terminalPalette: TerminalPalette.values.firstWhere(
       (p) => p.name == json['terminalPalette'],
       orElse: () => TerminalPalette.followApp,
+    ),
+    // Lenient all the way down: a hand-edited theme costs at most its own
+    // bad values, never the rest of the settings file.
+    themePalette: ThemePalette.decodeStored(json['themePalette']),
+    themeMode: ThemeModePreference.values.firstWhere(
+      (m) => m.name == json['themeMode'],
+      orElse: () => ThemeModePreference.system,
     ),
     deviceId: json['deviceId'] as String? ?? '',
     snippetsSeeded: json['snippetsSeeded'] as bool? ?? false,
