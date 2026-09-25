@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- On phones and tablets, the server filter field is full height again
+  instead of a thin strip above an empty gap, and compact server rows
+  are 40 dp instead of 48.
 - Tabs switch in place. Settings, the side panel and the server mark
   picker showed the new tab by scrolling the content sideways to it, and
   a sideways swipe or trackpad scroll flipped between tabs. The new tab
