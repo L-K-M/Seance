@@ -992,7 +992,7 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
                         ),
                         SizedBox(width: list ? 8 : 4),
                       ],
-                      if (widget.collapsed || comfortable) ...[
+                      if (widget.collapsed || comfortable || touch) ...[
                         count,
                         SizedBox(width: list ? 8 : 4),
                       ],
