@@ -148,7 +148,7 @@ void main() {
 
     expect(find.byType(ServerListPane), findsOneWidget);
     expect(tester.widget<TextField>(field).controller?.text, 'bo');
-    expect(find.text('1 of 1'), findsOneWidget);
+    expect(find.text('1 of 1 · ↵ opens the first'), findsOneWidget);
   });
 
   testWidgets('system back on the server list is left to the platform', (

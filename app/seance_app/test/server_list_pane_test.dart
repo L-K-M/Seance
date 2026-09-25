@@ -339,22 +339,38 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(rendered(tester), ['b']);
-      expect(find.text('1 of 8'), findsOneWidget);
+      expect(find.text('1 of 8 · ↵ opens the first'), findsOneWidget);
     });
 
-    testWidgets('the filter shows at eight servers, not before', (
-      tester,
-    ) async {
+    testWidgets('the filter shows at five servers, not before', (tester) async {
       final field = find.byKey(const ValueKey('servers.filter.field'));
       await boot(tester, [
-        for (final name in ['a', 'b', 'c', 'd', 'e', 'f', 'g']) server(name),
+        for (final name in ['a', 'b', 'c', 'd']) server(name),
       ]);
       await pumpRail(tester);
       expect(field, findsNothing);
 
-      await tester.runAsync(() => state!.saveServer(server('h')));
+      await tester.runAsync(() => state!.saveServer(server('e')));
       await tester.pumpAndSettle();
       expect(field, findsOneWidget);
+    });
+
+    testWidgets('the count says what Enter does, and only when there is '
+        'something to open', (tester) async {
+      await boot(tester, [
+        for (final name in ['alpha', 'bravo', 'charlie', 'delta', 'echo'])
+          server(name),
+      ]);
+      await pumpRail(tester);
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+
+      await tester.enterText(field, 'ha');
+      await tester.pumpAndSettle();
+      expect(find.text('2 of 5 · ↵ opens the first'), findsOneWidget);
+
+      await tester.enterText(field, 'zzz');
+      await tester.pumpAndSettle();
+      expect(find.text('0 of 5'), findsOneWidget);
     });
 
     for (final platform in [TargetPlatform.macOS, TargetPlatform.linux]) {

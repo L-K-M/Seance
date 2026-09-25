@@ -61,9 +61,12 @@ class ServerListPane extends StatefulWidget {
   });
 
   /// Below this many servers the list is short enough to read at a glance
-  /// and the filter would just be chrome (10 §5). The field still shows while
-  /// a query is live, and on demand through [revealFilter].
-  static const int filterThreshold = 8;
+  /// and the filter would just be chrome. Five, as both sibling apps had it
+  /// before the kit (and Poltergeist again now), so a phone with a handful
+  /// of servers, which has no chord to reveal the field, still gets one.
+  /// The field still shows while a query is live, and on demand through
+  /// [revealFilter].
+  static const int filterThreshold = 5;
 
   static final List<_ServerListPaneState> _mounted = [];
 
@@ -333,9 +336,13 @@ class _ServerListPaneState extends State<ServerListPane> {
             // A no-op on an empty query, so Enter in an empty field cannot
             // connect to whichever server is first.
             onSubmitted: _openFirstMatch,
+            // Enter opens nothing without a match, so the hint is only
+            // offered when it would.
             countText: _query.isEmpty
                 ? null
-                : '${matches.length} of ${servers.length}',
+                : matches.isEmpty
+                ? '0 of ${servers.length}'
+                : '${matches.length} of ${servers.length} · ↵ opens the first',
           ),
         Expanded(child: list),
         if (!_home)
