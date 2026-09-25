@@ -307,6 +307,67 @@ void main() {
     });
   });
 
+  group('hiddenByHeader', () {
+    final servers = [
+      _server('loose'),
+      _server('db', group: 'Production'),
+      _server('web', group: 'Production'),
+      _server('ci', group: 'Build'),
+      _server('star'),
+    ];
+    final pins = {'star'};
+    final all = groupServers(servers, pinnedIds: pins);
+    final production = serverGroupKey('Production');
+    final build = serverGroupKey('Build');
+
+    Map<String, List<String>> hidden(
+      List<ServerConfig> shown, {
+      Set<String> collapsed = const {},
+    }) => {
+      for (final MapEntry(:key, :value) in hiddenByHeader(
+        sections: all,
+        rows: serverListRows(
+          sections: groupServers(shown, pinnedIds: pins),
+          collapsedKeys: collapsed,
+        ),
+      ).entries)
+        key: _labels(value),
+    };
+
+    test('nothing folded or filtered hides nothing', () {
+      expect(hidden(servers), isEmpty);
+    });
+
+    test('a folded group hides its members under its own row, not also '
+        'under SERVERS', () {
+      expect(hidden(servers, collapsed: {production}), {
+        production: ['db', 'web'],
+      });
+    });
+
+    test('a folded section hides everything under it, groups included', () {
+      expect(hidden(servers, collapsed: {kServersKey, kPinnedKey}), {
+        kPinnedKey: ['star'],
+        kServersKey: ['loose', 'ci', 'db', 'web'],
+      });
+    });
+
+    test('a filtered-out server goes to the nearest header left on screen, '
+        'or nowhere', () {
+      // "web" shares Production with a match; "ci" is alone in Build, whose
+      // row the filter drops, so SERVERS holds it; "star" has no PINNED
+      // header left to hold it.
+      final matches = servers
+          .where((s) => s.label == 'db' || s.label == 'loose')
+          .toList();
+      expect(hidden(matches), {
+        production: ['web'],
+        kServersKey: ['ci'],
+      });
+      expect(hidden(matches).containsKey(build), isFalse);
+    });
+  });
+
   group('existingServerGroups', () {
     test('lists each group once, sorted, in its first spelling', () {
       final groups = existingServerGroups([

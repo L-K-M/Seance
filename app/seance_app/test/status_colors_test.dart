@@ -53,7 +53,9 @@ void main() {
   // rail's surfaces: the rail itself, its hover fill, and the selection pill
   // of the focused session's server — and on the phone home's page surface.
   // The dot is ringed in whatever is behind it, so the dot's colour meets
-  // exactly these.
+  // exactly these. The same pairs cover the rest the rows draw from these
+  // colours: a blocked dot's bar is cut out of the red in the surface's
+  // own colour, and the connected ring is the green on the surface.
   for (final platform in [TargetPlatform.macOS, TargetPlatform.android]) {
     for (final brightness in Brightness.values) {
       final theme = brightness == Brightness.dark

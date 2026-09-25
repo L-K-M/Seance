@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-import 'package:dartssh2/dartssh2.dart' show SSHAuthFailError;
+import 'package:dartssh2/dartssh2.dart'
+    show SSHAuthAbortError, SSHAuthFailError, SSHHostkeyError;
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
 
@@ -46,6 +47,35 @@ void main() {
       }
       expect(log.lines.length, lessThanOrEqualTo(400));
       expect(log.lines.last, 'line 999'); // newest kept
+    });
+  });
+
+  group('SshConnectException', () {
+    test('isHostKeyRefusal names a refused host key and nothing else', () {
+      SshConnectException failure(Object cause) =>
+          SshConnectException('failed', cause, SshConnectionLog());
+      // dartssh2 raises this when the verify callback says no, and hands it
+      // on as the reason of an authentication abort (see
+      // ssh_host_key_refusal_test.dart for the real handshake).
+      final refused = SSHHostkeyError('Hostkey verification failed');
+      expect(failure(refused).isHostKeyRefusal, isTrue);
+      expect(
+        failure(
+          SSHAuthAbortError('Connection closed before authentication', refused),
+        ).isHostKeyRefusal,
+        isTrue,
+      );
+      expect(
+        failure(
+          SSHAuthAbortError('Connection closed before authentication'),
+        ).isHostKeyRefusal,
+        isFalse,
+      );
+      expect(failure(SSHAuthFailError('denied')).isHostKeyRefusal, isFalse);
+      expect(
+        failure(Exception('Connection refused')).isHostKeyRefusal,
+        isFalse,
+      );
     });
   });
 

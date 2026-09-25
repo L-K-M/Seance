@@ -23,33 +23,62 @@ final _strings = SidebarKitStrings(
   addMenu: 'kit-add',
   settings: 'kit-settings',
   rowMenu: 'kit-more',
+  compactRows: 'kit-compact',
+  comfortableRows: 'kit-comfortable',
 );
+
+/// The production theme the kit paints under, for [brightness] on
+/// [platform] (a sibling's copy of this file names its own here).
+ThemeData _theme(Brightness brightness, TargetPlatform platform) =>
+    brightness == Brightness.dark
+    ? SeanceTheme.dark(platform: platform)
+    : SeanceTheme.light(platform: platform);
 
 Future<void> _pump(
   WidgetTester tester,
   Widget child, {
   TargetPlatform platform = TargetPlatform.macOS,
+  Brightness brightness = Brightness.light,
   Color? background,
+  SidebarKitLayout layout = SidebarKitLayout.rail,
+  SidebarKitDensity? density,
+  double width = 240,
 }) async {
   tester.view.physicalSize = const Size(600, 600);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
     MaterialApp(
-      theme: SeanceTheme.light(platform: platform),
+      theme: _theme(brightness, platform),
       home: Scaffold(
         body: SidebarKitScope(
           strings: _strings,
           background: background,
+          layout: layout,
+          // The kit defaults to comfortable; most of this file pins the
+          // compact rail's one-line anatomy, so compact unless asked (a
+          // list is comfortable by definition).
+          density:
+              density ??
+              (layout == SidebarKitLayout.list
+                  ? SidebarKitDensity.comfortable
+                  : SidebarKitDensity.compact),
           child: Align(
             alignment: Alignment.topLeft,
-            child: SizedBox(width: 240, child: child),
+            child: SizedBox(width: width, child: child),
           ),
         ),
       ),
     ),
   );
   await tester.pumpAndSettle();
+}
+
+/// WCAG contrast between two opaque colours.
+double _contrast(Color a, Color b) {
+  final (la, lb) = (a.computeLuminance(), b.computeLuminance());
+  final (hi, lo) = la > lb ? (la, lb) : (lb, la);
+  return (hi + 0.05) / (lo + 0.05);
 }
 
 Future<TestGesture> _hover(WidgetTester tester, Finder target) async {
@@ -400,9 +429,8 @@ void main() {
       expect((dot.border! as Border).top.color, surface);
     });
 
-    testWidgets('a subtitle adds a second line; a trailing icon shows', (
-      tester,
-    ) async {
+    testWidgets('a comfortable subtitle adds a second line; a trailing icon '
+        'shows', (tester) async {
       await _pump(
         tester,
         const SidebarRow(
@@ -413,11 +441,12 @@ void main() {
           trailingIcon: Icons.cloud_off_outlined,
           trailingText: '×2',
         ),
+        density: SidebarKitDensity.comfortable,
       );
       expect(find.text('deploy@demo:22'), findsOneWidget);
       expect(find.byIcon(Icons.cloud_off_outlined), findsOneWidget);
       expect(find.text('×2'), findsOneWidget);
-      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 40);
+      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 52);
     });
 
     testWidgets('the menu button opens the menu on desktop', (tester) async {
@@ -646,6 +675,9 @@ void main() {
         ),
       );
       expect(chevron.visible, isTrue);
+      // The count stays drawn too, expanded or not: compact touch keeps
+      // all three in view, as comfortable does.
+      expect(find.text('3'), findsOneWidget);
       expect(tester.getSize(find.byKey(const ValueKey('h'))).height, 40);
     });
   });
@@ -854,6 +886,128 @@ void main() {
       expect(addShown(), isFalse);
     });
 
+    // D33 draws every comfortable or touch row's "⋮", and a focused row
+    // draws its hover action: both are Tab's stops after their row, as a
+    // header's "+" is, but not the arrows', which walk rows and headers.
+    for (final (density, platform) in [
+      (SidebarKitDensity.comfortable, TargetPlatform.macOS),
+      (SidebarKitDensity.comfortable, TargetPlatform.android),
+      (SidebarKitDensity.compact, TargetPlatform.android),
+      (SidebarKitDensity.compact, TargetPlatform.macOS),
+    ]) {
+      final menuShown =
+          density == SidebarKitDensity.comfortable ||
+          platform == TargetPlatform.android;
+      testWidgets('the arrows walk rows past their buttons, which Tab '
+          'reaches (${density.name}, ${platform.name})', (tester) async {
+        Widget row(String name) => SidebarRow(
+          key: ValueKey(name),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: name,
+          onActivate: (_) {},
+          hoverAction: SidebarRowAction(
+            key: ValueKey('$name.action'),
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () {},
+          ),
+          menuEntries: () => [
+            SidebarMenuAction(label: 'kit-rename', onSelected: () {}),
+          ],
+        );
+        await _pump(
+          tester,
+          Column(children: [row('alpha'), row('beta'), row('gamma')]),
+          platform: platform,
+          density: density,
+        );
+        // The row's own node: the one its menu anchor sits under.
+        FocusNode rowNode(String name) => Focus.of(
+          tester.element(
+            find.descendant(
+              of: find.byKey(ValueKey(name)),
+              matching: find.byType(MenuAnchor),
+            ),
+          ),
+        );
+        FocusNode buttonNode(String name, IconData icon) => Focus.of(
+          tester.element(
+            find.descendant(
+              of: find.byKey(ValueKey(name)),
+              matching: find.byIcon(icon),
+            ),
+          ),
+        );
+
+        rowNode('alpha').requestFocus();
+        await tester.pump();
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(rowNode('gamma').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        expect(rowNode('alpha').hasPrimaryFocus, isTrue);
+
+        // Tab steps through the row's buttons, then on to the next row;
+        // Shift+Tab steps back through them.
+        await press(tester, LogicalKeyboardKey.tab);
+        expect(buttonNode('alpha', Icons.eject).hasPrimaryFocus, isTrue);
+        if (menuShown) {
+          await press(tester, LogicalKeyboardKey.tab);
+          expect(buttonNode('alpha', Icons.more_vert).hasPrimaryFocus, isTrue);
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          await press(tester, LogicalKeyboardKey.tab);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+          expect(buttonNode('alpha', Icons.eject).hasPrimaryFocus, isTrue);
+          await press(tester, LogicalKeyboardKey.tab);
+        }
+        await press(tester, LogicalKeyboardKey.tab);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+
+        // From a button the arrows rejoin the walk: ↑ to its row, ↓ on
+        // to the next.
+        await press(tester, LogicalKeyboardKey.tab);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.tab);
+        if (menuShown) await press(tester, LogicalKeyboardKey.tab);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(rowNode('gamma').hasPrimaryFocus, isTrue);
+      });
+    }
+
+    testWidgets('a clicked row still hands Tab to the hover action it '
+        'draws only for the keyboard', (tester) async {
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: 'alpha',
+          onActivate: (_) {},
+          hoverAction: SidebarRowAction(
+            key: const ValueKey('r.action'),
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () {},
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('r')));
+      await tester.pump();
+      // The pointer is gone and the click drew no ring, so the action is
+      // not drawn until the key arrives.
+      expect(find.byKey(const ValueKey('r.action')), findsNothing);
+      await press(tester, LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(
+        Focus.of(tester.element(find.byIcon(Icons.eject))).hasPrimaryFocus,
+        isTrue,
+      );
+    });
+
   });
 
   // A row's verbs have to reach a screen reader, which has no pointer to
@@ -953,6 +1107,942 @@ void main() {
       expect(find.text('kit-rename'), findsOneWidget);
       expect(find.semantics.byLabel('kit-rename'), findsOne);
       semantics.dispose();
+    });
+  });
+
+  // The two views: compact is the one-line rail the kit shipped with,
+  // comfortable the roomy two-line rows both apps drew before it.
+  group('density', () {
+    /// A mark that fills the slot the kit reserves, and reports the glyph
+    /// size the kit hands a bare icon.
+    double? glyph;
+    Widget probe() => Builder(
+      builder: (context) {
+        glyph = sidebarGlyphSize(context);
+        return SizedBox.square(
+          key: const ValueKey('mark'),
+          dimension: sidebarMarkExtent(context),
+        );
+      },
+    );
+
+    Finder titleOf(String key) => find.descendant(
+      of: find.byKey(ValueKey(key)),
+      matching: find.byType(MiddleEllipsisText),
+    );
+
+    testWidgets('the scope defaults to comfortable and tells its dependents '
+        'when the density changes', (tester) async {
+      final seen = <SidebarKitDensity>[];
+      // One instance across both pumps: only the scope's notification can
+      // rebuild it.
+      final dependent = Builder(
+        builder: (context) {
+          seen.add(SidebarKitScope.densityOf(context));
+          return const SizedBox();
+        },
+      );
+      await tester.pumpWidget(
+        SidebarKitScope(strings: _strings, child: dependent),
+      );
+      expect(seen, [SidebarKitDensity.comfortable]);
+      await tester.pumpWidget(
+        SidebarKitScope(
+          strings: _strings,
+          density: SidebarKitDensity.compact,
+          child: dependent,
+        ),
+      );
+      expect(seen, [SidebarKitDensity.comfortable, SidebarKitDensity.compact]);
+    });
+
+    test('a list is comfortable by definition', () {
+      expect(
+        () => SidebarKitScope(
+          strings: _strings,
+          layout: SidebarKitLayout.list,
+          density: SidebarKitDensity.compact,
+          child: const SizedBox(),
+        ),
+        throwsAssertionError,
+      );
+      expect(
+        sidebarHomeLayout(SidebarKitDensity.comfortable),
+        SidebarKitLayout.list,
+      );
+      expect(
+        sidebarHomeLayout(SidebarKitDensity.compact),
+        SidebarKitLayout.rail,
+      );
+    });
+
+    testWidgets('comfortable desktop rows are roomy: 52 px, a 32 px mark, a '
+        '14 px title over a 12 px second line', (tester) async {
+      await _pump(
+        tester,
+        Column(
+          children: [
+            SidebarRow(
+              key: const ValueKey('two'),
+              mark: probe(),
+              title: 'demo',
+              subtitle: 'deploy@demo',
+            ),
+            const SidebarRow(
+              key: ValueKey('one'),
+              mark: Icon(Icons.dns_outlined),
+              title: 'bare',
+            ),
+          ],
+        ),
+        density: SidebarKitDensity.comfortable,
+      );
+      expect(tester.getSize(find.byKey(const ValueKey('two'))).height, 52);
+      // Every comfortable row is one height, second line or not.
+      expect(tester.getSize(find.byKey(const ValueKey('one'))).height, 52);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('mark'))),
+        const Size(32, 32),
+      );
+      expect(glyph, 20);
+      expect(
+        tester.widget<MiddleEllipsisText>(titleOf('two')).style?.fontSize,
+        14,
+      );
+      expect(tester.widget<Text>(find.text('deploy@demo')).style?.fontSize, 12);
+      // The second line sits under the title, not beside it.
+      expect(
+        tester.getTopLeft(find.text('deploy@demo')).dy,
+        greaterThanOrEqualTo(tester.getBottomLeft(titleOf('two')).dy),
+      );
+    });
+
+    testWidgets('compact desktop rows stay one 26 px line: an 18 px mark, a '
+        '13 px title, and no second line even when a host passes one', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: probe(),
+          title: 'demo',
+          subtitle: 'deploy@demo',
+        ),
+      );
+      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 26);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('mark'))),
+        const Size(18, 18),
+      );
+      expect(glyph, 16);
+      expect(
+        tester.widget<MiddleEllipsisText>(titleOf('r')).style?.fontSize,
+        13,
+      );
+      expect(find.text('deploy@demo'), findsNothing);
+    });
+
+    testWidgets('a touch rail follows the density too', (tester) async {
+      for (final (density, extent, mark, glyphSize, twoLines) in [
+        (SidebarKitDensity.comfortable, 56.0, 32.0, 22.0, true),
+        (SidebarKitDensity.compact, 48.0, 24.0, 20.0, false),
+      ]) {
+        await _pump(
+          tester,
+          SidebarRow(
+            key: const ValueKey('r'),
+            mark: probe(),
+            title: 'demo',
+            subtitle: 'deploy@demo',
+          ),
+          platform: TargetPlatform.android,
+          density: density,
+        );
+        final reason = density.name;
+        expect(
+          tester.getSize(find.byKey(const ValueKey('r'))).height,
+          extent,
+          reason: reason,
+        );
+        expect(
+          tester.getSize(find.byKey(const ValueKey('mark'))),
+          Size(mark, mark),
+          reason: reason,
+        );
+        expect(glyph, glyphSize, reason: reason);
+        expect(
+          find.text('deploy@demo'),
+          twoLines ? findsOneWidget : findsNothing,
+          reason: reason,
+        );
+      }
+    });
+
+    testWidgets('the "⋮" follows the density unless the host says '
+        'otherwise: comfortable or touch draws it', (tester) async {
+      Widget row({bool? showMenuButton}) => SidebarRow(
+        mark: const Icon(Icons.dns_outlined),
+        title: 'demo',
+        showMenuButton: showMenuButton,
+        menuEntries: () => [
+          SidebarMenuAction(label: 'kit-open', onSelected: () {}),
+        ],
+      );
+      for (final (platform, density, shown) in [
+        (TargetPlatform.macOS, SidebarKitDensity.compact, false),
+        (TargetPlatform.macOS, SidebarKitDensity.comfortable, true),
+        (TargetPlatform.android, SidebarKitDensity.compact, true),
+        (TargetPlatform.android, SidebarKitDensity.comfortable, true),
+      ]) {
+        await _pump(tester, row(), platform: platform, density: density);
+        expect(
+          find.byTooltip('kit-more'),
+          shown ? findsOneWidget : findsNothing,
+          reason: '$platform ${density.name}',
+        );
+      }
+      await _pump(
+        tester,
+        row(showMenuButton: false),
+        density: SidebarKitDensity.comfortable,
+      );
+      expect(find.byTooltip('kit-more'), findsNothing);
+      await _pump(tester, row(showMenuButton: true));
+      expect(find.byTooltip('kit-more'), findsOneWidget);
+    });
+
+    testWidgets('the accent is a 4 px rounded line leading the mark, in both '
+        'densities, and moves nothing', (tester) async {
+      const accent = Color(0xFF00897B);
+      Finder line(String key) => find.descendant(
+        of: find.byKey(ValueKey(key)),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is DecoratedBox &&
+              widget.decoration is BoxDecoration &&
+              (widget.decoration as BoxDecoration).color == accent,
+        ),
+      );
+      for (final (density, extent) in [
+        (SidebarKitDensity.compact, 18.0),
+        (SidebarKitDensity.comfortable, 32.0),
+      ]) {
+        await _pump(
+          tester,
+          Column(
+            children: [
+              SidebarRow(
+                key: const ValueKey('a'),
+                mark: probe(),
+                title: 'accented',
+                accent: accent,
+                depth: 1,
+              ),
+              const SidebarRow(
+                key: ValueKey('b'),
+                mark: Icon(Icons.dns_outlined),
+                title: 'plain',
+                depth: 1,
+              ),
+            ],
+          ),
+          density: density,
+        );
+        final reason = density.name;
+        expect(line('a'), findsOneWidget, reason: reason);
+        expect(line('b'), findsNothing, reason: reason);
+        expect(tester.getSize(line('a')), Size(4, extent), reason: reason);
+        final decoration =
+            tester.widget<DecoratedBox>(line('a')).decoration as BoxDecoration;
+        expect(decoration.borderRadius, BorderRadius.circular(2));
+        final mark = find.byKey(const ValueKey('mark'));
+        // Leading the mark, level with it, inside the row's pill.
+        expect(
+          tester.getTopRight(line('a')).dx,
+          lessThan(tester.getTopLeft(mark).dx),
+          reason: reason,
+        );
+        expect(
+          tester.getCenter(line('a')).dy,
+          tester.getCenter(mark).dy,
+          reason: reason,
+        );
+        expect(
+          tester.getTopLeft(line('a')).dx,
+          greaterThanOrEqualTo(6),
+          reason: reason,
+        );
+        // A coloured row and a plain one keep one column of titles.
+        expect(
+          tester.getTopLeft(titleOf('a')).dx,
+          tester.getTopLeft(titleOf('b')).dx,
+          reason: reason,
+        );
+      }
+    });
+
+    testWidgets('the connected ring frames the mark in both densities, '
+        'sized to each, and moves nothing', (tester) async {
+      const green = Color(0xFF2E7D32);
+      Finder ring(String key) => find.descendant(
+        of: find.byKey(ValueKey(key)),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is DecoratedBox &&
+              widget.decoration is BoxDecoration &&
+              (widget.decoration as BoxDecoration).color == null &&
+              ((widget.decoration as BoxDecoration).border as Border?)
+                      ?.top
+                      .color ==
+                  green,
+        ),
+      );
+      for (final (density, layout, platform, outer, stroke, shape) in [
+        (
+          SidebarKitDensity.compact,
+          SidebarKitLayout.rail,
+          TargetPlatform.macOS,
+          23.0,
+          1.5,
+          BoxShape.rectangle,
+        ),
+        (
+          SidebarKitDensity.comfortable,
+          SidebarKitLayout.rail,
+          TargetPlatform.macOS,
+          40.0,
+          2.0,
+          BoxShape.rectangle,
+        ),
+        (
+          SidebarKitDensity.comfortable,
+          SidebarKitLayout.list,
+          TargetPlatform.android,
+          48.0,
+          2.0,
+          BoxShape.circle,
+        ),
+      ]) {
+        await _pump(
+          tester,
+          Column(
+            children: [
+              SidebarRow(
+                key: const ValueKey('a'),
+                mark: probe(),
+                title: 'up',
+                markRing: green,
+                status: const SidebarStatusDot(green),
+              ),
+              const SidebarRow(
+                key: ValueKey('b'),
+                mark: Icon(Icons.dns_outlined),
+                title: 'down',
+              ),
+            ],
+          ),
+          platform: platform,
+          layout: layout,
+          density: density,
+        );
+        final reason = '${layout.name} ${density.name}';
+        expect(ring('a'), findsOneWidget, reason: reason);
+        expect(ring('b'), findsNothing, reason: reason);
+        expect(tester.getSize(ring('a')), Size(outer, outer), reason: reason);
+        expect(
+          tester.getCenter(ring('a')),
+          tester.getCenter(find.byKey(const ValueKey('mark'))),
+          reason: reason,
+        );
+        final decoration =
+            tester.widget<DecoratedBox>(ring('a')).decoration as BoxDecoration;
+        expect(
+          (decoration.border! as Border).top.width,
+          stroke,
+          reason: reason,
+        );
+        expect(decoration.shape, shape, reason: reason);
+        expect(
+          tester.getTopLeft(titleOf('a')).dx,
+          tester.getTopLeft(titleOf('b')).dx,
+          reason: reason,
+        );
+      }
+    });
+
+    testWidgets('a blocked dot is the no-entry sign: the solid dot crossed by '
+        'a bar cut out of it, at 3:1 on the rail and on the pill', (
+      tester,
+    ) async {
+      for (final brightness in Brightness.values) {
+        for (final selected in [false, true]) {
+          late Color error;
+          await _pump(
+            tester,
+            Builder(
+              builder: (context) {
+                error = Theme.of(context).colorScheme.error;
+                return SidebarRow(
+                  key: const ValueKey('r'),
+                  mark: const Icon(Icons.dns_outlined, size: 16),
+                  title: 'demo',
+                  selected: selected,
+                  status: SidebarStatusDot(
+                    error,
+                    style: SidebarDotStyle.blocked,
+                  ),
+                );
+              },
+            ),
+            brightness: brightness,
+          );
+          final reason = '${brightness.name}${selected ? ', selected' : ''}';
+          final dotFinder = find.descendant(
+            of: find.byKey(const ValueKey('r')),
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is Container &&
+                  widget.decoration is BoxDecoration &&
+                  (widget.decoration as BoxDecoration).shape ==
+                      BoxShape.circle &&
+                  (widget.decoration as BoxDecoration).color == error,
+            ),
+          );
+          expect(dotFinder, findsOneWidget, reason: reason);
+          final dot = tester.widget<Container>(dotFinder);
+          final cutOut =
+              ((dot.decoration! as BoxDecoration).border! as Border).top.color;
+          final barFinder = find.descendant(
+            of: dotFinder,
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is DecoratedBox &&
+                  widget.decoration is BoxDecoration &&
+                  (widget.decoration as BoxDecoration).color == cutOut,
+            ),
+          );
+          expect(barFinder, findsOneWidget, reason: reason);
+          final bar = tester.getSize(barFinder);
+          expect(bar.width, greaterThan(bar.height * 2), reason: reason);
+          expect(
+            _contrast(error, cutOut),
+            greaterThanOrEqualTo(3),
+            reason: reason,
+          );
+        }
+      }
+
+      // A failed dot is the plain disc: nothing crosses it.
+      await _pump(
+        tester,
+        const SidebarRow(
+          key: ValueKey('r'),
+          mark: Icon(Icons.dns_outlined, size: 16),
+          title: 'demo',
+          status: SidebarStatusDot(Colors.red),
+        ),
+      );
+      final solid = tester.widget<Container>(
+        find.descendant(
+          of: find.byKey(const ValueKey('r')),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Container &&
+                widget.decoration is BoxDecoration &&
+                (widget.decoration as BoxDecoration).color == Colors.red,
+          ),
+        ),
+      );
+      expect(solid.child, isNull);
+    });
+
+    testWidgets('the long-press sheet shows the subtitle under its title, '
+        'whatever the row draws', (tester) async {
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined),
+          title: 'demo',
+          subtitle: 'deploy@demo',
+          onActivate: (_) {},
+          menuEntries: () => [
+            SidebarMenuAction(label: 'kit-open', onSelected: () {}),
+          ],
+        ),
+        platform: TargetPlatform.android,
+      );
+      // Compact touch rows draw no second line: the sheet is where a
+      // finger gets the fact a pointer reads from the tooltip.
+      expect(find.text('deploy@demo'), findsNothing);
+      await tester.longPress(find.byKey(const ValueKey('r')));
+      await tester.pumpAndSettle();
+      final sheet = find.byType(BottomSheet);
+      expect(sheet, findsOneWidget);
+      final title = find.descendant(of: sheet, matching: find.text('demo'));
+      final subtitle = find.descendant(
+        of: sheet,
+        matching: find.text('deploy@demo'),
+      );
+      expect(subtitle, findsOneWidget);
+      expect(
+        tester.getTopLeft(subtitle).dy,
+        greaterThanOrEqualTo(tester.getBottomLeft(title).dy),
+      );
+      expect(
+        tester.getBottomLeft(subtitle).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.text('kit-open')).dy),
+      );
+    });
+  });
+
+  group('SidebarSectionHeader density', () {
+    Visibility visibilityOf(WidgetTester tester, Finder finder) =>
+        tester.widget<Visibility>(
+          find.ancestor(of: finder, matching: find.byType(Visibility)).first,
+        );
+
+    testWidgets('comfortable headers keep the chevron, the count and the + '
+        'drawn', (tester) async {
+      Widget header({bool nested = false}) => SidebarSectionHeader(
+        title: 'Servers',
+        count: 3,
+        collapsed: false,
+        nested: nested,
+        onToggle: () {},
+        onAdd: nested ? null : () {},
+        addKey: const ValueKey('add'),
+      );
+      await _pump(tester, header(), density: SidebarKitDensity.comfortable);
+      expect(find.text('3'), findsOneWidget);
+      expect(
+        visibilityOf(tester, find.byIcon(Icons.expand_more)).visible,
+        isTrue,
+      );
+      expect(
+        visibilityOf(tester, find.byKey(const ValueKey('add'))).visible,
+        isTrue,
+      );
+
+      await _pump(
+        tester,
+        header(nested: true),
+        density: SidebarKitDensity.comfortable,
+      );
+      expect(find.text('3'), findsOneWidget);
+
+      // Compact hides them at rest (hover, focus and a folded section
+      // draw them again), so these check Visibility, not absence.
+      await _pump(tester, header(), density: SidebarKitDensity.compact);
+      expect(find.text('3'), findsNothing);
+      expect(
+        visibilityOf(tester, find.byIcon(Icons.expand_more)).visible,
+        isFalse,
+      );
+      expect(
+        visibilityOf(tester, find.byKey(const ValueKey('add'))).visible,
+        isFalse,
+      );
+    });
+
+    testWidgets('a header carries a status dot for rows it hides', (
+      tester,
+    ) async {
+      const green = Color(0xFF2E7D32);
+      Iterable<Container> dots(WidgetTester tester) => tester
+          .widgetList<Container>(
+            find.descendant(
+              of: find.byType(SidebarSectionHeader),
+              matching: find.byType(Container),
+            ),
+          )
+          .where(
+            (box) =>
+                box.decoration is BoxDecoration &&
+                (box.decoration! as BoxDecoration).shape == BoxShape.circle &&
+                (box.decoration! as BoxDecoration).color == green,
+          );
+      for (final nested in [false, true]) {
+        await _pump(
+          tester,
+          SidebarSectionHeader(
+            title: 'Production',
+            count: 3,
+            collapsed: true,
+            nested: nested,
+            onToggle: () {},
+            status: const SidebarStatusDot(green),
+          ),
+        );
+        expect(dots(tester), hasLength(1), reason: 'nested: $nested');
+        // Beside the count it summarises, after the title.
+        expect(
+          tester.getTopLeft(find.byWidget(dots(tester).single)).dx,
+          greaterThanOrEqualTo(
+            tester
+                .getTopRight(
+                  find.textContaining(
+                    RegExp('production', caseSensitive: false),
+                  ),
+                )
+                .dx,
+          ),
+        );
+      }
+      await _pump(
+        tester,
+        SidebarSectionHeader(
+          title: 'Production',
+          count: 3,
+          collapsed: true,
+          onToggle: () {},
+        ),
+      );
+      expect(dots(tester), isEmpty);
+    });
+  });
+
+  group('SidebarDensitySwitch', () {
+    testWidgets('two halves in one capsule: the current one selected and '
+        'filled, a tap on the other reports it', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final picked = <SidebarKitDensity>[];
+      await _pump(tester, SidebarDensitySwitch(onChanged: picked.add));
+      expect(find.byIcon(Icons.density_small), findsOneWidget);
+      expect(find.byIcon(Icons.density_medium), findsOneWidget);
+
+      // The node a screen reader lands on: the half's merged one.
+      SemanticsData half(String tooltip) => find.semantics
+          .byPredicate(
+            (node) =>
+                !node.isMergedIntoParent &&
+                node.getSemanticsData().tooltip == tooltip,
+          )
+          .evaluate()
+          .single
+          .getSemanticsData();
+      final compact = half('kit-compact');
+      final comfortable = half('kit-comfortable');
+      expect(compact.flagsCollection.isButton, isTrue);
+      expect(compact.flagsCollection.isInMutuallyExclusiveGroup, isTrue);
+      expect(compact.flagsCollection.isSelected, ui.Tristate.isTrue);
+      expect(comfortable.flagsCollection.isInMutuallyExclusiveGroup, isTrue);
+      expect(comfortable.flagsCollection.isSelected, ui.Tristate.isFalse);
+      expect(comfortable.hasAction(SemanticsAction.tap), isTrue);
+
+      Color? fillOf(IconData icon) => tester
+          .widget<IconButton>(
+            find.ancestor(
+              of: find.byIcon(icon),
+              matching: find.byType(IconButton),
+            ),
+          )
+          .style
+          ?.backgroundColor
+          ?.resolve(const <WidgetState>{});
+      expect(fillOf(Icons.density_small), isNotNull);
+      expect(fillOf(Icons.density_medium), isNull);
+
+      await tester.tap(find.byTooltip('kit-comfortable'));
+      await tester.tap(find.byTooltip('kit-compact'));
+      expect(picked, [SidebarKitDensity.comfortable]);
+      semantics.dispose();
+    });
+
+    testWidgets('an explicit value wins over the scope', (tester) async {
+      await _pump(
+        tester,
+        SidebarDensitySwitch(
+          value: SidebarKitDensity.comfortable,
+          onChanged: (_) {},
+        ),
+      );
+      final button = tester.widget<IconButton>(
+        find.ancestor(
+          of: find.byIcon(Icons.density_medium),
+          matching: find.byType(IconButton),
+        ),
+      );
+      expect(
+        button.style?.backgroundColor?.resolve(const <WidgetState>{}),
+        isNotNull,
+      );
+    });
+
+    testWidgets('the bottom bar draws it before the gear only when asked, '
+        'and nothing overflows at the rail\'s 180 px minimum', (tester) async {
+      final picked = <SidebarKitDensity>[];
+      Widget bar({ValueChanged<SidebarKitDensity>? onDensityChanged}) =>
+          SidebarBottomBar(
+            settingsKey: const ValueKey('gear'),
+            addEntries: () => const [],
+            sync: const SidebarSyncChipData(
+              label: 'kit-synced · 2 min',
+              tone: SidebarSyncTone.normal,
+            ),
+            onSettings: () {},
+            onDensityChanged: onDensityChanged,
+          );
+
+      await _pump(tester, bar());
+      expect(find.byType(SidebarDensitySwitch), findsNothing);
+
+      for (final platform in [TargetPlatform.macOS, TargetPlatform.android]) {
+        await _pump(
+          tester,
+          bar(onDensityChanged: picked.add),
+          platform: platform,
+          width: 180,
+        );
+        expect(tester.takeException(), isNull, reason: '$platform');
+        final toggle = find.byType(SidebarDensitySwitch);
+        final gear = find.byKey(const ValueKey('gear'));
+        expect(toggle, findsOneWidget, reason: '$platform');
+        expect(
+          tester.getTopRight(toggle).dx,
+          lessThanOrEqualTo(tester.getTopLeft(gear).dx),
+          reason: '$platform',
+        );
+        expect(tester.getTopRight(gear).dx, lessThanOrEqualTo(180));
+      }
+      // The desktop chip still reads at the minimum, shortened.
+      await _pump(tester, bar(onDensityChanged: picked.add), width: 180);
+      expect(find.textContaining('kit-synced'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('kit-comfortable'));
+      expect(picked, [SidebarKitDensity.comfortable]);
+    });
+  });
+
+  group('SidebarFilterField count', () {
+    testWidgets('the count reads under the field, where a long hint fits', (
+      tester,
+    ) async {
+      const hint = '2 of 9 · ↵ opens the first';
+      Widget field(String query) => SidebarFilterField(
+        fieldKey: const ValueKey('f'),
+        query: query,
+        countText: hint,
+        onChanged: (_) {},
+        onDismiss: () {},
+      );
+      await _pump(tester, field('web'), width: 180);
+      expect(tester.takeException(), isNull);
+      expect(find.text(hint), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text(hint)).dy,
+        greaterThanOrEqualTo(
+          tester.getBottomLeft(find.byKey(const ValueKey('f'))).dy,
+        ),
+      );
+      // No query, no count.
+      await _pump(tester, field(''), width: 180);
+      expect(find.text(hint), findsNothing);
+    });
+  });
+
+  group('horizontal arrows', () {
+    testWidgets('Left and Right keep focus in the sidebar: a header folds '
+        'or unfolds and otherwise swallows them, and so does a row', (
+      tester,
+    ) async {
+      final outside = FocusNode(debugLabel: 'beside the sidebar');
+      addTearDown(outside.dispose);
+      var collapsed = false;
+      await _pump(
+        tester,
+        StatefulBuilder(
+          builder: (context, setState) => Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 160,
+                child: Column(
+                  children: [
+                    SidebarSectionHeader(
+                      headerKey: const ValueKey('h'),
+                      title: 'Servers',
+                      count: 1,
+                      collapsed: collapsed,
+                      onToggle: () => setState(() => collapsed = !collapsed),
+                    ),
+                    SidebarRow(
+                      key: const ValueKey('r'),
+                      mark: const Icon(Icons.dns_outlined, size: 16),
+                      title: 'alpha',
+                      onActivate: (_) {},
+                    ),
+                  ],
+                ),
+              ),
+              // A pane beside the rail, where directional traversal would
+              // take an arrow the sidebar let through.
+              Focus(
+                focusNode: outside,
+                child: const SizedBox(width: 60, height: 60),
+              ),
+            ],
+          ),
+        ),
+      );
+      final header = Focus.of(tester.element(find.byKey(const ValueKey('h'))));
+      final row = Focus.of(tester.element(find.text('alpha')));
+      header.requestFocus();
+      await tester.pump();
+
+      Future<void> press(LogicalKeyboardKey key, {bool repeat = false}) async {
+        if (repeat) {
+          await tester.sendKeyDownEvent(key);
+          await tester.sendKeyRepeatEvent(key);
+          await tester.sendKeyUpEvent(key);
+        } else {
+          await tester.sendKeyEvent(key);
+        }
+        await tester.pump();
+      }
+
+      // Right on an expanded header, held or not: nothing to open.
+      await press(LogicalKeyboardKey.arrowRight);
+      await press(LogicalKeyboardKey.arrowRight, repeat: true);
+      expect(header.hasPrimaryFocus, isTrue);
+      expect(collapsed, isFalse);
+
+      await press(LogicalKeyboardKey.arrowLeft);
+      expect(collapsed, isTrue);
+      // Left on a collapsed one, held or not: nothing to close.
+      await press(LogicalKeyboardKey.arrowLeft);
+      await press(LogicalKeyboardKey.arrowLeft, repeat: true);
+      expect(header.hasPrimaryFocus, isTrue);
+      expect(collapsed, isTrue);
+      // A held Right opens it once, not on every repeat.
+      await press(LogicalKeyboardKey.arrowRight, repeat: true);
+      expect(collapsed, isFalse);
+      expect(header.hasPrimaryFocus, isTrue);
+
+      row.requestFocus();
+      await tester.pump();
+      for (final key in [
+        LogicalKeyboardKey.arrowRight,
+        LogicalKeyboardKey.arrowLeft,
+      ]) {
+        await press(key);
+        await press(key, repeat: true);
+        expect(row.hasPrimaryFocus, isTrue, reason: '$key');
+      }
+      expect(outside.hasFocus, isFalse);
+    });
+
+    testWidgets('Left and Right with Ctrl, Alt or Meta are the app\'s: they '
+        'reach its shortcuts from a row or a header', (tester) async {
+      final fired = <String>[];
+      var collapsed = false;
+      await _pump(
+        tester,
+        // The host's chords, above the sidebar as an app's shortcuts are
+        // (Poltergeist's pane focus is Ctrl+Alt+arrow, or Cmd+Option+arrow
+        // on macOS).
+        CallbackShortcuts(
+          bindings: {
+            const SingleActivator(
+              LogicalKeyboardKey.arrowRight,
+              control: true,
+              alt: true,
+            ): () =>
+                fired.add('ctrl+alt+right'),
+            const SingleActivator(
+              LogicalKeyboardKey.arrowLeft,
+              control: true,
+              alt: true,
+            ): () =>
+                fired.add('ctrl+alt+left'),
+            const SingleActivator(
+              LogicalKeyboardKey.arrowRight,
+              meta: true,
+              alt: true,
+            ): () =>
+                fired.add('meta+alt+right'),
+            const SingleActivator(
+              LogicalKeyboardKey.arrowLeft,
+              alt: true,
+            ): () =>
+                fired.add('alt+left'),
+          },
+          child: StatefulBuilder(
+            builder: (context, setState) => Column(
+              children: [
+                SidebarSectionHeader(
+                  headerKey: const ValueKey('h'),
+                  title: 'Servers',
+                  count: 1,
+                  collapsed: collapsed,
+                  onToggle: () => setState(() => collapsed = !collapsed),
+                ),
+                SidebarRow(
+                  mark: const Icon(Icons.dns_outlined, size: 16),
+                  title: 'alpha',
+                  onActivate: (_) {},
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      final header = Focus.of(tester.element(find.byKey(const ValueKey('h'))));
+      final row = Focus.of(tester.element(find.text('alpha')));
+
+      Future<void> chord(
+        List<LogicalKeyboardKey> modifiers,
+        LogicalKeyboardKey key, {
+        bool repeat = false,
+      }) async {
+        for (final modifier in modifiers) {
+          await tester.sendKeyDownEvent(modifier);
+        }
+        await tester.sendKeyDownEvent(key);
+        if (repeat) await tester.sendKeyRepeatEvent(key);
+        await tester.sendKeyUpEvent(key);
+        for (final modifier in modifiers.reversed) {
+          await tester.sendKeyUpEvent(modifier);
+        }
+        await tester.pump();
+      }
+
+      const ctrlAlt = [
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.altLeft,
+      ];
+      const metaAlt = [LogicalKeyboardKey.metaLeft, LogicalKeyboardKey.altLeft];
+      const alt = [LogicalKeyboardKey.altLeft];
+
+      row.requestFocus();
+      await tester.pump();
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowRight);
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowLeft);
+      await chord(metaAlt, LogicalKeyboardKey.arrowRight);
+      await chord(alt, LogicalKeyboardKey.arrowLeft);
+      expect(fired, [
+        'ctrl+alt+right',
+        'ctrl+alt+left',
+        'meta+alt+right',
+        'alt+left',
+      ]);
+
+      // A header lets them by too, held or not, and does not fold or
+      // unfold on the way.
+      fired.clear();
+      header.requestFocus();
+      await tester.pump();
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowLeft);
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowRight, repeat: true);
+      await chord(alt, LogicalKeyboardKey.arrowLeft);
+      expect(fired, [
+        'ctrl+alt+left',
+        'ctrl+alt+right',
+        'ctrl+alt+right',
+        'alt+left',
+      ]);
+      expect(collapsed, isFalse);
     });
   });
 }

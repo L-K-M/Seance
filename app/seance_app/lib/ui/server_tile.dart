@@ -9,7 +9,10 @@ import 'sidebar/sidebar_kit.dart';
 
 /// One server's row in the list, drawn by the sibling kit's [SidebarRow]
 /// (Poltergeist's plan, 10 §5): the server's badge with its one status dot,
-/// the name, and `×N` while it has several tabs open.
+/// the name, and `×N` while it has several tabs open. At either density the
+/// server's colour runs down the row's edge and a connected server's badge
+/// wears the green ring; a comfortable row adds the address, or the state
+/// that leads it, as a second line.
 ///
 /// Public so a widget test can assert what the row says without standing up
 /// an `AppState`: the dot and the sync-exclusion mark are pictures, and what
@@ -31,15 +34,6 @@ class ServerTile extends StatelessWidget {
 
   /// 1 under a group's disclosure row.
   final int depth;
-
-  /// Spell `user@host:port` out on a second line. Only a touch home list
-  /// asks for it: a desktop rail keeps to one line and leaves the address to
-  /// the tooltip, which touch has no hover to show.
-  final bool showAddress;
-
-  /// Draw a visible "⋮" for the row's verbs (the home list's; the rail has
-  /// right-click and the Menu key).
-  final bool showMenuButton;
 
   final VoidCallback onOpen;
   final VoidCallback onNewTab;
@@ -72,8 +66,6 @@ class ServerTile extends StatelessWidget {
     this.onDisconnect,
     this.onReconnect,
     this.depth = 0,
-    this.showAddress = false,
-    this.showMenuButton = false,
   });
 
   /// Shown whether or not sync is set up: the flag is the user's standing
@@ -88,28 +80,53 @@ class ServerTile extends StatelessWidget {
 
   String get _address => '${server.username}@$_host:${server.port}';
 
-  /// The home row's second line: `user@host`, with the port only when it
-  /// is not SSH's default — the form Poltergeist's Home shows. The tooltip
-  /// and the announced label keep the full [_address].
+  /// The row's second line: `user@host`, with the port only when it is
+  /// not SSH's default, the form Poltergeist's rows show. Always handed to
+  /// the kit, which draws it only on a comfortable row; the tooltip and
+  /// the announced label keep the full [_address] either way.
   String get _subtitleAddress {
     final base = '${server.username}@$_host';
     return server.port == 22 ? base : '$base:${server.port}';
   }
+
+  /// The second line as the kit draws it: a state the user has to act on
+  /// or wait for comes first, so the ellipsis takes the address rather
+  /// than the news (the order Poltergeist's rows use); a healthy or
+  /// unknown state leaves the line to the address, the dot saying the rest.
+  String get _subtitle => switch (dot) {
+    ServerDot.connecting ||
+    ServerDot.failed ||
+    ServerDot.blocked ||
+    ServerDot.unreachable => '${dot.description} · $_subtitleAddress',
+    ServerDot.none ||
+    ServerDot.connected ||
+    ServerDot.reachable => _subtitleAddress,
+  };
 
   String get _disconnectLabel => tabCount > 1 ? 'Disconnect all' : 'Disconnect';
 
   @override
   Widget build(BuildContext context) {
     final state = dot.description;
+    final detail = dot.detail;
     final excluded = server.excludeFromSync;
     return SidebarRow(
       mark: ServerRailMark(server: server),
+      // The colour's line tone: four pixels of the pastel fill tone would
+      // be a smudge, not a mark (ServerAccentBar's reasoning).
+      accent: serverAccent(context, ServerTint.of(server))?.line,
+      // The ring changes the badge's silhouette, which the eye picks out of
+      // a list better than a dot's colour; only a live connection draws it,
+      // so a framed badge always means "connected".
+      markRing: dot == ServerDot.connected
+          ? StatusColors.online(context)
+          : null,
       title: server.label,
       status: switch (dot.color(context)) {
         final color? => SidebarStatusDot(color, style: dot.style),
         null => null,
       },
-      subtitle: showAddress ? _subtitleAddress : null,
+      subtitle: _subtitle,
       trailingIcon: excluded ? Icons.cloud_off_outlined : null,
       trailingText: tabCount > 1 ? '×$tabCount' : null,
       hoverAction: onDisconnect == null
@@ -120,17 +137,23 @@ class ServerTile extends StatelessWidget {
               tooltip: _disconnectLabel,
               onPressed: onDisconnect!,
             ),
-      showMenuButton: showMenuButton,
       selected: selected,
       depth: depth,
       // The address, the state and the exclusion are pictures or absent on
-      // a one-line row: the tooltip carries them for a pointer, the label
-      // for a screen reader.
-      tooltip: [_address, ?state, if (excluded) excludedDescription].join('\n'),
+      // a compact row: the tooltip carries them for a pointer, the label
+      // for a screen reader. The "⋮" is the kit's call (comfortable rows
+      // and touch draw it).
+      tooltip: [
+        _address,
+        ?state,
+        ?detail,
+        if (excluded) excludedDescription,
+      ].join('\n'),
       semanticLabel: [
         server.label,
         _address,
         ?state,
+        ?detail,
         if (tabCount > 1) '$tabCount tabs',
         if (excluded) excludedDescription,
       ].join(', '),
@@ -211,21 +234,19 @@ class ServerTile extends StatelessWidget {
   ];
 }
 
-/// A server's mark at the rail's size (see [sidebarMarkExtent]).
+/// A server's mark at the kit's size for the row (see [sidebarMarkExtent]).
 ///
-/// A server with no colour and a built-in glyph draws the glyph alone, like
-/// every other rail row in the sibling apps (Poltergeist draws the same
-/// server the same way), rather than a grey tile around it. A coloured
-/// server gets its badge, whose fill is the colour. An imported image
-/// covers that fill, so a coloured image mark is framed in the colour's
-/// line tone instead: at 18 px there is no room for the accent bar the
-/// larger rows carried beside the badge.
+/// Comfortable, every server gets its 32 px badge, as the list drew it
+/// before the kit: a coloured one on its colour, an uncoloured one on the
+/// neutral tile, so the badges make one column. Compact, a server with no
+/// colour and a built-in glyph draws the glyph alone, like every other
+/// compact row in the sibling apps (Poltergeist draws the same server the
+/// same way), and a coloured server keeps its badge. The colour itself
+/// runs down the row as the accent line ([SidebarRow.accent]) in both, so
+/// an imported image, which covers the badge's fill, needs no frame.
 class ServerRailMark extends StatelessWidget {
   final ServerConfig server;
   const ServerRailMark({super.key, required this.server});
-
-  /// The frame around a coloured image mark.
-  static const double _frameWidth = 1.5;
 
   /// The Android list's glyph size inside its 40 dp disc — the same
   /// proportions Poltergeist's Home uses.
@@ -243,27 +264,20 @@ class ServerRailMark extends StatelessWidget {
     if (SidebarKitScope.layoutOf(context) == SidebarKitLayout.list) {
       return ExcludeSemantics(child: _disc(context, extent, tint, accent));
     }
+    final comfortable =
+        SidebarKitScope.densityOf(context) == SidebarKitDensity.comfortable;
     // Decorative: the row announces the server's name itself.
-    if (mark is ServerGlyphMark && accent == null) {
+    if (!comfortable && mark is ServerGlyphMark && accent == null) {
       return ExcludeSemantics(
         child: Icon(
           serverIconData(mark.icon),
-          size: extent - 2,
+          size: sidebarGlyphSize(context),
           color: SeanceChrome.of(context).secondaryText,
         ),
       );
     }
-    final badge = ExcludeSemantics(
+    return ExcludeSemantics(
       child: ServerBadge(tint: tint, mark: mark, size: extent),
-    );
-    if (mark is! ServerImageMark || accent == null) return badge;
-    return DecoratedBox(
-      position: DecorationPosition.foreground,
-      decoration: BoxDecoration(
-        border: Border.all(color: accent.line, width: _frameWidth),
-        borderRadius: BorderRadius.circular(extent * ServerBadge.cornerRatio),
-      ),
-      child: badge,
     );
   }
 

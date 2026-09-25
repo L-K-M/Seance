@@ -231,11 +231,13 @@ tests in the kit test):
 6. **The row surface.** `SidebarKitScope.background`: the dot's cut-out
    ring took `sidebarBackground` even on another surface (a phone's home
    list on the page surface), which drew a halo.
-7. **Row options.** `subtitle` (a second line for touch lists, which
-   have no hover tooltip), `trailingIcon` (a standing mark, Séance's
-   excluded-from-sync cloud), and `showMenuButton` (a visible "⋮" opening
-   the menu at the button on desktop, the sheet on touch).
-   `SidebarKitStrings` gains a required `rowMenu` tooltip for it.
+7. **Row options.** `subtitle` (a second line, at first only for touch
+   lists, which have no hover tooltip; since the two densities below,
+   hosts always pass one and the kit draws it only when comfortable),
+   `trailingIcon` (a standing mark, Séance's excluded-from-sync cloud),
+   and `showMenuButton` (a visible "⋮" opening the menu at the button on
+   desktop, the sheet on touch). `SidebarKitStrings` gains a required
+   `rowMenu` tooltip for it.
 
 Séance's theme also gives the kit's menus 8 px corners and compact
 desktop items, which Poltergeist gets from its app-wide compact density.
@@ -247,6 +249,44 @@ one `SidebarRow.status: SidebarStatusDot?` value (colour plus
 fields, so a style without a colour cannot be expressed. The two kit files
 now differ only in this header, the theme import, and `_chrome()`; keep
 them that way by porting any kit change to both.
+
+**Two densities (2026-09-25).** The owner asked for the two views back,
+in both apps, comfortable by default (Poltergeist records the decision
+as D33, "Sidebar density and restored row detail", in its
+`docs/plan/00-OVERVIEW.md`). The kit change landed in both
+files at once, so they still differ only in the three places above:
+
+- `SidebarKitDensity { compact, comfortable }` on `SidebarKitScope`
+  (`densityOf`; the list layout is comfortable by definition, asserted),
+  and `sidebarHomeLayout(density)`: the list when comfortable, touch rail
+  rows when compact. Compact is the one-line rail as before (26 px, an
+  18 px mark); comfortable is 52 px on desktop and 56 on touch, a 32 px
+  mark, a `bodyLarge` title and a `bodySmall` second line.
+  `sidebarMarkExtent` and the new `sidebarGlyphSize` follow the density.
+- The kit decides the second line: `subtitle` is drawn only when
+  comfortable, and the long-press sheet shows it under its title either
+  way (`showSidebarMenuSheet(subtitle:)`). `showMenuButton: null` means
+  drawn when comfortable or on touch.
+- `SidebarRow.accent` (the 4 px line in the server's colour, leading the
+  mark, both densities) and `SidebarRow.markRing` (a ring around the
+  mark, for a connected server). `SidebarDotStyle.blocked` is a dot
+  crossed by a bar in the cut-out colour, for a host key that no longer
+  matches. `SidebarSectionHeader.status` puts a dot beside the count for
+  live rows the header keeps out of view.
+- Comfortable headers draw their chevron, count and "+" at rest.
+- `SidebarDensitySwitch`, and `SidebarBottomBar.onDensityChanged`, which
+  places it before the gear. `SidebarKitStrings` gains `compactRows` and
+  `comfortableRows`.
+- ← and → (and their repeats) are swallowed on a header with nothing to
+  fold or unfold and on a row, so focus stays in the sidebar.
+- The filter's `countText` reads on a line under the field, where
+  "N of M · ↵ opens the first" fits at the rail's narrowest.
+
+Séance's host maps its stored `ServerListDensity` to the kit's in one
+place and passes the density to every posture, puts the switch in the
+bottom bar, the phone home's app bar and macOS's View menu, and passes
+`accent`, `markRing`, the blocked dot and the header dot (see
+[STATUS.md](STATUS.md)).
 
 ## Cross-app behaviors worth knowing about
 

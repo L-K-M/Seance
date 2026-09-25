@@ -1,9 +1,12 @@
+import 'dart:async' show unawaited;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../main.dart';
 import 'command_generator.dart';
+import 'server_list_density.dart';
 import 'server_list_pane.dart';
 import 'settings_screen.dart';
 import 'top_toast.dart';
@@ -83,6 +86,69 @@ void terminalSelectAll(TerminalSession tab) {
     buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
   );
 }
+
+/// The channel the native macOS menu (MainFlutterWindow.swift) and Dart
+/// talk over, both ways.
+const MethodChannel macMenuChannel = MethodChannel('seance/menu');
+
+/// Wire the native macOS menu items to app actions, and keep the one item
+/// whose title Dart owns in step: View's density item, which names the
+/// density it switches to ("Use Compact Sidebar Rows"). One item with a
+/// flipping title rather than a checked pair, the pattern Poltergeist's
+/// View menu uses for the same command (sibling contract §10.5).
+void installMacMenu(AppState state, {MethodChannel channel = macMenuChannel}) {
+  channel.setMethodCallHandler((call) async {
+    switch (call.method) {
+      case 'newTab':
+        openNewTab(state);
+      case 'openSettings':
+        openSettings();
+      case 'generateCommand':
+        openCommandGenerator(state);
+      case 'toggleServerListDensity':
+        await state.setServerListDensity(switch (state.serverListDensity) {
+          ServerListDensity.comfortable => ServerListDensity.compact,
+          ServerListDensity.compact => ServerListDensity.comfortable,
+        });
+      // Native Edit menu, forwarded only when a terminal is focused.
+      case 'editCopy':
+        if (state.activeSession != null) terminalCopy(state.activeSession!);
+      case 'editPaste':
+        if (state.activeSession != null) {
+          await terminalPaste(state.activeSession!);
+        }
+      case 'editSelectAll':
+        if (state.activeSession != null) {
+          terminalSelectAll(state.activeSession!);
+        }
+    }
+    return null;
+  });
+
+  // Retitled on every density change, from the menu or either switch, and
+  // on nothing else: the state notifies for far more than this.
+  ServerListDensity? titled;
+  void retitle() {
+    final density = state.serverListDensity;
+    if (density == titled) return;
+    titled = density;
+    unawaited(
+      channel.invokeMethod<void>(
+        'setServerListDensityTitle',
+        _densityMenuTitle(density),
+      ),
+    );
+  }
+
+  retitle();
+  state.addListener(retitle);
+}
+
+/// The View menu's density item at [current]: the choice it switches to.
+String _densityMenuTitle(ServerListDensity current) => switch (current) {
+  ServerListDensity.comfortable => 'Use Compact Sidebar Rows',
+  ServerListDensity.compact => 'Use Comfortable Sidebar Rows',
+};
 
 /// The server filter's chord (Poltergeist's plan, 10 §5): ⌥⌘F on Apple
 /// platforms, Ctrl+Alt+F elsewhere.

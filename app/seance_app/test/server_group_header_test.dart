@@ -17,12 +17,17 @@ void main() {
     required bool collapsed,
     bool nested = true,
     VoidCallback? onToggle,
+    VoidCallback? onAdd,
+    // The rail's compact headers unless a test asks: the count shows only
+    // folded there.
+    SidebarKitDensity density = SidebarKitDensity.compact,
   }) => tester.pumpWidget(
     MaterialApp(
       theme: SeanceTheme.light(platform: TargetPlatform.macOS),
       home: Scaffold(
         body: SidebarKitScope(
           strings: serverSidebarStrings,
+          density: density,
           child: SidebarSectionHeader(
             headerKey: const ValueKey('header'),
             nested: nested,
@@ -30,6 +35,9 @@ void main() {
             count: count,
             collapsed: collapsed,
             onToggle: onToggle ?? () {},
+            onAdd: onAdd,
+            addKey: const ValueKey('add'),
+            addTooltip: 'New server',
           ),
         ),
       ),
@@ -54,6 +62,55 @@ void main() {
     expect(find.text('3'), findsOneWidget);
     expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     expect(find.byIcon(Icons.expand_more), findsNothing);
+  });
+
+  testWidgets('comfortable: the count, the chevron and the "+" stay drawn, '
+      'folded or not', (tester) async {
+    // As the list drew its group headers before the kit: nothing waits for
+    // a hover to say how many servers a group holds.
+    await pump(
+      tester,
+      name: 'Production',
+      count: 3,
+      collapsed: false,
+      density: SidebarKitDensity.comfortable,
+    );
+    expect(find.text('3'), findsOneWidget);
+    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+
+    await pump(
+      tester,
+      name: 'Servers',
+      count: 5,
+      collapsed: false,
+      nested: false,
+      onAdd: () {},
+      density: SidebarKitDensity.comfortable,
+    );
+    expect(find.text('5'), findsOneWidget);
+    for (final icon in [Icons.expand_more, Icons.add]) {
+      final visibility = tester.widget<Visibility>(
+        find.ancestor(of: find.byIcon(icon), matching: find.byType(Visibility)),
+      );
+      expect(visibility.visible, isTrue, reason: '$icon at rest');
+    }
+
+    await pump(
+      tester,
+      name: 'Servers',
+      count: 5,
+      collapsed: true,
+      nested: false,
+      onAdd: () {},
+      density: SidebarKitDensity.comfortable,
+    );
+    expect(find.text('5'), findsOneWidget);
+    for (final icon in [Icons.chevron_right, Icons.add]) {
+      final visibility = tester.widget<Visibility>(
+        find.ancestor(of: find.byIcon(icon), matching: find.byType(Visibility)),
+      );
+      expect(visibility.visible, isTrue, reason: '$icon folded');
+    }
   });
 
   testWidgets('a section header draws caps and announces the spelling', (

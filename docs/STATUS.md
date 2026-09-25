@@ -7,8 +7,13 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-24. The server list is the sibling sidebar Séance
-shares with Poltergeist: a rail with PINNED and SERVERS sections, one-line
+_Last updated: 2026-09-25. The server list has its two views back, on the
+rail, on tablets and on the phone home: comfortable (the default) draws
+two lines under the 32 px badge with the colour line, the connected ring
+and a visible "⋮", compact keeps the one-line rail, and a switch in the
+bottom bar, the home app bar and macOS's View menu picks between them.
+Before that, the server list became the sibling sidebar Séance
+shares with Poltergeist: a rail with PINNED and SERVERS sections,
 rows with one status dot, a filter, and a bottom bar with "+", sync status
 and Settings, over a kit ported from Poltergeist (see
 [POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)); on a phone the same list
@@ -59,6 +64,89 @@ be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
 
+## Two views of the server list again (2026-09-25)
+
+The owner's call after the kit port below: aligning the two sidebars
+lost "the two views", so both apps now offer a compact and a comfortable
+density, comfortable by default on every platform (Poltergeist's plan
+records the decision as D33, "Sidebar density and restored row detail",
+in its `docs/plan/00-OVERVIEW.md`). This supersedes the port's "the
+density preference survives here only" and its one-line rail.
+
+**Density.** The kit gained `SidebarKitDensity` (its record is in
+[POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)). `ServerListPane` maps
+the stored `serverListDensity` to it in one place and every posture
+follows it: the desktop rail, a tablet's touch rail and a narrow desktop
+window draw the rail at that density, and the phone home is the Android
+list when comfortable and one-line touch rows when compact (the kit's
+`sidebarHomeLayout`), so the two gates that each decided "comfortable
+home" are gone. `toJson` always wrote the preference and its old default
+was comfortable, so an existing install comes back comfortable, which is
+the look the owner asked for.
+
+**Rows.** Comfortable rows are 52 px (56 on touch) with a 32 px
+`ServerBadge`, the neutral tile behind an uncoloured glyph, a 14 px title
+and a 12 px second line; compact is the port's 26 px row, unchanged. The
+tile always hands the kit its second line and the kit draws it only when
+comfortable: `user@host` (the port only when not 22), led by the state
+when a session is connecting, failed or blocked or the probe found the
+host unreachable ("Connection failed · deploy@host", Poltergeist's
+order). The server's colour is the kit's 4 px accent line in both
+densities, so the frame an image mark wore in its place is gone, and the
+editor's and colour picker's previews of `ServerAccentBar` describe the
+list again. A connected session rings the badge in green beside the dot
+(the kit's `markRing`, not `ServerAvatar`, which stays unused by the
+list). The "⋮" is the kit's default: drawn when comfortable or on touch.
+Headers draw their count, chevron and SERVERS' "+" at rest when
+comfortable.
+
+**Blocked.** A connect refused at the host-key check of a host this
+device had pinned (a changed key the user declined) sets
+`TerminalSession.hostKeyBlocked`, from the core's new
+`SshConnectException.isHostKeyRefusal` plus the pinned-key lookup; a
+declined first use stays an ordinary failure. Its row draws the kit's
+blocked dot (the no-entry sign Poltergeist uses) and says "Connection
+blocked" with what unblocks it. dartssh2 does not throw its host-key
+error: it reports an authentication abort that carries it as the
+reason, so `isHostKeyRefusal` unwraps that. The first cut checked only
+the bare error and never matched a real connection;
+`ssh_host_key_refusal_test.dart` now drives dartssh2's real key
+exchange through a fixture socket, and a check against a local OpenSSH
+`sshd` gave the verdict `changed` and a refusal. A key-exchange
+signature that fails to verify is not promised to count: dartssh2
+raises the same host-key error for RSA and ECDSA keys, but an internal
+error for ed25519. The app half (the dot and the copy) is tested apart,
+with `hostKeyBlocked` set directly.
+
+**Hidden live sessions.** A folded group, or a filter, that hides a
+connected or connecting server puts its dot on the header hiding it
+(`hiddenByHeader` in `server_grouping.dart` picks the innermost header
+still on screen). Header dots carry no announcement yet: the kit's
+header label is its title and count.
+
+**Switches.** The kit's `SidebarDensitySwitch` sits in the rail's bottom
+bar and, in a scope of its own, in the phone home's app bar, replacing
+the segmented button. On macOS, View opens with "Use Compact Sidebar
+Rows" or "Use Comfortable Sidebar Rows", one item whose title Dart sets
+over `seance/menu` (`setServerListDensityTitle`); the item calls
+`toggleServerListDensity`. The channel's Dart half moved from `main.dart`
+to `installMacMenu` in `app_menus.dart`, where `mac_menu_test.dart`
+drives it over a mocked channel. The Swift half was not compiled here
+(no Swift toolchain on Linux).
+
+**Filter.** The field shows from five servers again (both apps had five
+before the kit), and the count reads "N of M · ↵ opens the first" while a
+match exists. `ServerListPane.revealFilter()` returns false and latches
+nothing on an empty list, where it used to pop the field open once the
+first server arrived.
+
+**Verification.** `server_list_capture_test.dart` now renders the rail
+comfortable and compact, the rail at its 200 px minimum, a tablet rail,
+the phone home and a narrow desktop window at both densities, and a
+folded group keeping its dot. Not verified: macOS (the View menu item,
+VoiceOver), a real tablet, and the blocked row in a running app against
+a real server (the core half was checked against a local `sshd`).
+
 ## The server list is the sibling sidebar (2026-09-24)
 
 **The kit.** Poltergeist rebuilt its sidebar (its plan, 10 §5) on
@@ -94,7 +182,7 @@ Edit…, Duplicate, Delete…), Shift+F10 and the Menu key open them with
 focus inside, and a connected row shows an eject glyph on hover. ⌘-click
 (Ctrl-click off Apple platforms, where Control-click is the secondary
 click and opens the row's verbs, as right-click does) opens another tab. The filter shows at eight servers (it was
-five), while a query is live, or on ⌥⌘F (Ctrl+Alt+F off Apple
+five; superseded on 2026-09-25, five again, see above), while a query is live, or on ⌥⌘F (Ctrl+Alt+F off Apple
 platforms, where the terminal keeps the chord for the shell); Esc
 clears, then closes, and Enter opens the first row shown. The bottom bar
 has a "+" menu (New server…, Import SSH config…; Séance has no group
@@ -110,7 +198,8 @@ extent (48 dp on touch, with a 24 dp mark) and a visible "⋮"; a
 long-press opens the same verbs as a sheet. The density preference
 survives here only: comfortable adds the address as a second line,
 because touch has no hover to show the tooltip; the rail's rows are one
-line by the anatomy. Back from the terminal returns to the list with its
+line by the anatomy. (Superseded on 2026-09-25: every posture follows
+the density again, see above.) Back from the terminal returns to the list with its
 query and scroll offset, kept in the route's page storage. The back
 handling from a938373, 6643a3b and 367e4ea is untouched and its tests
 pass.
@@ -905,17 +994,24 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   observations) and the tab aggregation behind it.
 - `app/seance_app/test/server_list_pane_test.dart` — the rail (no app
   bar; the bottom bar's "+" menu, sync chip states and gear; sections
-  and nesting; folds persisting; the filter at eight servers and on
-  ⌥⌘F / Ctrl+Alt+F with Esc clearing then closing; the selection pill;
-  pinning from a right-click; the empty state) and the home's "+" never
-  covering the last row's "⋮".
+  and nesting; folds persisting; the filter at five servers, its
+  "↵ opens the first" count and on ⌥⌘F / Ctrl+Alt+F with Esc clearing
+  then closing, and neither a refused nor an emptied reveal reopening
+  it; the selection pill; pinning from a right-click; a header's dot for
+  a hidden live session; the blocked row; the empty state) and the
+  home's "+" never covering the last row's "⋮".
 - `app/seance_app/test/ui/sidebar/sidebar_kit_test.dart` — the ported
   kit's tests plus Séance's additions: ring dots, the host surface, two
   lines, the menu button on desktop and touch, touch headers, keyboard
   focus inside a row menu, and a focus ring that does not move content.
-- `app/seance_app/test/server_list_capture_test.dart` — renders both
-  postures and brightnesses for review; writes PNGs only with
+- `app/seance_app/test/server_list_capture_test.dart` — renders the
+  rail (also at its 200 px minimum), a tablet rail, the phone home and a
+  narrow desktop window at both densities and brightnesses, plus a folded
+  group keeping its dot, for review; writes PNGs only with
   `SEANCE_CAPTURE=1`.
+- `app/seance_app/test/mac_menu_test.dart` — View's density item over a
+  mocked `seance/menu` channel: it flips the density and its title
+  follows.
 - `app/seance_app/test/server_editor_test.dart` — Return saves from a
   one-line field, is a newline in the login script, presses a focused button
   instead, and does nothing while the form is invalid; a custom colour is

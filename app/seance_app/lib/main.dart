@@ -2,7 +2,6 @@ import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_state.dart';
@@ -114,7 +113,7 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
     };
 
     await state.load();
-    _installMacMenu(state);
+    if (Platform.isMacOS) installMacMenu(state);
     _warnIfSettingsWereRecovered(state);
     _warnIfKeystoreUnavailable(state);
     // Fire-and-forget: don't let a slow/offline update check hold up startup.
@@ -192,34 +191,6 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
     } catch (_) {
       // No version info / platform channel unavailable — skip silently.
     }
-  }
-
-  /// Wire the native macOS menu items (MainFlutterWindow.swift) to app actions.
-  void _installMacMenu(AppState state) {
-    if (!Platform.isMacOS) return;
-    const channel = MethodChannel('seance/menu');
-    channel.setMethodCallHandler((call) async {
-      switch (call.method) {
-        case 'newTab':
-          openNewTab(state);
-        case 'openSettings':
-          openSettings();
-        case 'generateCommand':
-          openCommandGenerator(state);
-        // Native Edit menu, forwarded only when a terminal is focused.
-        case 'editCopy':
-          if (state.activeSession != null) terminalCopy(state.activeSession!);
-        case 'editPaste':
-          if (state.activeSession != null) {
-            await terminalPaste(state.activeSession!);
-          }
-        case 'editSelectAll':
-          if (state.activeSession != null) {
-            terminalSelectAll(state.activeSession!);
-          }
-      }
-      return null;
-    });
   }
 
   @override

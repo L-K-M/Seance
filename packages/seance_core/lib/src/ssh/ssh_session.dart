@@ -293,6 +293,27 @@ class SshConnectException implements Exception {
 
   SshConnectException(this.message, this.cause, this.log);
 
+  /// The connection stopped at host-key verification: the user (or the
+  /// unwired prompt's safe default) declined the key the server presented.
+  /// The app tells a refused *changed* key apart from a declined first use
+  /// by whether a key is pinned.
+  ///
+  /// dartssh2 never throws the [SSHHostkeyError] itself: it closes the
+  /// transport with it, and the client reports that as an
+  /// [SSHAuthAbortError] whose `reason` is the host-key error. The bare form
+  /// is accepted too, for a dartssh2 that stops wrapping it.
+  ///
+  /// A key-exchange signature that fails to verify lands here too for RSA
+  /// and ECDSA host keys, which dartssh2 reports with the same host-key
+  /// error (its ed25519 verifier throws a plain exception instead, which
+  /// reaches this layer as an internal error). So this getter alone does
+  /// not prove the user declined a key; only the prompt's verdict does.
+  bool get isHostKeyRefusal {
+    final cause = this.cause;
+    final reason = cause is SSHAuthAbortError ? cause.reason : cause;
+    return reason is SSHHostkeyError;
+  }
+
   @override
   String toString() => message;
 }

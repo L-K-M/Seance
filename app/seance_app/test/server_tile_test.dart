@@ -46,7 +46,7 @@ void main() {
     int tabCount = 0,
     bool connected = false,
     bool reconnectable = false,
-    bool showAddress = false,
+    SidebarKitDensity density = SidebarKitDensity.compact,
     TargetPlatform platform = TargetPlatform.macOS,
   }) async {
     await tester.pumpWidget(
@@ -55,6 +55,7 @@ void main() {
         home: Scaffold(
           body: SidebarKitScope(
             strings: serverSidebarStrings,
+            density: density,
             child: Align(
               alignment: Alignment.topLeft,
               child: SizedBox(
@@ -65,7 +66,6 @@ void main() {
                   tabCount: tabCount,
                   selected: selected,
                   pinned: pinned,
-                  showAddress: showAddress,
                   onOpen: () => calls.add('open'),
                   onNewTab: () => calls.add('newTab'),
                   onEdit: () => calls.add('edit'),
@@ -120,6 +120,37 @@ void main() {
     expect(find.byTooltip('deploy@box.example.com:22'), findsOneWidget);
   });
 
+  testWidgets('the tile always hands the kit its address line, and only '
+      'a comfortable row draws it', (tester) async {
+    await pump(tester);
+    expect(
+      tester.widget<SidebarRow>(find.byType(SidebarRow)).subtitle,
+      'deploy@box.example.com',
+    );
+    expect(find.text('deploy@box.example.com'), findsNothing);
+
+    await pump(tester, density: SidebarKitDensity.comfortable);
+    expect(find.text('deploy@box.example.com'), findsOneWidget);
+    expect(tester.getSize(find.byType(SidebarRow)).height, 52);
+  });
+
+  testWidgets('the second line leads with a state the user has to notice, '
+      'so the ellipsis never takes it', (tester) async {
+    for (final (dot, line) in [
+      (ServerDot.connecting, 'Connecting · deploy@box.example.com'),
+      (ServerDot.failed, 'Connection failed · deploy@box.example.com'),
+      (ServerDot.blocked, 'Connection blocked · deploy@box.example.com'),
+      (ServerDot.unreachable, 'Host unreachable · deploy@box.example.com'),
+      // A healthy or unknown state says nothing the dot does not.
+      (ServerDot.connected, 'deploy@box.example.com'),
+      (ServerDot.reachable, 'deploy@box.example.com'),
+      (ServerDot.none, 'deploy@box.example.com'),
+    ]) {
+      await pump(tester, dot: dot, density: SidebarKitDensity.comfortable);
+      expect(find.text(line), findsOneWidget, reason: '$dot');
+    }
+  });
+
   testWidgets('the selected row wears the pill and a semibold title', (
     tester,
   ) async {
@@ -141,12 +172,32 @@ void main() {
   });
 
   group('the mark', () {
-    testWidgets('an uncoloured glyph draws alone, like the sibling rail', (
-      tester,
-    ) async {
+    testWidgets('compact: an uncoloured glyph draws alone, like the sibling '
+        'rail', (tester) async {
       await pump(tester, config: server(icon: ServerIcon.database));
       expect(find.byType(ServerBadge), findsNothing);
       expect(find.byIcon(serverIconData(ServerIcon.database)), findsOneWidget);
+    });
+
+    testWidgets('comfortable: every server gets its 32 px badge, a neutral '
+        'tile behind an uncoloured glyph', (tester) async {
+      await pump(
+        tester,
+        config: server(icon: ServerIcon.database),
+        density: SidebarKitDensity.comfortable,
+      );
+      final badge = tester.widget<ServerBadge>(find.byType(ServerBadge));
+      expect(badge.size, 32);
+      expect(badge.tint, ServerTint.none);
+
+      // A tablet's comfortable rail draws the same badge.
+      await pump(
+        tester,
+        config: server(icon: ServerIcon.database),
+        density: SidebarKitDensity.comfortable,
+        platform: TargetPlatform.android,
+      );
+      expect(tester.widget<ServerBadge>(find.byType(ServerBadge)).size, 32);
     });
 
     testWidgets('a coloured server gets its badge, at the mark extent', (
@@ -164,49 +215,67 @@ void main() {
         platform: TargetPlatform.android,
       );
       expect(tester.widget<ServerBadge>(find.byType(ServerBadge)).size, 24);
-    });
 
-    testWidgets('a coloured image mark is framed in the colour', (
-      tester,
-    ) async {
-      // An image covers the badge's fill, so without the frame the colour
-      // would have nowhere to show at 18 px.
-      final png = await tester.runAsync(() async {
-        final recorder = ui.PictureRecorder();
-        ui.Canvas(recorder).drawRect(
-          const ui.Rect.fromLTWH(0, 0, 8, 8),
-          ui.Paint()..color = const ui.Color(0xFF00FF00),
-        );
-        final picture = recorder.endRecording();
-        final image = await picture.toImage(8, 8);
-        final data = await image.toByteData(format: ui.ImageByteFormat.png);
-        picture.dispose();
-        image.dispose();
-        return base64Encode(data!.buffer.asUint8List());
-      });
       await pump(
         tester,
-        config: server(color: ServerColor.red, iconImage: png),
+        config: server(color: ServerColor.red),
+        density: SidebarKitDensity.comfortable,
       );
-      final frame = tester.widget<DecoratedBox>(
-        find.descendant(
-          of: find.byType(ServerRailMark),
-          matching: find.byWidgetPredicate(
-            (w) =>
-                w is DecoratedBox &&
-                w.position == DecorationPosition.foreground,
-          ),
-        ),
-      );
-      final border = (frame.decoration as BoxDecoration).border! as Border;
-      expect(
-        border.top.color,
-        serverAccent(
-          tester.element(find.byType(ServerRailMark)),
-          const ServerTint(named: ServerColor.red),
-        )!.line,
-      );
+      expect(tester.widget<ServerBadge>(find.byType(ServerBadge)).size, 32);
     });
+
+    for (final density in SidebarKitDensity.values) {
+      testWidgets('${density.name}: the colour runs down the row as its '
+          'accent line, image marks included', (tester) async {
+        // An image covers the badge's fill; the line is the carrier every
+        // kind of mark keeps, so an image needs no frame of its own.
+        final png = await tester.runAsync(() async {
+          final recorder = ui.PictureRecorder();
+          ui.Canvas(recorder).drawRect(
+            const ui.Rect.fromLTWH(0, 0, 8, 8),
+            ui.Paint()..color = const ui.Color(0xFF00FF00),
+          );
+          final picture = recorder.endRecording();
+          final image = await picture.toImage(8, 8);
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          picture.dispose();
+          image.dispose();
+          return base64Encode(data!.buffer.asUint8List());
+        });
+        for (final config in [
+          server(color: ServerColor.red),
+          server(color: ServerColor.red, iconImage: png),
+        ]) {
+          await pump(tester, config: config, density: density);
+          final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
+          expect(
+            row.accent,
+            serverAccent(
+              tester.element(find.byType(SidebarRow)),
+              const ServerTint(named: ServerColor.red),
+            )!.line,
+          );
+          expect(
+            find.descendant(
+              of: find.byType(ServerRailMark),
+              matching: find.byWidgetPredicate(
+                (w) =>
+                    w is DecoratedBox &&
+                    w.position == DecorationPosition.foreground,
+              ),
+            ),
+            findsNothing,
+            reason: 'the line carries the colour; a frame would say it twice',
+          );
+        }
+
+        await pump(tester, density: density);
+        expect(
+          tester.widget<SidebarRow>(find.byType(SidebarRow)).accent,
+          isNull,
+        );
+      });
+    }
   });
 
   group('the dot', () {
@@ -242,6 +311,55 @@ void main() {
           semantics.dispose();
         }
       });
+    }
+  });
+
+  testWidgets('only a connected row wears the green ring around its mark, '
+      'in either density, beside its dot', (tester) async {
+    for (final density in SidebarKitDensity.values) {
+      await pump(tester, dot: ServerDot.connected, density: density);
+      final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
+      final online = StatusColors.online(
+        tester.element(find.byType(SidebarRow)),
+      );
+      expect(row.markRing, online, reason: density.name);
+      expect(row.status?.color, online, reason: 'the ring joins the dot');
+
+      for (final dot in ServerDot.values) {
+        if (dot == ServerDot.connected) continue;
+        await pump(tester, dot: dot, density: density);
+        expect(
+          tester.widget<SidebarRow>(find.byType(SidebarRow)).markRing,
+          isNull,
+          reason: '$dot, ${density.name}',
+        );
+      }
+    }
+  });
+
+  testWidgets('a blocked row says what unblocks it, to a pointer and a '
+      'screen reader', (tester) async {
+    final semantics = tester.ensureSemantics();
+    try {
+      await pump(tester, dot: ServerDot.blocked);
+      final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
+      expect(row.status?.style, SidebarDotStyle.blocked);
+      expect(row.tooltip, contains(ServerDot.blocked.detail));
+      final label = tester
+          .getSemantics(
+            find
+                .descendant(
+                  of: find.byType(SidebarRow),
+                  matching: find.byType(Listener),
+                )
+                .first,
+          )
+          .getSemanticsData()
+          .label;
+      expect(label, contains('Connection blocked'));
+      expect(label, contains(ServerDot.blocked.detail));
+    } finally {
+      semantics.dispose();
     }
   });
 
@@ -397,7 +515,7 @@ void main() {
         tester,
         config: at('box.example.com', 2222),
         platform: TargetPlatform.android,
-        showAddress: true,
+        density: SidebarKitDensity.comfortable,
       );
       expect(find.text('deploy@box.example.com:2222'), findsOneWidget);
 
@@ -405,7 +523,7 @@ void main() {
         tester,
         config: at('fe80::1', 22),
         platform: TargetPlatform.android,
-        showAddress: true,
+        density: SidebarKitDensity.comfortable,
       );
       expect(find.text('deploy@[fe80::1]'), findsOneWidget);
       // The full address keeps the brackets too, where the port follows.
@@ -419,10 +537,43 @@ void main() {
       );
     });
 
+    testWidgets('the sheet names the server and its second line, even '
+        'where the row drew only one', (tester) async {
+      // A compact touch row has no second line and no hover tooltip: the
+      // sheet is where the address can still be read.
+      await pump(
+        tester,
+        platform: TargetPlatform.android,
+        dot: ServerDot.failed,
+      );
+      expect(
+        find.text('Connection failed · deploy@box.example.com'),
+        findsNothing,
+      );
+      await tester.longPress(find.byType(SidebarRow));
+      await tester.pumpAndSettle();
+      final sheet = find.byType(BottomSheet);
+      expect(
+        find.descendant(of: sheet, matching: find.text('box')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: sheet,
+          matching: find.text('Connection failed · deploy@box.example.com'),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('on touch a long-press opens the same verbs as a sheet', (
       tester,
     ) async {
-      await pump(tester, platform: TargetPlatform.android, showAddress: true);
+      await pump(
+        tester,
+        platform: TargetPlatform.android,
+        density: SidebarKitDensity.comfortable,
+      );
       // The touch home spells the address out (SSH's default port left
       // implied, as Poltergeist's Home does), and is 48 dp or more.
       expect(find.text('deploy@box.example.com'), findsOneWidget);

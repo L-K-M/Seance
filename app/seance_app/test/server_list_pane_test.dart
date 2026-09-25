@@ -12,13 +12,32 @@ import 'package:seance_app/services/app_services.dart';
 import 'package:seance_app/services/xterm_engine.dart';
 import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/app_menus.dart';
+import 'package:seance_app/ui/server_grouping.dart';
 import 'package:seance_app/ui/server_list_density.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_app/ui/server_status_dot.dart';
 import 'package:seance_app/ui/server_tile.dart';
 import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
 
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+/// A session the app believes is open, without a network.
+class _OpenSshSession implements SshSession {
+  _OpenSshSession(this.engine);
+
+  @override
+  final TerminalEngine engine;
+
+  @override
+  bool get isClosed => false;
+
+  @override
+  Future<void> close() => engine.dispose();
+
+  @override
+  Object? noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 /// The pane in its two postures: the desktop rail (the sibling sidebar
 /// anatomy, Poltergeist's plan 10 §5) and the phone home (§9), whose
@@ -320,22 +339,38 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(rendered(tester), ['b']);
-      expect(find.text('1 of 8'), findsOneWidget);
+      expect(find.text('1 of 8 · ↵ opens the first'), findsOneWidget);
     });
 
-    testWidgets('the filter shows at eight servers, not before', (
-      tester,
-    ) async {
+    testWidgets('the filter shows at five servers, not before', (tester) async {
       final field = find.byKey(const ValueKey('servers.filter.field'));
       await boot(tester, [
-        for (final name in ['a', 'b', 'c', 'd', 'e', 'f', 'g']) server(name),
+        for (final name in ['a', 'b', 'c', 'd']) server(name),
       ]);
       await pumpRail(tester);
       expect(field, findsNothing);
 
-      await tester.runAsync(() => state!.saveServer(server('h')));
+      await tester.runAsync(() => state!.saveServer(server('e')));
       await tester.pumpAndSettle();
       expect(field, findsOneWidget);
+    });
+
+    testWidgets('the count says what Enter does, and only when there is '
+        'something to open', (tester) async {
+      await boot(tester, [
+        for (final name in ['alpha', 'bravo', 'charlie', 'delta', 'echo'])
+          server(name),
+      ]);
+      await pumpRail(tester);
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+
+      await tester.enterText(field, 'ha');
+      await tester.pumpAndSettle();
+      expect(find.text('2 of 5 · ↵ opens the first'), findsOneWidget);
+
+      await tester.enterText(field, 'zzz');
+      await tester.pumpAndSettle();
+      expect(find.text('0 of 5'), findsOneWidget);
     });
 
     for (final platform in [TargetPlatform.macOS, TargetPlatform.linux]) {
@@ -379,6 +414,54 @@ void main() {
         expect(field, findsNothing);
       });
     }
+
+    testWidgets('with nothing to filter a reveal is refused, and does not '
+        'pop the field open once the first server arrives', (tester) async {
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+      await boot(tester, []);
+      await pumpRail(tester);
+
+      expect(
+        ServerListPane.revealFilter(),
+        isFalse,
+        reason: 'the chord found nothing to reveal and must say so',
+      );
+      await tester.pumpAndSettle();
+      expect(field, findsNothing);
+
+      await tester.runAsync(() => state!.saveServer(server('alpha')));
+      await tester.pumpAndSettle();
+      expect(
+        field,
+        findsNothing,
+        reason: 'a refused reveal must not latch the field open for later',
+      );
+    });
+
+    testWidgets('a reveal made before the list emptied does not reopen the '
+        'field when the next server arrives', (tester) async {
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+      await boot(tester, [server('alpha'), server('bravo')]);
+      await pumpRail(tester);
+      expect(ServerListPane.revealFilter(), isTrue);
+      await tester.pumpAndSettle();
+      expect(field, findsOneWidget);
+
+      await tester.runAsync(() async {
+        await state!.deleteServer('alpha');
+        await state!.deleteServer('bravo');
+      });
+      await tester.pumpAndSettle();
+      expect(field, findsNothing);
+
+      await tester.runAsync(() => state!.saveServer(server('charlie')));
+      await tester.pumpAndSettle();
+      expect(
+        field,
+        findsNothing,
+        reason: 'emptying the list ends the reveal, as it drops the query',
+      );
+    });
 
     testWidgets('Windows leaves AltGr+F to text input: AltGr arrives as '
         'Ctrl + right Alt, and "[" is AltGr+F on Czech and other layouts', (
@@ -430,6 +513,84 @@ void main() {
           tile.server.label: tile.selected,
       };
       expect(selected, {'alpha': false, 'bravo': true});
+    });
+
+    testWidgets('a session refused at a changed host key marks its row '
+        'blocked, not merely failed', (tester) async {
+      await boot(tester, [server('alpha'), server('bravo')]);
+      TerminalSession failed(String id, String serverId) => TerminalSession(
+        id: id,
+        serverId: serverId,
+        config: state!.servers.firstWhere((s) => s.id == serverId),
+        engine: XtermTerminalEngine(),
+        connecting: false,
+        error: 'SSH error connecting',
+      );
+      state!.tabs.addAll([
+        failed('t1', 'alpha')..hostKeyBlocked = true,
+        failed('t2', 'bravo'),
+      ]);
+      await pumpRail(tester);
+      final dots = {
+        for (final tile in tester.widgetList<ServerTile>(
+          find.byType(ServerTile),
+        ))
+          tile.server.label: tile.dot,
+      };
+      expect(dots, {'alpha': ServerDot.blocked, 'bravo': ServerDot.failed});
+    });
+
+    testWidgets('a folded group or a filter keeps a live connection in '
+        'view, as a dot on the header that hides it', (tester) async {
+      await boot(tester, [
+        server('db', group: 'Production'),
+        server('web', group: 'Production'),
+        server('alpha'),
+        server('bravo'),
+      ]);
+      final tab = TerminalSession(
+        id: 't',
+        serverId: 'db',
+        config: state!.servers.firstWhere((s) => s.id == 'db'),
+        engine: XtermTerminalEngine(),
+        connecting: false,
+      );
+      tab.session = _OpenSshSession(tab.engine);
+      state!.tabs.add(tab);
+      await pumpRail(tester);
+      final online = StatusColors.online(
+        tester.element(find.byType(ServerListPane)),
+      );
+      SidebarStatusDot? dotOn(String key) =>
+          tester.widget<SidebarSectionHeader>(find.byKey(ValueKey(key))).status;
+      final production = 'servers.group.${serverGroupKey('Production')}';
+      const servers = 'servers.section.$kServersKey';
+
+      // In view, the row carries its own dot; the headers carry none.
+      expect(dotOn(production), isNull);
+      expect(dotOn(servers), isNull);
+
+      await tester.tap(find.text('Production'));
+      await tester.pumpAndSettle();
+      expect(dotOn(production)?.color, online);
+      expect(
+        dotOn(servers),
+        isNull,
+        reason: 'the group row already shows it; SERVERS would say it twice',
+      );
+
+      await tester.tap(find.text('Production'));
+      await tester.pumpAndSettle();
+      expect(ServerListPane.revealFilter(), isTrue);
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('servers.filter.field')),
+        'alpha',
+      );
+      await tester.pumpAndSettle();
+      // The filter dropped db and its group's row: SERVERS holds the dot.
+      expect(find.text('Production'), findsNothing);
+      expect(dotOn(servers)?.color, online);
     });
 
     testWidgets('the sync chip says what sync is doing', (tester) async {
@@ -512,6 +673,34 @@ void main() {
       );
       expect(Focus.of(tester.element(add)).hasPrimaryFocus, isTrue);
       await press(LogicalKeyboardKey.tab);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['alpha']);
+    });
+
+    testWidgets('the arrows walk comfortable rows past their "⋮"', (
+      tester,
+    ) async {
+      // Comfortable is the default, and it draws every row's "⋮".
+      await boot(tester, [server('alpha'), server('mike'), server('zulu')]);
+      final opened = <String>[];
+      await pumpRail(tester, onOpen: (config) => opened.add(config.id));
+      Future<void> press(LogicalKeyboardKey key) async {
+        await tester.sendKeyEvent(key);
+        await tester.pumpAndSettle();
+      }
+
+      await tester.tap(find.text('alpha'));
+      await tester.pumpAndSettle();
+      opened.clear();
+
+      await press(LogicalKeyboardKey.arrowDown);
+      await press(LogicalKeyboardKey.arrowDown);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['zulu']);
+      opened.clear();
+
+      await press(LogicalKeyboardKey.arrowUp);
+      await press(LogicalKeyboardKey.arrowUp);
       await press(LogicalKeyboardKey.enter);
       expect(opened, ['alpha']);
     });

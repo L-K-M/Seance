@@ -23,12 +23,12 @@ import 'top_toast.dart';
 enum ServerListPosture {
   /// The wide layout's left rail: the sibling sidebar anatomy (Poltergeist's
   /// plan, 10 §5) with no app bar, a filter field at the top and the bottom
-  /// bar's "+" menu, sync status and gear at the foot.
+  /// bar's "+" menu, sync status, density switch and gear at the foot.
   rail,
 
   /// The narrow layout's home screen, full screen (10 §9, §10.6): an app
-  /// bar, the same sections and rows at the platform's row extent, and a
-  /// "+" button that adds a server.
+  /// bar with the density switch, the same sections and rows at the
+  /// platform's row extent, and a "+" button that adds a server.
   home,
 }
 
@@ -44,6 +44,8 @@ final SidebarKitStrings serverSidebarStrings = SidebarKitStrings(
   addMenu: 'New server or import',
   settings: 'Sync & settings',
   rowMenu: 'More actions',
+  compactRows: 'Compact rows',
+  comfortableRows: 'Comfortable rows',
 );
 
 /// The configured servers with their live state, in the sibling rail's
@@ -59,21 +61,25 @@ class ServerListPane extends StatefulWidget {
   });
 
   /// Below this many servers the list is short enough to read at a glance
-  /// and the filter would just be chrome (10 §5). The field still shows while
-  /// a query is live, and on demand through [revealFilter].
-  static const int filterThreshold = 8;
+  /// and the filter would just be chrome. Five, as both sibling apps had it
+  /// before the kit (and Poltergeist again now), so a phone with a handful
+  /// of servers, which has no chord to reveal the field, still gets one.
+  /// The field still shows while a query is live, and on demand through
+  /// [revealFilter].
+  static const int filterThreshold = 5;
 
   static final List<_ServerListPaneState> _mounted = [];
 
   /// Show and focus the filter field of the pane on screen (⌥⌘F, or
   /// Ctrl+Alt+F off Apple platforms). Returns false when no pane is mounted
-  /// to take it. The newest pane wins: during the narrow layout's screen
-  /// switch the outgoing one is still mounted, and is not the one the user
-  /// is looking at.
+  /// to take it, or when its list has nothing to filter: the onboarding
+  /// state draws no field, and a reveal remembered from then would pop one
+  /// open the moment the first server arrived. The newest pane wins: during
+  /// the narrow layout's screen switch the outgoing one is still mounted,
+  /// and is not the one the user is looking at.
   static bool revealFilter() {
     if (_mounted.isEmpty) return false;
-    _mounted.last._revealFilter();
-    return true;
+    return _mounted.last._revealFilter();
   }
 
   @override
@@ -141,12 +147,16 @@ class _ServerListPaneState extends State<ServerListPane> {
 
   void _clearQuery() => _setQuery('');
 
-  void _revealFilter() {
+  /// Opens and focuses the field; false, with nothing latched, while the
+  /// list is empty (see [ServerListPane.revealFilter]).
+  bool _revealFilter() {
+    if (AppScope.of(context).servers.isEmpty) return false;
     setState(() => _filterOpen = true);
     // The field may be mounting in this very frame: focus it after.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _filterFocus.requestFocus();
     });
+    return true;
   }
 
   /// Esc: a live query clears first; an empty field then hands control back
@@ -161,12 +171,15 @@ class _ServerListPaneState extends State<ServerListPane> {
   }
 
   /// Drop a stale query once the list it filtered is empty, so adding a server
-  /// afterwards shows it instead of "No servers match". Deferred to after the
-  /// frame because this is observed from inside a build.
+  /// afterwards shows it instead of "No servers match", and end a reveal with
+  /// it, so the field does not come back unasked with that server. Deferred to
+  /// after the frame because this is observed from inside a build.
   void _dropStaleQuery() {
-    if (_query.isEmpty) return;
+    if (_query.isEmpty && !_filterOpen) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _query.isNotEmpty) _clearQuery();
+      if (!mounted) return;
+      if (_query.isNotEmpty) _clearQuery();
+      if (_filterOpen) setState(() => _filterOpen = false);
     });
   }
 
@@ -206,12 +219,12 @@ class _ServerListPaneState extends State<ServerListPane> {
 
   bool get _home => widget.posture == ServerListPosture.home;
 
-  /// The phone home draws as an Android list — 56 dp rows, 40 dp discs,
-  /// the address as a second line — the same list Poltergeist's compact
-  /// Home uses (sibling contract §10.6). The compact density keeps the
-  /// denser one-line touch rows, and the desktop rail and a narrow
-  /// desktop window stay rail-drawn.
-  SidebarKitLayout _layoutFor(BuildContext context, AppState state) {
+  /// The phone home at [density] (the kit's [sidebarHomeLayout]): an
+  /// Android list when comfortable, the same list Poltergeist's Home uses
+  /// (sibling contract §10.6), and one-line touch rows when compact. The
+  /// rail, on a desktop or a tablet, and a narrow desktop window are
+  /// rail-drawn at either density.
+  SidebarKitLayout _layoutFor(BuildContext context, SidebarKitDensity density) {
     final touch = switch (Theme.of(context).platform) {
       TargetPlatform.android ||
       TargetPlatform.iOS ||
@@ -220,11 +233,7 @@ class _ServerListPaneState extends State<ServerListPane> {
       TargetPlatform.macOS ||
       TargetPlatform.windows => false,
     };
-    return _home &&
-            touch &&
-            state.serverListDensity == ServerListDensity.comfortable
-        ? SidebarKitLayout.list
-        : SidebarKitLayout.rail;
+    return _home && touch ? sidebarHomeLayout(density) : SidebarKitLayout.rail;
   }
 
   @override
@@ -236,12 +245,18 @@ class _ServerListPaneState extends State<ServerListPane> {
         : chrome.sidebarBackground;
     final body = ListenableBuilder(
       listenable: state,
-      builder: (context, _) => SidebarKitScope(
-        strings: serverSidebarStrings,
-        background: background,
-        layout: _layoutFor(context, state),
-        child: Builder(builder: (context) => _body(context, state)),
-      ),
+      builder: (context, _) {
+        // The one density gate: every posture follows the preference, and
+        // the kit derives what each density draws from it.
+        final density = state.serverListDensity.kit;
+        return SidebarKitScope(
+          strings: serverSidebarStrings,
+          background: background,
+          layout: _layoutFor(context, density),
+          density: density,
+          child: Builder(builder: (context) => _body(context, state)),
+        );
+      },
     );
     // A Material rather than a bare fill: the filter field and the kit's
     // buttons ink on it, and the rail must not depend on a Scaffold above.
@@ -256,9 +271,24 @@ class _ServerListPaneState extends State<ServerListPane> {
             builder: (context, _) =>
                 _SyncIndicator(state: state, onRetry: () => _syncNow(state)),
           ),
+          // The kit's switch, as the rail's bottom bar draws it. The app
+          // bar sits outside the list's scope, so it gets one of its own
+          // for the switch's strings and the current density.
           ListenableBuilder(
             listenable: state,
-            builder: (context, _) => _DensitySwitch(state: state),
+            builder: (context, _) => SidebarKitScope(
+              strings: serverSidebarStrings,
+              density: state.serverListDensity.kit,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Center(
+                  child: SidebarDensitySwitch(
+                    key: const ValueKey('servers.density'),
+                    onChanged: (density) => _setDensity(state, density),
+                  ),
+                ),
+              ),
+            ),
           ),
           IconButton(
             tooltip: 'Import SSH config',
@@ -324,9 +354,13 @@ class _ServerListPaneState extends State<ServerListPane> {
             // A no-op on an empty query, so Enter in an empty field cannot
             // connect to whichever server is first.
             onSubmitted: _openFirstMatch,
+            // Enter opens nothing without a match, so the hint is only
+            // offered when it would.
             countText: _query.isEmpty
                 ? null
-                : '${matches.length} of ${servers.length}',
+                : matches.isEmpty
+                ? '0 of ${servers.length}'
+                : '${matches.length} of ${servers.length} · ↵ opens the first',
           ),
         Expanded(child: list),
         if (!_home)
@@ -347,6 +381,8 @@ class _ServerListPaneState extends State<ServerListPane> {
               ),
             ],
             sync: _syncChip(state),
+            onDensityChanged: (density) => _setDensity(state, density),
+            densityKey: const ValueKey('servers.density'),
             onSettings: () => _openSettings(context),
           ),
       ],
@@ -365,6 +401,12 @@ class _ServerListPaneState extends State<ServerListPane> {
       // away behind a header the user never opened — which reads as the filter
       // being broken rather than as the list being tidy.
       collapsedKeys: _query.isEmpty ? state.collapsedServerGroups : const {},
+    );
+    // What each header folds or filters out of view, measured against the
+    // whole list, so a hidden live session still shows on its header.
+    final hidden = hiddenByHeader(
+      sections: _sections(state, state.servers),
+      rows: rows,
     );
     // The home screen lets the ListView take the ambient insets (the
     // gesture-nav bar on Android) and extends the bottom one by the floating
@@ -401,6 +443,7 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: title,
                 count: count,
                 collapsed: collapsed,
+                status: _hiddenLiveDot(context, state, hidden[key]),
                 onToggle: () => state.toggleServerGroup(key),
                 // SERVERS' "+" adds to it; the shortlist is filled from a
                 // row's menu, so PINNED has none. The home screen's floating
@@ -424,6 +467,7 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: name,
                 count: count,
                 collapsed: collapsed,
+                status: _hiddenLiveDot(context, state, hidden[key]),
                 onToggle: () => state.toggleServerGroup(key),
               ),
             ServerRow(:final server, :final depth) => _tile(
@@ -435,6 +479,30 @@ class _ServerListPaneState extends State<ServerListPane> {
           },
       ],
     );
+  }
+
+  /// A header's dot for the live sessions it keeps out of view: green while
+  /// one of [servers] is connected, amber while one is connecting. A
+  /// failure is left to its row: folding a group is a choice not to look,
+  /// and what must not vanish with it is a connection still open.
+  SidebarStatusDot? _hiddenLiveDot(
+    BuildContext context,
+    AppState state,
+    List<ServerConfig>? servers,
+  ) {
+    if (servers == null) return null;
+    final live = {
+      for (final server in servers)
+        for (final tab in state.tabsForServer(server.id))
+          if (tab is TerminalSession) tab.status,
+    };
+    final dot = live.contains(TerminalStatus.connected)
+        ? ServerDot.connected
+        : live.contains(TerminalStatus.connecting)
+        ? ServerDot.connecting
+        : null;
+    if (dot == null) return null;
+    return SidebarStatusDot(dot.color(context)!, style: dot.style);
   }
 
   Widget _tile(
@@ -459,14 +527,14 @@ class _ServerListPaneState extends State<ServerListPane> {
       dot: serverDotFor(
         session: session,
         probe: state.statuses[server.id] ?? ProbeStatus.unknown,
+        hostKeyBlocked: terminals.any(
+          (t) => t.status == TerminalStatus.error && t.hostKeyBlocked,
+        ),
       ),
       tabCount: tabs.length,
       selected: server.id == state.activeServerId,
       pinned: state.isServerPinned(server.id),
       depth: depth,
-      showAddress:
-          _home && state.serverListDensity == ServerListDensity.comfortable,
-      showMenuButton: _home,
       onOpen: () => widget.onOpen(server),
       onNewTab: () => state.newTab(server),
       onEdit: () => _editServer(context, state, server),
@@ -484,6 +552,11 @@ class _ServerListPaneState extends State<ServerListPane> {
       onReconnect: dead ? () => state.reconnect(terminals.single.id) : null,
     );
   }
+
+  /// The switch's pick, persisted on this device (the list rebuilds from
+  /// the state it notifies).
+  void _setDensity(AppState state, SidebarKitDensity density) =>
+      unawaited(state.setServerListDensity(ServerListDensity.fromKit(density)));
 
   /// One sync round now: the chip's retry. The outcome lands in the shared
   /// sync status the chip repaints from, so nothing is lost by not awaiting
@@ -822,57 +895,6 @@ class _UpdateBanner extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The home screen's view control: whether a row spells its address out on a
-/// second line.
-///
-/// A segmented button rather than a menu: both choices are in view, the
-/// current one is the filled segment, and switching is one tap. A third
-/// density would be a third segment, which is why the segments are built
-/// from the enum rather than written out. The rail has no such control: its
-/// rows are one line by the sibling anatomy, with the address in the tooltip.
-class _DensitySwitch extends StatelessWidget {
-  final AppState state;
-  const _DensitySwitch({required this.state});
-
-  /// A switch rather than a ternary because a third density is addable: a
-  /// ternary would draw it with the comfortable icon while its own tooltip
-  /// said otherwise, and nothing would complain.
-  static IconData _icon(ServerListDensity density) => switch (density) {
-    ServerListDensity.comfortable => Icons.density_medium,
-    ServerListDensity.compact => Icons.density_small,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Center(
-        child: SegmentedButton<ServerListDensity>(
-          segments: [
-            for (final density in ServerListDensity.values)
-              ButtonSegment(
-                value: density,
-                icon: Icon(_icon(density)),
-                // The label, as a tooltip: icons alone fit the app bar, and
-                // the tooltip is also what a screen reader gets.
-                tooltip: density.label,
-              ),
-          ],
-          selected: {state.serverListDensity},
-          showSelectedIcon: false,
-          // Tightened to the app bar: at its default size the button is as
-          // tall as the bar's icons' tap targets and visibly heavier. The
-          // tap target itself is left to the theme, which pads it to 48 on
-          // touch platforms and shrink-wraps it on desktop.
-          style: const ButtonStyle(visualDensity: VisualDensity.compact),
-          onSelectionChanged: (selection) =>
-              state.setServerListDensity(selection.single),
         ),
       ),
     );
