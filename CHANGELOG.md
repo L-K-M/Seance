@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Settings opens in a window of its own on macOS, Linux and Windows,
+  instead of covering the app. Choosing Settings again (⌘, or Ctrl+,, the
+  gear, "Sync off") brings it forward on that tab; closing it keeps the
+  app as it was. Phones and tablets keep the full-screen Settings. A
+  change on General or Files that cannot be saved now says so.
 - Server list: rebuilt on the sidebar Séance now shares with Poltergeist.
   On desktop the list is a rail with no app bar: PINNED, then SERVERS with
   groups as nested disclosure rows (folds persist), rows with the server's

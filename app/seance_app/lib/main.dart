@@ -1,13 +1,16 @@
 import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_state.dart';
 import 'services/app_services.dart';
 import 'services/secure_master_key.dart';
+import 'services/settings_window.dart';
 import 'services/window_state.dart';
+import 'settings_window_app.dart';
 import 'theme.dart';
 import 'ui/adaptive_shell.dart';
 import 'ui/app_menus.dart';
@@ -17,8 +20,18 @@ import 'ui/top_toast.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-Future<void> main() async {
+/// Opens Settings in its own window, on desktop once the app has started.
+/// Null on mobile, where Settings is a route, and before bootstrap finishes.
+SettingsWindowHost? settingsWindowHost;
+
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // The settings window's engine runs this same entrypoint, and gets the
+  // Settings screen rather than a second copy of the app.
+  if (args.contains(settingsWindowArgument)) {
+    await runSettingsWindow();
+    return;
+  }
   // Put the desktop window back where it was closed (size, monitor,
   // maximized/full-screen) before the first frame, and keep tracking it.
   // On macOS this is also what makes the hidden-at-launch window visible.
@@ -114,6 +127,9 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
 
     await state.load();
     if (Platform.isMacOS) installMacMenu(state);
+    if (!kIsWeb && (Platform.isMacOS || Platform.isLinux || Platform.isWindows)) {
+      settingsWindowHost = SettingsWindowHost(state);
+    }
     _warnIfSettingsWereRecovered(state);
     _warnIfKeystoreUnavailable(state);
     // Fire-and-forget: don't let a slow/offline update check hold up startup.

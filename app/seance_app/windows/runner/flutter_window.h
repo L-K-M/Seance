@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "settings_window.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -28,6 +29,10 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Settings in a window of its own. Destroyed before flutter_controller_,
+  // whose engine it relays for.
+  std::unique_ptr<SettingsWindowHost> settings_window_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
