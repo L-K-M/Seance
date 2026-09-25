@@ -28,9 +28,11 @@
   hides a connected server shows its dot on the header (a filter that
   hides a whole section keeps its header for that, as Poltergeist's
   does); a changed host key you declined marks the row blocked rather
-  than failed; the filter's count says "↵ opens the first" again; the
-  long-press sheet shows the row's second line under its name; and the
-  filter chord no longer latches the field open on an empty list.
+  than failed (a key-exchange signature that fails on an unchanged key
+  is an ordinary failure, not a block); the filter's count says "↵ opens
+  the first" again; the long-press sheet shows the row's second line
+  under its name; and the filter chord no longer latches the field open
+  on an empty list.
 - Android: the system back button on the narrow terminal screen returns to
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving

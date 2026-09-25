@@ -100,23 +100,33 @@ list). The "⋮" is the kit's default: drawn when comfortable or on touch.
 Headers draw their count, chevron and SERVERS' "+" at rest when
 comfortable.
 
-**Blocked.** A connect refused at the host-key check of a host this
-device had pinned (a changed key the user declined) sets
-`TerminalSession.hostKeyBlocked`, from the core's new
-`SshConnectException.isHostKeyRefusal` plus the pinned-key lookup; a
-declined first use stays an ordinary failure. Its row draws the kit's
-blocked dot (the no-entry sign Poltergeist uses) and says "Connection
-blocked" with what unblocks it. dartssh2 does not throw its host-key
-error: it reports an authentication abort that carries it as the
-reason, so `isHostKeyRefusal` unwraps that. The first cut checked only
-the bare error and never matched a real connection;
+**Blocked.** A connect whose host-key prompt was shown a changed key
+(the verdict `changed`) and answered no, because the user declined or
+the unwired prompt refused by default, sets
+`TerminalSession.hostKeyBlocked`; a declined first use stays an ordinary
+failure. `_connect` wraps the prompt per attempt (`_HostKeyAttempt` in
+`app_state.dart`) and reads the verdict and answer from there. It first
+read the error instead, the core's `SshConnectException.isHostKeyRefusal`
+plus a pinned-key lookup, but dartssh2 raises the same host-key error for
+an RSA or ECDSA key-exchange signature that fails to verify, and checks
+that before the key reaches the prompt, so a pinned host whose key never
+changed read as blocked. That is now an ordinary failure, its error shown.
+`isHostKeyRefusal` stays in the core unchanged (Poltergeist consumes the
+core through a git pin); the app no longer reads it. Its row draws the
+kit's blocked dot (the no-entry sign Poltergeist uses) and says
+"Connection blocked" with what unblocks it. dartssh2 does not throw its
+host-key error: it reports an authentication abort that carries it as
+the reason, so `isHostKeyRefusal` unwraps that. The first cut checked
+only the bare error and never matched a real connection;
 `ssh_host_key_refusal_test.dart` now drives dartssh2's real key
 exchange through a fixture socket, and a check against a local OpenSSH
-`sshd` gave the verdict `changed` and a refusal. A key-exchange
-signature that fails to verify is not promised to count: dartssh2
-raises the same host-key error for RSA and ECDSA keys, but an internal
-error for ed25519. The app half (the dot and the copy) is tested apart,
-with `hostKeyBlocked` set directly.
+`sshd` gave the verdict `changed` and a refusal. The app half is tested
+in `host_key_blocked_test.dart`, which replays a handshake at
+`AppState`'s `openSshSession` seam: the key goes through the real TOFU
+check and prompt (`SshSessionManager.verifyHostKey`), and the failure is
+built from dartssh2's own error types (an app dev dependency now, pinned
+like the core's). The dot and the copy are tested apart, with
+`hostKeyBlocked` set directly.
 
 **Hidden live sessions.** A folded group, or a filter, that hides a
 connected or connecting server puts its dot on the header hiding it
@@ -997,6 +1007,11 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
 - `app/seance_app/test/server_status_dot_test.dart` — the shared dot
   mapping (live session over probe; solid for sessions, ring for probe
   observations) and the tab aggregation behind it.
+- `app/seance_app/test/host_key_blocked_test.dart`: a session is
+  blocked only when its own prompt refused a changed key (declined, or
+  the unwired prompt's default); a declined first use, an accepted key
+  that then fails, and a host-key error on the unchanged pinned key are
+  ordinary failures, and a reconnect is decided by its own prompt.
 - `app/seance_app/test/server_list_pane_test.dart` — the rail (no app
   bar; the bottom bar's "+" menu, sync chip states and gear; sections
   and nesting; folds persisting; the filter at five servers, its

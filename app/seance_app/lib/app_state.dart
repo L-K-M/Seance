@@ -116,11 +116,13 @@ class TerminalSession extends PaneTab {
   bool connecting;
   String? error;
 
-  /// The failure in [error] was the host-key check refusing a key other than
-  /// the one this device pinned for the host: a changed key the user
-  /// declined, or one whose signature did not verify. The server is blocked
-  /// until its key is reviewed at the next attempt, which the list shows
-  /// apart from an ordinary failure.
+  /// The attempt that failed with [error] had its host-key prompt refuse a
+  /// key other than the one this device pinned for the host: the user
+  /// declined the changed key, or the prompt, not wired yet, refused it. The
+  /// server is blocked until its key is reviewed at the next attempt, which
+  /// the list shows apart from an ordinary failure. A key-exchange signature
+  /// that fails to verify is an ordinary failure, although dartssh2 reports
+  /// it with the same host-key error.
   bool hostKeyBlocked = false;
 
   /// Live transcript of the current/last connection attempt, shown in the
@@ -354,12 +356,67 @@ bool secretStillReferenced(
   required String excludingId,
 }) => servers.any((s) => s.id != excludingId && s.secretRef == secretRef);
 
+/// Opens a terminal's SSH session through [manager]. The app connects for
+/// real ([SshSessionManager.connect]); a test replays a handshake instead,
+/// putting the host key to [SshSessionManager.verifyHostKey], the check
+/// dartssh2 calls.
+typedef SshSessionOpener =
+    Future<SshSession> Function(
+      SshSessionManager manager, {
+      required ServerConfig config,
+      required SshCredentials credentials,
+      required TerminalEngine engine,
+      SshConnectionLog? log,
+    });
+
+Future<SshSession> _connectThrough(
+  SshSessionManager manager, {
+  required ServerConfig config,
+  required SshCredentials credentials,
+  required TerminalEngine engine,
+  SshConnectionLog? log,
+}) => manager.connect(
+  config: config,
+  credentials: credentials,
+  engine: engine,
+  log: log,
+);
+
+/// What the host-key prompt decided during one connection attempt: the one
+/// place a refused *changed* key can be told apart. The failure cannot tell
+/// it: dartssh2 fails an attempt with the same host-key error when the
+/// prompt says no and when a key-exchange signature does not verify (RSA,
+/// ECDSA host keys), and it checks the signature before the key reaches the
+/// prompt, so a pinned key that never changed can fail that way too.
+class _HostKeyAttempt {
+  _HostKeyAttempt(this._ask);
+
+  final HostKeyPrompter _ask;
+  HostKeyVerdict? _verdict;
+  bool? _approved;
+
+  /// [_ask], noting the verdict it is shown and the answer it gives.
+  Future<bool> prompt(HostKeyDecision decision) async {
+    _verdict = decision.verdict;
+    _approved = null;
+    final approved = await _ask(decision);
+    _approved = approved;
+    return approved;
+  }
+
+  /// The prompt was shown a key other than the pinned one and said no.
+  /// False while its answer is pending, so an attempt that timed out with
+  /// the prompt still open reads as the timeout it was.
+  bool get refusedChangedKey =>
+      _verdict == HostKeyVerdict.changed && _approved == false;
+}
+
 /// Top-level app state: the server list, live reachability, and the open
 /// terminal sessions. A server may have several sessions (tabs); the UI is a
 /// thin `ListenableBuilder` over this.
 class AppState extends ChangeNotifier {
   final AppServices services;
-  late final SshSessionManager _sessionManager;
+  final SshSessionOpener _openSshSession;
 
   List<ServerConfig> servers = [];
   List<Snippet> snippets = [];
@@ -435,18 +492,14 @@ class AppState extends ChangeNotifier {
   /// it and drop every live SSH connection. No-op on other platforms.
   final BackgroundKeepAlive _keepAlive;
 
+  /// [openSshSession] replaces the SSH handshake, for tests.
   AppState(
     this.services, {
     UpdateChecker? updateChecker,
     BackgroundKeepAlive? keepAlive,
+    this._openSshSession = _connectThrough,
   }) : _updateChecker = updateChecker ?? UpdateChecker(),
-       _keepAlive = keepAlive ?? BackgroundKeepAlive() {
-    _sessionManager = SshSessionManager(
-      tofu: services.tofu,
-      onHostKey: _promptForHostKey,
-      onKeyboardInteractive: _promptKeyboardInteractive,
-    );
-  }
+       _keepAlive = keepAlive ?? BackgroundKeepAlive();
 
   /// The host-key prompt as the SSH layer wants it, reading [hostKeyPrompter]
   /// at call time so the root widget can wire it after this state exists.
@@ -1178,9 +1231,17 @@ class AppState extends ChangeNotifier {
   Future<void> _connect(TerminalSession tab) async {
     final engine = tab.engine;
     final log = tab.log;
+    // The attempt's own record of the prompt, so two tabs opening one host
+    // at once each keep their own answer.
+    final hostKey = _HostKeyAttempt(_promptForHostKey);
     try {
       final credentials = await services.resolveCredentials(tab.config);
-      final session = await _sessionManager.connect(
+      final session = await _openSshSession(
+        SshSessionManager(
+          tofu: services.tofu,
+          onHostKey: hostKey.prompt,
+          onKeyboardInteractive: _promptKeyboardInteractive,
+        ),
         config: tab.config,
         credentials: credentials,
         engine: engine,
@@ -1253,25 +1314,17 @@ class AppState extends ChangeNotifier {
         if (!session.isClosed) session.resize(TerminalSize(w, h));
       };
     } catch (e) {
-      // A declined *first* use pins nothing, so a pinned key is what makes a
-      // host-key refusal a changed key rather than a stranger turned away.
-      // Looked up only for that refusal: every other failure stays
-      // synchronous here.
-      final blocked =
-          e is SshConnectException &&
-          e.isHostKeyRefusal &&
-          await _hostKeyPinned(tab.config);
       if (!identical(tabById(tab.id), tab)) return;
       tab.connecting = false;
       tab.error = e is SshConnectException ? e.message : e.toString();
-      tab.hostKeyBlocked = blocked;
+      // From the prompt's answer, not the error's shape (see
+      // [_HostKeyAttempt]). A changed verdict needs a pinned key, so no
+      // lookup of the pin is needed either.
+      tab.hostKeyBlocked = hostKey.refusedChangedKey;
     }
     notifyListeners();
     _refreshKeepAlive();
   }
-
-  Future<bool> _hostKeyPinned(ServerConfig config) async =>
-      await services.tofu.store.get(config.host, config.port) != null;
 
   /// Retry a session that failed or dropped: replace it in place with a fresh
   /// connection (new engine, new id) at the same tab position, disposing the

@@ -122,7 +122,7 @@ packages:
     source: hosted
     version: "2.9.0"
   dartssh2:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: dartssh2
       sha256: fdc8e5e47c88473525e90ba11fbc2234a47d3788de010061d0b49de7e12a3c24
