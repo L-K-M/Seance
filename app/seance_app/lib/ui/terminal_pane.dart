@@ -1120,8 +1120,16 @@ class _SessionViewState extends State<_SessionView> {
   /// Note: on macOS the native Edit menu claims ⌘C/⌘V/⌘A at the OS level, so
   /// those never reach here — the right-click menu is the reliable path there.
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final keys = HardwareKeyboard.instance;
+    // Off Apple platforms the terminal keeps the server filter's chord,
+    // repeats included (see the ⌥⌘F note below).
+    if (!(Platform.isMacOS || Platform.isIOS) &&
+        serverFilterActivator(
+          Theme.of(context).platform,
+        ).accepts(event, keys)) {
+      return KeyEventResult.skipRemainingHandlers;
+    }
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
     if (event.logicalKey == LogicalKeyboardKey.keyK &&
         (keys.isMetaPressed ||
@@ -1141,7 +1149,13 @@ class _SessionViewState extends State<_SessionView> {
     // The server filter's ⌥⌘F: ⌘ never reaches the shell, so it is safe to
     // take here, where xterm would otherwise send the Alt+F underneath it.
     // Off Apple platforms the chord is Ctrl+Alt+F, which a shell (or an
-    // editor running in it) may bind, so the terminal keeps it.
+    // editor running in it) may bind, so the terminal keeps it: xterm has
+    // no bytes for Ctrl+Alt+letter, and an ignored key would bubble on to
+    // AppMenus and pull focus out of the shell into the filter. Skipping
+    // the remaining handlers stops it here while leaving the key
+    // unhandled, so the platform still delivers any character it types:
+    // Windows reports AltGr as Ctrl+Alt, and AltGr+F is "[" on Czech,
+    // Slovak, Hungarian and other layouts.
     if (apple &&
         keys.isMetaPressed &&
         keys.isAltPressed &&

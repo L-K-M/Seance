@@ -91,8 +91,9 @@ probe's "unreachable", which the contract leaves open, is a hollow red
 ring. Right-click opens the verbs at the pointer (Connect, Connect in new
 tab, Disconnect, Reconnect for a lone dead tab, Pin to top or Unpin,
 Edit…, Duplicate, Delete…), Shift+F10 and the Menu key open them with
-focus inside, and a connected row shows an eject glyph on hover. ⌘- or
-Ctrl-click opens another tab. The filter shows at eight servers (it was
+focus inside, and a connected row shows an eject glyph on hover. ⌘-click
+(Ctrl-click off Apple platforms, where Control-click is the secondary
+click) opens another tab. The filter shows at eight servers (it was
 five), while a query is live, or on ⌥⌘F (Ctrl+Alt+F off Apple
 platforms, where the terminal keeps the chord for the shell); Esc
 clears, then closes, and Enter opens the first row shown. The bottom bar

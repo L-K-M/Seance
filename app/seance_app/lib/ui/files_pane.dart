@@ -250,7 +250,13 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
   /// root. The app bar's arrow still leaves from anywhere (see [FilesScreen]).
   /// After a failed listing (a parent the user may not read, say) back
   /// leaves too, so it can never get stuck retrying the same folder.
+  ///
+  /// Android only: it is the one platform with a system back. On iOS (and
+  /// macOS, whose page transition is Cupertino's too) back is the edge
+  /// swipe, which Flutter disables outright on a route that vetoes its pop,
+  /// so a swipe below the root would do nothing at all instead of leaving.
   Widget _systemBackGoesUp(RemoteFilesController controller, Widget child) {
+    if (Theme.of(context).platform != TargetPlatform.android) return child;
     return PopScope(
       canPop: !controller.canGoUp || controller.error != null,
       onPopInvokedWithResult: (didPop, _) {

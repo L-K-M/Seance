@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -255,6 +257,35 @@ void main() {
     expect(find.byType(FilesScreen), findsNothing);
     expect(find.byType(TerminalPane), findsOneWidget);
     expect(files.currentPath, '/home/test');
+  });
+
+  testWidgets('iOS: the edge swipe leaves Files from any folder', (
+    tester,
+  ) async {
+    // Climbing on back is Android's system back. A route that vetoes its
+    // pop loses the iOS edge swipe entirely (Flutter disables the gesture
+    // for RoutePopDisposition.doNotPop), which would leave the swipe doing
+    // nothing below the root.
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      final session = await pumpNarrowShell(tester);
+      final files = await connectFiles(tester, session);
+      await openTerminal(tester);
+      await tester.tap(find.byTooltip('Remote files'));
+      await settle(tester);
+      expect(files.currentPath, '/home/test');
+      final route = ModalRoute.of(tester.element(find.byType(FilesScreen)))!;
+      expect(route.popGestureEnabled, isTrue);
+
+      await tester.dragFrom(const Offset(4, 400), const Offset(380, 0));
+      await settle(tester);
+
+      expect(find.byType(FilesScreen), findsNothing);
+      expect(find.byType(TerminalPane), findsOneWidget);
+      expect(files.currentPath, '/home/test');
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('system back closes the terminal screen\'s drawer first', (

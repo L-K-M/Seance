@@ -134,19 +134,28 @@ class ServerTile extends StatelessWidget {
         if (tabCount > 1) '$tabCount tabs',
         if (excluded) excludedDescription,
       ].join(', '),
-      onActivate: (how) => _activate(how),
+      onActivate: (how) => _activate(how, Theme.of(context).platform),
       menuEntries: _verbs,
     );
   }
 
   /// A plain click opens (or returns to) the server's session; ⌘-click, or
   /// Ctrl-click off Apple platforms, opens another tab, as ⌘T does.
-  void _activate(SidebarActivation how) {
+  ///
+  /// On a Mac, Control-click is the secondary click, but the embedder
+  /// delivers it as a primary click with Control held. It must not open a
+  /// tab or connect anything; turning it into the row's context menu is
+  /// the sidebar kit's job, as right-click is.
+  void _activate(SidebarActivation how, TargetPlatform platform) {
     final keys = HardwareKeyboard.instance;
-    if (how == SidebarActivation.pointer &&
-        (keys.isMetaPressed || keys.isControlPressed)) {
-      onNewTab();
-      return;
+    final apple =
+        platform == TargetPlatform.macOS || platform == TargetPlatform.iOS;
+    if (how == SidebarActivation.pointer) {
+      if (apple ? keys.isMetaPressed : keys.isControlPressed) {
+        onNewTab();
+        return;
+      }
+      if (apple && keys.isControlPressed) return;
     }
     onOpen();
   }
