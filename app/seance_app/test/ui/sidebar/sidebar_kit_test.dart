@@ -622,7 +622,7 @@ void main() {
       expect(ringed(), isNull);
     });
 
-    testWidgets('on touch the row is 48 dp and the menu button opens the '
+    testWidgets('on touch the row is 40 dp and the menu button opens the '
         'sheet', (tester) async {
       var opened = 0;
       await _pump(
@@ -642,7 +642,7 @@ void main() {
         ),
         platform: TargetPlatform.android,
       );
-      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 48);
+      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 40);
       await tester.tap(find.byTooltip('kit-more'));
       await tester.pumpAndSettle();
       expect(find.byType(BottomSheet), findsOneWidget);
@@ -715,6 +715,38 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       expect(dismissed, 1);
     });
+
+    // The fill is the field's visible extent: a decorator left at its
+    // intrinsic height inside the taller box drew a sliver of a field on a
+    // phone, with the rest of its height as an empty gap beneath it.
+    for (final (platform, extent) in [
+      (TargetPlatform.macOS, 26.0),
+      (TargetPlatform.android, 44.0),
+    ]) {
+      testWidgets('fills its whole ${extent.toInt()} px on ${platform.name}', (
+        tester,
+      ) async {
+        await _pump(
+          tester,
+          SidebarFilterField(
+            fieldKey: const ValueKey('f'),
+            query: '',
+            onChanged: (_) {},
+            onDismiss: () {},
+          ),
+          platform: platform,
+        );
+        // The decorator's private border container is what paints the fill.
+        final fill = find.descendant(
+          of: find.byKey(const ValueKey('f')),
+          matching: find.byWidgetPredicate(
+            (widget) => widget.runtimeType.toString() == '_BorderContainer',
+            description: "InputDecorator's fill-painting _BorderContainer",
+          ),
+        );
+        expect(tester.getSize(fill).height, extent);
+      });
+    }
   });
 
   group('SidebarBottomBar', () {
@@ -1246,7 +1278,7 @@ void main() {
     testWidgets('a touch rail follows the density too', (tester) async {
       for (final (density, extent, mark, glyphSize, twoLines) in [
         (SidebarKitDensity.comfortable, 56.0, 32.0, 22.0, true),
-        (SidebarKitDensity.compact, 48.0, 24.0, 20.0, false),
+        (SidebarKitDensity.compact, 40.0, 24.0, 20.0, false),
       ]) {
         await _pump(
           tester,

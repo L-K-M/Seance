@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- On phones and tablets, the server filter field is full height again
+  instead of a thin strip above an empty gap, and compact server rows
+  are 40 dp instead of 48.
 - Settings opens in a window of its own on macOS, Linux and Windows,
   instead of covering the app. Choosing Settings again (⌘, or Ctrl+,, the
   gear, "Sync off") brings it forward on that tab; closing it keeps the
