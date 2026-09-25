@@ -40,10 +40,14 @@ Future<void> _loadRealFonts() async {
   }
 
   // Server glyphs and the chrome's icons are MaterialIcons codepoints; the
-  // font ships inside the Flutter SDK.
+  // font ships inside the Flutter SDK. `flutter test` exports FLUTTER_ROOT;
+  // run bare, the tester sits at bin/cache/artifacts/engine/<host>/ below
+  // the SDK root, six levels up from the executable.
   final flutterRoot =
       Platform.environment['FLUTTER_ROOT'] ??
-      File(Platform.resolvedExecutable).parent.parent.parent.parent.parent.path;
+      File(
+        Platform.resolvedExecutable,
+      ).parent.parent.parent.parent.parent.parent.path;
   final icons = File(
     '$flutterRoot/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
   );
