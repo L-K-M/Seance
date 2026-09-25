@@ -242,7 +242,7 @@ void main() {
         () => state!.setServerListDensity(ServerListDensity.compact),
       );
       await tester.pumpAndSettle();
-      expect(tester.getSize(find.byType(ServerTile)).height, 48);
+      expect(tester.getSize(find.byType(ServerTile)).height, 40);
       expect(find.text('deploy@alpha.example.com'), findsNothing);
       expect(
         find.byTooltip(serverSidebarStrings.rowMenu),

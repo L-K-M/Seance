@@ -58,12 +58,13 @@ const double _pillRadius = 6;
 /// The touch counterparts of the desktop tokens above. A header is a
 /// button (it folds its section), so on touch it grows toward a finger's
 /// target without taking a full row's height; the icon buttons and the
-/// filter field grow the same way.
+/// filter field grow the same way (the field to a comfortable 44, since it
+/// is typed into rather than just tapped).
 const double _touchSectionHeaderExtent = 36;
 const double _touchBottomBarExtent = 48;
 const double _touchIconButtonExtent = 40;
 const double _filterExtent = 26;
-const double _touchFilterExtent = 40;
+const double _touchFilterExtent = 44;
 
 /// A comfortable desktop group's disclosure row: a row among 52 px rows,
 /// so it grows past a section caption's 22 px.
@@ -151,8 +152,9 @@ const _compactDesktop = _RowMetrics(
   accentGap: 4,
 );
 
-/// Compact on touch: Material's 48 dp rows, the mark and dot scaled with
-/// them.
+/// Compact on touch: 40 dp rows, Material's dense list item (compact is
+/// the density picked to fit more rows than the 56 dp list), the mark and
+/// dot scaled with them.
 const _compactTouch = _RowMetrics(
   rowExtent: null,
   markExtent: 24,
@@ -224,8 +226,8 @@ const _listMetrics = _RowMetrics(
 );
 
 /// How the kit lays itself out, set once on [SidebarKitScope]. [rail] is
-/// the sidebar column: the spec's pixel sizes on desktop, Material's
-/// 48 dp rows on touch. [list] is a phone's full-screen home list, drawn
+/// the sidebar column: the spec's pixel sizes on desktop, 40 dp rows on
+/// touch. [list] is a phone's full-screen home list, drawn
 /// like the platform's own lists so it matches the screens it opens:
 /// 56 dp rows under a 40 dp mark, a 16 sp title, and Material list
 /// subheaders (48 dp, 14 sp in the accent colour, as authored rather than
@@ -2003,7 +2005,7 @@ class _SidebarFilterFieldState extends State<SidebarFilterField> {
     final theme = Theme.of(context);
     final touch = _touch(context);
     final small = touch
-        ? theme.textTheme.bodyMedium
+        ? theme.textTheme.bodyLarge
         : theme.textTheme.bodySmall;
     final count = widget.query.isEmpty ? null : widget.countText;
     return Padding(
@@ -2063,7 +2065,11 @@ class _SidebarFilterFieldState extends State<SidebarFilterField> {
             style: small,
             textAlignVertical: TextAlignVertical.center,
             decoration: InputDecoration(
-              isDense: true,
+              // Not dense, so the fill grows to the box above (a
+              // non-dense container rises toward 48 px, capped by the
+              // box). Dense, it painted at its 20 px intrinsic height and
+              // left the rest of the extent as an empty gap beneath.
+              isDense: false,
               filled: true,
               fillColor: chrome.capsuleFill,
               contentPadding: const EdgeInsets.symmetric(horizontal: 6),
@@ -2071,7 +2077,7 @@ class _SidebarFilterFieldState extends State<SidebarFilterField> {
               hintStyle: small?.copyWith(color: chrome.secondaryText),
               prefixIcon: Icon(
                 Icons.search,
-                size: touch ? 18 : 14,
+                size: touch ? 20 : 14,
                 color: chrome.secondaryText,
               ),
               prefixIconConstraints: BoxConstraints(

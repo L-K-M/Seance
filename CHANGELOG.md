@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- On phones and tablets, the server filter field is full height again
+  instead of a thin strip above an empty gap, and compact server rows
+  are 40 dp instead of 48.
+
 - Colour that means something, shared with Poltergeist: each colour
   names one kind of thing in both apps, so you find things by colour
   before you read them. The side panel's tabs are the Assistant purple,
