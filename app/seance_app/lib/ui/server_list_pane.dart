@@ -69,13 +69,14 @@ class ServerListPane extends StatefulWidget {
 
   /// Show and focus the filter field of the pane on screen (⌥⌘F, or
   /// Ctrl+Alt+F off Apple platforms). Returns false when no pane is mounted
-  /// to take it. The newest pane wins: during the narrow layout's screen
-  /// switch the outgoing one is still mounted, and is not the one the user
-  /// is looking at.
+  /// to take it, or when its list has nothing to filter: the onboarding
+  /// state draws no field, and a reveal remembered from then would pop one
+  /// open the moment the first server arrived. The newest pane wins: during
+  /// the narrow layout's screen switch the outgoing one is still mounted,
+  /// and is not the one the user is looking at.
   static bool revealFilter() {
     if (_mounted.isEmpty) return false;
-    _mounted.last._revealFilter();
-    return true;
+    return _mounted.last._revealFilter();
   }
 
   @override
@@ -143,12 +144,16 @@ class _ServerListPaneState extends State<ServerListPane> {
 
   void _clearQuery() => _setQuery('');
 
-  void _revealFilter() {
+  /// Opens and focuses the field; false, with nothing latched, while the
+  /// list is empty (see [ServerListPane.revealFilter]).
+  bool _revealFilter() {
+    if (AppScope.of(context).servers.isEmpty) return false;
     setState(() => _filterOpen = true);
     // The field may be mounting in this very frame: focus it after.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _filterFocus.requestFocus();
     });
+    return true;
   }
 
   /// Esc: a live query clears first; an empty field then hands control back

@@ -380,6 +380,29 @@ void main() {
       });
     }
 
+    testWidgets('with nothing to filter a reveal is refused, and does not '
+        'pop the field open once the first server arrives', (tester) async {
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+      await boot(tester, []);
+      await pumpRail(tester);
+
+      expect(
+        ServerListPane.revealFilter(),
+        isFalse,
+        reason: 'the chord found nothing to reveal and must say so',
+      );
+      await tester.pumpAndSettle();
+      expect(field, findsNothing);
+
+      await tester.runAsync(() => state!.saveServer(server('alpha')));
+      await tester.pumpAndSettle();
+      expect(
+        field,
+        findsNothing,
+        reason: 'a refused reveal must not latch the field open for later',
+      );
+    });
+
     testWidgets('Windows leaves AltGr+F to text input: AltGr arrives as '
         'Ctrl + right Alt, and "[" is AltGr+F on Czech and other layouts', (
       tester,
