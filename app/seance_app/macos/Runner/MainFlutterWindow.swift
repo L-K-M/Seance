@@ -19,6 +19,15 @@ class MainFlutterWindow: NSWindow {
   /// terminal, and otherwise fall back to the native behaviour (text fields).
   private var terminalFocused = false
 
+  /// View ▸ "Use Compact Sidebar Rows" / "Use Comfortable Sidebar Rows": one
+  /// item whose title Dart owns and sets to the density it would switch to,
+  /// so the copy lives in one place. Hidden (with its separator) until Dart
+  /// has named it; Dart may name it before the menu is built, hence the
+  /// title kept on its own.
+  private var densityItem: NSMenuItem?
+  private var densitySeparator: NSMenuItem?
+  private var densityTitle: String?
+
   override func awakeFromNib() {
     // Séance is single-window; disabling automatic window tabbing stops AppKit
     // from injecting a View menu full of tab commands ("Show Tab Bar", etc.).
@@ -37,12 +46,18 @@ class MainFlutterWindow: NSWindow {
       name: "seance/menu",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
 
-    // Dart → native: track whether a terminal is focused (see `terminalFocused`).
+    // Dart → native: track whether a terminal is focused (see
+    // `terminalFocused`), and title the View menu's density item.
     menuChannel?.setMethodCallHandler { [weak self] call, result in
-      if call.method == "setTerminalFocused" {
+      switch call.method {
+      case "setTerminalFocused":
         self?.terminalFocused = (call.arguments as? Bool) ?? false
         result(nil)
-      } else {
+      case "setServerListDensityTitle":
+        self?.densityTitle = call.arguments as? String
+        self?.applyDensityTitle()
+        result(nil)
+      default:
         result(FlutterMethodNotImplemented)
       }
     }
@@ -157,9 +172,9 @@ class MainFlutterWindow: NSWindow {
 
   /// Keep the storyboard's standard menus (Edit, Window, Help, …) and add our
   /// own: rewire the app menu's Preferences item to open Settings, add Terminal
-  /// items for New Tab (⌘T) and Generate Command… (⌘K), and route Edit ▸
-  /// Copy/Paste/Select All through us so they can reach the terminal — all fire
-  /// back into Dart.
+  /// items for New Tab (⌘T) and Generate Command… (⌘K), put the server list's
+  /// density switch at the top of View, and route Edit ▸ Copy/Paste/Select All
+  /// through us so they can reach the terminal — all fire back into Dart.
   private func installMenuItems() {
     guard let mainMenu = NSApp.mainMenu else { return }
 
@@ -199,7 +214,30 @@ class MainFlutterWindow: NSWindow {
       mainMenu.addItem(terminalItem)
     }
 
+    if let viewMenu = mainMenu.items.first(where: { $0.title == "View" })?.submenu {
+      let density = NSMenuItem(
+        title: "",
+        action: #selector(didSelectToggleDensity),
+        keyEquivalent: "")
+      density.target = self
+      let separator = NSMenuItem.separator()
+      viewMenu.insertItem(density, at: 0)
+      viewMenu.insertItem(separator, at: 1)
+      densityItem = density
+      densitySeparator = separator
+      applyDensityTitle()
+    }
+
     retargetEditMenu(mainMenu)
+  }
+
+  /// Title the density item with the latest name from Dart, or keep it (and
+  /// its separator) hidden while there is none.
+  private func applyDensityTitle() {
+    let title = densityTitle ?? ""
+    densityItem?.title = title
+    densityItem?.isHidden = title.isEmpty
+    densitySeparator?.isHidden = title.isEmpty
   }
 
   /// Retarget the standard Edit menu's Copy / Paste / Select All to our own
@@ -363,5 +401,9 @@ class MainFlutterWindow: NSWindow {
 
   @objc private func didSelectGenerateCommand() {
     menuChannel?.invokeMethod("generateCommand", arguments: nil)
+  }
+
+  @objc private func didSelectToggleDensity() {
+    menuChannel?.invokeMethod("toggleServerListDensity", arguments: nil)
   }
 }
