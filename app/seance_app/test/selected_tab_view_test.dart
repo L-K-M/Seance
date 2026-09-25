@@ -117,6 +117,40 @@ void main() {
     expect(primary, isNot(same(screens)));
   });
 
+  testWidgets('a hidden page gives up focus and cannot take it back', (
+    tester,
+  ) async {
+    final tabs = TabController(length: 2, vsync: const TestVSync());
+    addTearDown(tabs.dispose);
+    final field = FocusNode();
+    addTearDown(field.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SelectedTabView(
+            controller: tabs,
+            children: [TextField(focusNode: field), const TextField()],
+          ),
+        ),
+      ),
+    );
+    await tester.enterText(find.byType(TextField), 'half-typed');
+    expect(field.hasFocus, isTrue);
+
+    // Switched in code, with no tap to move focus to the tab bar first.
+    tabs.index = 1;
+    await tester.pump();
+    expect(field.hasFocus, isFalse);
+
+    field.requestFocus();
+    await tester.pump();
+    expect(field.hasFocus, isFalse);
+
+    tabs.index = 0;
+    await tester.pump();
+    expect(find.text('half-typed'), findsOneWidget);
+  });
+
   testWidgets('a scrolled page keeps its offset, and only the showing page '
       'is on the primary scroll controller', (tester) async {
     Widget rows(String name) => ListView(
