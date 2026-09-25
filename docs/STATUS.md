@@ -100,14 +100,22 @@ Headers draw their count, chevron and SERVERS' "+" at rest when
 comfortable.
 
 **Blocked.** A connect refused at the host-key check of a host this
-device had pinned (a changed key the user declined, or a signature that
-did not verify) sets `TerminalSession.hostKeyBlocked`, from the core's
-new `SshConnectException.isHostKeyRefusal` plus the pinned-key lookup; a
+device had pinned (a changed key the user declined) sets
+`TerminalSession.hostKeyBlocked`, from the core's new
+`SshConnectException.isHostKeyRefusal` plus the pinned-key lookup; a
 declined first use stays an ordinary failure. Its row draws the kit's
 blocked dot (the no-entry sign Poltergeist uses) and says "Connection
-blocked" with what unblocks it. Not verified end to end: there is no SSH
-server fake to refuse a key in the widget tests, so the pieces are
-tested apart.
+blocked" with what unblocks it. dartssh2 does not throw its host-key
+error: it reports an authentication abort that carries it as the
+reason, so `isHostKeyRefusal` unwraps that. The first cut checked only
+the bare error and never matched a real connection;
+`ssh_host_key_refusal_test.dart` now drives dartssh2's real key
+exchange through a fixture socket, and a check against a local OpenSSH
+`sshd` gave the verdict `changed` and a refusal. A key-exchange
+signature that fails to verify is not promised to count: dartssh2
+raises the same host-key error for RSA and ECDSA keys, but an internal
+error for ed25519. The app half (the dot and the copy) is tested apart,
+with `hostKeyBlocked` set directly.
 
 **Hidden live sessions.** A folded group, or a filter, that hides a
 connected or connecting server puts its dot on the header hiding it
@@ -135,7 +143,8 @@ first server arrived.
 comfortable and compact, the rail at its 200 px minimum, a tablet rail,
 the phone home and a narrow desktop window at both densities, and a
 folded group keeping its dot. Not verified: macOS (the View menu item,
-VoiceOver), a real tablet, and the blocked state against a real server.
+VoiceOver), a real tablet, and the blocked row in a running app against
+a real server (the core half was checked against a local `sshd`).
 
 ## The server list is the sibling sidebar (2026-09-24)
 
