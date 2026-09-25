@@ -13,6 +13,12 @@
 - On phones and tablets, the server filter field is full height again
   instead of a thin strip above an empty gap, and compact server rows
   are 40 dp instead of 48.
+- Tabs switch in place. Settings, the side panel and the server mark
+  picker showed the new tab by scrolling the content sideways to it, and
+  a sideways swipe or trackpad scroll flipped between tabs. The new tab
+  now simply appears, a swipe no longer changes tabs, and each tab keeps
+  what you left in it: a half-typed message, a search, the scroll
+  position.
 - Settings opens in a window of its own on macOS, Linux and Windows,
   instead of covering the app. Choosing Settings again (⌘, or Ctrl+,, the
   gear, "Sync off") brings it forward on that tab; closing it keeps the

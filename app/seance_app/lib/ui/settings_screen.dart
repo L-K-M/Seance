@@ -10,6 +10,7 @@ import '../services/settings_backend.dart';
 import '../services/system_fonts.dart';
 import 'appearance_settings.dart';
 import 'font_picker.dart';
+import 'selected_tab_view.dart';
 import 'settings_layout.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
@@ -245,7 +246,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           bottom: tabBar,
         ),
       },
-      body: TabBarView(
+      body: SelectedTabView(
         controller: _tabs,
         children: [
           _generalTab(),
