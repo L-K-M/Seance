@@ -25,6 +25,25 @@ void main() {
           serverDotFor(session: TerminalStatus.error, probe: probe),
           ServerDot.failed,
         );
+        // A failure at a changed host key blocks the server until the key
+        // is reviewed, which is not the same as a failure to retry.
+        expect(
+          serverDotFor(
+            session: TerminalStatus.error,
+            probe: probe,
+            hostKeyBlocked: true,
+          ),
+          ServerDot.blocked,
+        );
+        // Another tab still connected outranks it, as it outranks a failure.
+        expect(
+          serverDotFor(
+            session: TerminalStatus.connected,
+            probe: probe,
+            hostKeyBlocked: true,
+          ),
+          ServerDot.connected,
+        );
       }
     });
 
@@ -54,6 +73,7 @@ void main() {
         (ServerDot.connected, SidebarDotStyle.solid),
         (ServerDot.connecting, SidebarDotStyle.solid),
         (ServerDot.failed, SidebarDotStyle.solid),
+        (ServerDot.blocked, SidebarDotStyle.blocked),
         (ServerDot.reachable, SidebarDotStyle.ring),
         (ServerDot.unreachable, SidebarDotStyle.ring),
       ],
@@ -87,6 +107,7 @@ void main() {
       StatusColors.connecting(context),
     );
     expect(ServerDot.failed.color(context), StatusColors.offline(context));
+    expect(ServerDot.blocked.color(context), StatusColors.offline(context));
     expect(ServerDot.unreachable.color(context), StatusColors.offline(context));
   });
 

@@ -14,6 +14,7 @@ import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/app_menus.dart';
 import 'package:seance_app/ui/server_list_density.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_app/ui/server_status_dot.dart';
 import 'package:seance_app/ui/server_tile.dart';
 import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
@@ -453,6 +454,31 @@ void main() {
           tile.server.label: tile.selected,
       };
       expect(selected, {'alpha': false, 'bravo': true});
+    });
+
+    testWidgets('a session refused at a changed host key marks its row '
+        'blocked, not merely failed', (tester) async {
+      await boot(tester, [server('alpha'), server('bravo')]);
+      TerminalSession failed(String id, String serverId) => TerminalSession(
+        id: id,
+        serverId: serverId,
+        config: state!.servers.firstWhere((s) => s.id == serverId),
+        engine: XtermTerminalEngine(),
+        connecting: false,
+        error: 'SSH error connecting',
+      );
+      state!.tabs.addAll([
+        failed('t1', 'alpha')..hostKeyBlocked = true,
+        failed('t2', 'bravo'),
+      ]);
+      await pumpRail(tester);
+      final dots = {
+        for (final tile in tester.widgetList<ServerTile>(
+          find.byType(ServerTile),
+        ))
+          tile.server.label: tile.dot,
+      };
+      expect(dots, {'alpha': ServerDot.blocked, 'bravo': ServerDot.failed});
     });
 
     testWidgets('the sync chip says what sync is doing', (tester) async {

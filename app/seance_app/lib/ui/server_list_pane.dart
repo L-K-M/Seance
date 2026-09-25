@@ -468,6 +468,9 @@ class _ServerListPaneState extends State<ServerListPane> {
       dot: serverDotFor(
         session: session,
         probe: state.statuses[server.id] ?? ProbeStatus.unknown,
+        hostKeyBlocked: terminals.any(
+          (t) => t.status == TerminalStatus.error && t.hostKeyBlocked,
+        ),
       ),
       tabCount: tabs.length,
       selected: server.id == state.activeServerId,

@@ -293,6 +293,12 @@ class SshConnectException implements Exception {
 
   SshConnectException(this.message, this.cause, this.log);
 
+  /// The connection stopped at host-key verification: the user (or the
+  /// unwired prompt's safe default) declined the key the server presented,
+  /// or its signature did not verify. The app tells a refused *changed* key
+  /// apart from a declined first use by whether a key is pinned.
+  bool get isHostKeyRefusal => cause is SSHHostkeyError;
+
   @override
   String toString() => message;
 }

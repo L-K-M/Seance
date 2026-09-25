@@ -139,6 +139,7 @@ void main() {
     for (final (dot, line) in [
       (ServerDot.connecting, 'Connecting · deploy@box.example.com'),
       (ServerDot.failed, 'Connection failed · deploy@box.example.com'),
+      (ServerDot.blocked, 'Connection blocked · deploy@box.example.com'),
       (ServerDot.unreachable, 'Host unreachable · deploy@box.example.com'),
       // A healthy or unknown state says nothing the dot does not.
       (ServerDot.connected, 'deploy@box.example.com'),
@@ -333,6 +334,32 @@ void main() {
           reason: '$dot, ${density.name}',
         );
       }
+    }
+  });
+
+  testWidgets('a blocked row says what unblocks it, to a pointer and a '
+      'screen reader', (tester) async {
+    final semantics = tester.ensureSemantics();
+    try {
+      await pump(tester, dot: ServerDot.blocked);
+      final row = tester.widget<SidebarRow>(find.byType(SidebarRow));
+      expect(row.status?.style, SidebarDotStyle.blocked);
+      expect(row.tooltip, contains(ServerDot.blocked.detail));
+      final label = tester
+          .getSemantics(
+            find
+                .descendant(
+                  of: find.byType(SidebarRow),
+                  matching: find.byType(Listener),
+                )
+                .first,
+          )
+          .getSemanticsData()
+          .label;
+      expect(label, contains('Connection blocked'));
+      expect(label, contains(ServerDot.blocked.detail));
+    } finally {
+      semantics.dispose();
     }
   });
 

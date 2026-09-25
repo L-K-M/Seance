@@ -93,6 +93,7 @@ class ServerTile extends StatelessWidget {
   String get _subtitle => switch (dot) {
     ServerDot.connecting ||
     ServerDot.failed ||
+    ServerDot.blocked ||
     ServerDot.unreachable => '${dot.description} · $_subtitleAddress',
     ServerDot.none ||
     ServerDot.connected ||
@@ -104,6 +105,7 @@ class ServerTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = dot.description;
+    final detail = dot.detail;
     final excluded = server.excludeFromSync;
     return SidebarRow(
       mark: ServerRailMark(server: server),
@@ -138,11 +140,17 @@ class ServerTile extends StatelessWidget {
       // a compact row: the tooltip carries them for a pointer, the label
       // for a screen reader. The "⋮" is the kit's call (comfortable rows
       // and touch draw it).
-      tooltip: [_address, ?state, if (excluded) excludedDescription].join('\n'),
+      tooltip: [
+        _address,
+        ?state,
+        ?detail,
+        if (excluded) excludedDescription,
+      ].join('\n'),
       semanticLabel: [
         server.label,
         _address,
         ?state,
+        ?detail,
         if (tabCount > 1) '$tabCount tabs',
         if (excluded) excludedDescription,
       ].join(', '),

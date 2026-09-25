@@ -7,6 +7,8 @@
 /// - connected: solid green
 /// - connecting: solid amber
 /// - failed: solid red
+/// - blocked (the host key no longer matches the pinned one): a red dot
+///   crossed by a bar, the kit's no-entry sign, as Poltergeist draws it
 /// - reachable (the probe answered, nothing is connected): a hollow green
 ///   ring
 /// - unknown, or idle with no probe answer: no dot
@@ -29,6 +31,7 @@ enum ServerDot {
   connected,
   connecting,
   failed,
+  blocked,
   reachable,
   unreachable;
 
@@ -39,13 +42,24 @@ enum ServerDot {
     ServerDot.connected => 'Connected',
     ServerDot.connecting => 'Connecting',
     ServerDot.failed => 'Connection failed',
+    ServerDot.blocked => 'Connection blocked',
     ServerDot.reachable => 'Host reachable',
     ServerDot.unreachable => 'Host unreachable',
   };
 
-  /// Live session truth is solid; a probe's observation is a ring.
+  /// What to do about the state, where the state alone does not say it:
+  /// folded into the tooltip and label after [description].
+  String? get detail => switch (this) {
+    ServerDot.blocked =>
+      'The host key changed. Review it at the next connection attempt.',
+    _ => null,
+  };
+
+  /// Live session truth is solid; a probe's observation is a ring; a
+  /// refusal the user has to act on is the no-entry sign.
   SidebarDotStyle get style => switch (this) {
     ServerDot.reachable || ServerDot.unreachable => SidebarDotStyle.ring,
+    ServerDot.blocked => SidebarDotStyle.blocked,
     _ => SidebarDotStyle.solid,
   };
 
@@ -54,12 +68,15 @@ enum ServerDot {
     ServerDot.none => null,
     ServerDot.connected || ServerDot.reachable => StatusColors.online(context),
     ServerDot.connecting => StatusColors.connecting(context),
-    ServerDot.failed || ServerDot.unreachable => StatusColors.offline(context),
+    ServerDot.failed ||
+    ServerDot.blocked ||
+    ServerDot.unreachable => StatusColors.offline(context),
   };
 }
 
 /// The dot for a server whose terminal sessions aggregate to [session]
-/// (null when it has none) and whose last probe said [probe].
+/// (null when it has none) and whose last probe said [probe]; a failed
+/// session that [hostKeyBlocked] reads as blocked rather than failed.
 ///
 /// A live session outranks the probe: a connected server is connected even
 /// if the last probe timed out. A session that ended cleanly is idle, and
@@ -67,6 +84,7 @@ enum ServerDot {
 ServerDot serverDotFor({
   required TerminalStatus? session,
   required ProbeStatus probe,
+  bool hostKeyBlocked = false,
 }) {
   switch (session) {
     case TerminalStatus.connected:
@@ -74,7 +92,7 @@ ServerDot serverDotFor({
     case TerminalStatus.connecting:
       return ServerDot.connecting;
     case TerminalStatus.error:
-      return ServerDot.failed;
+      return hostKeyBlocked ? ServerDot.blocked : ServerDot.failed;
     case TerminalStatus.disconnected || null:
       return switch (probe) {
         ProbeStatus.online => ServerDot.reachable,

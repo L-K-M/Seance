@@ -116,6 +116,13 @@ class TerminalSession extends PaneTab {
   bool connecting;
   String? error;
 
+  /// The failure in [error] was the host-key check refusing a key other than
+  /// the one this device pinned for the host: a changed key the user
+  /// declined, or one whose signature did not verify. The server is blocked
+  /// until its key is reviewed at the next attempt, which the list shows
+  /// apart from an ordinary failure.
+  bool hostKeyBlocked = false;
+
   /// Live transcript of the current/last connection attempt, shown in the
   /// "connection log" details when a connection fails. Owned by the session so
   /// its trace lines drive [logNotifier] rather than the whole app.
@@ -1246,13 +1253,25 @@ class AppState extends ChangeNotifier {
         if (!session.isClosed) session.resize(TerminalSize(w, h));
       };
     } catch (e) {
+      // A declined *first* use pins nothing, so a pinned key is what makes a
+      // host-key refusal a changed key rather than a stranger turned away.
+      // Looked up only for that refusal: every other failure stays
+      // synchronous here.
+      final blocked =
+          e is SshConnectException &&
+          e.isHostKeyRefusal &&
+          await _hostKeyPinned(tab.config);
       if (!identical(tabById(tab.id), tab)) return;
       tab.connecting = false;
       tab.error = e is SshConnectException ? e.message : e.toString();
+      tab.hostKeyBlocked = blocked;
     }
     notifyListeners();
     _refreshKeepAlive();
   }
+
+  Future<bool> _hostKeyPinned(ServerConfig config) async =>
+      await services.tofu.store.get(config.host, config.port) != null;
 
   /// Retry a session that failed or dropped: replace it in place with a fresh
   /// connection (new engine, new id) at the same tab position, disposing the
@@ -1978,6 +1997,7 @@ class AppState extends ChangeNotifier {
     tab.session = null;
     tab.connecting = false;
     tab.error = null;
+    tab.hostKeyBlocked = false;
     notifyListeners();
     _refreshKeepAlive();
   }
