@@ -273,4 +273,15 @@ void main() {
       expect(await host.open(SettingsTab.general), isFalse);
     },
   );
+
+  test(
+    'a runner that could not create the window reports it, for the route',
+    () async {
+      messenger.setMockMethodCallHandler(_control, (call) async {
+        throw PlatformException(code: 'open_failed');
+      });
+
+      expect(await host.open(SettingsTab.general), isFalse);
+    },
+  );
 }

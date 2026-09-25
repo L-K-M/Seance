@@ -149,7 +149,9 @@ client builds compile the runners; neither has been run.
 (⌘K) still act on the app's window while Settings is key. Settings'
 window size and position are not remembered. Edit ▸ Copy/Paste now reach
 a terminal only when the app's window is key, so the Settings window's
-fields get the native actions.
+fields get the native actions. Closing the window discards what was typed
+into its fields and not saved, the API keys included; a reopened window
+starts from the settings as saved.
 
 ## Two views of the server list again (2026-09-25)
 

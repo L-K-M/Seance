@@ -163,9 +163,21 @@ class _SettingsScreenState extends State<SettingsScreen>
     _terminalFont.text = s.terminalFontFamily;
     _syncUrl.text = s.syncBaseUrl ?? '';
     _syncUser.text = s.syncUsername ?? '';
+    _listenForTabRequests();
+  }
+
+  void _listenForTabRequests() {
     _tabRequests = widget.tabRequests?.listen(
       (tab) => _tabs.animateTo(tab.index),
     );
+  }
+
+  @override
+  void didUpdateWidget(SettingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.tabRequests == oldWidget.tabRequests) return;
+    unawaited(_tabRequests?.cancel());
+    _listenForTabRequests();
   }
 
   @override
@@ -221,7 +233,6 @@ class _SettingsScreenState extends State<SettingsScreen>
       ),
     );
   }
-
 
   Widget _assistantTab() => _settingsPage(
     key: const PageStorageKey('assistant-settings'),
@@ -474,8 +485,9 @@ class _SettingsScreenState extends State<SettingsScreen>
                       .round(),
               value: _terminalFontSize,
               label: '${_terminalFontSize.round()} pt',
-              onChanged: (value) =>
-                  setState(() => _terminalFontSize = clampTerminalFontSize(value)),
+              onChanged: (value) => setState(
+                () => _terminalFontSize = clampTerminalFontSize(value),
+              ),
               onChangeEnd: (_) => _persistTerminalAppearance(),
             ),
           ),
@@ -985,7 +997,8 @@ class _SettingsScreenState extends State<SettingsScreen>
             : 'the API key';
         showTopToastIn(
           context,
-          message: 'Settings not saved — could not store $which: '
+          message:
+              'Settings not saved — could not store $which: '
               '${result.error}',
         );
         return;
@@ -993,7 +1006,10 @@ class _SettingsScreenState extends State<SettingsScreen>
         break;
     }
     if (result.publishError != null) {
-      showTopToastIn(context, message: 'Assistant sync: ${result.publishError}');
+      showTopToastIn(
+        context,
+        message: 'Assistant sync: ${result.publishError}',
+      );
     }
     if (result.keysStored) {
       // Cleared once stored, or the text left in the field makes every later
@@ -1032,14 +1048,14 @@ class _SettingsScreenState extends State<SettingsScreen>
                 'meanwhile. The fields show what is configured now; review '
                 'them and save again.'
           : result.reloadError != null
-              ? 'Saved — but the assistant could not be reloaded, so it is '
-                    'still running the previous configuration: '
-                    '${result.reloadError}'
-              : result.zaiWithoutKey
-                  ? 'Saved — but no Z.AI key could be read (none stored, or '
-                        'the keyring is locked), so Z.AI search will be '
-                        'skipped.'
-                  : 'Saved',
+          ? 'Saved — but the assistant could not be reloaded, so it is '
+                'still running the previous configuration: '
+                '${result.reloadError}'
+          : result.zaiWithoutKey
+          ? 'Saved — but no Z.AI key could be read (none stored, or '
+                'the keyring is locked), so Z.AI search will be '
+                'skipped.'
+          : 'Saved',
     );
   }
 
@@ -1073,7 +1089,10 @@ class _SettingsScreenState extends State<SettingsScreen>
         }
       });
       if (result.saveError != null) {
-        showTopToastIn(context, message: 'Sync preferences: ${result.saveError}');
+        showTopToastIn(
+          context,
+          message: 'Sync preferences: ${result.saveError}',
+        );
       } else if (result.assistantSyncError != null) {
         showTopToastIn(
           context,
@@ -1131,7 +1150,10 @@ class _SettingsScreenState extends State<SettingsScreen>
     final requested = _keepSessionsAlive;
     try {
       await _backend.setKeepSessionsAlive(requested);
-    } catch (_) {
+    } catch (e) {
+      if (mounted) {
+        showTopToastIn(context, message: 'Keep sessions alive not saved — $e');
+      }
       if (_keepSessionsAlive != requested) return;
       _keepSessionsAlive = !requested;
       if (mounted) setState(() {});

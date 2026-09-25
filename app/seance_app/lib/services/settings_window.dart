@@ -162,10 +162,17 @@ class SettingsWindowHost {
       await _control.invokeMethod<void>('open');
     } on MissingPluginException {
       return false;
+    } on PlatformException {
+      // The runner could not create the window: the route instead.
+      return false;
     }
     // A first window becomes visible when it says hello, which may already
     // have happened; one being shown again, here.
     if (_connected) _visible = true;
+    // A change made while `show` was in flight was not sent, since the
+    // window did not count as showing yet; the dedupe makes this a no-op
+    // when nothing changed.
+    _scheduleSnapshot();
     return true;
   }
 
@@ -212,14 +219,19 @@ class SettingsWindowHost {
     } on MissingPluginException {
       _connected = false;
       _lastSnapshot = null;
+    } on PlatformException {
+      // The window failed to apply it. Forgotten, so the next change sends
+      // it again rather than the dedupe skipping what never arrived; and
+      // caught, since nothing awaits this.
+      _lastSnapshot = null;
     }
   }
 
   Future<Object?> _handleLink(MethodCall call) async {
-    final Object? argument = call.arguments is String
-        ? jsonDecode(call.arguments as String)
-        : null;
     try {
+      final Object? argument = call.arguments is String
+          ? jsonDecode(call.arguments as String)
+          : null;
       final result = await _dispatch(call.method, argument);
       return result == null ? null : jsonEncode(result);
     } on MissingPluginException {
@@ -235,10 +247,11 @@ class SettingsWindowHost {
     Map<String, dynamic> map() => (argument! as Map).cast<String, dynamic>();
     switch (method) {
       case _Link.hello:
-        _connected = true;
-        _visible = true;
+        // Built first: a window whose hello failed is not connected.
         final snapshot = _snapshotOf(_backend);
         _lastSnapshot = jsonEncode(snapshot);
+        _connected = true;
+        _visible = true;
         return {'snapshot': snapshot, 'tab': _tab.name};
       case _Link.setCheckForUpdates:
         await _backend.setCheckForUpdates(argument! as bool);
@@ -328,14 +341,20 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   }) async {
     final backend = RemoteSettingsBackend._(link);
     link.setMethodCallHandler(backend._handle);
-    final hello = (await backend._call(_Link.hello))! as Map;
-    backend._apply((hello['snapshot'] as Map).cast<String, dynamic>());
-    backend.page = ValueNotifier(
-      SettingsWindowPage(
-        tab: SettingsTab.values.byName(hello['tab'] as String),
-        generation: 0,
-      ),
-    );
+    try {
+      final hello = (await backend._call(_Link.hello))! as Map;
+      backend._apply((hello['snapshot'] as Map).cast<String, dynamic>());
+      backend.page = ValueNotifier(
+        SettingsWindowPage(
+          tab: SettingsTab.values.byName(hello['tab'] as String),
+          generation: 0,
+        ),
+      );
+    } catch (_) {
+      // Nothing may reach a backend that never got its page.
+      link.setMethodCallHandler(null);
+      rethrow;
+    }
     return backend;
   }
 

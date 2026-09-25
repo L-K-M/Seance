@@ -136,8 +136,12 @@ SettingsWindowHost::SettingsWindowHost(HWND main_window,
           result->NotImplemented();
           return;
         }
-        Open();
-        result->Success();
+        if (Open()) {
+          result->Success();
+        } else {
+          // Dart falls back to the in-app Settings.
+          result->Error("open_failed", "The Settings window was not created");
+        }
       });
   main_messenger_->SetMessageHandler(
       kLinkChannel, [this](const uint8_t* message, size_t message_size,
@@ -159,13 +163,13 @@ SettingsWindowHost::~SettingsWindowHost() {
   window_ = nullptr;
 }
 
-void SettingsWindowHost::Open() {
+bool SettingsWindowHost::Open() {
   if (window_ && window_->GetHandle() != nullptr) {
     // Shows it again if it was closed, and brings it forward either way.
     HWND handle = window_->GetHandle();
     ShowWindow(handle, IsIconic(handle) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(handle);
-    return;
+    return true;
   }
 
   window_ = std::make_unique<SettingsFlutterWindow>(
@@ -185,13 +189,19 @@ void SettingsWindowHost::Open() {
   if (!window_->Create(kWindowTitle, origin,
                        Win32Window::Size(kDefaultWidth, kDefaultHeight))) {
     window_ = nullptr;
-    return;
+    return false;
   }
+  // Then placed in physical pixels, which the unsigned logical origin
+  // cannot carry for a monitor left of or above the primary one. Moved to a
+  // monitor of another scale, the window resizes itself (WM_DPICHANGED).
+  SetWindowPos(window_->GetHandle(), nullptr, x, y, 0, 0,
+               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
   // The owner: the settings window stays above the app's window and is
   // destroyed with it. Set after creation, the documented way to give an
   // overlapped window an owner.
   SetWindowLongPtr(window_->GetHandle(), GWLP_HWNDPARENT,
                    reinterpret_cast<LONG_PTR>(main_window_));
+  return true;
 }
 
 void SettingsWindowHost::OnWindowHidden() {

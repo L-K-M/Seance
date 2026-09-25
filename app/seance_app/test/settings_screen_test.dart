@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/services/app_settings.dart';
@@ -163,6 +165,33 @@ void main() {
 
     expect(find.text('Update check not saved — disk full'), findsOneWidget);
     await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('a failed keep-alive write says so and turns the switch back', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      backend.failWrites = const SettingsBackendException('disk full');
+      await pumpScreen(tester);
+      final toggle = find.widgetWithText(
+        SwitchListTile,
+        'Keep sessions alive in the background',
+      );
+      final before = tester.widget<SwitchListTile>(toggle).value;
+
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Keep sessions alive not saved — disk full'),
+        findsOneWidget,
+      );
+      expect(tester.widget<SwitchListTile>(toggle).value, before);
+      await tester.pump(const Duration(seconds: 5));
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('Save sends the form and clears a key once it is stored', (
