@@ -593,6 +593,151 @@ void main() {
       expect(dotOn(servers)?.color, online);
     });
 
+    testWidgets('a filter that hides a whole section keeps its header while '
+        'a live server is among the hidden, and a miss is still a miss', (
+      tester,
+    ) async {
+      await boot(tester, [
+        server('db', group: 'Production'),
+        server('star'),
+        server('alpha'),
+        server('bravo'),
+      ]);
+      services!.settings.pinnedServerIds.add('star');
+      final connected = TerminalSession(
+        id: 't1',
+        serverId: 'star',
+        config: state!.servers.firstWhere((s) => s.id == 'star'),
+        engine: XtermTerminalEngine(),
+        connecting: false,
+      );
+      connected.session = _OpenSshSession(connected.engine);
+      state!.tabs.addAll([
+        connected,
+        // Still connecting: live too, in amber.
+        TerminalSession(
+          id: 't2',
+          serverId: 'db',
+          config: state!.servers.firstWhere((s) => s.id == 'db'),
+          engine: XtermTerminalEngine(),
+        ),
+      ]);
+      final opened = <ServerConfig>[];
+      await pumpRail(tester, onOpen: opened.add);
+      final context = tester.element(find.byType(ServerListPane));
+      SidebarStatusDot? dotOn(String key) =>
+          tester.widget<SidebarSectionHeader>(find.byKey(ValueKey(key))).status;
+      const pinned = 'servers.section.$kPinnedKey';
+      const servers = 'servers.section.$kServersKey';
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+      expect(ServerListPane.revealFilter(), isTrue);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(field, 'alpha');
+      await tester.pumpAndSettle();
+      expect(rendered(tester), ['alpha']);
+      expect(
+        dotOn(pinned)?.color,
+        StatusColors.online(context),
+        reason: 'the filter hid all of PINNED, a connected server included',
+      );
+
+      await tester.enterText(field, 'zzz');
+      await tester.pumpAndSettle();
+      expect(rendered(tester), isEmpty);
+      expect(dotOn(pinned)?.color, StatusColors.online(context));
+      // db's group row is gone with it, so SERVERS carries its dot.
+      expect(dotOn(servers)?.color, StatusColors.connecting(context));
+      expect(find.text('Production'), findsNothing);
+      expect(find.text('No servers match'), findsOneWidget);
+      expect(find.text('0 of 4'), findsOneWidget);
+
+      // A kept header is not a match: Enter opens nothing.
+      await tester.testTextInput.receiveAction(TextInputAction.go);
+      await tester.pumpAndSettle();
+      expect(opened, isEmpty);
+    });
+
+    testWidgets('a section the filter empties with nothing live in it still '
+        'goes', (tester) async {
+      await boot(tester, [server('star'), server('alpha'), server('bravo')]);
+      services!.settings.pinnedServerIds.add('star');
+      final tab = TerminalSession(
+        id: 't',
+        serverId: 'alpha',
+        config: state!.servers.firstWhere((s) => s.id == 'alpha'),
+        engine: XtermTerminalEngine(),
+        connecting: false,
+      );
+      tab.session = _OpenSshSession(tab.engine);
+      state!.tabs.add(tab);
+      await pumpRail(tester);
+      const pinned = ValueKey('servers.section.$kPinnedKey');
+      const servers = ValueKey('servers.section.$kServersKey');
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+      expect(ServerListPane.revealFilter(), isTrue);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(field, 'zzz');
+      await tester.pumpAndSettle();
+      expect(find.byKey(pinned), findsNothing);
+      expect(find.byKey(servers), findsOneWidget);
+
+      await tester.enterText(field, 'star');
+      await tester.pumpAndSettle();
+      expect(rendered(tester), ['star']);
+      expect(find.byKey(pinned), findsOneWidget);
+      expect(find.byKey(servers), findsOneWidget);
+
+      // Nothing live left to hide: SERVERS goes, and a miss draws no header.
+      await tester.runAsync(() => state!.disconnect('t'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(servers), findsNothing);
+      await tester.enterText(field, 'zzz');
+      await tester.pumpAndSettle();
+      expect(find.byType(SidebarSectionHeader), findsNothing);
+      expect(find.text('No servers match'), findsOneWidget);
+    });
+
+    testWidgets('a folded group says what its dot means to a screen '
+        'reader', (tester) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        await boot(tester, [
+          server('db', group: 'Production'),
+          server('web', group: 'Production'),
+        ]);
+        final tab = TerminalSession(
+          id: 't',
+          serverId: 'db',
+          config: state!.servers.firstWhere((s) => s.id == 'db'),
+          engine: XtermTerminalEngine(),
+          connecting: false,
+        );
+        tab.session = _OpenSshSession(tab.engine);
+        state!.tabs.add(tab);
+        await pumpRail(tester);
+        final header = find.byKey(
+          ValueKey('servers.group.header.${serverGroupKey('Production')}'),
+        );
+        String label() => tester.getSemantics(header).getSemanticsData().label;
+        expect(label(), 'Production, 2 servers');
+
+        await tester.tap(find.text('Production'));
+        await tester.pumpAndSettle();
+        expect(label(), 'Production, 2 servers\nConnected server hidden');
+
+        // Amber has words of its own (connecting outranks the open
+        // session, as a reconnect's does).
+        tab.connecting = true;
+        state!.notifyListeners();
+        await tester.pumpAndSettle();
+        expect(label(), 'Production, 2 servers\nConnecting server hidden');
+      } finally {
+        semantics.dispose();
+      }
+    });
+
     testWidgets('the sync chip says what sync is doing', (tester) async {
       await boot(tester, [server('alpha')]);
       services!.settings.syncBaseUrl = 'https://sync.example.com';

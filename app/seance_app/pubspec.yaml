@@ -57,6 +57,9 @@ dependencies:
 dev_dependencies:
   # Mock network lifetimes at the AppServices boundary.
   http: ^1.6.0
+  # The errors a real handshake fails with, for tests that replay one at
+  # AppState's SSH boundary. Pinned to the version seance_core pins.
+  dartssh2: 3.0.2
   flutter_lints: ^5.0.0
   # Regenerates every platform's launcher icon from media-sources/seance-icon.png
   # (config in flutter_launcher_icons.yaml): dart run flutter_launcher_icons

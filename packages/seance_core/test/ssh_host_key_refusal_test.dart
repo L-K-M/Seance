@@ -103,8 +103,8 @@ void main() {
 
       expect(verdicts, [HostKeyVerdict.firstUse]);
       expect(failure.isHostKeyRefusal, isTrue);
-      // TOFU pins only what the user accepts: the app reads a pinned key
-      // as "changed", so a declined stranger must leave the store empty.
+      // TOFU pins only what the user accepts: a declined stranger must
+      // leave the store empty, or its next attempt would go unasked.
       expect(await store.get(_host, _port), isNull);
     });
 

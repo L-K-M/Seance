@@ -173,12 +173,19 @@ final class ServerRow extends ServerListRow {
 /// way back. A section with no members emits nothing, header included: a
 /// PINNED with nothing pinned, or a SERVERS emptied by pinning everything,
 /// would be a caption over nothing.
+///
+/// Except a section named in [keptSections] ([kPinnedKey], [kServersKey]):
+/// when [sections] is a filtered list that left it empty, its header stays
+/// anyway, counting 0 as every header counts what it draws. That is for a
+/// filter that hid a live server there (see [sectionsHoldingLive]), whose
+/// header is then the one place its dot can show.
 List<ServerListRow> serverListRows({
   required ServerSidebarSections sections,
   required Set<String> collapsedKeys,
+  Set<String> keptSections = const {},
 }) {
   final rows = <ServerListRow>[];
-  if (sections.pinned.isNotEmpty) {
+  if (sections.pinned.isNotEmpty || keptSections.contains(kPinnedKey)) {
     final collapsed = collapsedKeys.contains(kPinnedKey);
     rows.add(
       ServerSectionRow(
@@ -192,7 +199,7 @@ List<ServerListRow> serverListRows({
   }
 
   final unpinned = sections.unpinnedCount;
-  if (unpinned == 0) return rows;
+  if (unpinned == 0 && !keptSections.contains(kServersKey)) return rows;
   final collapsed = collapsedKeys.contains(kServersKey);
   rows.add(
     ServerSectionRow(
@@ -223,6 +230,23 @@ List<ServerListRow> serverListRows({
   return rows;
 }
 
+/// The sections of [whole] holding a server [isLive] accepts, by key: the
+/// ones whose header a filter must not drop along with their rows.
+///
+/// Poltergeist's rule: a filter that hides every row drops the section,
+/// unless a live server is among the hidden, and then its header stays to
+/// say so. Only whole sections need it. A group the filter empties goes,
+/// and its members fall to SERVERS' header, which this keeps.
+Set<String> sectionsHoldingLive(
+  ServerSidebarSections whole,
+  bool Function(ServerConfig server) isLive,
+) => {
+  if (whole.pinned.any(isLive)) kPinnedKey,
+  if (whole.ungrouped.any(isLive) ||
+      whole.groups.any((group) => group.servers.any(isLive)))
+    kServersKey,
+};
+
 /// The servers of [sections] that each header in [rows] keeps out of view,
 /// by the header's key, so a folded group or a filter never hides a live
 /// connection without a trace.
@@ -231,8 +255,10 @@ List<ServerListRow> serverListRows({
 /// section's or group's members are hidden, and so are the ones a filter
 /// left out when [rows] were built from a filtered list. Each server goes
 /// under the innermost header still on screen that holds it (its group's
-/// row, else SERVERS), so a folded group's server marks that group and not
-/// SERVERS as well; one whose every header is gone goes nowhere.
+/// row, else its section's), so a folded group's server marks that group
+/// and not SERVERS as well. One whose every header is gone goes nowhere,
+/// which only a server that is not live can meet when [rows] kept the
+/// sections [sectionsHoldingLive] names.
 Map<String, List<ServerConfig>> hiddenByHeader({
   required ServerSidebarSections sections,
   required List<ServerListRow> rows,

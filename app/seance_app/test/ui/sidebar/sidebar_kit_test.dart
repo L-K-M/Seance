@@ -1673,6 +1673,7 @@ void main() {
             nested: nested,
             onToggle: () {},
             status: const SidebarStatusDot(green),
+            statusLabel: 'Connected server hidden',
           ),
         );
         expect(dots(tester), hasLength(1), reason: 'nested: $nested');
@@ -1700,6 +1701,53 @@ void main() {
         ),
       );
       expect(dots(tester), isEmpty);
+    });
+
+    testWidgets('a header announces the dot it draws, and no dot it does '
+        'not', (tester) async {
+      // The dot is paint: without its words, a folded group hiding a
+      // connected server would be silent where its rows are not.
+      final semantics = tester.ensureSemantics();
+      try {
+        String label() => tester
+            .getSemantics(find.byKey(const ValueKey('h')))
+            .getSemanticsData()
+            .label;
+        for (final nested in [false, true]) {
+          await _pump(
+            tester,
+            SidebarSectionHeader(
+              headerKey: const ValueKey('h'),
+              title: 'Production',
+              count: 3,
+              collapsed: true,
+              nested: nested,
+              onToggle: () {},
+              status: const SidebarStatusDot(Colors.green),
+              statusLabel: 'Connected server hidden',
+            ),
+          );
+          // After the title and count, as a line of its own.
+          expect(
+            label(),
+            'Production (3)\nConnected server hidden',
+            reason: 'nested: $nested',
+          );
+        }
+        await _pump(
+          tester,
+          SidebarSectionHeader(
+            headerKey: const ValueKey('h'),
+            title: 'Production',
+            count: 3,
+            collapsed: true,
+            onToggle: () {},
+          ),
+        );
+        expect(label(), 'Production (3)');
+      } finally {
+        semantics.dispose();
+      }
     });
   });
 
