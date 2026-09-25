@@ -416,6 +416,10 @@ class _ServerListPaneState extends State<ServerListPane> {
     // What each header folds or filters out of view, measured against the
     // whole list, so a hidden live session still shows on its header.
     final hidden = hiddenByHeader(sections: whole, rows: rows);
+    final hiddenLive = {
+      for (final MapEntry(:key, :value) in hidden.entries)
+        key: _hiddenLive(context, state, value),
+    };
     // The home screen lets the ListView take the ambient insets (the
     // gesture-nav bar on Android) and extends the bottom one by the floating
     // button's clearance; an explicit EdgeInsets must neither drop the
@@ -451,7 +455,8 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: title,
                 count: count,
                 collapsed: collapsed,
-                status: _hiddenLiveDot(context, state, hidden[key]),
+                status: hiddenLive[key]?.dot,
+                statusLabel: hiddenLive[key]?.label,
                 onToggle: () => state.toggleServerGroup(key),
                 // SERVERS' "+" adds to it; the shortlist is filled from a
                 // row's menu, so PINNED has none. The home screen's floating
@@ -475,7 +480,8 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: name,
                 count: count,
                 collapsed: collapsed,
-                status: _hiddenLiveDot(context, state, hidden[key]),
+                status: hiddenLive[key]?.dot,
+                statusLabel: hiddenLive[key]?.label,
                 onToggle: () => state.toggleServerGroup(key),
               ),
             ServerRow(:final server, :final depth) => _tile(
@@ -493,16 +499,19 @@ class _ServerListPaneState extends State<ServerListPane> {
   }
 
   /// A header's dot for the live sessions it keeps out of view (see
-  /// [_liveDot]).
-  SidebarStatusDot? _hiddenLiveDot(
+  /// [_liveDot]), and its words for a screen reader.
+  ({SidebarStatusDot dot, String label})? _hiddenLive(
     BuildContext context,
     AppState state,
-    List<ServerConfig>? servers,
+    List<ServerConfig> servers,
   ) {
-    if (servers == null) return null;
     final dot = _liveDot(state, servers);
     if (dot == null) return null;
-    return SidebarStatusDot(dot.color(context)!, style: dot.style);
+    return (
+      dot: SidebarStatusDot(dot.color(context)!, style: dot.style),
+      // The row's own word for the state, said of a server out of view.
+      label: '${dot.description} server hidden',
+    );
   }
 
   /// What a header says for [servers] out of view: connected while one of

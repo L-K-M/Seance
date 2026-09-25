@@ -288,6 +288,17 @@ bottom bar, the phone home's app bar and macOS's View menu, and passes
 `accent`, `markRing`, the blocked dot and the header dot (see
 [STATUS.md](STATUS.md)).
 
+**The header dot is announced (2026-09-25).** The header's dot was
+drawn only, so a screen reader heard nothing of a live server a fold or
+a filter hid. `SidebarSectionHeader.statusLabel` now carries what
+`status` means, in the host's words; the two come together (asserted),
+and the header's merged label adds the words on a line after
+`sectionSemantics`' title and count ("Production, 3 servers", then
+"Connected server hidden"). `SidebarKitStrings` is unchanged: the words
+are the host's, like the title, and the line break is how a merged
+node already joins its parts, so the kit writes no punctuation of its
+own. The change landed in both kit files at once.
+
 ## Cross-app behaviors worth knowing about
 
 - In shared-account mode Poltergeist reads `serverConfig` records

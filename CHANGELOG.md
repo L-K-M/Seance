@@ -25,9 +25,10 @@
   one-line rail. Switch with the control in the rail's bottom bar or the
   phone home's app bar, or on macOS with View ▸ Use Compact Sidebar Rows
   (Use Comfortable Sidebar Rows). Also: a folded group, or a filter, that
-  hides a connected server shows its dot on the header (a filter that
-  hides a whole section keeps its header for that, as Poltergeist's
-  does); a changed host key you declined marks the row blocked rather
+  hides a connected server shows its dot on the header, and a screen
+  reader hears it with the header ("Connected server hidden"); a filter
+  that hides a whole section keeps its header for that, as Poltergeist's
+  does; a changed host key you declined marks the row blocked rather
   than failed (a key-exchange signature that fails on an unchanged key
   is an ordinary failure, not a block); the filter's count says "↵ opens
   the first" again; the long-press sheet shows the row's second line
