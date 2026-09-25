@@ -105,8 +105,8 @@ it was built before, from the tables written out in the test, at both
 brightnesses on desktop and mobile. While the surface is Automatic,
 Automatic slots are the sibling tables for the mode's brightness. Once a
 palette sets its own surface, that surface decides the brightness (by
-`ThemeData.estimateBrightnessForColor`, which picks the side black or
-white text reads better on, rather than a fixed luminance midpoint), the
+`ThemeData.estimateBrightnessForColor`: dark below a relative luminance
+of about 0.34, Material's cut-off, which leans toward light text), the
 mode control is disabled with a line saying why, and the Automatic slots
 are mixed from that surface and the palette's text instead: the tables'
 slate rail beside a Solarized pane would be neither theme. Mixed from

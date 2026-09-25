@@ -197,7 +197,8 @@ void main() {
     });
 
     test('a colour off a slider round-trips exactly', () {
-      // More precision than #RRGGBB can hold, as an HSV slider produces.
+      // A colour as an HSV slider produces it, whose channels come out of a
+      // conversion rather than typed digits; the trip must be byte-exact.
       final picked = HSVColor.fromAHSV(1, 123.456, 0.37, 0.81).toColor();
       final palette = ThemePresets.initial
           .copyWith(accent: picked)

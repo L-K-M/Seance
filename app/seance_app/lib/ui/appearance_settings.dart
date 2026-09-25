@@ -166,7 +166,9 @@ class _AppearanceSettingsState extends State<AppearanceSettings> {
         try {
           await widget.backend.setAppearance(_palette, _mode);
         } catch (e) {
-          if (mounted) {
+          // Reported only when no newer write is waiting to retry: against a
+          // failing disk a corner drag would otherwise toast once per write.
+          if (mounted && !_dirty) {
             showTopToastIn(context, message: 'Appearance not saved: $e');
           }
         }

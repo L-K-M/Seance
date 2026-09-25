@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/theme.dart';
 import 'package:seance_app/theme/app_appearance.dart';
+import 'package:seance_app/theme/contrast.dart';
 import 'package:seance_app/theme/theme_palette.dart';
 import 'package:seance_app/theme/theme_presets.dart';
 
@@ -198,15 +199,20 @@ void main() {
       );
       final scheme = SeanceTheme.build(palette, Brightness.dark).colorScheme;
       expect(scheme.brightness, Brightness.light);
-      // Each step further from the surface toward the text.
-      double distance(Color c) =>
-          (c.computeLuminance() - scheme.surface.computeLuminance()).abs();
+      // Each step further from the surface toward the text: the fraction
+      // of the way from one to the other, which is negative for a shade
+      // that stepped away from the text instead.
+      final surface = scheme.surface.computeLuminance();
+      final text = palette.text!.computeLuminance();
+      double towardText(Color c) =>
+          (c.computeLuminance() - surface) / (text - surface);
       final ladder = [
         scheme.surfaceContainerLow,
         scheme.surfaceContainer,
         scheme.surfaceContainerHigh,
         scheme.surfaceContainerHighest,
-      ].map(distance).toList();
+      ].map(towardText).toList();
+      expect(ladder.first, greaterThan(0));
       for (var i = 1; i < ladder.length; i++) {
         expect(ladder[i], greaterThan(ladder[i - 1]), reason: 'step $i');
       }
@@ -233,6 +239,10 @@ void main() {
       ).extension<SeanceChrome>()!;
       expect(chrome.onSelection, const Color(0xFFFFFFFF));
       expect(chrome.selectionFill, isNot(const Color(0xFF5A4BC0)));
+      expect(
+        contrastRatio(chrome.onSelection, chrome.selectionFill),
+        greaterThanOrEqualTo(4.5),
+      );
     });
   });
 
@@ -270,6 +280,14 @@ void main() {
           ThemeModePreference.dark,
         ),
         Brightness.light,
+      );
+      expect(
+        resolveBrightness(
+          ThemePresets.midnight,
+          Brightness.light,
+          ThemeModePreference.system,
+        ),
+        Brightness.dark,
       );
       expect(
         resolveBrightness(

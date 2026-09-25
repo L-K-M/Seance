@@ -7,11 +7,12 @@ import 'theme_palette.dart';
 ///
 /// A preset is a starting point, not a mode: picking one copies its values
 /// into the device's palette, which the user is then free to change. Every
-/// one but the default is complete — its own surface, rail, lines,
+/// one with its own surface is complete — its own surface, rail, lines,
 /// selection, status colours and terminal — because a preset that left
 /// the rail Automatic would frame a Solarized pane in slate. The default
 /// leaves everything Automatic, which is what reproduces the app as it
-/// looked before themes existed.
+/// looked before themes existed, and Graphite changes only the accent and
+/// the corners over the same Automatic neutrals.
 ///
 /// Each has to pass `theme_presets_test.dart`: text and secondary text on
 /// its surface and rail, the accent and every status colour on its

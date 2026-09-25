@@ -165,13 +165,16 @@ class ThemeTerminalColors {
   );
 
   /// These colours with ANSI colour [index] replaced.
-  ThemeTerminalColors withAnsi(int index, Color color) => ThemeTerminalColors(
-    background: background,
-    foreground: foreground,
-    cursor: cursor,
-    selection: selection,
-    ansi: [for (var i = 0; i < ansiCount; i++) i == index ? color : ansi[i]],
-  );
+  ThemeTerminalColors withAnsi(int index, Color color) {
+    RangeError.checkValidIndex(index, ansi, 'index', ansiCount);
+    return ThemeTerminalColors(
+      background: background,
+      foreground: foreground,
+      cursor: cursor,
+      selection: selection,
+      ansi: [for (var i = 0; i < ansiCount; i++) i == index ? color : ansi[i]],
+    );
+  }
 
   Map<String, Object> toJson() => {
     'background': formatThemeColor(background),
@@ -534,7 +537,8 @@ class ThemePalette {
     try {
       return ThemePalette.fromJson(json.cast<String, Object?>());
     } catch (_) {
-      // A map with non-string keys: nothing in it was written by this app.
+      // Nothing under fromJson throws today; this keeps the promise if
+      // something there ever does.
       return ThemePresets.initial;
     }
   }

@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/services/app_settings.dart';
 import 'package:seance_app/theme.dart';
+import 'package:seance_app/theme/contrast.dart';
 import 'package:seance_app/theme/theme_palette.dart';
 import 'package:seance_app/theme/theme_presets.dart';
 import 'package:seance_app/ui/terminal_appearance.dart';
+import 'package:xterm/xterm.dart' show TerminalTheme;
 
 void main() {
   group('terminal appearance', () {
@@ -86,8 +88,51 @@ void main() {
         // Search highlights, which a theme does not name, are derived.
         expect(theme.searchHitBackground, colors.ansi[3]);
         expect(theme.searchHitBackgroundCurrent, colors.cursor);
-        expect(theme.searchHitForeground, colors.background);
+        expect([
+          colors.background,
+          colors.foreground,
+        ], contains(theme.searchHitForeground));
       }
+    });
+
+    test('search hits keep their text readable on every preset', () {
+      for (final preset in ThemePresets.all) {
+        final colors = preset.terminal;
+        if (colors == null) continue;
+        final theme = SeanceTerminalThemes.fromColors(colors);
+        for (final hit in [
+          theme.searchHitBackground,
+          theme.searchHitBackgroundCurrent,
+        ]) {
+          expect(
+            contrastRatio(theme.searchHitForeground, hit),
+            greaterThanOrEqualTo(3),
+            reason: preset.name,
+          );
+        }
+      }
+    });
+
+    test('the lighter of the two base colours is not forced onto a hit', () {
+      // A light theme whose yellow and cursor are pale: its near-white
+      // background would vanish on them, its dark text does not.
+      final colors = ThemePresets.paper.terminal!;
+      final pale = ThemeTerminalColors(
+        background: const Color(0xFFFFFFFF),
+        foreground: const Color(0xFF1A1A1A),
+        cursor: const Color(0xFFE0E0E0),
+        selection: colors.selection,
+        ansi: [
+          for (var i = 0; i < ThemeTerminalColors.ansiCount; i++)
+            i == ThemeTerminalColors.yellowIndex
+                ? const Color(0xFFFFF59D)
+                : colors.ansi[i],
+        ],
+      );
+      expect(
+        SeanceTerminalThemes.fromColors(pale).searchHitForeground,
+        const Color(0xFF1A1A1A),
+      );
     });
 
     test('a pinned palette ignores the theme\'s terminal colours', () {
@@ -117,10 +162,29 @@ void main() {
         final colors = SeanceTerminalThemes.toColors(builtIn);
         expect(colors.ansi, hasLength(ThemeTerminalColors.ansiCount));
         final back = SeanceTerminalThemes.fromColors(colors);
-        expect(back.background, builtIn.background);
-        expect(back.selection, builtIn.selection);
-        expect(back.black, builtIn.black);
-        expect(back.brightWhite, builtIn.brightWhite);
+        List<Color> named(TerminalTheme t) => [
+          t.background,
+          t.foreground,
+          t.cursor,
+          t.selection,
+          t.black,
+          t.red,
+          t.green,
+          t.yellow,
+          t.blue,
+          t.magenta,
+          t.cyan,
+          t.white,
+          t.brightBlack,
+          t.brightRed,
+          t.brightGreen,
+          t.brightYellow,
+          t.brightBlue,
+          t.brightMagenta,
+          t.brightCyan,
+          t.brightWhite,
+        ];
+        expect(named(back), named(builtIn));
       }
     });
 

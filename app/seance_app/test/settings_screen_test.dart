@@ -61,9 +61,16 @@ class _FakeBackend extends ChangeNotifier implements SettingsBackend {
   /// Every theme written, in order.
   final List<(ThemePalette, ThemeModePreference)> appearances = [];
 
+  /// When set, theme writes wait for it: a write still in flight.
+  Completer<void>? holdAppearance;
+
   @override
-  Future<void> setAppearance(ThemePalette palette, ThemeModePreference mode) {
+  Future<void> setAppearance(
+    ThemePalette palette,
+    ThemeModePreference mode,
+  ) async {
     appearances.add((palette, mode));
+    await holdAppearance?.future;
     return _write('setAppearance');
   }
 
@@ -396,23 +403,28 @@ void main() {
       tester,
     ) async {
       backend.settings.themePalette = ThemePresets.paper;
+      // Released in `finally`, not by a tear-down: the tester checks for a
+      // live handle before tear-downs run.
       final handle = tester.ensureSemantics();
-      await pumpAppearance(tester);
+      try {
+        await pumpAppearance(tester);
 
-      expect(
-        tester.getSemantics(find.byTooltip('Use the Paper theme')),
-        matchesSemantics(
-          label: 'Paper',
-          tooltip: 'Use the Paper theme',
-          isButton: true,
-          hasSelectedState: true,
-          isSelected: true,
-          isFocusable: true,
-          hasTapAction: true,
-          hasFocusAction: true,
-        ),
-      );
-      handle.dispose();
+        expect(
+          tester.getSemantics(find.byTooltip('Use the Paper theme')),
+          matchesSemantics(
+            label: 'Paper',
+            tooltip: 'Use the Paper theme',
+            isButton: true,
+            hasSelectedState: true,
+            isSelected: true,
+            isFocusable: true,
+            hasTapAction: true,
+            hasFocusAction: true,
+          ),
+        );
+      } finally {
+        handle.dispose();
+      }
     });
 
     testWidgets('the mode writes through while the surface is Automatic', (
@@ -638,6 +650,25 @@ void main() {
       await tester.tap(find.byTooltip('Use the Graphite theme'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Appearance not saved: disk full'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+    });
+
+    testWidgets('a failing streak says so once, for the last write', (
+      tester,
+    ) async {
+      backend.failWrites = const SettingsBackendException('disk full');
+      backend.holdAppearance = Completer<void>();
+      await pumpAppearance(tester);
+
+      await tester.tap(find.byTooltip('Use the Graphite theme'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Use the Paper theme'));
+      await tester.pump();
+      backend.holdAppearance!.complete();
+      await tester.pumpAndSettle();
+
+      expect(backend.appearances, hasLength(2));
       expect(find.text('Appearance not saved: disk full'), findsOneWidget);
       await tester.pump(const Duration(seconds: 5));
     });

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../theme.dart' show SeanceTheme;
 import '../theme/theme_palette.dart';
 
 /// Picks a colour: hue, saturation and brightness sliders, and a hex box.
@@ -138,6 +139,9 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
     final color = _color;
     final note = widget.note;
     return AlertDialog(
+      // Preview, hex field, the sliders and the note outgrow a landscape
+      // phone or a large text scale.
+      scrollable: true,
       title: Text(widget.title),
       content: SizedBox(
         width: 360,
@@ -165,7 +169,11 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
                     autocorrect: false,
                     enableSuggestions: false,
                     textInputAction: TextInputAction.done,
-                    style: const TextStyle(fontFamily: 'monospace'),
+                    // A bare 'monospace' resolves on Android only.
+                    style: TextStyle(
+                      fontFamily: SeanceTheme.monoFallback.first,
+                      fontFamilyFallback: SeanceTheme.monoFallback,
+                    ),
                     decoration: InputDecoration(
                       labelText: 'Hex',
                       prefixText: '#',
@@ -354,27 +362,31 @@ class _ChannelSlider extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: theme.textTheme.labelMedium),
-        SliderTheme(
-          data: SliderTheme.of(context).copyWith(
-            trackHeight: 14,
-            trackShape: _GradientTrackShape(colors),
-            // The track is the colour; a tinted halo over it would muddy the
-            // very thing being chosen.
-            overlayShape: SliderComponentShape.noOverlay,
+    // One node for the name and the slider, so a screen reader says which
+    // of the four this is, not only its value.
+    return MergeSemantics(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: theme.textTheme.labelMedium),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 14,
+              trackShape: _GradientTrackShape(colors),
+              // The track is the colour; a tinted halo over it would muddy the
+              // very thing being chosen.
+              overlayShape: SliderComponentShape.noOverlay,
+            ),
+            child: Slider(
+              value: value,
+              max: max,
+              label: semanticValue,
+              semanticFormatterCallback: (_) => semanticValue,
+              onChanged: onChanged,
+            ),
           ),
-          child: Slider(
-            value: value,
-            max: max,
-            label: semanticValue,
-            semanticFormatterCallback: (_) => semanticValue,
-            onChanged: onChanged,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

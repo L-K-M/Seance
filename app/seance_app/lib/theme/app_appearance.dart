@@ -44,10 +44,10 @@ class AppAppearance {
 
 /// Whether a palette with its own [surface] is light or dark.
 ///
-/// The framework's own estimate, which picks the side black or white text
-/// reads better against, rather than a fixed luminance midpoint: a mid grey
-/// at relative luminance 0.4 takes dark text better than light, and the
-/// neutrals this chooses bring the text colour with them.
+/// The framework's own estimate: dark below a relative luminance of about
+/// 0.34, a cut-off Material biases toward light text rather than WCAG's
+/// equal-contrast point (about 0.18). A mid grey at 0.4 is therefore light,
+/// and the neutrals this chooses bring the text colour with them.
 Brightness surfaceBrightness(Color surface) =>
     ThemeData.estimateBrightnessForColor(surface);
 

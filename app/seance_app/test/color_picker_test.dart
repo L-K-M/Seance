@@ -40,6 +40,24 @@ void main() {
   String hex(WidgetTester tester) =>
       tester.widget<TextField>(find.byType(TextField)).controller!.text;
 
+  testWidgets('each slider is named to a screen reader', (tester) async {
+    final handle = tester.ensureSemantics();
+    try {
+      await open(tester, start: const Color(0xFF3366CC), allowAlpha: true);
+      // The slider's own node carries the name, not only a text beside it.
+      final names = ['Hue', 'Saturation', 'Brightness', 'Opacity'];
+      for (var i = 0; i < names.length; i++) {
+        expect(
+          tester.getSemantics(find.byType(Slider).at(i)).label,
+          contains(names[i]),
+          reason: names[i],
+        );
+      }
+    } finally {
+      handle.dispose();
+    }
+  });
+
   testWidgets('without a preview it shows the colour as a swatch', (
     tester,
   ) async {

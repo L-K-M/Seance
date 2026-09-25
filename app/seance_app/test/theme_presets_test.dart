@@ -38,8 +38,10 @@ void main() {
     }
   });
 
-  test('every preset but the default brings a complete look', () {
-    for (final preset in ThemePresets.all.skip(2)) {
+  test('every preset with its own surface brings a complete look', () {
+    // The default and Graphite leave the surface, and with it every
+    // neutral, Automatic; any preset that sets a surface sets them all.
+    for (final preset in ThemePresets.all.where((p) => p.surface != null)) {
       for (final slot in ThemeSlot.values) {
         expect(preset.slot(slot), isNotNull, reason: '${preset.name} $slot');
       }

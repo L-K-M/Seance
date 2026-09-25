@@ -310,6 +310,7 @@ class SeanceChrome extends ThemeExtension<SeanceChrome> {
         _chromeFor(
           _neutralsFor(ThemePresets.initial, theme.brightness),
           theme.platform,
+          cornerScale: ThemePresets.initial.cornerScale,
         );
   }
 

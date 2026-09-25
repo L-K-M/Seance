@@ -1,8 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart' show TerminalStyle, TerminalTheme;
 
 import '../services/app_settings.dart';
 import '../theme.dart';
+import '../theme/contrast.dart';
 import '../theme/theme_palette.dart';
 
 /// How the terminal picks its colors.
@@ -92,12 +95,19 @@ class SeanceTerminalThemes {
 
   /// A theme's terminal colours as xterm's palette.
   ///
-  /// A theme names no search-highlight colours, so they are derived the way
-  /// the built-in dark palette picks its own: matches in the ANSI yellow,
-  /// the current one in the cursor's colour, both under text in the
-  /// background's.
+  /// A theme names no search-highlight colours, so they are derived: matches
+  /// in the ANSI yellow, the current one in the cursor's colour, both under
+  /// text in whichever of the theme's background and foreground reads
+  /// better on the two. The background alone would put near-white text on
+  /// a light theme's pale yellow.
   static TerminalTheme fromColors(ThemeTerminalColors colors) {
     final ansi = colors.ansi;
+    final hits = [ansi[ThemeTerminalColors.yellowIndex], colors.cursor];
+    double worst(Color text) =>
+        hits.map((hit) => contrastRatio(text, hit)).reduce(math.min);
+    final hitText = worst(colors.background) >= worst(colors.foreground)
+        ? colors.background
+        : colors.foreground;
     return TerminalTheme(
       cursor: colors.cursor,
       selection: colors.selection,
@@ -121,7 +131,7 @@ class SeanceTerminalThemes {
       brightWhite: ansi[15],
       searchHitBackground: ansi[ThemeTerminalColors.yellowIndex],
       searchHitBackgroundCurrent: colors.cursor,
-      searchHitForeground: colors.background,
+      searchHitForeground: hitText,
     );
   }
 
