@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
+import '../family_hues.dart';
 import '../main.dart';
 import '../services/remote_git_controller.dart';
 import '../services/xterm_engine.dart';
@@ -249,7 +250,11 @@ class _GitViewState extends State<_GitView> {
               padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
               child: Row(
                 children: [
-                  const Icon(Icons.account_tree_outlined, size: 20),
+                  Icon(
+                    Icons.account_tree,
+                    size: 20,
+                    color: FamilyPalette.of(context).glyph(FamilyHue.orange),
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -439,13 +444,17 @@ class _RepoView extends StatelessWidget {
         ),
         const Divider(height: 1),
         if (clean)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 28),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 28),
             child: Column(
               children: [
-                Icon(Icons.check_circle_outline, size: 32),
-                SizedBox(height: 8),
-                Text('Working tree clean'),
+                Icon(
+                  Icons.check_circle,
+                  size: 32,
+                  color: FamilyPalette.of(context).glyph(FamilyHue.green),
+                ),
+                const SizedBox(height: 8),
+                const Text('Working tree clean'),
               ],
             ),
           ),
@@ -466,7 +475,7 @@ class _RepoView extends StatelessWidget {
               letter: change.stagedLetter,
               action: _RowAction(
                 tooltip: 'Unstage',
-                icon: Icons.remove_circle_outline,
+                icon: Icons.remove_circle,
                 onPressed: busy ? null : () => onUnstage(change),
               ),
             ),
@@ -479,12 +488,14 @@ class _RepoView extends StatelessWidget {
               letter: change.unstagedLetter,
               action: _RowAction(
                 tooltip: 'Stage',
-                icon: Icons.add_circle_outline,
+                icon: Icons.add_circle,
+                hue: FamilyHue.green,
                 onPressed: busy ? null : () => onStage(change),
               ),
               menuAction: _RowAction(
                 tooltip: 'Discard changes',
                 icon: Icons.undo,
+                hue: FamilyHue.red,
                 onPressed: busy ? null : () => onDiscard(change),
               ),
             ),
@@ -497,7 +508,8 @@ class _RepoView extends StatelessWidget {
               letter: '?',
               action: _RowAction(
                 tooltip: 'Stage',
-                icon: Icons.add_circle_outline,
+                icon: Icons.add_circle,
+                hue: FamilyHue.green,
                 onPressed: busy ? null : () => onStage(change),
               ),
             ),
@@ -542,9 +554,9 @@ class _RepoHeader extends StatelessWidget {
           Row(
             children: [
               Icon(
-                Icons.folder_outlined,
+                Icons.folder,
                 size: 16,
-                color: scheme.onSurfaceVariant,
+                color: FamilyPalette.of(context).glyph(FamilyHue.blue),
               ),
               const SizedBox(width: 6),
               Expanded(
@@ -569,9 +581,9 @@ class _RepoHeader extends StatelessWidget {
           Row(
             children: [
               Icon(
-                Icons.account_tree_outlined,
+                Icons.account_tree,
                 size: 16,
-                color: scheme.primary,
+                color: FamilyPalette.of(context).glyph(FamilyHue.orange),
               ),
               const SizedBox(width: 6),
               Flexible(
@@ -646,8 +658,28 @@ class _SectionHeader extends StatelessWidget {
 class _RowAction {
   final String tooltip;
   final IconData icon;
+
+  /// The verb's family hue (Poltergeist's D34): Stage the go green,
+  /// Discard the destructive red. Drawn only while the action is live,
+  /// so a busy pane's buttons still dim; null keeps the button's ink.
+  final FamilyHue? hue;
   final VoidCallback? onPressed;
-  const _RowAction({required this.tooltip, required this.icon, this.onPressed});
+  const _RowAction({
+    required this.tooltip,
+    required this.icon,
+    this.hue,
+    this.onPressed,
+  });
+
+  Icon glyph(BuildContext context) {
+    final hue = this.hue;
+    return Icon(
+      icon,
+      color: hue == null || onPressed == null
+          ? null
+          : FamilyPalette.of(context).glyph(hue),
+    );
+  }
 }
 
 class _ChangeRow extends StatelessWidget {
@@ -710,7 +742,7 @@ class _ChangeRow extends StatelessWidget {
                     tooltip: action!.tooltip,
                     iconSize: 18,
                     visualDensity: VisualDensity.compact,
-                    icon: Icon(action!.icon),
+                    icon: action!.glyph(context),
                     onPressed: action!.onPressed,
                   ),
                 if (menuAction != null)
@@ -718,7 +750,7 @@ class _ChangeRow extends StatelessWidget {
                     tooltip: menuAction!.tooltip,
                     iconSize: 18,
                     visualDensity: VisualDensity.compact,
-                    icon: Icon(menuAction!.icon),
+                    icon: menuAction!.glyph(context),
                     onPressed: menuAction!.onPressed,
                   ),
               ],
@@ -886,7 +918,11 @@ class _NotARepository extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.account_tree_outlined, size: 38),
+          Icon(
+            Icons.account_tree,
+            size: 38,
+            color: FamilyPalette.of(context).glyph(FamilyHue.orange),
+          ),
           const SizedBox(height: 10),
           const Text('Not a git repository'),
           const SizedBox(height: 4),

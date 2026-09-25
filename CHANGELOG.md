@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Colour that means something, shared with Poltergeist: each colour
+  names one kind of thing in both apps, so you find things by colour
+  before you read them. The side panel's tabs are the Assistant purple,
+  Snippets teal, Files blue and Git orange, each icon above its label,
+  with the underline in the open tab's colour. Files shows folders
+  blue, code orange, images pink, audio and video purple, archives
+  brown and PDFs red, and a finished transfer is green, a failed one
+  red. Git's Stage is green and Discard red. The assistant's sparkle and
+  the command wand are purple, and Settings' tabs are coloured too.
 - Server list: rebuilt on the sidebar Séance now shares with Poltergeist.
   On desktop the list is a rail with no app bar: PINNED, then SERVERS with
   groups as nested disclosure rows (folds persist), rows with the server's

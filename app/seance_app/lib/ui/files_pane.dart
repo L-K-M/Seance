@@ -10,6 +10,7 @@ import 'package:seance_core/seance_core.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../app_state.dart';
+import '../family_hues.dart';
 import '../main.dart';
 import '../services/external_file_opener.dart';
 import '../services/file_export_service.dart';
@@ -17,6 +18,7 @@ import '../services/managed_remote_file.dart';
 import '../services/remote_files_controller.dart';
 import '../services/xterm_engine.dart';
 import 'built_in_text_editor.dart';
+import 'file_kinds.dart';
 import 'top_toast.dart';
 
 class FilesScreen extends StatelessWidget {
@@ -210,12 +212,18 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
                             width: 2,
                           ),
                         ),
-                        child: const Column(
+                        child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.file_upload_outlined, size: 36),
-                            SizedBox(height: 8),
-                            Text('Upload to this directory'),
+                            Icon(
+                              Icons.file_upload,
+                              size: 36,
+                              color: FamilyPalette.of(
+                                context,
+                              ).glyph(FamilyHue.cyan),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text('Upload to this directory'),
                           ],
                         ),
                       ),
@@ -288,7 +296,11 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.folder_open_outlined, size: 40),
+                Icon(
+                  Icons.folder_open,
+                  size: 40,
+                  color: FamilyPalette.of(context).glyph(FamilyHue.blue),
+                ),
                 const SizedBox(height: 10),
                 Text(
                   controller.filterQuery.isNotEmpty || !controller.showHidden
@@ -1293,7 +1305,8 @@ class _BrowserHeader extends StatelessWidget {
                 ),
                 _HeaderButton(
                   tooltip: 'Home',
-                  icon: Icons.home_outlined,
+                  icon: Icons.home,
+                  hue: FamilyHue.blue,
                   onPressed: controller.goHome,
                 ),
                 _HeaderButton(
@@ -1496,7 +1509,10 @@ class _BrowserHeader extends StatelessWidget {
                   if (onDownloadSelected != null)
                     IconButton(
                       tooltip: 'Download selected',
-                      icon: const Icon(Icons.download),
+                      icon: Icon(
+                        Icons.download,
+                        color: FamilyPalette.of(context).glyph(FamilyHue.cyan),
+                      ),
                       onPressed: onDownloadSelected,
                     ),
                   TextButton(
@@ -1520,17 +1536,30 @@ class _HeaderButton extends StatelessWidget {
   const _HeaderButton({
     required this.tooltip,
     required this.icon,
+    this.hue,
     this.onPressed,
   });
 
+  /// A place's family hue (Poltergeist's D34), drawn while the button is
+  /// live; navigation (Up, Refresh) keeps the button's ink.
+  final FamilyHue? hue;
+
   @override
-  Widget build(BuildContext context) => IconButton(
-    tooltip: tooltip,
-    visualDensity: VisualDensity.compact,
-    iconSize: 20,
-    onPressed: onPressed,
-    icon: Icon(icon),
-  );
+  Widget build(BuildContext context) {
+    final hue = this.hue;
+    return IconButton(
+      tooltip: tooltip,
+      visualDensity: VisualDensity.compact,
+      iconSize: 20,
+      onPressed: onPressed,
+      icon: Icon(
+        icon,
+        color: hue == null || onPressed == null
+            ? null
+            : FamilyPalette.of(context).glyph(hue),
+      ),
+    );
+  }
 }
 
 class _EditorChoice {
@@ -1590,12 +1619,7 @@ class _FileRow extends StatelessWidget {
       selected: selected,
       leading: selectionMode
           ? Checkbox(value: selected, onChanged: (_) => onSelect())
-          : Icon(switch (entry.type) {
-              RemoteFileType.directory => Icons.folder_outlined,
-              RemoteFileType.symbolicLink => Icons.link,
-              RemoteFileType.file => Icons.insert_drive_file_outlined,
-              RemoteFileType.other => Icons.description_outlined,
-            }),
+          : fileKindIcon(context, entry),
       title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: !showDetails && details.isNotEmpty
           ? Text(details, maxLines: 1, overflow: TextOverflow.ellipsis)
@@ -1758,6 +1782,7 @@ class _TransfersPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = FamilyPalette.of(context);
     final visible = controller.transfers.reversed.take(3).toList();
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -1787,6 +1812,7 @@ class _TransfersPanel extends StatelessWidget {
                     ? Icons.upload
                     : Icons.download,
                 size: 19,
+                color: palette.glyph(FamilyHue.cyan),
               ),
               title: Text(
                 transfer.name,
@@ -1812,11 +1838,18 @@ class _TransfersPanel extends StatelessWidget {
                       icon: const Icon(Icons.close, size: 18),
                       onPressed: () => controller.cancelTransfer(transfer.id),
                     )
-                  : Icon(
-                      transfer.status == RemoteTransferStatus.completed
-                          ? Icons.check_circle_outline
-                          : Icons.error_outline,
+                  // A finished transfer says how it went by colour too:
+                  // done in the go green, failed or cancelled in the red.
+                  : transfer.status == RemoteTransferStatus.completed
+                  ? Icon(
+                      Icons.check_circle,
                       size: 18,
+                      color: palette.glyph(FamilyHue.green),
+                    )
+                  : Icon(
+                      Icons.error,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.error,
                     ),
             ),
         ],
