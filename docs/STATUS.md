@@ -93,7 +93,7 @@ tab, Disconnect, Reconnect for a lone dead tab, Pin to top or Unpin,
 Edit…, Duplicate, Delete…), Shift+F10 and the Menu key open them with
 focus inside, and a connected row shows an eject glyph on hover. ⌘-click
 (Ctrl-click off Apple platforms, where Control-click is the secondary
-click) opens another tab. The filter shows at eight servers (it was
+click and opens the row's verbs, as right-click does) opens another tab. The filter shows at eight servers (it was
 five), while a query is live, or on ⌥⌘F (Ctrl+Alt+F off Apple
 platforms, where the terminal keeps the chord for the shell); Esc
 clears, then closes, and Enter opens the first row shown. The bottom bar
@@ -124,9 +124,9 @@ servers, a connecting then failed dot, right-click and Esc on a row
 menu, Ctrl+Alt+F filtering to "2 of 9", and the narrow home. It showed
 the focus-ring shift that the kit fix removes. Not verified: a real
 Android device (system back, TalkBack), macOS (⌥⌘F, VoiceOver),
-Windows, and a live SSH session's green dot outside tests. 812 Flutter
-tests pass (60 new) and `flutter analyze` is clean; the pure-Dart
-packages were not touched.
+Windows, and a live SSH session's green dot outside tests. 830 Flutter
+tests pass after the review rounds (812 at the port) and `flutter
+analyze` is clean; the pure-Dart packages were not touched.
 
 `ServerAvatar` (the badge with a connected ring) is no longer used by
 the list; its tests stay until the editor or a sibling decides whether

@@ -18,7 +18,7 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart' show PointerDeviceKind, kPrimaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 import 'package:flutter/services.dart';
@@ -1006,6 +1006,11 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
   bool _hovering = false;
   PointerDeviceKind? _lastPointer;
 
+  /// Where a Mac Control-click went down, while its tap is pending: AppKit
+  /// makes that click the secondary one, so it opens the verbs rather
+  /// than activating the row.
+  Offset? _controlClickAt;
+
   @override
   void dispose() {
     _firstVerbFocus.dispose();
@@ -1054,6 +1059,25 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
         button.localToGlobal(button.size.bottomLeft(Offset.zero)),
       ),
     );
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    _lastPointer = event.kind;
+    final controlClick =
+        Theme.of(context).platform == TargetPlatform.macOS &&
+        event.buttons == kPrimaryButton &&
+        HardwareKeyboard.instance.isControlPressed;
+    _controlClickAt = controlClick ? event.localPosition : null;
+  }
+
+  void _onTap() {
+    final at = _controlClickAt;
+    _controlClickAt = null;
+    if (at == null) {
+      _activate(SidebarActivation.pointer);
+      return;
+    }
+    _openMenu(position: at);
   }
 
   void _onLongPress() {
@@ -1315,15 +1339,14 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
           // announced button a screen reader cannot activate is WCAG
           // 4.1.2's failure.
           child: Listener(
-            onPointerDown: (event) => _lastPointer = event.kind,
+            onPointerDown: _onPointerDown,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               // The pointer moves focus with it: Enter and the arrows
               // keep working from the row the user last touched.
               onTapDown: (_) => focusFromPointer(),
-              onTap: widget.onActivate == null
-                  ? null
-                  : () => _activate(SidebarActivation.pointer),
+              onTap: widget.onActivate == null ? null : _onTap,
+              onTapCancel: () => _controlClickAt = null,
               // A right-click takes focus too, so Esc and the arrows reach
               // the menu it opens.
               onSecondaryTapDown: entries == null

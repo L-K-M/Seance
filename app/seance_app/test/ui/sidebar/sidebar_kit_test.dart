@@ -445,6 +445,49 @@ void main() {
       expect(opened, 1);
     });
 
+    testWidgets('on macOS a Control-click opens the menu, as a right-click '
+        'does; elsewhere it is a click', (tester) async {
+      for (final platform in [TargetPlatform.macOS, TargetPlatform.linux]) {
+        var activations = 0;
+        await _pump(
+          tester,
+          SidebarRow(
+            key: const ValueKey('r'),
+            mark: const Icon(Icons.folder, size: 16),
+            title: 'Docs',
+            onActivate: (_) => activations++,
+            menuEntries: () => [
+              SidebarMenuAction(
+                key: const ValueKey('one'),
+                label: 'kit-one',
+                onSelected: () {},
+              ),
+            ],
+          ),
+          platform: platform,
+        );
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.tap(
+          find.byKey(const ValueKey('r')),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await tester.pumpAndSettle();
+
+        final mac = platform == TargetPlatform.macOS;
+        expect(
+          find.text('kit-one'),
+          mac ? findsOneWidget : findsNothing,
+          reason: '$platform',
+        );
+        expect(activations, mac ? 0 : 1, reason: '$platform');
+        if (mac) {
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await tester.pumpAndSettle();
+        }
+      }
+    });
+
     testWidgets('a keyboard-opened menu takes focus; Esc hands it back', (
       tester,
     ) async {

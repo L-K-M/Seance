@@ -143,9 +143,10 @@ class ServerTile extends StatelessWidget {
   /// Ctrl-click off Apple platforms, opens another tab, as ⌘T does.
   ///
   /// On a Mac, Control-click is the secondary click, but the embedder
-  /// delivers it as a primary click with Control held. It must not open a
-  /// tab or connect anything; turning it into the row's context menu is
-  /// the sidebar kit's job, as right-click is.
+  /// delivers it as a primary click with Control held. The sidebar kit
+  /// turns it into the row's context menu before it gets here; this guard
+  /// keeps it from opening a tab or connecting anything should one reach
+  /// the row another way.
   void _activate(SidebarActivation how, TargetPlatform platform) {
     final keys = HardwareKeyboard.instance;
     final apple =
