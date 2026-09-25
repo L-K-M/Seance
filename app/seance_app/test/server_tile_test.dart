@@ -389,6 +389,15 @@ void main() {
         showAddress: true,
       );
       expect(find.text('deploy@[fe80::1]'), findsOneWidget);
+      // The full address keeps the brackets too, where the port follows.
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Tooltip &&
+              (widget.message?.startsWith('deploy@[fe80::1]:22') ?? false),
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('on touch a long-press opens the same verbs as a sheet', (

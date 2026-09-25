@@ -259,7 +259,10 @@ void main() {
       expect(find.text('Import SSH config…'), findsOneWidget);
       // Groups are a field on a server, not a thing of their own: there is
       // no "New group" to make.
-      expect(find.textContaining('group'), findsNothing);
+      expect(
+        find.textContaining(RegExp('group', caseSensitive: false)),
+        findsNothing,
+      );
     });
 
     testWidgets('sections: PINNED, then SERVERS with its groups nested', (

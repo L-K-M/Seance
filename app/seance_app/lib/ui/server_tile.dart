@@ -82,15 +82,17 @@ class ServerTile extends StatelessWidget {
   static const String excludedDescription =
       'Excluded from sync — this device only';
 
-  String get _address => '${server.username}@${server.host}:${server.port}';
+  /// An IPv6 host bracketed, so the port after it still reads as one.
+  String get _host =>
+      server.host.contains(':') ? '[${server.host}]' : server.host;
+
+  String get _address => '${server.username}@$_host:${server.port}';
 
   /// The home row's second line: `user@host`, with the port only when it
-  /// is not SSH's default (an IPv6 host bracketed so the port reads) —
-  /// the form Poltergeist's Home shows. The tooltip and the announced
-  /// label keep the full [_address].
+  /// is not SSH's default — the form Poltergeist's Home shows. The tooltip
+  /// and the announced label keep the full [_address].
   String get _subtitleAddress {
-    final host = server.host.contains(':') ? '[${server.host}]' : server.host;
-    final base = '${server.username}@$host';
+    final base = '${server.username}@$_host';
     return server.port == 22 ? base : '$base:${server.port}';
   }
 

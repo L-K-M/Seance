@@ -264,6 +264,7 @@ void main() {
       await tester.runAsync(() => state!.toggleServerPin('zulu'));
       await pumpPane(tester);
       expect(renderedLabels(tester), ['zulu', 'alpha']);
+      expect(find.text(kPinnedLabel), findsOneWidget);
 
       await openVerbs(tester, 'zulu');
       expect(
@@ -276,7 +277,7 @@ void main() {
 
       expect(state!.pinnedServerIds, isEmpty);
       expect(renderedLabels(tester), ['alpha', 'zulu']);
-      expect(find.text(kPinnedLabel.toUpperCase()), findsNothing);
+      expect(find.text(kPinnedLabel), findsNothing);
     });
 
     testWidgets('a pinned server leaves its group for the shortlist', (
