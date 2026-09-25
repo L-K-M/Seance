@@ -883,6 +883,128 @@ void main() {
       expect(addShown(), isFalse);
     });
 
+    // D33 draws every comfortable or touch row's "⋮", and a focused row
+    // draws its hover action: both are Tab's stops after their row, as a
+    // header's "+" is, but not the arrows', which walk rows and headers.
+    for (final (density, platform) in [
+      (SidebarKitDensity.comfortable, TargetPlatform.macOS),
+      (SidebarKitDensity.comfortable, TargetPlatform.android),
+      (SidebarKitDensity.compact, TargetPlatform.android),
+      (SidebarKitDensity.compact, TargetPlatform.macOS),
+    ]) {
+      final menuShown =
+          density == SidebarKitDensity.comfortable ||
+          platform == TargetPlatform.android;
+      testWidgets('the arrows walk rows past their buttons, which Tab '
+          'reaches (${density.name}, ${platform.name})', (tester) async {
+        Widget row(String name) => SidebarRow(
+          key: ValueKey(name),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: name,
+          onActivate: (_) {},
+          hoverAction: SidebarRowAction(
+            key: ValueKey('$name.action'),
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () {},
+          ),
+          menuEntries: () => [
+            SidebarMenuAction(label: 'kit-rename', onSelected: () {}),
+          ],
+        );
+        await _pump(
+          tester,
+          Column(children: [row('alpha'), row('beta'), row('gamma')]),
+          platform: platform,
+          density: density,
+        );
+        // The row's own node: the one its menu anchor sits under.
+        FocusNode rowNode(String name) => Focus.of(
+          tester.element(
+            find.descendant(
+              of: find.byKey(ValueKey(name)),
+              matching: find.byType(MenuAnchor),
+            ),
+          ),
+        );
+        FocusNode buttonNode(String name, IconData icon) => Focus.of(
+          tester.element(
+            find.descendant(
+              of: find.byKey(ValueKey(name)),
+              matching: find.byIcon(icon),
+            ),
+          ),
+        );
+
+        rowNode('alpha').requestFocus();
+        await tester.pump();
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(rowNode('gamma').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        expect(rowNode('alpha').hasPrimaryFocus, isTrue);
+
+        // Tab steps through the row's buttons, then on to the next row;
+        // Shift+Tab steps back through them.
+        await press(tester, LogicalKeyboardKey.tab);
+        expect(buttonNode('alpha', Icons.eject).hasPrimaryFocus, isTrue);
+        if (menuShown) {
+          await press(tester, LogicalKeyboardKey.tab);
+          expect(buttonNode('alpha', Icons.more_vert).hasPrimaryFocus, isTrue);
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          await press(tester, LogicalKeyboardKey.tab);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+          expect(buttonNode('alpha', Icons.eject).hasPrimaryFocus, isTrue);
+          await press(tester, LogicalKeyboardKey.tab);
+        }
+        await press(tester, LogicalKeyboardKey.tab);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+
+        // From a button the arrows rejoin the walk: ↑ to its row, ↓ on
+        // to the next.
+        await press(tester, LogicalKeyboardKey.tab);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        expect(rowNode('beta').hasPrimaryFocus, isTrue);
+        await press(tester, LogicalKeyboardKey.tab);
+        if (menuShown) await press(tester, LogicalKeyboardKey.tab);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(rowNode('gamma').hasPrimaryFocus, isTrue);
+      });
+    }
+
+    testWidgets('a clicked row still hands Tab to the hover action it '
+        'draws only for the keyboard', (tester) async {
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined, size: 16),
+          title: 'alpha',
+          onActivate: (_) {},
+          hoverAction: SidebarRowAction(
+            key: const ValueKey('r.action'),
+            icon: Icons.eject,
+            tooltip: 'kit-disconnect',
+            onPressed: () {},
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('r')));
+      await tester.pump();
+      // The pointer is gone and the click drew no ring, so the action is
+      // not drawn until the key arrives.
+      expect(find.byKey(const ValueKey('r.action')), findsNothing);
+      await press(tester, LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(
+        Focus.of(tester.element(find.byIcon(Icons.eject))).hasPrimaryFocus,
+        isTrue,
+      );
+    });
+
   });
 
   // A row's verbs have to reach a screen reader, which has no pointer to

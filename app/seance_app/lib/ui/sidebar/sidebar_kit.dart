@@ -1204,7 +1204,9 @@ final class SidebarStatusDot {
 /// pane shows) with a semibold title; the focus ring shows only in keyboard
 /// mode. Right-click opens [menuEntries] at the pointer, Shift+F10 and the
 /// Menu key open them from the keyboard, and a touch long-press opens the
-/// same verbs as a bottom sheet.
+/// same verbs as a bottom sheet. The arrows walk rows and headers; the
+/// hover action and the "⋮" are Tab's stops after their row, not the
+/// arrows', like a header's "+".
 class SidebarRow extends StatefulWidget {
   const SidebarRow({
     super.key,
@@ -1300,6 +1302,19 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
 
   /// The menu's first enabled verb, for a keyboard-opened menu to focus.
   final _firstVerbFocus = FocusNode(debugLabel: 'SidebarRow first verb');
+
+  /// The row's own buttons: the hover action and the "⋮". They skip
+  /// traversal, so the arrows (and the next row's ↑) walk rows past them,
+  /// as they pass a header's "+"; the row hands them Tab instead (see
+  /// [_onKey] and [_onButtonKey]).
+  final _actionFocus = FocusNode(
+    debugLabel: 'SidebarRow action',
+    skipTraversal: true,
+  );
+  final _menuButtonFocus = FocusNode(
+    debugLabel: 'SidebarRow menu button',
+    skipTraversal: true,
+  );
   bool _hovering = false;
   PointerDeviceKind? _lastPointer;
 
@@ -1311,10 +1326,61 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
   @override
   void dispose() {
     _firstVerbFocus.dispose();
+    _actionFocus.dispose();
+    _menuButtonFocus.dispose();
     super.dispose();
   }
 
   void _activate(SidebarActivation how) => widget.onActivate?.call(how);
+
+  /// The trailing "⋮" is drawn (see [SidebarRow.showMenuButton]).
+  bool get _drawsMenuButton =>
+      widget.menuEntries != null &&
+      (widget.showMenuButton ?? (_comfortable(context) || _touch(context)));
+
+  /// Tab or Shift+Tab with no other modifier: Control, Meta and Alt make
+  /// it a chord the app binds (switching tabs), not a step between stops.
+  static bool _isTab(LogicalKeyboardKey key, {required bool shift}) {
+    final keys = HardwareKeyboard.instance;
+    return key == LogicalKeyboardKey.tab &&
+        keys.isShiftPressed == shift &&
+        !keys.isControlPressed &&
+        !keys.isMetaPressed &&
+        !keys.isAltPressed;
+  }
+
+  /// Keys on the row's own buttons. The arrows rejoin the walk the
+  /// buttons sit outside of: ↑ returns to the row and ↓ moves on past it
+  /// (traversal moves on from the node that holds focus even though it
+  /// skips traversal itself). Tab and Shift+Tab step between the two;
+  /// past them, traversal needs nothing here.
+  KeyEventResult _onButtonKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp) {
+      focusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      node.nextFocus();
+      return KeyEventResult.handled;
+    }
+    if (_actionFocus.hasPrimaryFocus &&
+        _drawsMenuButton &&
+        _isTab(key, shift: false)) {
+      _menuButtonFocus.requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (_menuButtonFocus.hasPrimaryFocus &&
+        widget.hoverAction != null &&
+        _isTab(key, shift: true)) {
+      _actionFocus.requestFocus();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
 
   /// Opens the verbs. From the keyboard ([focusFirst]) focus moves into the
   /// menu once it has mounted, or Shift+F10 would open a menu the keyboard
@@ -1417,6 +1483,17 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
         return KeyEventResult.handled;
       }
     }
+    // Tab reaches the row's buttons, which the arrows pass by: the hover
+    // action first (a focused row draws it), then the "⋮".
+    if (_isTab(key, shift: false)) {
+      final button = widget.hoverAction != null
+          ? _actionFocus
+          : (_drawsMenuButton ? _menuButtonFocus : null);
+      if (button != null) {
+        button.requestFocus();
+        return KeyEventResult.handled;
+      }
+    }
     if (key == LogicalKeyboardKey.arrowDown) {
       node.nextFocus();
       return KeyEventResult.handled;
@@ -1471,7 +1548,6 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     // behind the mark, pill or hover included.
     final ring = fill == null ? background : Color.alphaBlend(fill, background);
     final list = _list(context);
-    final touch = _touch(context);
     final comfortable = _comfortable(context);
     final metrics = _metrics(context);
     final radius = _radius(context);
@@ -1491,11 +1567,17 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     final action = widget.hoverAction;
     final showAction = action != null && (_hovering || focused);
     final Widget? trailing = showAction
-        ? _KitIconButton(
-            key: action.key,
-            icon: action.icon,
-            tooltip: action.tooltip,
-            onPressed: action.onPressed,
+        ? Focus(
+            canRequestFocus: false,
+            skipTraversal: true,
+            onKeyEvent: _onButtonKey,
+            child: _KitIconButton(
+              key: action.key,
+              icon: action.icon,
+              tooltip: action.tooltip,
+              focusNode: _actionFocus,
+              onPressed: action.onPressed,
+            ),
           )
         : (widget.trailingText == null
               ? null
@@ -1511,13 +1593,18 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     // Built once per frame: the menu and the row's semantics actions list
     // the same verbs.
     final verbs = entries?.call();
-    final showMenuButton = widget.showMenuButton ?? (comfortable || touch);
-    final menuButton = showMenuButton && entries != null
-        ? Builder(
-            builder: (buttonContext) => _KitIconButton(
-              icon: Icons.more_vert,
-              tooltip: SidebarKitScope.of(context).rowMenu,
-              onPressed: () => _openFromButton(buttonContext),
+    final menuButton = _drawsMenuButton
+        ? Focus(
+            canRequestFocus: false,
+            skipTraversal: true,
+            onKeyEvent: _onButtonKey,
+            child: Builder(
+              builder: (buttonContext) => _KitIconButton(
+                icon: Icons.more_vert,
+                tooltip: SidebarKitScope.of(context).rowMenu,
+                focusNode: _menuButtonFocus,
+                onPressed: () => _openFromButton(buttonContext),
+              ),
             ),
           )
         : null;

@@ -677,6 +677,34 @@ void main() {
       expect(opened, ['alpha']);
     });
 
+    testWidgets('the arrows walk comfortable rows past their "⋮"', (
+      tester,
+    ) async {
+      // Comfortable is the default, and it draws every row's "⋮".
+      await boot(tester, [server('alpha'), server('mike'), server('zulu')]);
+      final opened = <String>[];
+      await pumpRail(tester, onOpen: (config) => opened.add(config.id));
+      Future<void> press(LogicalKeyboardKey key) async {
+        await tester.sendKeyEvent(key);
+        await tester.pumpAndSettle();
+      }
+
+      await tester.tap(find.text('alpha'));
+      await tester.pumpAndSettle();
+      opened.clear();
+
+      await press(LogicalKeyboardKey.arrowDown);
+      await press(LogicalKeyboardKey.arrowDown);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['zulu']);
+      opened.clear();
+
+      await press(LogicalKeyboardKey.arrowUp);
+      await press(LogicalKeyboardKey.arrowUp);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['alpha']);
+    });
+
     testWidgets('a row\'s verbs reach a screen reader', (tester) async {
       final semantics = tester.ensureSemantics();
       await boot(tester, [server('alpha')]);
