@@ -1806,5 +1806,117 @@ void main() {
       }
       expect(outside.hasFocus, isFalse);
     });
+
+    testWidgets('Left and Right with Ctrl, Alt or Meta are the app\'s: they '
+        'reach its shortcuts from a row or a header', (tester) async {
+      final fired = <String>[];
+      var collapsed = false;
+      await _pump(
+        tester,
+        // The host's chords, above the sidebar as an app's shortcuts are
+        // (Poltergeist's pane focus is Ctrl+Alt+arrow, or Cmd+Option+arrow
+        // on macOS).
+        CallbackShortcuts(
+          bindings: {
+            const SingleActivator(
+              LogicalKeyboardKey.arrowRight,
+              control: true,
+              alt: true,
+            ): () =>
+                fired.add('ctrl+alt+right'),
+            const SingleActivator(
+              LogicalKeyboardKey.arrowLeft,
+              control: true,
+              alt: true,
+            ): () =>
+                fired.add('ctrl+alt+left'),
+            const SingleActivator(
+              LogicalKeyboardKey.arrowRight,
+              meta: true,
+              alt: true,
+            ): () =>
+                fired.add('meta+alt+right'),
+            const SingleActivator(
+              LogicalKeyboardKey.arrowLeft,
+              alt: true,
+            ): () =>
+                fired.add('alt+left'),
+          },
+          child: StatefulBuilder(
+            builder: (context, setState) => Column(
+              children: [
+                SidebarSectionHeader(
+                  headerKey: const ValueKey('h'),
+                  title: 'Servers',
+                  count: 1,
+                  collapsed: collapsed,
+                  onToggle: () => setState(() => collapsed = !collapsed),
+                ),
+                SidebarRow(
+                  mark: const Icon(Icons.dns_outlined, size: 16),
+                  title: 'alpha',
+                  onActivate: (_) {},
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      final header = Focus.of(tester.element(find.byKey(const ValueKey('h'))));
+      final row = Focus.of(tester.element(find.text('alpha')));
+
+      Future<void> chord(
+        List<LogicalKeyboardKey> modifiers,
+        LogicalKeyboardKey key, {
+        bool repeat = false,
+      }) async {
+        for (final modifier in modifiers) {
+          await tester.sendKeyDownEvent(modifier);
+        }
+        await tester.sendKeyDownEvent(key);
+        if (repeat) await tester.sendKeyRepeatEvent(key);
+        await tester.sendKeyUpEvent(key);
+        for (final modifier in modifiers.reversed) {
+          await tester.sendKeyUpEvent(modifier);
+        }
+        await tester.pump();
+      }
+
+      const ctrlAlt = [
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.altLeft,
+      ];
+      const metaAlt = [LogicalKeyboardKey.metaLeft, LogicalKeyboardKey.altLeft];
+      const alt = [LogicalKeyboardKey.altLeft];
+
+      row.requestFocus();
+      await tester.pump();
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowRight);
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowLeft);
+      await chord(metaAlt, LogicalKeyboardKey.arrowRight);
+      await chord(alt, LogicalKeyboardKey.arrowLeft);
+      expect(fired, [
+        'ctrl+alt+right',
+        'ctrl+alt+left',
+        'meta+alt+right',
+        'alt+left',
+      ]);
+
+      // A header lets them by too, held or not, and does not fold or
+      // unfold on the way.
+      fired.clear();
+      header.requestFocus();
+      await tester.pump();
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowLeft);
+      await chord(ctrlAlt, LogicalKeyboardKey.arrowRight, repeat: true);
+      await chord(alt, LogicalKeyboardKey.arrowLeft);
+      expect(fired, [
+        'ctrl+alt+left',
+        'ctrl+alt+right',
+        'ctrl+alt+right',
+        'alt+left',
+      ]);
+      expect(collapsed, isFalse);
+    });
   });
 }

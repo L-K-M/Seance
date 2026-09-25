@@ -741,6 +741,13 @@ class SidebarSectionHeader extends StatefulWidget {
   State<SidebarSectionHeader> createState() => _SidebarSectionHeaderState();
 }
 
+/// Ctrl, Alt or Meta is held, so an arrow is the app's chord (a pane
+/// focus or Go Back binding), not a step in the sidebar.
+bool _appChordHeld() {
+  final keys = HardwareKeyboard.instance;
+  return keys.isControlPressed || keys.isAltPressed || keys.isMetaPressed;
+}
+
 class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     with _KeyboardFocusRing {
   bool _hovering = false;
@@ -792,6 +799,9 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     final horizontal =
         key == LogicalKeyboardKey.arrowLeft ||
         key == LogicalKeyboardKey.arrowRight;
+    // A chord goes on to the app's shortcuts, held or not, and folds
+    // nothing on the way.
+    if (horizontal && _appChordHeld()) return KeyEventResult.ignored;
     // Repeats may drive traversal, never activation — a held key must
     // not flicker the collapse state.
     if (event is KeyRepeatEvent) {
@@ -1417,10 +1427,10 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     }
     // A row has nothing to open sideways, and a ← or → let through would
     // carry focus out of the sidebar by directional traversal (Finder
-    // keeps it here, as the headers do).
+    // keeps it here, as the headers do). A chord is the app's.
     if (key == LogicalKeyboardKey.arrowLeft ||
         key == LogicalKeyboardKey.arrowRight) {
-      return KeyEventResult.handled;
+      return _appChordHeld() ? KeyEventResult.ignored : KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
