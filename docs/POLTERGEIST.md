@@ -252,7 +252,8 @@ them that way by porting any kit change to both.
 
 **Two densities (2026-09-25).** The owner asked for the two views back,
 in both apps, comfortable by default (Poltergeist records the decision
-in its `docs/plan/00-OVERVIEW.md`). The kit change landed in both
+as D33, "Sidebar density and restored row detail", in its
+`docs/plan/00-OVERVIEW.md`). The kit change landed in both
 files at once, so they still differ only in the three places above:
 
 - `SidebarKitDensity { compact, comfortable }` on `SidebarKitScope`

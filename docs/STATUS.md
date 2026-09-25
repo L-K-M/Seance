@@ -69,7 +69,8 @@ tracking that support Poltergeist's pooled transport policy._
 The owner's call after the kit port below: aligning the two sidebars
 lost "the two views", so both apps now offer a compact and a comfortable
 density, comfortable by default on every platform (Poltergeist's plan
-records the decision in its `docs/plan/00-OVERVIEW.md`). This supersedes the port's "the
+records the decision as D33, "Sidebar density and restored row detail",
+in its `docs/plan/00-OVERVIEW.md`). This supersedes the port's "the
 density preference survives here only" and its one-line rail.
 
 **Density.** The kit gained `SidebarKitDensity` (its record is in
@@ -181,7 +182,7 @@ Edit…, Duplicate, Delete…), Shift+F10 and the Menu key open them with
 focus inside, and a connected row shows an eject glyph on hover. ⌘-click
 (Ctrl-click off Apple platforms, where Control-click is the secondary
 click and opens the row's verbs, as right-click does) opens another tab. The filter shows at eight servers (it was
-five), while a query is live, or on ⌥⌘F (Ctrl+Alt+F off Apple
+five; superseded on 2026-09-25, five again, see above), while a query is live, or on ⌥⌘F (Ctrl+Alt+F off Apple
 platforms, where the terminal keeps the chord for the shell); Esc
 clears, then closes, and Enter opens the first row shown. The bottom bar
 has a "+" menu (New server…, Import SSH config…; Séance has no group
@@ -993,17 +994,24 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   observations) and the tab aggregation behind it.
 - `app/seance_app/test/server_list_pane_test.dart` — the rail (no app
   bar; the bottom bar's "+" menu, sync chip states and gear; sections
-  and nesting; folds persisting; the filter at eight servers and on
-  ⌥⌘F / Ctrl+Alt+F with Esc clearing then closing; the selection pill;
-  pinning from a right-click; the empty state) and the home's "+" never
-  covering the last row's "⋮".
+  and nesting; folds persisting; the filter at five servers, its
+  "↵ opens the first" count and on ⌥⌘F / Ctrl+Alt+F with Esc clearing
+  then closing, and neither a refused nor an emptied reveal reopening
+  it; the selection pill; pinning from a right-click; a header's dot for
+  a hidden live session; the blocked row; the empty state) and the
+  home's "+" never covering the last row's "⋮".
 - `app/seance_app/test/ui/sidebar/sidebar_kit_test.dart` — the ported
   kit's tests plus Séance's additions: ring dots, the host surface, two
   lines, the menu button on desktop and touch, touch headers, keyboard
   focus inside a row menu, and a focus ring that does not move content.
-- `app/seance_app/test/server_list_capture_test.dart` — renders both
-  postures and brightnesses for review; writes PNGs only with
+- `app/seance_app/test/server_list_capture_test.dart` — renders the
+  rail (also at its 200 px minimum), a tablet rail, the phone home and a
+  narrow desktop window at both densities and brightnesses, plus a folded
+  group keeping its dot, for review; writes PNGs only with
   `SEANCE_CAPTURE=1`.
+- `app/seance_app/test/mac_menu_test.dart` — View's density item over a
+  mocked `seance/menu` channel: it flips the density and its title
+  follows.
 - `app/seance_app/test/server_editor_test.dart` — Return saves from a
   one-line field, is a newline in the login script, presses a focused button
   instead, and does nothing while the form is invalid; a custom colour is
