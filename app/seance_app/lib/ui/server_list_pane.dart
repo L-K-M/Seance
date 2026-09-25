@@ -171,12 +171,15 @@ class _ServerListPaneState extends State<ServerListPane> {
   }
 
   /// Drop a stale query once the list it filtered is empty, so adding a server
-  /// afterwards shows it instead of "No servers match". Deferred to after the
-  /// frame because this is observed from inside a build.
+  /// afterwards shows it instead of "No servers match", and end a reveal with
+  /// it, so the field does not come back unasked with that server. Deferred to
+  /// after the frame because this is observed from inside a build.
   void _dropStaleQuery() {
-    if (_query.isEmpty) return;
+    if (_query.isEmpty && !_filterOpen) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _query.isNotEmpty) _clearQuery();
+      if (!mounted) return;
+      if (_query.isNotEmpty) _clearQuery();
+      if (_filterOpen) setState(() => _filterOpen = false);
     });
   }
 

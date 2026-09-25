@@ -438,6 +438,31 @@ void main() {
       );
     });
 
+    testWidgets('a reveal made before the list emptied does not reopen the '
+        'field when the next server arrives', (tester) async {
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+      await boot(tester, [server('alpha'), server('bravo')]);
+      await pumpRail(tester);
+      expect(ServerListPane.revealFilter(), isTrue);
+      await tester.pumpAndSettle();
+      expect(field, findsOneWidget);
+
+      await tester.runAsync(() async {
+        await state!.deleteServer('alpha');
+        await state!.deleteServer('bravo');
+      });
+      await tester.pumpAndSettle();
+      expect(field, findsNothing);
+
+      await tester.runAsync(() => state!.saveServer(server('charlie')));
+      await tester.pumpAndSettle();
+      expect(
+        field,
+        findsNothing,
+        reason: 'emptying the list ends the reveal, as it drops the query',
+      );
+    });
+
     testWidgets('Windows leaves AltGr+F to text input: AltGr arrives as '
         'Ctrl + right Alt, and "[" is AltGr+F on Czech and other layouts', (
       tester,
