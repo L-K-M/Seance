@@ -56,40 +56,49 @@ enum FamilyHue {
 class FamilyPalette extends ThemeExtension<FamilyPalette> {
   const FamilyPalette._(this._glyphs);
 
-  /// Indexed by [FamilyHue.index].
-  final List<Color> _glyphs;
+  /// Keyed by hue, so reordering or adding a [FamilyHue] cannot shift a
+  /// tint onto another hue; a hue missing here fails the first lookup
+  /// (every hue is looked up on every surface in the family hues test).
+  final Map<FamilyHue, Color> _glyphs;
 
   /// Bright enough to sing on the slate surfaces without glowing.
-  static const dark = FamilyPalette._([
-    Color(0xFF5BA8F5), // blue
-    Color(0xFF45C8DC), // cyan
-    Color(0xFF4FD1B5), // teal
-    Color(0xFF5BD17A), // green
-    Color(0xFFF2C14E), // yellow
-    Color(0xFFFF9A52), // orange
-    Color(0xFFFF7A70), // red
-    Color(0xFFF57FC0), // pink
-    Color(0xFFB79CFF), // purple
-    Color(0xFF8FA2FF), // indigo
-    Color(0xFFD2A679), // brown
-    Color(0xFFB4BCC8), // graphite: the neutrals' secondary text
-  ]);
+  static const dark = FamilyPalette._({
+    FamilyHue.blue: Color(0xFF5BA8F5),
+    FamilyHue.cyan: Color(0xFF45C8DC),
+    FamilyHue.teal: Color(0xFF4FD1B5),
+    FamilyHue.green: Color(0xFF5BD17A),
+    FamilyHue.yellow: Color(0xFFF2C14E),
+    FamilyHue.orange: Color(0xFFFF9A52),
+    FamilyHue.red: Color(0xFFFF7A70),
+    FamilyHue.pink: Color(0xFFF57FC0),
+    FamilyHue.purple: Color(0xFFB79CFF),
+    FamilyHue.indigo: Color(0xFF8FA2FF),
+    FamilyHue.brown: Color(0xFFD2A679),
+    // Graphite is the neutrals' secondary text.
+    FamilyHue.graphite: Color(0xFFB4BCC8),
+  });
 
   /// Deep enough to hold 3:1 on the Finder-light greys.
-  static const light = FamilyPalette._([
-    Color(0xFF1F6FD1), // blue
-    Color(0xFF00838F), // cyan
-    Color(0xFF00796B), // teal
-    Color(0xFF1B873A), // green
-    Color(0xFF9A6700), // yellow
-    Color(0xFFC2410C), // orange
-    Color(0xFFC62828), // red
-    Color(0xFFC2185B), // pink
-    Color(0xFF7B3FD1), // purple
-    Color(0xFF3F51B5), // indigo
-    Color(0xFF8D5A2B), // brown
-    Color(0xFF596170), // graphite: the neutrals' secondary text
-  ]);
+  static const light = FamilyPalette._({
+    FamilyHue.blue: Color(0xFF1F6FD1),
+    FamilyHue.cyan: Color(0xFF00838F),
+    FamilyHue.teal: Color(0xFF00796B),
+    FamilyHue.green: Color(0xFF1B873A),
+    FamilyHue.yellow: Color(0xFF9A6700),
+    FamilyHue.orange: Color(0xFFC2410C),
+    FamilyHue.red: Color(0xFFC62828),
+    FamilyHue.pink: Color(0xFFC2185B),
+    FamilyHue.purple: Color(0xFF7B3FD1),
+    FamilyHue.indigo: Color(0xFF3F51B5),
+    FamilyHue.brown: Color(0xFF8D5A2B),
+    // Graphite is the neutrals' secondary text.
+    FamilyHue.graphite: Color(0xFF596170),
+  });
+
+  /// A disc's wash (a phone listing's kind badge, a Home row's mark): the
+  /// glyph's own tint at this opacity behind it, light enough to keep
+  /// the glyph at 3:1 (the family hues test pins it).
+  static const double discWashAlpha = 0.14;
 
   static FamilyPalette forBrightness(Brightness brightness) =>
       brightness == Brightness.dark ? dark : light;
@@ -104,7 +113,7 @@ class FamilyPalette extends ThemeExtension<FamilyPalette> {
   }
 
   /// [hue]'s tint for a bare glyph on a chrome surface.
-  Color glyph(FamilyHue hue) => _glyphs[hue.index];
+  Color glyph(FamilyHue hue) => _glyphs[hue]!;
 
   @override
   FamilyPalette copyWith() => this;
@@ -112,10 +121,10 @@ class FamilyPalette extends ThemeExtension<FamilyPalette> {
   @override
   FamilyPalette lerp(FamilyPalette? other, double t) {
     if (other == null) return this;
-    return FamilyPalette._([
-      for (var i = 0; i < _glyphs.length; i++)
-        Color.lerp(_glyphs[i], other._glyphs[i], t)!,
-    ]);
+    return FamilyPalette._({
+      for (final hue in FamilyHue.values)
+        hue: Color.lerp(glyph(hue), other.glyph(hue), t)!,
+    });
   }
 }
 

@@ -197,8 +197,10 @@ class _PanelTabLabel extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           if (constraints.maxWidth < _glyphOnlyWidth) {
+            // The label speaks once: the tooltip is for the pointer.
             return Tooltip(
               message: tab.label,
+              excludeFromSemantics: true,
               child: Semantics(label: tab.label, child: glyph),
             );
           }

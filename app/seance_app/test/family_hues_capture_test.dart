@@ -270,11 +270,16 @@ void main() {
     );
   }
 
-  Future<void> openTab(WidgetTester tester, String label) async {
+  /// Opens [label]'s tab and waits for [loaded] to appear: the tab's pane
+  /// mounts on its first visit and loads through real futures (the
+  /// listing, the git probe), so the wait is on the real loop, bounded.
+  Future<void> openTab(
+    WidgetTester tester,
+    String label, {
+    required Finder loaded,
+  }) async {
     await tester.tap(find.text(label));
-    // The tab's pane mounts on its first visit and loads through real
-    // futures (the listing, the git probe).
-    for (var i = 0; i < 5; i++) {
+    for (var i = 0; i < 50 && loaded.evaluate().isEmpty; i++) {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 20)),
       );
@@ -308,7 +313,7 @@ void main() {
     testWidgets('captures the Files tab ($tone)', (tester) async {
       await boot(tester);
       final boundary = await pumpPanel(tester, brightness);
-      await openTab(tester, 'Files');
+      await openTab(tester, 'Files', loaded: find.text('invoice.pdf'));
       expect(find.text('invoice.pdf'), findsOneWidget);
       await capture(tester, boundary, 'panel-files-$tone');
     });
@@ -316,7 +321,7 @@ void main() {
     testWidgets('captures the Git tab ($tone)', (tester) async {
       await boot(tester);
       final boundary = await pumpPanel(tester, brightness);
-      await openTab(tester, 'Git');
+      await openTab(tester, 'Git', loaded: find.text('README.md'));
       expect(find.text('README.md'), findsOneWidget);
       await capture(tester, boundary, 'panel-git-$tone');
     });
@@ -343,7 +348,7 @@ void main() {
 
     Color? underline() => tester.widget<TabBar>(find.byType(TabBar)).indicatorColor;
     expect(underline(), palette.glyph(FamilyHue.teal)); // Snippets opens
-    await openTab(tester, 'Git');
+    await openTab(tester, 'Git', loaded: find.text('README.md'));
     await tester.pumpAndSettle();
     expect(underline(), palette.glyph(FamilyHue.orange));
   });
