@@ -101,7 +101,8 @@ class _SelectedTabViewState extends State<SelectedTabView> {
             : _parked.putIfAbsent(tab, ScrollController.new),
         automaticallyInheritForPlatforms:
             primary!.automaticallyInheritForPlatforms,
-        scrollDirection: primary.scrollDirection ?? Axis.vertical,
+        // Copied as is: null means no scroll view inherits it by itself.
+        scrollDirection: primary.scrollDirection,
         child: slot,
       );
     }

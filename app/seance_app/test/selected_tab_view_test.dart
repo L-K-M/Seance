@@ -148,6 +148,32 @@ void main() {
     expect(screens.positions, hasLength(1));
   });
 
+  testWidgets('a page inherits the primary controller only as the screen '
+      'allows', (tester) async {
+    final screens = ScrollController();
+    addTearDown(screens.dispose);
+    final tabs = TabController(length: 2, vsync: const TestVSync());
+    addTearDown(tabs.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        // A primary controller that no scroll view inherits by itself.
+        home: PrimaryScrollController(
+          controller: screens,
+          scrollDirection: null,
+          child: SelectedTabView(
+            controller: tabs,
+            children: [
+              ListView(children: const [Text('row')]),
+              const Text('second'),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(screens.hasClients, isFalse);
+  });
+
   testWidgets('follows an explicit controller', (tester) async {
     final controller = TabController(length: 2, vsync: const TestVSync());
     addTearDown(controller.dispose);
