@@ -288,6 +288,39 @@ void main() {
     expect(find.text('Sync automatically'), findsOneWidget);
   });
 
+  testWidgets('a tab swaps its page in place instead of sliding to it', (
+    tester,
+  ) async {
+    await pumpScreen(tester);
+    final general = tester.getRect(
+      find.byKey(const PageStorageKey('general-settings')),
+    );
+
+    await tester.tap(find.widgetWithText(Tab, 'Sync'));
+    await tester.pump();
+
+    // The first frame after the tap: all of the new page, where the old one
+    // was, and none of the old.
+    expect(find.text('Check for updates'), findsNothing);
+    expect(
+      tester.getRect(find.byKey(const PageStorageKey('sync-settings'))),
+      general,
+    );
+  });
+
+  testWidgets('a sideways swipe does not change the tab', (tester) async {
+    await pumpScreen(tester);
+
+    await tester.fling(
+      find.text('Check for updates'),
+      const Offset(-600, 0),
+      2000,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Check for updates'), findsOneWidget);
+  });
+
   testWidgets('the sync status line follows the backend', (tester) async {
     await pumpScreen(tester, tab: SettingsTab.sync);
     expect(find.textContaining('Last sync failed'), findsNothing);

@@ -9,6 +9,7 @@ import '../services/external_file_opener.dart';
 import '../services/settings_backend.dart';
 import '../services/system_fonts.dart';
 import 'font_picker.dart';
+import 'selected_tab_view.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
 import 'top_toast.dart';
@@ -240,7 +241,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           bottom: tabBar,
         ),
       },
-      body: TabBarView(
+      body: SelectedTabView(
         controller: _tabs,
         children: [_generalTab(), _assistantTab(), _filesTab(), _syncTab()],
       ),
