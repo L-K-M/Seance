@@ -193,10 +193,12 @@ void main() {
       List<ServerConfig> servers, {
       Set<String> pinned = const {},
       Set<String> collapsed = const {},
+      Set<String> kept = const {},
     }) => _rendered(
       serverListRows(
         sections: groupServers(servers, pinnedIds: pinned),
         collapsedKeys: collapsed,
+        keptSections: kept,
       ),
     );
 
@@ -296,6 +298,21 @@ void main() {
       );
     });
 
+    test('a kept section the filter emptied keeps its header, and only '
+        'that', () {
+      // The filter matched nothing: each section is kept because a live
+      // server is among what it hid, so each header stays, over no rows.
+      expect(rowsFor([], kept: {kPinnedKey, kServersKey}), [
+        '#$kPinnedLabel:0',
+        '#$kServersLabel:0',
+      ]);
+      expect(rowsFor([_server('a')], kept: {kPinnedKey}), [
+        '#$kPinnedLabel:0',
+        '#$kServersLabel:1',
+        '-a',
+      ]);
+    });
+
     test('a stale key for a group that no longer exists is harmless', () {
       expect(
         rowsFor(
@@ -323,12 +340,14 @@ void main() {
     Map<String, List<String>> hidden(
       List<ServerConfig> shown, {
       Set<String> collapsed = const {},
+      Set<String> kept = const {},
     }) => {
       for (final MapEntry(:key, :value) in hiddenByHeader(
         sections: all,
         rows: serverListRows(
           sections: groupServers(shown, pinnedIds: pins),
           collapsedKeys: collapsed,
+          keptSections: kept,
         ),
       ).entries)
         key: _labels(value),
@@ -365,6 +384,39 @@ void main() {
         kServersKey: ['ci'],
       });
       expect(hidden(matches).containsKey(build), isFalse);
+    });
+
+    test('a section header kept for a live server holds all it hid', () {
+      // Nothing matched. PINNED and SERVERS were kept (a live server in
+      // each), so every server lands on one of them, groups included.
+      expect(hidden(const [], kept: {kPinnedKey, kServersKey}), {
+        kPinnedKey: ['star'],
+        kServersKey: ['loose', 'ci', 'db', 'web'],
+      });
+    });
+  });
+
+  group('sectionsHoldingLive', () {
+    final all = groupServers(
+      [_server('star'), _server('loose'), _server('db', group: 'Production')],
+      pinnedIds: {'star'},
+    );
+    Set<String> kept(Set<String> live) =>
+        sectionsHoldingLive(all, (server) => live.contains(server.id));
+
+    test('nothing live keeps no header', () {
+      expect(kept({}), isEmpty);
+    });
+
+    test('a live pinned server keeps PINNED, and only PINNED', () {
+      expect(kept({'star'}), {kPinnedKey});
+    });
+
+    test('a live server in SERVERS keeps SERVERS, grouped or not: a hidden '
+        "group's header is gone, so SERVERS is where its dot shows", () {
+      expect(kept({'loose'}), {kServersKey});
+      expect(kept({'db'}), {kServersKey});
+      expect(kept({'star', 'db'}), {kPinnedKey, kServersKey});
     });
   });
 

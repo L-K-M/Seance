@@ -331,8 +331,6 @@ class _ServerListPaneState extends State<ServerListPane> {
         onNewServer: () => _editServer(context, state, null),
         onImport: () => _importConfig(context, state),
       );
-    } else if (matches.isEmpty) {
-      list = _NoMatches(onClear: _clearQuery);
     } else {
       list = _serverList(context, state, matches);
     }
@@ -389,11 +387,14 @@ class _ServerListPaneState extends State<ServerListPane> {
     );
   }
 
+  /// The list drawn for [servers], the query's matches (every server while
+  /// there is no query), with "No servers match" when none are left.
   Widget _serverList(
     BuildContext context,
     AppState state,
     List<ServerConfig> servers,
   ) {
+    final whole = _sections(state, state.servers);
     final rows = serverListRows(
       sections: _sections(state, servers),
       // A live query overrides every collapsed section. Otherwise the filter
@@ -401,13 +402,20 @@ class _ServerListPaneState extends State<ServerListPane> {
       // away behind a header the user never opened — which reads as the filter
       // being broken rather than as the list being tidy.
       collapsedKeys: _query.isEmpty ? state.collapsedServerGroups : const {},
+      // A section the query empties keeps its header while a live server is
+      // among what it hid, so that server's dot still has somewhere to show.
+      keptSections: _query.isEmpty
+          ? const {}
+          : sectionsHoldingLive(
+              whole,
+              (server) => _liveDot(state, [server]) != null,
+            ),
     );
+    // Nothing matched and nothing live is hidden: the copy alone.
+    if (rows.isEmpty) return _NoMatches(onClear: _clearQuery);
     // What each header folds or filters out of view, measured against the
     // whole list, so a hidden live session still shows on its header.
-    final hidden = hiddenByHeader(
-      sections: _sections(state, state.servers),
-      rows: rows,
-    );
+    final hidden = hiddenByHeader(sections: whole, rows: rows);
     // The home screen lets the ListView take the ambient insets (the
     // gesture-nav bar on Android) and extends the bottom one by the floating
     // button's clearance; an explicit EdgeInsets must neither drop the
@@ -477,32 +485,41 @@ class _ServerListPaneState extends State<ServerListPane> {
               depth,
             ),
           },
+        // Nothing matched, but a header stayed for a live server the filter
+        // hid. It is not a match, so the miss is still said, under it.
+        if (servers.isEmpty) _NoMatches(onClear: _clearQuery),
       ],
     );
   }
 
-  /// A header's dot for the live sessions it keeps out of view: green while
-  /// one of [servers] is connected, amber while one is connecting. A
-  /// failure is left to its row: folding a group is a choice not to look,
-  /// and what must not vanish with it is a connection still open.
+  /// A header's dot for the live sessions it keeps out of view (see
+  /// [_liveDot]).
   SidebarStatusDot? _hiddenLiveDot(
     BuildContext context,
     AppState state,
     List<ServerConfig>? servers,
   ) {
     if (servers == null) return null;
+    final dot = _liveDot(state, servers);
+    if (dot == null) return null;
+    return SidebarStatusDot(dot.color(context)!, style: dot.style);
+  }
+
+  /// What a header says for [servers] out of view: connected while one of
+  /// them is, else connecting while one is, else null, as nothing there is
+  /// live. A failure is left to its row: folding a group is a choice not to
+  /// look, and what must not vanish with it is a connection still open.
+  ServerDot? _liveDot(AppState state, Iterable<ServerConfig> servers) {
     final live = {
       for (final server in servers)
         for (final tab in state.tabsForServer(server.id))
           if (tab is TerminalSession) tab.status,
     };
-    final dot = live.contains(TerminalStatus.connected)
+    return live.contains(TerminalStatus.connected)
         ? ServerDot.connected
         : live.contains(TerminalStatus.connecting)
         ? ServerDot.connecting
         : null;
-    if (dot == null) return null;
-    return SidebarStatusDot(dot.color(context)!, style: dot.style);
   }
 
   Widget _tile(

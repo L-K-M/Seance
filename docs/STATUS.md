@@ -122,7 +122,12 @@ with `hostKeyBlocked` set directly.
 connected or connecting server puts its dot on the header hiding it
 (`hiddenByHeader` in `server_grouping.dart` picks the innermost header
 still on screen). Header dots carry no announcement yet: the kit's
-header label is its title and count.
+header label is its title and count. While a query is live, a section
+the filter empties keeps its header when a live server is among what it
+hid (Poltergeist's rule, `sectionsHoldingLive`), so the server's dot
+still has a header to show on; with nothing live hidden, the section
+goes as before. A kept header counts 0 and is not a match: "No servers
+match" shows under it and Enter opens nothing.
 
 **Switches.** The kit's `SidebarDensitySwitch` sits in the rail's bottom
 bar and, in a scope of its own, in the phone home's app bar, replacing
@@ -986,9 +991,9 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   round-trips in `app_settings_test.dart`.
 - `app/seance_app/test/server_grouping_test.dart` — sectioning: PINNED
   then SERVERS (ungrouped first, groups nested and sorted), case-folded
-  keys with the first spelling kept, no empty section headers, folding a
-  group, the shortlist or SERVERS itself, and a stale collapsed key doing
-  nothing.
+  keys with the first spelling kept, no empty section headers (unless a
+  filter hid a live server there), folding a group, the shortlist or
+  SERVERS itself, and a stale collapsed key doing nothing.
 - `app/seance_app/test/server_status_dot_test.dart` — the shared dot
   mapping (live session over probe; solid for sessions, ring for probe
   observations) and the tab aggregation behind it.
@@ -998,7 +1003,8 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   "↵ opens the first" count and on ⌥⌘F / Ctrl+Alt+F with Esc clearing
   then closing, and neither a refused nor an emptied reveal reopening
   it; the selection pill; pinning from a right-click; a header's dot for
-  a hidden live session; the blocked row; the empty state) and the
+  a hidden live session, and the section header a filter keeps for one;
+  the blocked row; the empty state) and the
   home's "+" never covering the last row's "⋮".
 - `app/seance_app/test/ui/sidebar/sidebar_kit_test.dart` — the ported
   kit's tests plus Séance's additions: ring dots, the host surface, two

@@ -25,11 +25,12 @@
   one-line rail. Switch with the control in the rail's bottom bar or the
   phone home's app bar, or on macOS with View ▸ Use Compact Sidebar Rows
   (Use Comfortable Sidebar Rows). Also: a folded group, or a filter, that
-  hides a connected server shows its dot on the header; a changed host
-  key you declined marks the row blocked rather than failed; the filter's
-  count says "↵ opens the first" again; the long-press sheet shows the
-  row's second line under its name; and the filter chord no longer
-  latches the field open on an empty list.
+  hides a connected server shows its dot on the header (a filter that
+  hides a whole section keeps its header for that, as Poltergeist's
+  does); a changed host key you declined marks the row blocked rather
+  than failed; the filter's count says "↵ opens the first" again; the
+  long-press sheet shows the row's second line under its name; and the
+  filter chord no longer latches the field open on an empty list.
 - Android: the system back button on the narrow terminal screen returns to
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving
