@@ -121,8 +121,12 @@ with `hostKeyBlocked` set directly.
 **Hidden live sessions.** A folded group, or a filter, that hides a
 connected or connecting server puts its dot on the header hiding it
 (`hiddenByHeader` in `server_grouping.dart` picks the innermost header
-still on screen). Header dots carry no announcement yet: the kit's
-header label is its title and count.
+still on screen). The header also says so: the kit's
+`SidebarSectionHeader.statusLabel` comes with its dot, and the pane
+passes "Connected server hidden" or "Connecting server hidden" (the
+row's word for the state), which the header's merged label carries on
+a line after its title and count. Before, the dot was drawn only, so a
+folded group hiding a connected server was silent to a screen reader.
 
 **Switches.** The kit's `SidebarDensitySwitch` sits in the rail's bottom
 bar and, in a scope of its own, in the phone home's app bar, replacing
@@ -998,12 +1002,14 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   "↵ opens the first" count and on ⌥⌘F / Ctrl+Alt+F with Esc clearing
   then closing, and neither a refused nor an emptied reveal reopening
   it; the selection pill; pinning from a right-click; a header's dot for
-  a hidden live session; the blocked row; the empty state) and the
+  a hidden live session, and its announcement; the blocked row; the
+  empty state) and the
   home's "+" never covering the last row's "⋮".
 - `app/seance_app/test/ui/sidebar/sidebar_kit_test.dart` — the ported
   kit's tests plus Séance's additions: ring dots, the host surface, two
   lines, the menu button on desktop and touch, touch headers, keyboard
-  focus inside a row menu, and a focus ring that does not move content.
+  focus inside a row menu, a focus ring that does not move content, and
+  a header dot's words in the header's announcement.
 - `app/seance_app/test/server_list_capture_test.dart` — renders the
   rail (also at its 200 px minimum), a tablet rail, the phone home and a
   narrow desktop window at both densities and brightnesses, plus a folded

@@ -686,9 +686,10 @@ Future<void> showSidebarMenuSheet(
 /// A collapsible header: a top-level section (DEVICES, FAVORITES, …) in
 /// 11 px semibold caps, or — [nested] — a group's disclosure row among
 /// the rows. Both are one merged semantics node (header + button +
-/// expanded state + "title, N items"), toggle on tap, Enter/Space, and
-/// the expandable pattern's ←/→ (a ← or → with nothing to fold or unfold
-/// is swallowed, so focus stays in the sidebar), and move focus with ↑/↓.
+/// expanded state + "title, N items", then a [status] dot's words),
+/// toggle on tap, Enter/Space, and the expandable pattern's ←/→ (a ← or
+/// → with nothing to fold or unfold is swallowed, so focus stays in the
+/// sidebar), and move focus with ↑/↓.
 ///
 /// Compact, the count shows only while collapsed, and the chevron and the
 /// optional "+" appear on hover or keyboard focus (a nested row keeps its
@@ -710,7 +711,12 @@ class SidebarSectionHeader extends StatefulWidget {
     this.dropHighlight = false,
     this.headerKey,
     this.status,
-  });
+    this.statusLabel,
+  }) : assert(
+         // A dot and its words come together: drawn alone, a screen
+         // reader would hear nothing of it.
+         (status == null) == (statusLabel == null),
+       );
 
   final String title;
   final int count;
@@ -721,6 +727,11 @@ class SidebarSectionHeader extends StatefulWidget {
   /// view: a folded group's connected server, or one a filter hides. The
   /// host decides when; null draws none.
   final SidebarStatusDot? status;
+
+  /// What [status] says, in the host's words ("Connected server hidden"),
+  /// given with it and only with it. The dot itself is paint, so the
+  /// header's announcement carries these words after its title and count.
+  final String? statusLabel;
 
   /// A group's disclosure row rather than a section header.
   final bool nested;
@@ -924,7 +935,14 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
             header: true,
             button: true,
             expanded: !widget.collapsed,
-            label: strings.sectionSemantics(widget.title, widget.count),
+            // The dot is paint (the content below is excluded), so its
+            // words join the title and count here. A line of their own, as
+            // a merged node joins its parts' labels, leaves the kit free of
+            // any language's list punctuation.
+            label: [
+              strings.sectionSemantics(widget.title, widget.count),
+              ?widget.statusLabel,
+            ].join('\n'),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               // The pointer moves focus with it, like the rows: the keys

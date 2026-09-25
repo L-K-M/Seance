@@ -593,6 +593,45 @@ void main() {
       expect(dotOn(servers)?.color, online);
     });
 
+    testWidgets('a folded group says what its dot means to a screen '
+        'reader', (tester) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        await boot(tester, [
+          server('db', group: 'Production'),
+          server('web', group: 'Production'),
+        ]);
+        final tab = TerminalSession(
+          id: 't',
+          serverId: 'db',
+          config: state!.servers.firstWhere((s) => s.id == 'db'),
+          engine: XtermTerminalEngine(),
+          connecting: false,
+        );
+        tab.session = _OpenSshSession(tab.engine);
+        state!.tabs.add(tab);
+        await pumpRail(tester);
+        final header = find.byKey(
+          ValueKey('servers.group.header.${serverGroupKey('Production')}'),
+        );
+        String label() => tester.getSemantics(header).getSemanticsData().label;
+        expect(label(), 'Production, 2 servers');
+
+        await tester.tap(find.text('Production'));
+        await tester.pumpAndSettle();
+        expect(label(), 'Production, 2 servers\nConnected server hidden');
+
+        // Amber has words of its own (connecting outranks the open
+        // session, as a reconnect's does).
+        tab.connecting = true;
+        state!.notifyListeners();
+        await tester.pumpAndSettle();
+        expect(label(), 'Production, 2 servers\nConnecting server hidden');
+      } finally {
+        semantics.dispose();
+      }
+    });
+
     testWidgets('the sync chip says what sync is doing', (tester) async {
       await boot(tester, [server('alpha')]);
       services!.settings.syncBaseUrl = 'https://sync.example.com';

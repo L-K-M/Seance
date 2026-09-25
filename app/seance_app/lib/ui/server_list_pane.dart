@@ -408,6 +408,10 @@ class _ServerListPaneState extends State<ServerListPane> {
       sections: _sections(state, state.servers),
       rows: rows,
     );
+    final hiddenLive = {
+      for (final MapEntry(:key, :value) in hidden.entries)
+        key: _hiddenLive(context, state, value),
+    };
     // The home screen lets the ListView take the ambient insets (the
     // gesture-nav bar on Android) and extends the bottom one by the floating
     // button's clearance; an explicit EdgeInsets must neither drop the
@@ -443,7 +447,8 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: title,
                 count: count,
                 collapsed: collapsed,
-                status: _hiddenLiveDot(context, state, hidden[key]),
+                status: hiddenLive[key]?.dot,
+                statusLabel: hiddenLive[key]?.label,
                 onToggle: () => state.toggleServerGroup(key),
                 // SERVERS' "+" adds to it; the shortlist is filled from a
                 // row's menu, so PINNED has none. The home screen's floating
@@ -467,7 +472,8 @@ class _ServerListPaneState extends State<ServerListPane> {
                 title: name,
                 count: count,
                 collapsed: collapsed,
-                status: _hiddenLiveDot(context, state, hidden[key]),
+                status: hiddenLive[key]?.dot,
+                statusLabel: hiddenLive[key]?.label,
                 onToggle: () => state.toggleServerGroup(key),
               ),
             ServerRow(:final server, :final depth) => _tile(
@@ -481,16 +487,16 @@ class _ServerListPaneState extends State<ServerListPane> {
     );
   }
 
-  /// A header's dot for the live sessions it keeps out of view: green while
-  /// one of [servers] is connected, amber while one is connecting. A
-  /// failure is left to its row: folding a group is a choice not to look,
-  /// and what must not vanish with it is a connection still open.
-  SidebarStatusDot? _hiddenLiveDot(
+  /// A header's dot for the live sessions it keeps out of view, and its
+  /// words for a screen reader: green while one of [servers] is connected,
+  /// amber while one is connecting. A failure is left to its row: folding
+  /// a group is a choice not to look, and what must not vanish with it is
+  /// a connection still open.
+  ({SidebarStatusDot dot, String label})? _hiddenLive(
     BuildContext context,
     AppState state,
-    List<ServerConfig>? servers,
+    List<ServerConfig> servers,
   ) {
-    if (servers == null) return null;
     final live = {
       for (final server in servers)
         for (final tab in state.tabsForServer(server.id))
@@ -502,7 +508,11 @@ class _ServerListPaneState extends State<ServerListPane> {
         ? ServerDot.connecting
         : null;
     if (dot == null) return null;
-    return SidebarStatusDot(dot.color(context)!, style: dot.style);
+    return (
+      dot: SidebarStatusDot(dot.color(context)!, style: dot.style),
+      // The row's own word for the state, said of a server out of view.
+      label: '${dot.description} server hidden',
+    );
   }
 
   Widget _tile(
