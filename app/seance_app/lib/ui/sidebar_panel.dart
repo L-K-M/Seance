@@ -94,8 +94,8 @@ class _SidebarPanelState extends State<SidebarPanel>
                 ),
               ),
               Expanded(
-                // Only the open tab is built, so Files and Git initialize
-                // their session's controller only once they are opened.
+                // A tab's page is built when it is first opened, so Files and
+                // Git initialize their session's controller only then.
                 child: SelectedTabView(
                   controller: _tabs,
                   children: [
