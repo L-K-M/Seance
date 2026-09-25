@@ -8,6 +8,7 @@ import 'settings_screen.dart';
 import 'chat_sidebar.dart';
 import 'files_pane.dart';
 import 'git_pane.dart';
+import 'selected_tab_view.dart';
 import 'snippets_pane.dart';
 
 /// The right-hand utility panel: an Assistant tab (the LLM chat, when a provider
@@ -25,12 +26,6 @@ class SidebarPanel extends StatefulWidget {
 class _SidebarPanelState extends State<SidebarPanel>
     with SingleTickerProviderStateMixin {
   TabController? _tabs;
-  bool _filesVisited = false;
-  bool _gitVisited = false;
-
-  /// The Git tab is always last; the Files tab only exists when
-  /// [SidebarPanel.includeFiles] is on.
-  int get _gitIndex => widget.includeFiles ? 3 : 2;
 
   @override
   void didChangeDependencies() {
@@ -43,21 +38,11 @@ class _SidebarPanelState extends State<SidebarPanel>
       length: widget.includeFiles ? 4 : 3,
       initialIndex: state.llmConfigured ? 0 : 1,
       vsync: this,
-    )..addListener(_tabChanged);
-  }
-
-  void _tabChanged() {
-    if (widget.includeFiles && _tabs?.index == 2 && !_filesVisited) {
-      setState(() => _filesVisited = true);
-    }
-    if (_tabs?.index == _gitIndex && !_gitVisited) {
-      setState(() => _gitVisited = true);
-    }
+    );
   }
 
   @override
   void dispose() {
-    _tabs?.removeListener(_tabChanged);
     _tabs?.dispose();
     super.dispose();
   }
@@ -109,18 +94,17 @@ class _SidebarPanelState extends State<SidebarPanel>
                 ),
               ),
               Expanded(
-                child: TabBarView(
+                // Only the open tab is built, so Files and Git initialize
+                // their session's controller only once they are opened.
+                child: SelectedTabView(
                   controller: _tabs,
                   children: [
                     state.llmConfigured
                         ? const ChatSidebar()
                         : const _AssistantSetupPrompt(),
                     const SnippetsPane(),
-                    if (widget.includeFiles)
-                      _filesVisited
-                          ? const FilesPane()
-                          : const SizedBox.shrink(),
-                    _gitVisited ? const GitPane() : const SizedBox.shrink(),
+                    if (widget.includeFiles) const FilesPane(),
+                    const GitPane(),
                   ],
                 ),
               ),
