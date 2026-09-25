@@ -476,6 +476,17 @@ Do not "simplify" these away — they are load-bearing:
   from the settings window's isolate. A new setting is a backend method plus
   a `_Link` case, not an edit to `settings` from the screen — the window's
   `settings` is a copy.
+- `ThemePalette` (`lib/theme/`) — the device's one editable theme: an
+  accent, nullable ("Automatic") colour slots, status colours, an optional
+  terminal block, a font family and a corner scale, stored as one JSON
+  object in `settings.json` (device-local) and decoded leniently: a bad
+  key costs only itself. `ThemePresets.all` are starting points copied in,
+  recognised by value (`matchingPreset`); the first is the default and
+  must keep drawing the pre-theme look (`theme_build_test.dart`).
+  `SeanceTheme.build` resolves Automatic slots from the sibling tables, or
+  from the palette's own surface once it sets one. Hand-drawn corners opt
+  in through `SeanceChrome.corner`; the MaterialApps rebuild from
+  `AppState.appearance` / `RemoteSettingsBackend.appearance` only.
 - `LlmProvider` — `AnthropicProvider` and `OpenAiCompatibleProvider` (the latter
   covers Ollama/LM Studio/etc. via `base_url`).
 - `SystemFonts` — `SfntSystemFonts` reads the host's font directories,

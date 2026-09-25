@@ -299,6 +299,15 @@ are the host's, like the title, and the line break is how a merged
 node already joins its parts, so the kit writes no punctuation of its
 own. The change landed in both kit files at once.
 
+**Themed corners (2026-09-25, Séance only so far).** With themes (see
+[STATUS.md](STATUS.md)), the kit's pill corner (`_radius`, which the
+focus ring shares) and its other desktop pill corners (`_pill`: the icon
+buttons, the filter field, the sync chip) go through
+`_chrome(context).corner(...)`, the chrome's corner scale. Poltergeist's
+copy needs `cornerScale` and `corner()` on `PoltergeistChrome` first;
+until it ports them, the two kit files also differ in these two
+functions.
+
 ## The colour vocabulary
 
 Poltergeist's D34 (its `docs/plan/00-OVERVIEW.md`, "Colour that means

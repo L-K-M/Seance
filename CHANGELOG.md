@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Themes: Settings has an Appearance tab. Pick one of ten themes
+  (Séance, Graphite, Paper, Newsprint, Solarized, Midnight, Terminal,
+  Vapor, Bubblegum, High contrast) as a starting point, then change any
+  colour, the status colours, the terminal's colours, the interface font
+  and how round the corners are; the app repaints as you go. Colours left
+  on Automatic follow light or dark as you choose. Copy theme and Paste
+  theme carry a theme between devices; themes do not sync. An existing
+  install looks exactly as before.
 - Settings opens in a window of its own on macOS, Linux and Windows,
   instead of covering the app. Choosing Settings again (⌘, or Ctrl+,, the
   gear, "Sync off") brings it forward on that tab; closing it keeps the
