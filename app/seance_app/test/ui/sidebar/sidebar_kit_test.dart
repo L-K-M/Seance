@@ -677,4 +677,102 @@ void main() {
       expect(label.style?.color, scheme.error);
     });
   });
+
+  // Reach without a pointer: the header's "+" has to be operable from the
+  // keyboard.
+  group('keyboard reach', () {
+    Widget section({required VoidCallback onAdd}) => Column(
+      children: [
+        SidebarSectionHeader(
+          headerKey: const ValueKey('h'),
+          title: 'Servers',
+          count: 2,
+          collapsed: false,
+          onToggle: () {},
+          onAdd: onAdd,
+          addKey: const ValueKey('add'),
+          addTooltip: 'kit-add-server',
+        ),
+        for (final name in ['alpha', 'beta'])
+          SidebarRow(
+            mark: const Icon(Icons.dns_outlined, size: 16),
+            title: name,
+            onActivate: (_) {},
+          ),
+      ],
+    );
+
+    Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
+      await tester.sendKeyEvent(key);
+      await tester.pump();
+    }
+
+    testWidgets('Tab reaches a header\'s + and leaves it; the arrows walk '
+        'past it', (tester) async {
+      var adds = 0;
+      await _pump(tester, section(onAdd: () => adds++));
+      FocusNode nodeOf(Finder finder) => Focus.of(tester.element(finder));
+      final header = nodeOf(find.byKey(const ValueKey('h')));
+      final add = nodeOf(find.byIcon(Icons.add));
+      final alpha = nodeOf(find.text('alpha'));
+      final beta = nodeOf(find.text('beta'));
+      bool addShown() => tester
+          .widget<Visibility>(
+            find
+                .ancestor(
+                  of: find.byKey(const ValueKey('add')),
+                  matching: find.byType(Visibility),
+                )
+                .first,
+          )
+          .visible;
+
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(header.hasPrimaryFocus, isTrue);
+
+      // Tab lands on the "+", which stays drawn while it holds focus (it
+      // used to hide as the header lost focus, and focus bounced back).
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(add.hasPrimaryFocus, isTrue);
+      expect(addShown(), isTrue);
+      await press(tester, LogicalKeyboardKey.enter);
+      expect(adds, 1);
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(alpha.hasPrimaryFocus, isTrue);
+      expect(addShown(), isFalse);
+
+      // The arrows walk headers and rows: the "+" is Tab's stop only.
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      expect(header.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(alpha.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(beta.hasPrimaryFocus, isTrue);
+
+      // From the "+", the arrows rejoin the walk.
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(add.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(alpha.hasPrimaryFocus, isTrue);
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      await press(tester, LogicalKeyboardKey.tab);
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      expect(header.hasPrimaryFocus, isTrue);
+    });
+
+    testWidgets('a clicked header still hands Tab to its +', (tester) async {
+      await _pump(tester, section(onAdd: () {}));
+      await tester.tap(find.byKey(const ValueKey('h')));
+      await tester.pump();
+      // The pointer is gone, so nothing but focus can reveal the "+".
+      await press(tester, LogicalKeyboardKey.tab);
+      expect(
+        Focus.of(tester.element(find.byIcon(Icons.add))).hasPrimaryFocus,
+        isTrue,
+      );
+    });
+
+  });
 }

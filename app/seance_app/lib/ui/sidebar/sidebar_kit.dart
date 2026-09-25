@@ -452,7 +452,8 @@ Future<void> showSidebarMenuSheet(
 ///
 /// The count shows only while collapsed; the chevron and the optional
 /// "+" appear on hover or keyboard focus (a nested row keeps its
-/// chevron: it is the disclosure affordance there).
+/// chevron: it is the disclosure affordance there). The "+" is Tab's stop
+/// after its header but not the arrows': they walk headers and rows.
 class SidebarSectionHeader extends StatefulWidget {
   const SidebarSectionHeader({
     super.key,
@@ -497,12 +498,39 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     with _KeyboardFocusRing {
   bool _hovering = false;
 
+  /// The "+". It skips traversal, so the arrows (and a row's ↑ from
+  /// below) pass it by; the header hands it Tab instead (see [_onKey]).
+  final _addFocus = FocusNode(
+    debugLabel: 'SidebarSectionHeader add',
+    skipTraversal: true,
+  );
+
+  /// The "+" holds focus: it stays drawn, or hiding it would drop the
+  /// focus it just took and leave the keyboard nowhere.
+  bool _addFocused = false;
+
+  @override
+  void dispose() {
+    _addFocus.dispose();
+    super.dispose();
+  }
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     noteKey();
     final key = event.logicalKey;
+    final keys = HardwareKeyboard.instance;
+    if (key == LogicalKeyboardKey.tab &&
+        widget.onAdd != null &&
+        !keys.isShiftPressed &&
+        !keys.isControlPressed &&
+        !keys.isMetaPressed &&
+        !keys.isAltPressed) {
+      _addFocus.requestFocus();
+      return KeyEventResult.handled;
+    }
     if (key == LogicalKeyboardKey.arrowDown) {
       node.nextFocus();
       return KeyEventResult.handled;
@@ -527,6 +555,25 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     return KeyEventResult.ignored;
   }
 
+  /// Keys on the "+": the arrows rejoin the walk it sits outside of. Tab
+  /// and Shift+Tab need nothing here — traversal moves on from the node
+  /// that holds focus even though it skips traversal itself.
+  KeyEventResult _onAddKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp) {
+      focusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      _addFocus.nextFocus();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final chrome = _chrome(context);
@@ -538,7 +585,7 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     // drawn there: hidden until a hover that never comes, the disclosure
     // would have no visible affordance at all.
     final list = _list(context);
-    final revealed = _hovering || focused || touch || list;
+    final revealed = _hovering || focused || _addFocused || touch || list;
     final nested = widget.nested;
     final inset = list ? _listInset : _railInset;
     final radius = _radius(context);
@@ -710,14 +757,25 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
             maintainAnimation: true,
             maintainSize: true,
             maintainInteractivity: false,
-            child: MouseRegion(
-              onEnter: (_) => setState(() => _hovering = true),
-              child: Center(
-                child: _KitIconButton(
-                  key: widget.addKey,
-                  icon: Icons.add,
-                  tooltip: widget.addTooltip,
-                  onPressed: onAdd,
+            // Focusable while hidden, so a header that holds focus without
+            // drawing it (a click's) can still hand Tab over: the focus it
+            // takes is what draws it.
+            maintainFocusability: true,
+            child: Focus(
+              canRequestFocus: false,
+              skipTraversal: true,
+              onKeyEvent: _onAddKey,
+              onFocusChange: (focused) => setState(() => _addFocused = focused),
+              child: MouseRegion(
+                onEnter: (_) => setState(() => _hovering = true),
+                child: Center(
+                  child: _KitIconButton(
+                    key: widget.addKey,
+                    icon: Icons.add,
+                    tooltip: widget.addTooltip,
+                    focusNode: _addFocus,
+                    onPressed: onAdd,
+                  ),
                 ),
               ),
             ),
@@ -736,11 +794,13 @@ class _KitIconButton extends StatelessWidget {
     required this.icon,
     required this.onPressed,
     this.tooltip,
+    this.focusNode,
   });
 
   final IconData icon;
   final VoidCallback? onPressed;
   final String? tooltip;
+  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -765,6 +825,7 @@ class _KitIconButton extends StatelessWidget {
               ),
       ),
       tooltip: tooltip,
+      focusNode: focusNode,
       onPressed: onPressed,
       icon: Icon(icon, color: chrome.secondaryText),
     );

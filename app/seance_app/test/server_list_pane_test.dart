@@ -447,6 +447,42 @@ void main() {
       expect(find.text('PINNED'), findsOneWidget);
     });
 
+    testWidgets('the arrows and Tab get past the SERVERS header and its +', (
+      tester,
+    ) async {
+      await boot(tester, [server('alpha'), server('zulu')]);
+      final opened = <String>[];
+      await pumpRail(tester, onOpen: (config) => opened.add(config.id));
+      Future<void> press(LogicalKeyboardKey key) async {
+        await tester.sendKeyEvent(key);
+        await tester.pumpAndSettle();
+      }
+
+      await tester.tap(find.text('alpha'));
+      await tester.pumpAndSettle();
+      opened.clear();
+
+      // Up lands on the header (its "+" drawn for the keyboard); Down
+      // comes straight back to the row rather than bouncing off the "+".
+      await press(LogicalKeyboardKey.arrowUp);
+      await press(LogicalKeyboardKey.arrowDown);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['alpha']);
+      opened.clear();
+
+      // Tab takes the header's "+" as a stop of its own, then the row.
+      await press(LogicalKeyboardKey.arrowUp);
+      await press(LogicalKeyboardKey.tab);
+      final add = find.descendant(
+        of: find.byKey(const ValueKey('servers.section.add')),
+        matching: find.byIcon(Icons.add),
+      );
+      expect(Focus.of(tester.element(add)).hasPrimaryFocus, isTrue);
+      await press(LogicalKeyboardKey.tab);
+      await press(LogicalKeyboardKey.enter);
+      expect(opened, ['alpha']);
+    });
+
     testWidgets('no servers: the onboarding state, with no filter', (
       tester,
     ) async {
