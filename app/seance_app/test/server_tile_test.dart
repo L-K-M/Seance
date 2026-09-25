@@ -276,21 +276,40 @@ void main() {
   });
 
   group('activation', () {
-    testWidgets('a click opens; ⌘- or Ctrl-click opens another tab', (
-      tester,
+    Future<void> clickWith(
+      WidgetTester tester,
+      LogicalKeyboardKey modifier,
     ) async {
-      await pump(tester);
+      await tester.sendKeyDownEvent(modifier);
       await tester.tap(find.byType(SidebarRow));
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyUpEvent(modifier);
+    }
+
+    testWidgets('macOS: a click opens and ⌘-click opens another tab; a '
+        'Control-click, the Mac secondary click, does neither', (tester) async {
+      await pump(tester, platform: TargetPlatform.macOS);
       await tester.tap(find.byType(SidebarRow));
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await tester.tap(find.byType(SidebarRow));
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await clickWith(tester, LogicalKeyboardKey.metaLeft);
+      // The embedder delivers Control+click as a primary click; it must
+      // not connect anything, let alone another SSH session.
+      await clickWith(tester, LogicalKeyboardKey.controlLeft);
       // Enter from the keyboard is always the plain open.
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      expect(calls, ['open', 'newTab', 'newTab', 'open']);
+      expect(calls, ['open', 'newTab', 'open']);
     });
+
+    for (final platform in [TargetPlatform.linux, TargetPlatform.windows]) {
+      testWidgets('${platform.name}: Ctrl-click opens another tab', (
+        tester,
+      ) async {
+        await pump(tester, platform: platform);
+        await tester.tap(find.byType(SidebarRow));
+        await clickWith(tester, LogicalKeyboardKey.controlLeft);
+        // The Super/Windows key is the system's, not a tab modifier.
+        await clickWith(tester, LogicalKeyboardKey.metaLeft);
+        expect(calls, ['open', 'newTab', 'open']);
+      });
+    }
   });
 
   group('the menu', () {
