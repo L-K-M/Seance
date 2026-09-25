@@ -46,6 +46,20 @@ void main() {
     expect(tester.getCenter(find.text('third')), first);
   });
 
+  testWidgets('builds only the selected page', (tester) async {
+    await pumpTabs(tester, [const Text('first'), const Text('second')]);
+
+    // Not merely hidden: a page that is not showing is not in the tree, so
+    // a pane that starts work when it mounts waits until its tab is opened.
+    expect(find.text('second', skipOffstage: false), findsNothing);
+
+    await tester.tap(find.text('Tab 1'));
+    await tester.pump();
+
+    expect(find.text('first', skipOffstage: false), findsNothing);
+    expect(find.text('second'), findsOneWidget);
+  });
+
   testWidgets('a sideways fling leaves the tab as it was', (tester) async {
     await pumpTabs(tester, [
       const Center(child: Text('first')),
