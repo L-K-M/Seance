@@ -192,20 +192,63 @@ void main() {
       }
     });
 
-    testWidgets('the rail has no density control: one line either way', (
-      tester,
-    ) async {
-      // The sibling anatomy keeps a desktop rail to one-line rows with the
-      // address in the tooltip, so the choice only shapes the home screen.
+    testWidgets('the rail follows the density too: two roomy lines by '
+        'default, one 26 px line when compact', (tester) async {
       await boot(tester, [server('alpha')]);
       await pumpPane(
         tester,
         posture: ServerListPosture.rail,
         platform: TargetPlatform.macOS,
       );
-      expect(find.byType(SegmentedButton<ServerListDensity>), findsNothing);
-      expect(find.text('deploy@alpha.example.com'), findsNothing);
+      expect(tester.getSize(find.byType(ServerTile)).height, 52);
+      expect(find.text('deploy@alpha.example.com'), findsOneWidget);
+      expect(
+        find.byTooltip(serverSidebarStrings.rowMenu),
+        findsOneWidget,
+        reason: 'a comfortable row keeps its verbs in view',
+      );
+
+      await tester.runAsync(
+        () => state!.setServerListDensity(ServerListDensity.compact),
+      );
+      await tester.pumpAndSettle();
       expect(tester.getSize(find.byType(ServerTile)).height, 26);
+      expect(find.text('deploy@alpha.example.com'), findsNothing);
+      expect(
+        find.byTooltip(serverSidebarStrings.rowMenu),
+        findsNothing,
+        reason:
+            'a compact desktop rail leaves the verbs to right-click and '
+            'the Menu key',
+      );
+    });
+
+    testWidgets('a tablet rail follows it as well, and always shows the '
+        '"⋮"', (tester) async {
+      // A touch window at the wide breakpoint gets the rail, not the phone
+      // list; without the second line and the "⋮" it would show no address
+      // and no visible way to a row's verbs.
+      await boot(tester, [server('alpha')]);
+      await pumpPane(
+        tester,
+        posture: ServerListPosture.rail,
+        platform: TargetPlatform.android,
+      );
+      expect(tester.getSize(find.byType(ServerTile)).height, 56);
+      expect(find.text('deploy@alpha.example.com'), findsOneWidget);
+      expect(find.byTooltip(serverSidebarStrings.rowMenu), findsOneWidget);
+
+      await tester.runAsync(
+        () => state!.setServerListDensity(ServerListDensity.compact),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getSize(find.byType(ServerTile)).height, 48);
+      expect(find.text('deploy@alpha.example.com'), findsNothing);
+      expect(
+        find.byTooltip(serverSidebarStrings.rowMenu),
+        findsOneWidget,
+        reason: 'touch has no right-click to fall back on',
+      );
     });
 
     testWidgets('the app-bar switch changes density and records the choice', (

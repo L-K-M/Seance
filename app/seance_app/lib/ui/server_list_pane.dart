@@ -213,12 +213,12 @@ class _ServerListPaneState extends State<ServerListPane> {
 
   bool get _home => widget.posture == ServerListPosture.home;
 
-  /// The phone home draws as an Android list — 56 dp rows, 40 dp discs,
-  /// the address as a second line — the same list Poltergeist's compact
-  /// Home uses (sibling contract §10.6). The compact density keeps the
-  /// denser one-line touch rows, and the desktop rail and a narrow
-  /// desktop window stay rail-drawn.
-  SidebarKitLayout _layoutFor(BuildContext context, AppState state) {
+  /// The phone home at [density] (the kit's [sidebarHomeLayout]): an
+  /// Android list when comfortable, the same list Poltergeist's Home uses
+  /// (sibling contract §10.6), and one-line touch rows when compact. The
+  /// rail, on a desktop or a tablet, and a narrow desktop window are
+  /// rail-drawn at either density.
+  SidebarKitLayout _layoutFor(BuildContext context, SidebarKitDensity density) {
     final touch = switch (Theme.of(context).platform) {
       TargetPlatform.android ||
       TargetPlatform.iOS ||
@@ -227,11 +227,7 @@ class _ServerListPaneState extends State<ServerListPane> {
       TargetPlatform.macOS ||
       TargetPlatform.windows => false,
     };
-    return _home &&
-            touch &&
-            state.serverListDensity == ServerListDensity.comfortable
-        ? SidebarKitLayout.list
-        : SidebarKitLayout.rail;
+    return _home && touch ? sidebarHomeLayout(density) : SidebarKitLayout.rail;
   }
 
   @override
@@ -243,18 +239,18 @@ class _ServerListPaneState extends State<ServerListPane> {
         : chrome.sidebarBackground;
     final body = ListenableBuilder(
       listenable: state,
-      builder: (context, _) => SidebarKitScope(
-        strings: serverSidebarStrings,
-        background: background,
-        layout: _layoutFor(context, state),
-        // The rail keeps its one-line rows; the home screen follows the
-        // density preference.
-        density:
-            _home && state.serverListDensity == ServerListDensity.comfortable
-            ? SidebarKitDensity.comfortable
-            : SidebarKitDensity.compact,
-        child: Builder(builder: (context) => _body(context, state)),
-      ),
+      builder: (context, _) {
+        // The one density gate: every posture follows the preference, and
+        // the kit derives what each density draws from it.
+        final density = state.serverListDensity.kit;
+        return SidebarKitScope(
+          strings: serverSidebarStrings,
+          background: background,
+          layout: _layoutFor(context, density),
+          density: density,
+          child: Builder(builder: (context) => _body(context, state)),
+        );
+      },
     );
     // A Material rather than a bare fill: the filter field and the kit's
     // buttons ink on it, and the rail must not depend on a Scaffold above.
@@ -477,9 +473,6 @@ class _ServerListPaneState extends State<ServerListPane> {
       selected: server.id == state.activeServerId,
       pinned: state.isServerPinned(server.id),
       depth: depth,
-      showAddress:
-          _home && state.serverListDensity == ServerListDensity.comfortable,
-      showMenuButton: _home,
       onOpen: () => widget.onOpen(server),
       onNewTab: () => state.newTab(server),
       onEdit: () => _editServer(context, state, server),

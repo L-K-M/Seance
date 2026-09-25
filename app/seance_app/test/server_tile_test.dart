@@ -46,7 +46,7 @@ void main() {
     int tabCount = 0,
     bool connected = false,
     bool reconnectable = false,
-    bool showAddress = false,
+    SidebarKitDensity density = SidebarKitDensity.compact,
     TargetPlatform platform = TargetPlatform.macOS,
   }) async {
     await tester.pumpWidget(
@@ -55,11 +55,7 @@ void main() {
         home: Scaffold(
           body: SidebarKitScope(
             strings: serverSidebarStrings,
-            // As the pane does: the address line is the comfortable
-            // density's, the one-line row the compact one's.
-            density: showAddress
-                ? SidebarKitDensity.comfortable
-                : SidebarKitDensity.compact,
+            density: density,
             child: Align(
               alignment: Alignment.topLeft,
               child: SizedBox(
@@ -70,7 +66,6 @@ void main() {
                   tabCount: tabCount,
                   selected: selected,
                   pinned: pinned,
-                  showAddress: showAddress,
                   onOpen: () => calls.add('open'),
                   onNewTab: () => calls.add('newTab'),
                   onEdit: () => calls.add('edit'),
@@ -123,6 +118,20 @@ void main() {
     expect(find.text('deploy@box.example.com:22'), findsNothing);
     // Not lost: the tooltip carries it for a pointer.
     expect(find.byTooltip('deploy@box.example.com:22'), findsOneWidget);
+  });
+
+  testWidgets('the tile always hands the kit its address line, and only '
+      'a comfortable row draws it', (tester) async {
+    await pump(tester);
+    expect(
+      tester.widget<SidebarRow>(find.byType(SidebarRow)).subtitle,
+      'deploy@box.example.com',
+    );
+    expect(find.text('deploy@box.example.com'), findsNothing);
+
+    await pump(tester, density: SidebarKitDensity.comfortable);
+    expect(find.text('deploy@box.example.com'), findsOneWidget);
+    expect(tester.getSize(find.byType(SidebarRow)).height, 52);
   });
 
   testWidgets('the selected row wears the pill and a semibold title', (
@@ -402,7 +411,7 @@ void main() {
         tester,
         config: at('box.example.com', 2222),
         platform: TargetPlatform.android,
-        showAddress: true,
+        density: SidebarKitDensity.comfortable,
       );
       expect(find.text('deploy@box.example.com:2222'), findsOneWidget);
 
@@ -410,7 +419,7 @@ void main() {
         tester,
         config: at('fe80::1', 22),
         platform: TargetPlatform.android,
-        showAddress: true,
+        density: SidebarKitDensity.comfortable,
       );
       expect(find.text('deploy@[fe80::1]'), findsOneWidget);
       // The full address keeps the brackets too, where the port follows.
@@ -427,7 +436,11 @@ void main() {
     testWidgets('on touch a long-press opens the same verbs as a sheet', (
       tester,
     ) async {
-      await pump(tester, platform: TargetPlatform.android, showAddress: true);
+      await pump(
+        tester,
+        platform: TargetPlatform.android,
+        density: SidebarKitDensity.comfortable,
+      );
       // The touch home spells the address out (SSH's default port left
       // implied, as Poltergeist's Home does), and is 48 dp or more.
       expect(find.text('deploy@box.example.com'), findsOneWidget);

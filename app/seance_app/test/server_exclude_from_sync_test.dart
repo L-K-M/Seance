@@ -78,12 +78,10 @@ void main() {
           .getSemanticsData();
       expect(data.label, contains('Excluded from sync'));
       expect(data.label, contains('this device only'));
-      // Still described for a pointer, in the row's tooltip.
+      // Still described for a pointer, in the row's tooltip (the one over
+      // its title, not the "⋮" beside it).
       final tooltip = tester.widget<Tooltip>(
-        find.descendant(
-          of: find.byType(SidebarRow),
-          matching: find.byType(Tooltip),
-        ),
+        find.ancestor(of: find.text('laptop'), matching: find.byType(Tooltip)),
       );
       expect(tooltip.message, contains('Excluded from sync'));
     } finally {

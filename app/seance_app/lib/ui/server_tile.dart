@@ -32,15 +32,6 @@ class ServerTile extends StatelessWidget {
   /// 1 under a group's disclosure row.
   final int depth;
 
-  /// Spell `user@host:port` out on a second line. Only a touch home list
-  /// asks for it: a desktop rail keeps to one line and leaves the address to
-  /// the tooltip, which touch has no hover to show.
-  final bool showAddress;
-
-  /// Draw a visible "⋮" for the row's verbs (the home list's; the rail has
-  /// right-click and the Menu key).
-  final bool showMenuButton;
-
   final VoidCallback onOpen;
   final VoidCallback onNewTab;
   final VoidCallback onEdit;
@@ -72,8 +63,6 @@ class ServerTile extends StatelessWidget {
     this.onDisconnect,
     this.onReconnect,
     this.depth = 0,
-    this.showAddress = false,
-    this.showMenuButton = false,
   });
 
   /// Shown whether or not sync is set up: the flag is the user's standing
@@ -88,9 +77,10 @@ class ServerTile extends StatelessWidget {
 
   String get _address => '${server.username}@$_host:${server.port}';
 
-  /// The home row's second line: `user@host`, with the port only when it
-  /// is not SSH's default — the form Poltergeist's Home shows. The tooltip
-  /// and the announced label keep the full [_address].
+  /// The row's second line: `user@host`, with the port only when it is
+  /// not SSH's default, the form Poltergeist's rows show. Always handed to
+  /// the kit, which draws it only on a comfortable row; the tooltip and
+  /// the announced label keep the full [_address] either way.
   String get _subtitleAddress {
     final base = '${server.username}@$_host';
     return server.port == 22 ? base : '$base:${server.port}';
@@ -109,7 +99,7 @@ class ServerTile extends StatelessWidget {
         final color? => SidebarStatusDot(color, style: dot.style),
         null => null,
       },
-      subtitle: showAddress ? _subtitleAddress : null,
+      subtitle: _subtitleAddress,
       trailingIcon: excluded ? Icons.cloud_off_outlined : null,
       trailingText: tabCount > 1 ? '×$tabCount' : null,
       hoverAction: onDisconnect == null
@@ -120,12 +110,12 @@ class ServerTile extends StatelessWidget {
               tooltip: _disconnectLabel,
               onPressed: onDisconnect!,
             ),
-      showMenuButton: showMenuButton,
       selected: selected,
       depth: depth,
       // The address, the state and the exclusion are pictures or absent on
-      // a one-line row: the tooltip carries them for a pointer, the label
-      // for a screen reader.
+      // a compact row: the tooltip carries them for a pointer, the label
+      // for a screen reader. The "⋮" is the kit's call (comfortable rows
+      // and touch draw it).
       tooltip: [_address, ?state, if (excluded) excludedDescription].join('\n'),
       semanticLabel: [
         server.label,

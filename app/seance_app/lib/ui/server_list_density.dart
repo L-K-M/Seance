@@ -5,16 +5,31 @@
 /// not of the account. It never syncs.
 library;
 
-/// The two row shapes the server list offers.
+import 'sidebar/sidebar_kit.dart';
+
+/// The two row shapes the server list offers, on the rail and at home alike.
 enum ServerListDensity {
-  /// The two-line row: badge, label, and the `user@host:port` it resolves to
-  /// on a second line.
+  /// The two-line row: a 32 px badge, the label, and the `user@host` it
+  /// resolves to (or its state) on a second line.
   comfortable,
 
   /// One line per server. The address moves into the row's tooltip and the
-  /// badge shrinks, which roughly halves a row's height — the point of the
-  /// mode is seeing more of a long list at once.
+  /// badge shrinks, which halves a row's height: the point of the mode is
+  /// seeing more of a long list at once.
   compact;
+
+  /// The sibling kit's density for this choice, which the list draws with.
+  SidebarKitDensity get kit => switch (this) {
+    ServerListDensity.comfortable => SidebarKitDensity.comfortable,
+    ServerListDensity.compact => SidebarKitDensity.compact,
+  };
+
+  /// The stored choice for a density the kit's switch reports.
+  static ServerListDensity fromKit(SidebarKitDensity density) =>
+      switch (density) {
+        SidebarKitDensity.comfortable => ServerListDensity.comfortable,
+        SidebarKitDensity.compact => ServerListDensity.compact,
+      };
 
   /// What the view menu calls this.
   String get label => switch (this) {
