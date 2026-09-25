@@ -84,6 +84,16 @@ class ServerTile extends StatelessWidget {
 
   String get _address => '${server.username}@${server.host}:${server.port}';
 
+  /// The home row's second line: `user@host`, with the port only when it
+  /// is not SSH's default (an IPv6 host bracketed so the port reads) —
+  /// the form Poltergeist's Home shows. The tooltip and the announced
+  /// label keep the full [_address].
+  String get _subtitleAddress {
+    final host = server.host.contains(':') ? '[${server.host}]' : server.host;
+    final base = '${server.username}@$host';
+    return server.port == 22 ? base : '$base:${server.port}';
+  }
+
   String get _disconnectLabel => tabCount > 1 ? 'Disconnect all' : 'Disconnect';
 
   @override
@@ -97,7 +107,7 @@ class ServerTile extends StatelessWidget {
         final color? => SidebarStatusDot(color, style: dot.style),
         null => null,
       },
-      subtitle: showAddress ? _address : null,
+      subtitle: showAddress ? _subtitleAddress : null,
       trailingIcon: excluded ? Icons.cloud_off_outlined : null,
       trailingText: tabCount > 1 ? '×$tabCount' : null,
       hoverAction: onDisconnect == null
@@ -205,12 +215,22 @@ class ServerRailMark extends StatelessWidget {
   /// The frame around a coloured image mark.
   static const double _frameWidth = 1.5;
 
+  /// The Android list's glyph size inside its 40 dp disc — the same
+  /// proportions Poltergeist's Home uses.
+  static const double _discGlyphSize = 24;
+
+  /// The disc's fill behind an untinted glyph.
+  static const double _discTintAlpha = 0.16;
+
   @override
   Widget build(BuildContext context) {
     final extent = sidebarMarkExtent(context);
     final tint = ServerTint.of(server);
     final accent = serverAccent(context, tint);
     final mark = server.mark;
+    if (SidebarKitScope.layoutOf(context) == SidebarKitLayout.list) {
+      return ExcludeSemantics(child: _disc(context, extent, tint, accent));
+    }
     // Decorative: the row announces the server's name itself.
     if (mark is ServerGlyphMark && accent == null) {
       return ExcludeSemantics(
@@ -232,6 +252,39 @@ class ServerRailMark extends StatelessWidget {
         borderRadius: BorderRadius.circular(extent * ServerBadge.cornerRatio),
       ),
       child: badge,
+    );
+  }
+
+  /// The Android list's mark (sibling contract §10.6): an untinted glyph
+  /// on a tertiary disc, so a plain server still reads as a server, and
+  /// a server with its own colour, emoji or image as its badge clipped
+  /// to a circle.
+  Widget _disc(
+    BuildContext context,
+    double extent,
+    ServerTint tint,
+    ServerAccent? accent,
+  ) {
+    final mark = server.mark;
+    if (mark is ServerGlyphMark && accent == null) {
+      final color = Theme.of(context).colorScheme.tertiary;
+      return SizedBox.square(
+        dimension: extent,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: _discTintAlpha),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            serverIconData(mark.icon),
+            size: _discGlyphSize,
+            color: color,
+          ),
+        ),
+      );
+    }
+    return ClipOval(
+      child: ServerBadge(tint: tint, mark: mark, size: extent),
     );
   }
 }

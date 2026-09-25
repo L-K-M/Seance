@@ -363,12 +363,41 @@ void main() {
       expect(calls, ['reconnect']);
     });
 
+    testWidgets('the home line names a non-default port and brackets an '
+        'IPv6 host', (tester) async {
+      ServerConfig at(String host, int port) => ServerConfig(
+        id: 'box',
+        label: 'box',
+        host: host,
+        port: port,
+        username: 'deploy',
+        createdAt: 1,
+        updatedAt: 1,
+      );
+      await pump(
+        tester,
+        config: at('box.example.com', 2222),
+        platform: TargetPlatform.android,
+        showAddress: true,
+      );
+      expect(find.text('deploy@box.example.com:2222'), findsOneWidget);
+
+      await pump(
+        tester,
+        config: at('fe80::1', 22),
+        platform: TargetPlatform.android,
+        showAddress: true,
+      );
+      expect(find.text('deploy@[fe80::1]'), findsOneWidget);
+    });
+
     testWidgets('on touch a long-press opens the same verbs as a sheet', (
       tester,
     ) async {
       await pump(tester, platform: TargetPlatform.android, showAddress: true);
-      // The touch home spells the address out, and is 48 dp or more.
-      expect(find.text('deploy@box.example.com:22'), findsOneWidget);
+      // The touch home spells the address out (SSH's default port left
+      // implied, as Poltergeist's Home does), and is 48 dp or more.
+      expect(find.text('deploy@box.example.com'), findsOneWidget);
       expect(
         tester.getSize(find.byType(SidebarRow)).height,
         greaterThanOrEqualTo(48),

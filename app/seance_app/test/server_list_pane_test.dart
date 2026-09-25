@@ -11,6 +11,7 @@ import 'package:seance_app/services/app_services.dart';
 import 'package:seance_app/services/xterm_engine.dart';
 import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/app_menus.dart';
+import 'package:seance_app/ui/server_list_density.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
 import 'package:seance_app/ui/server_tile.dart';
 import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
@@ -104,6 +105,54 @@ void main() {
       .widgetList<ServerTile>(find.byType(ServerTile))
       .map((tile) => tile.server.label)
       .toList();
+
+  testWidgets('the phone home draws the Android list; compact density keeps '
+      'one-line touch rows; a desktop window stays rail-drawn', (
+    tester,
+  ) async {
+    await boot(tester, [server('web')]);
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    Future<void> pumpHome(TargetPlatform platform) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: SeanceTheme.light(platform: platform),
+          home: AppScope(
+            state: state!,
+            child: ServerListPane(
+              posture: ServerListPosture.home,
+              onOpen: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    double rowHeight() => tester.getSize(find.byType(SidebarRow)).height;
+    double markSize() => tester.getSize(find.byType(ServerRailMark)).width;
+
+    // The default comfortable density: Poltergeist's Home list (§10.6).
+    await pumpHome(TargetPlatform.android);
+    expect(rowHeight(), 56);
+    expect(markSize(), 40);
+    expect(find.text('deploy@web.example.com'), findsOneWidget);
+
+    await tester.runAsync(
+      () => state!.setServerListDensity(ServerListDensity.compact),
+    );
+    await tester.pumpAndSettle();
+    expect(rowHeight(), 48);
+    expect(markSize(), lessThan(40));
+
+    await tester.runAsync(
+      () => state!.setServerListDensity(ServerListDensity.comfortable),
+    );
+    await pumpHome(TargetPlatform.linux);
+    expect(markSize(), lessThan(40));
+  });
 
   testWidgets('the last row\'s menu is tappable at the deepest scroll '
       '(the home screen\'s "+" must not cover it)', (tester) async {

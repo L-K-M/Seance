@@ -138,7 +138,7 @@ void main() {
 
       final comfortable = tester.getSize(find.byType(ServerTile).first).height;
       expect(
-        find.text('deploy@alpha.example.com:22'),
+        find.text('deploy@alpha.example.com'),
         findsOneWidget,
         reason: 'the comfortable row spells the address out on its own line',
       );
@@ -157,7 +157,7 @@ void main() {
             'vertical space',
       );
       expect(
-        find.text('deploy@alpha.example.com:22'),
+        find.text('deploy@alpha.example.com'),
         findsNothing,
         reason: 'the address line is what the compact row trades away',
       );
@@ -204,7 +204,7 @@ void main() {
         platform: TargetPlatform.macOS,
       );
       expect(find.byType(SegmentedButton<ServerListDensity>), findsNothing);
-      expect(find.text('deploy@alpha.example.com:22'), findsNothing);
+      expect(find.text('deploy@alpha.example.com'), findsNothing);
       expect(tester.getSize(find.byType(ServerTile)).height, 26);
     });
 
@@ -253,9 +253,10 @@ void main() {
       expect(state!.pinnedServerIds, {'zulu'});
       expect(renderedLabels(tester), ['zulu', 'alpha']);
       // Both sections are headed, or the rows after the shortlist would read
-      // as still being part of it.
-      expect(find.text(kPinnedLabel.toUpperCase()), findsOneWidget);
-      expect(find.text(kServersLabel.toUpperCase()), findsOneWidget);
+      // as still being part of it (the phone home's Android list heads
+      // them in sentence case, as Material subheaders).
+      expect(find.text(kPinnedLabel), findsOneWidget);
+      expect(find.text(kServersLabel), findsOneWidget);
     });
 
     testWidgets('the same menu unpins, and the list goes back', (tester) async {

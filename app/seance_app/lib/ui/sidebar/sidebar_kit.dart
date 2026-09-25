@@ -49,6 +49,7 @@ const double _dotRing = 1.5;
 /// The stroke of a [SidebarDotStyle.ring] dot: heavy enough that the hole
 /// reads as deliberate rather than as a dot drawn badly.
 const double _hollowStroke = 1.75;
+const double _listHollowStroke = 2.5;
 
 const double _sectionHeaderExtent = 22;
 const double _sectionLeadIn = 4;
@@ -70,6 +71,36 @@ const double _touchFilterExtent = 40;
 const double _subtitleExtra = 8;
 const double _twoLineFloor = 40;
 
+/// The [SidebarKitLayout.list] tokens: Material's list item (56 dp, a
+/// 40 dp leading mark 16 dp from the edge and from the text, 24 dp icons
+/// in 48 dp targets) and its 48 dp subheader. The composed dot grows with
+/// the mark so it still reads at arm's length.
+const double _listRowExtent = 56;
+const double _listMarkExtent = 40;
+const double _listDotExtent = 12;
+const double _listDotRing = 2;
+const double _listHeaderExtent = 48;
+const double _listInset = 8;
+const double _listMarkGap = 16;
+const double _listDepthIndent = 16;
+const double _listIconButtonExtent = 48;
+const double _listIconSize = 24;
+const double _listPillRadius = 12;
+
+/// How the kit lays itself out, set once on [SidebarKitScope]. [rail] is
+/// the sidebar column: the spec's pixel sizes on desktop, Material's
+/// 48 dp rows on touch. [list] is a phone's full-screen home list, drawn
+/// like the platform's own lists so it matches the screens it opens:
+/// 56 dp rows under a 40 dp mark, a 16 sp title, and Material list
+/// subheaders (48 dp, 14 sp in the accent colour, as authored rather than
+/// in caps) for the sections.
+enum SidebarKitLayout { rail, list }
+
+/// Whether the scope asks for [SidebarKitLayout.list].
+bool _list(BuildContext context) =>
+    context.dependOnInheritedWidgetOfExactType<SidebarKitScope>()?.layout ==
+    SidebarKitLayout.list;
+
 /// Whether the kit sizes for fingers. The same split the chrome tokens
 /// make (desktop platforms get the spec's pixel sizes, everything else
 /// Material's touch sizes), read from the theme so a test or capture can
@@ -82,10 +113,15 @@ bool _touch(BuildContext context) => switch (Theme.of(context).platform) {
 };
 
 /// The box a row's leading mark should fill: 18 px on desktop (10 §5), 24
-/// on touch. Hosts size their mark widgets with it so a badge fills the
-/// slot the kit reserves.
-double sidebarMarkExtent(BuildContext context) =>
-    _touch(context) ? _touchMarkExtent : _markExtent;
+/// on touch, 40 in the list layout. Hosts size their mark widgets with it
+/// so a badge fills the slot the kit reserves.
+double sidebarMarkExtent(BuildContext context) => _list(context)
+    ? _listMarkExtent
+    : (_touch(context) ? _touchMarkExtent : _markExtent);
+
+/// The pill's corner radius (and the focus ring's) for the layout.
+double _radius(BuildContext context) =>
+    _list(context) ? _listPillRadius : _pillRadius;
 
 /// The copy the kit renders, injected so the kit authors none.
 @immutable
@@ -126,10 +162,14 @@ class SidebarKitScope extends InheritedWidget {
     super.key,
     required this.strings,
     this.background,
+    this.layout = SidebarKitLayout.rail,
     required super.child,
   });
 
   final SidebarKitStrings strings;
+
+  /// The rail, or a phone's home list (see [SidebarKitLayout]).
+  final SidebarKitLayout layout;
 
   /// What is painted behind the rows, when it is not the rail's own
   /// `sidebarBackground` (a phone's full-screen home list sits on the
@@ -138,6 +178,11 @@ class SidebarKitScope extends InheritedWidget {
   final Color? background;
 
   static SidebarKitStrings of(BuildContext context) => _scope(context).strings;
+
+  /// The layout the nearest scope asks for, so a host's own marks can
+  /// draw for it (a disc in [SidebarKitLayout.list]).
+  static SidebarKitLayout layoutOf(BuildContext context) =>
+      _scope(context).layout;
 
   static SidebarKitScope _scope(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<SidebarKitScope>();
@@ -148,7 +193,8 @@ class SidebarKitScope extends InheritedWidget {
   @override
   bool updateShouldNotify(SidebarKitScope oldWidget) =>
       !identical(oldWidget.strings, strings) ||
-      oldWidget.background != background;
+      oldWidget.background != background ||
+      oldWidget.layout != layout;
 }
 
 /// The colour behind the rail's rows (see [SidebarKitScope.background]).
@@ -214,8 +260,8 @@ mixin _KeyboardFocusRing<T extends StatefulWidget> on State<T> {
 
 /// The keyboard focus ring (and a row's drop-into outline): painted as a
 /// foreground decoration so it never moves what it frames.
-BoxDecoration _focusRing(Color color) => BoxDecoration(
-  borderRadius: BorderRadius.circular(_pillRadius),
+BoxDecoration _focusRing(Color color, double radius) => BoxDecoration(
+  borderRadius: BorderRadius.circular(radius),
   border: Border.all(color: color, width: 2),
 );
 
@@ -491,45 +537,63 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
     // Touch has no hover to reveal on, so the chevron and the "+" stay
     // drawn there: hidden until a hover that never comes, the disclosure
     // would have no visible affordance at all.
-    final revealed = _hovering || focused || touch;
+    final list = _list(context);
+    final revealed = _hovering || focused || touch || list;
     final nested = widget.nested;
+    final inset = list ? _listInset : _railInset;
+    final radius = _radius(context);
     // A nested disclosure row is a row among rows, so on touch it takes a
     // row's height; a section caption grows only toward a finger's target.
-    final lineExtent = touch
+    // A list's subheader is Material's 48 dp, and its lead-in is part of it.
+    final lineExtent = list
+        ? _listHeaderExtent
+        : touch
         ? (nested ? chrome.sidebarRowExtent : _touchSectionHeaderExtent)
         : _sectionHeaderExtent;
+    final leadIn = nested || list ? 0.0 : _sectionLeadIn;
 
-    final titleStyle = nested
-        ? theme.textTheme.labelMedium?.copyWith(
-            color: chrome.secondaryText,
-            fontWeight: FontWeight.w600,
-          )
-        : theme.textTheme.labelSmall?.copyWith(
-            color: chrome.secondaryText,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.6,
-          );
+    final titleStyle = switch ((list, nested)) {
+      (true, false) => theme.textTheme.titleSmall?.copyWith(
+        color: theme.colorScheme.primary,
+      ),
+      (true, true) => theme.textTheme.titleSmall?.copyWith(
+        color: chrome.secondaryText,
+      ),
+      (false, true) => theme.textTheme.labelMedium?.copyWith(
+        color: chrome.secondaryText,
+        fontWeight: FontWeight.w600,
+      ),
+      (false, false) => theme.textTheme.labelSmall?.copyWith(
+        color: chrome.secondaryText,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0.6,
+      ),
+    };
     final chevron = Icon(
       widget.collapsed ? Icons.chevron_right : Icons.expand_more,
-      size: touch ? 18 : 14,
+      size: list ? _listIconSize : (touch ? 18 : 14),
       color: chrome.secondaryText,
     );
     final count = Text(
       widget.count.toString(),
-      style: theme.textTheme.labelSmall?.copyWith(
-        color: chrome.secondaryText,
-        fontFeatures: const [FontFeature.tabularFigures()],
-      ),
+      style: (list ? theme.textTheme.labelLarge : theme.textTheme.labelSmall)
+          ?.copyWith(
+            color: chrome.secondaryText,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
     );
 
     final header = MouseRegion(
       onEnter: (_) => setState(() => _hovering = true),
       onExit: (_) => setState(() => _hovering = false),
-      child: Focus(
-        focusNode: focusNode,
-        onKeyEvent: _onKey,
-        onFocusChange: onFocusChanged,
-        child: MergeSemantics(
+      // The focus node's own semantics (focusable) merge into the
+      // header's: outside it they would be a second, unlabeled stop for
+      // a screen reader before the header itself.
+      child: MergeSemantics(
+        child: Focus(
+          focusNode: focusNode,
+          onKeyEvent: _onKey,
+          onFocusChange: onFocusChanged,
           child: Semantics(
             header: true,
             button: true,
@@ -546,30 +610,30 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
               child: ExcludeSemantics(
                 child: Container(
                   key: widget.headerKey,
-                  height: _scaledExtent(
-                    context,
-                    nested ? lineExtent : lineExtent + _sectionLeadIn,
-                  ),
-                  margin: const EdgeInsets.symmetric(horizontal: _railInset),
+                  height: _scaledExtent(context, lineExtent + leadIn),
+                  margin: EdgeInsets.symmetric(horizontal: inset),
                   // A section header leads in with 4 px of air above its
                   // 22 px line; the "+" below centres on the same line.
                   padding: EdgeInsetsDirectional.only(
-                    start: _contentInset + widget.depth * _depthIndent,
-                    end: 4,
-                    top: nested ? 0 : _sectionLeadIn,
+                    start:
+                        _contentInset +
+                        widget.depth * (list ? _listDepthIndent : _depthIndent),
+                    // A list's chevron centres over the rows' "⋮".
+                    end: list ? 8 : 4,
+                    top: leadIn,
                   ),
                   alignment: AlignmentDirectional.centerStart,
                   decoration: BoxDecoration(
                     color: widget.dropHighlight
                         ? chrome.hoverFill
                         : (nested && _hovering ? chrome.hoverFill : null),
-                    borderRadius: BorderRadius.circular(_pillRadius),
+                    borderRadius: BorderRadius.circular(radius),
                   ),
                   // Painted over the content, not around it: a border in
                   // the decoration insets the child by its width, and the
                   // title would jump 2 px whenever focus arrived.
                   foregroundDecoration: focused
-                      ? _focusRing(theme.colorScheme.primary)
+                      ? _focusRing(theme.colorScheme.primary, radius)
                       : null,
                   child: Row(
                     children: [
@@ -578,14 +642,17 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
                           width: sidebarMarkExtent(context),
                           child: Center(child: chevron),
                         ),
-                        const SizedBox(width: 6),
+                        SizedBox(width: list ? _listMarkGap : 6),
                       ],
                       Expanded(
                         child: Text(
                           // Caps are visual only; the announcement keeps
                           // the authored spelling (a screen reader spells
-                          // out all-caps words letter by letter).
-                          nested ? widget.title : widget.title.toUpperCase(),
+                          // out all-caps words letter by letter). A list's
+                          // subheader keeps it on screen too.
+                          nested || list
+                              ? widget.title
+                              : widget.title.toUpperCase(),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: titleStyle,
@@ -593,11 +660,11 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
                       ),
                       if (widget.collapsed) ...[
                         count,
-                        const SizedBox(width: 4),
+                        SizedBox(width: list ? 8 : 4),
                       ],
                       if (!nested)
                         SizedBox(
-                          width: 18,
+                          width: list ? _listIconSize : 18,
                           child: Visibility.maintain(
                             visible: revealed,
                             child: Tooltip(
@@ -612,7 +679,9 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
                       // the count and chevron never slide under it.
                       if (widget.onAdd != null)
                         SizedBox(
-                          width: touch ? _touchIconButtonExtent + 2 : 24,
+                          width: list
+                              ? _listIconButtonExtent
+                              : (touch ? _touchIconButtonExtent + 2 : 24),
                         ),
                     ],
                   ),
@@ -632,8 +701,8 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
       children: [
         header,
         PositionedDirectional(
-          end: _railInset + 2,
-          top: nested ? 0 : _sectionLeadIn,
+          end: list ? _listInset : _railInset + 2,
+          top: leadIn,
           bottom: 0,
           child: Visibility(
             visible: revealed,
@@ -659,8 +728,8 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
   }
 }
 
-/// A borderless 22 px icon button (40 on touch) with the hover capsule
-/// the header uses.
+/// A borderless 22 px icon button (40 on touch, Material's 48 in the list
+/// layout) with the hover capsule the header uses.
 class _KitIconButton extends StatelessWidget {
   const _KitIconButton({
     super.key,
@@ -677,17 +746,23 @@ class _KitIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final chrome = _chrome(context);
     final touch = _touch(context);
-    final extent = touch ? _touchIconButtonExtent : 22.0;
+    final list = _list(context);
+    final extent = list
+        ? _listIconButtonExtent
+        : (touch ? _touchIconButtonExtent : 22.0);
     return IconButton(
-      iconSize: touch ? 20 : 15,
+      iconSize: list ? _listIconSize : (touch ? 20 : 15),
       padding: EdgeInsets.zero,
       constraints: BoxConstraints.tightFor(width: extent, height: extent),
       visualDensity: VisualDensity.compact,
       style: IconButton.styleFrom(
         hoverColor: chrome.hoverFill,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(_pillRadius),
-        ),
+        // A list's icon buttons ink as Material's circles.
+        shape: list
+            ? const CircleBorder()
+            : RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(_pillRadius),
+              ),
       ),
       tooltip: tooltip,
       onPressed: onPressed,
@@ -970,15 +1045,21 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     // The dot's ring reads as a cut-out: it takes the colour actually
     // behind the mark, pill or hover included.
     final ring = fill == null ? background : Color.alphaBlend(fill, background);
+    final list = _list(context);
+    final radius = _radius(context);
 
-    final titleStyle = theme.textTheme.bodyMedium?.copyWith(
-      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-      fontStyle: widget.italic ? FontStyle.italic : FontStyle.normal,
-    );
-    final captionStyle = theme.textTheme.labelSmall?.copyWith(
-      color: chrome.secondaryText,
-      fontFeatures: const [FontFeature.tabularFigures()],
-    );
+    final titleStyle =
+        (list ? theme.textTheme.bodyLarge : theme.textTheme.bodyMedium)
+            ?.copyWith(
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+              fontStyle: widget.italic ? FontStyle.italic : FontStyle.normal,
+            );
+    final captionStyle =
+        (list ? theme.textTheme.labelMedium : theme.textTheme.labelSmall)
+            ?.copyWith(
+              color: chrome.secondaryText,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            );
     final action = widget.hoverAction;
     final showAction = action != null && (_hovering || focused);
     final Widget? trailing = showAction
@@ -1011,6 +1092,7 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               MiddleEllipsisText(widget.title, style: titleStyle),
+              if (list) const SizedBox(height: 2),
               Text(
                 subtitle,
                 maxLines: 1,
@@ -1021,7 +1103,11 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
               ),
             ],
           );
-    final extent = subtitle == null
+    // A list row is Material's 56 dp whether or not it has a second line:
+    // a 40 dp mark leaves no room for less.
+    final extent = list
+        ? _listRowExtent
+        : subtitle == null
         ? chrome.sidebarRowExtent
         : (chrome.sidebarRowExtent + _subtitleExtra).clamp(
             _twoLineFloor,
@@ -1031,28 +1117,36 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     Widget content = Container(
       key: _contentKey,
       height: _scaledExtent(context, extent),
-      margin: const EdgeInsets.symmetric(horizontal: _railInset),
+      margin: EdgeInsets.symmetric(horizontal: list ? _listInset : _railInset),
       padding: EdgeInsetsDirectional.only(
-        start: _contentInset + widget.depth * _depthIndent,
-        end: 4,
+        start:
+            _contentInset +
+            widget.depth * (list ? _listDepthIndent : _depthIndent),
+        // A list's "⋮" target reaches the pill's edge, as a list item's
+        // trailing icon button does.
+        end: list && menuButton != null ? 0 : 4,
       ),
       decoration: BoxDecoration(
         color: fill,
-        borderRadius: BorderRadius.circular(_pillRadius),
+        borderRadius: BorderRadius.circular(radius),
       ),
       // Over the content, as on the header: a decoration border would
       // shift the mark and title by its width while focused.
       foregroundDecoration: focused || dropInto
-          ? _focusRing(theme.colorScheme.primary)
+          ? _focusRing(theme.colorScheme.primary, radius)
           : null,
       child: Row(
         children: [
           _SidebarMark(mark: widget.mark, dot: widget.status, ring: ring),
-          SizedBox(width: _touch(context) ? 12 : 6),
+          SizedBox(width: list ? _listMarkGap : (_touch(context) ? 12 : 6)),
           Expanded(child: label),
           if (trailingIcon != null) ...[
             const SizedBox(width: 6),
-            Icon(trailingIcon, size: 12, color: chrome.secondaryText),
+            Icon(
+              trailingIcon,
+              size: list ? 16 : 12,
+              color: chrome.secondaryText,
+            ),
           ],
           if (trailing != null) ...[const SizedBox(width: 6), trailing],
           ?menuButton,
@@ -1077,8 +1171,8 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
         children: [
           content,
           PositionedDirectional(
-            start: _railInset,
-            end: _railInset,
+            start: list ? _listInset : _railInset,
+            end: list ? _listInset : _railInset,
             top: widget.dropIndicator == SidebarDropIndicator.before ? 0 : null,
             bottom: widget.dropIndicator == SidebarDropIndicator.after
                 ? 0
@@ -1092,15 +1186,18 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     return MouseRegion(
       onEnter: (_) => setState(() => _hovering = true),
       onExit: (_) => setState(() => _hovering = false),
-      child: Focus(
-        focusNode: focusNode,
-        onKeyEvent: _onKey,
-        onFocusChange: onFocusChanged,
-        child: Semantics(
-          container: true,
-          button: widget.onActivate != null,
-          selected: selected,
-          label: widget.semanticLabel ?? widget.title,
+      // One node per row: the container sits outside the focus node, so
+      // its focusable flag merges into the row rather than wrapping it in
+      // a second, unlabeled stop for a screen reader.
+      child: Semantics(
+        container: true,
+        button: widget.onActivate != null,
+        selected: selected,
+        label: widget.semanticLabel ?? widget.title,
+        child: Focus(
+          focusNode: focusNode,
+          onKeyEvent: _onKey,
+          onFocusChange: onFocusChanged,
           // The detector sits OUTSIDE ExcludeSemantics so its tap reaches
           // the semantics tree — an announced button a screen reader
           // cannot activate is WCAG 4.1.2's failure.
@@ -1163,7 +1260,11 @@ class _SidebarMark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final extent = sidebarMarkExtent(context);
-    final dotExtent = _touch(context) ? _touchDotExtent : _dotExtent;
+    final list = _list(context);
+    final dotExtent = list
+        ? _listDotExtent
+        : (_touch(context) ? _touchDotExtent : _dotExtent);
+    final dotRing = list ? _listDotRing : _dotRing;
     final dot = this.dot;
     final hollow = dot?.style == SidebarDotStyle.ring;
     return SizedBox(
@@ -1173,19 +1274,22 @@ class _SidebarMark extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           Center(child: mark),
+          // On a list's round mark the corner puts the dot's centre on
+          // the circle's edge: the avatar badge Material draws presence
+          // with.
           if (dot != null)
             PositionedDirectional(
-              end: -_dotRing,
-              bottom: -_dotRing,
+              end: -dotRing,
+              bottom: -dotRing,
               child: Container(
-                width: dotExtent + 2 * _dotRing,
-                height: dotExtent + 2 * _dotRing,
+                width: dotExtent + 2 * dotRing,
+                height: dotExtent + 2 * dotRing,
                 decoration: BoxDecoration(
                   // A ring's hole shows the row, not the mark under it:
                   // the cut-out colour fills it.
                   color: hollow ? ring : dot.color,
                   shape: BoxShape.circle,
-                  border: Border.all(color: ring, width: _dotRing),
+                  border: Border.all(color: ring, width: dotRing),
                 ),
                 child: hollow
                     ? DecoratedBox(
@@ -1193,7 +1297,7 @@ class _SidebarMark extends StatelessWidget {
                           shape: BoxShape.circle,
                           border: Border.all(
                             color: dot.color,
-                            width: _hollowStroke,
+                            width: list ? _listHollowStroke : _hollowStroke,
                           ),
                         ),
                       )

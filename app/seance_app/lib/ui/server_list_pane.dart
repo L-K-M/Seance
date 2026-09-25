@@ -206,6 +206,27 @@ class _ServerListPaneState extends State<ServerListPane> {
 
   bool get _home => widget.posture == ServerListPosture.home;
 
+  /// The phone home draws as an Android list — 56 dp rows, 40 dp discs,
+  /// the address as a second line — the same list Poltergeist's compact
+  /// Home uses (sibling contract §10.6). The compact density keeps the
+  /// denser one-line touch rows, and the desktop rail and a narrow
+  /// desktop window stay rail-drawn.
+  SidebarKitLayout _layoutFor(BuildContext context, AppState state) {
+    final touch = switch (Theme.of(context).platform) {
+      TargetPlatform.android ||
+      TargetPlatform.iOS ||
+      TargetPlatform.fuchsia => true,
+      TargetPlatform.linux ||
+      TargetPlatform.macOS ||
+      TargetPlatform.windows => false,
+    };
+    return _home &&
+            touch &&
+            state.serverListDensity == ServerListDensity.comfortable
+        ? SidebarKitLayout.list
+        : SidebarKitLayout.rail;
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
@@ -213,12 +234,13 @@ class _ServerListPaneState extends State<ServerListPane> {
     final background = _home
         ? Theme.of(context).colorScheme.surface
         : chrome.sidebarBackground;
-    final body = SidebarKitScope(
-      strings: serverSidebarStrings,
-      background: background,
-      child: ListenableBuilder(
-        listenable: state,
-        builder: (context, _) => _body(context, state),
+    final body = ListenableBuilder(
+      listenable: state,
+      builder: (context, _) => SidebarKitScope(
+        strings: serverSidebarStrings,
+        background: background,
+        layout: _layoutFor(context, state),
+        child: Builder(builder: (context) => _body(context, state)),
       ),
     );
     // A Material rather than a bare fill: the filter field and the kit's
