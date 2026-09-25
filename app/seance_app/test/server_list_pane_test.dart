@@ -376,6 +376,35 @@ void main() {
       });
     }
 
+    testWidgets('Windows leaves AltGr+F to text input: AltGr arrives as '
+        'Ctrl + right Alt, and "[" is AltGr+F on Czech and other layouts', (
+      tester,
+    ) async {
+      final field = find.byKey(const ValueKey('servers.filter.field'));
+      await boot(tester, [server('alpha'), server('bravo')]);
+      await pumpRail(tester, platform: TargetPlatform.windows);
+      await tester.tap(find.text('alpha'));
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altRight);
+      final result = await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altRight);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      expect(field, findsNothing);
+      expect(result, isFalse, reason: 'unhandled, so the character types');
+
+      // The real chord, with the left Alt, still reveals the filter.
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      expect(field, findsOneWidget);
+    });
+
     testWidgets('the row of the focused session wears the pill', (
       tester,
     ) async {

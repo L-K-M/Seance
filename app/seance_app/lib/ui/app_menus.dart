@@ -100,6 +100,31 @@ SingleActivator serverFilterActivator(TargetPlatform platform) =>
       ),
     };
 
+/// [serverFilterActivator] as the app-wide binding takes it. On Windows it
+/// stands down while the right Alt is held: Windows reports AltGr as Ctrl +
+/// right Alt, AltGr+F types "[" on Czech, Slovak, Hungarian and other
+/// layouts, and a handled key would swallow that character in every field
+/// and terminal under [AppMenus]. The chord itself uses the left Alt.
+final class _ServerFilterChord extends ShortcutActivator {
+  const _ServerFilterChord(this._platform);
+
+  final TargetPlatform _platform;
+
+  SingleActivator get _chord => serverFilterActivator(_platform);
+
+  @override
+  Iterable<LogicalKeyboardKey>? get triggers => _chord.triggers;
+
+  @override
+  bool accepts(KeyEvent event, HardwareKeyboard state) =>
+      _chord.accepts(event, state) &&
+      !(_platform == TargetPlatform.windows &&
+          state.logicalKeysPressed.contains(LogicalKeyboardKey.altRight));
+
+  @override
+  String debugDescribeKeys() => _chord.debugDescribeKeys();
+}
+
 /// Cross-platform keyboard shortcuts for the menu commands. On macOS the native
 /// menu (wired in MainFlutterWindow.swift) owns ⌘T, ⌘, and ⌘K; this also covers
 /// Linux/Windows, where there is no system menu bar. The native menu and these
@@ -113,7 +138,7 @@ class AppMenus extends StatelessWidget {
     final state = AppScope.of(context);
     return CallbackShortcuts(
       bindings: {
-        serverFilterActivator(Theme.of(context).platform): () =>
+        _ServerFilterChord(Theme.of(context).platform): () =>
             ServerListPane.revealFilter(),
         const SingleActivator(LogicalKeyboardKey.keyT, meta: true): () =>
             openNewTab(state),
