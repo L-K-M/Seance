@@ -134,6 +134,22 @@ void main() {
     expect(tester.getSize(find.byType(SidebarRow)).height, 52);
   });
 
+  testWidgets('the second line leads with a state the user has to notice, '
+      'so the ellipsis never takes it', (tester) async {
+    for (final (dot, line) in [
+      (ServerDot.connecting, 'Connecting · deploy@box.example.com'),
+      (ServerDot.failed, 'Connection failed · deploy@box.example.com'),
+      (ServerDot.unreachable, 'Host unreachable · deploy@box.example.com'),
+      // A healthy or unknown state says nothing the dot does not.
+      (ServerDot.connected, 'deploy@box.example.com'),
+      (ServerDot.reachable, 'deploy@box.example.com'),
+      (ServerDot.none, 'deploy@box.example.com'),
+    ]) {
+      await pump(tester, dot: dot, density: SidebarKitDensity.comfortable);
+      expect(find.text(line), findsOneWidget, reason: '$dot');
+    }
+  });
+
   testWidgets('the selected row wears the pill and a semibold title', (
     tester,
   ) async {

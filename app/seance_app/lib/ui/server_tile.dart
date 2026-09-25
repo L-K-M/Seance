@@ -86,6 +86,19 @@ class ServerTile extends StatelessWidget {
     return server.port == 22 ? base : '$base:${server.port}';
   }
 
+  /// The second line as the kit draws it: a state the user has to act on
+  /// or wait for comes first, so the ellipsis takes the address rather
+  /// than the news (the order Poltergeist's rows use); a healthy or
+  /// unknown state leaves the line to the address, the dot saying the rest.
+  String get _subtitle => switch (dot) {
+    ServerDot.connecting ||
+    ServerDot.failed ||
+    ServerDot.unreachable => '${dot.description} · $_subtitleAddress',
+    ServerDot.none ||
+    ServerDot.connected ||
+    ServerDot.reachable => _subtitleAddress,
+  };
+
   String get _disconnectLabel => tabCount > 1 ? 'Disconnect all' : 'Disconnect';
 
   @override
@@ -99,7 +112,7 @@ class ServerTile extends StatelessWidget {
         final color? => SidebarStatusDot(color, style: dot.style),
         null => null,
       },
-      subtitle: _subtitleAddress,
+      subtitle: _subtitle,
       trailingIcon: excluded ? Icons.cloud_off_outlined : null,
       trailingText: tabCount > 1 ? '×$tabCount' : null,
       hoverAction: onDisconnect == null
