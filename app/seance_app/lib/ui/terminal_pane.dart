@@ -17,6 +17,7 @@ import 'connection_log_view.dart';
 import 'files_pane.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_appearance.dart';
+import 'server_list_pane.dart';
 import 'session_label.dart';
 import 'sidebar_panel.dart';
 import 'terminal_appearance.dart';
@@ -1119,8 +1120,16 @@ class _SessionViewState extends State<_SessionView> {
   /// Note: on macOS the native Edit menu claims ⌘C/⌘V/⌘A at the OS level, so
   /// those never reach here — the right-click menu is the reliable path there.
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final keys = HardwareKeyboard.instance;
+    // Off Apple platforms the terminal keeps the server filter's chord,
+    // repeats included (see the ⌥⌘F note below).
+    if (!(Platform.isMacOS || Platform.isIOS) &&
+        serverFilterActivator(
+          Theme.of(context).platform,
+        ).accepts(event, keys)) {
+      return KeyEventResult.skipRemainingHandlers;
+    }
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
     if (event.logicalKey == LogicalKeyboardKey.keyK &&
         (keys.isMetaPressed ||
@@ -1137,6 +1146,23 @@ class _SessionViewState extends State<_SessionView> {
     final clip = apple
         ? keys.isMetaPressed
         : (keys.isControlPressed && keys.isShiftPressed);
+    // The server filter's ⌥⌘F: ⌘ never reaches the shell, so it is safe to
+    // take here, where xterm would otherwise send the Alt+F underneath it.
+    // Off Apple platforms the chord is Ctrl+Alt+F, which a shell (or an
+    // editor running in it) may bind, so the terminal keeps it: xterm has
+    // no bytes for Ctrl+Alt+letter, and an ignored key would bubble on to
+    // AppMenus and pull focus out of the shell into the filter. Skipping
+    // the remaining handlers stops it here while leaving the key
+    // unhandled, so the platform still delivers any character it types:
+    // Windows reports AltGr as Ctrl+Alt, and AltGr+F is "[" on Czech,
+    // Slovak, Hungarian and other layouts.
+    if (apple &&
+        keys.isMetaPressed &&
+        keys.isAltPressed &&
+        event.logicalKey == LogicalKeyboardKey.keyF &&
+        ServerListPane.revealFilter()) {
+      return KeyEventResult.handled;
+    }
     // Open another tab for this server: ⌘T / Ctrl+Shift+T.
     if (clip && event.logicalKey == LogicalKeyboardKey.keyT) {
       widget.state.newTab(widget.tab.config);

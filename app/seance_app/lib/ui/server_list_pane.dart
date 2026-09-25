@@ -1,7 +1,7 @@
+import 'dart:async';
 import 'dart:developer' as developer;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -9,53 +9,155 @@ import '../app_state.dart';
 import '../main.dart';
 import '../theme.dart';
 import 'app_menus.dart';
-import 'middle_ellipsis_text.dart';
-import 'server_appearance.dart';
 import 'server_editor.dart';
 import 'server_filter.dart';
 import 'server_grouping.dart';
 import 'server_list_density.dart';
+import 'server_status_dot.dart';
+import 'server_tile.dart';
 import 'settings_screen.dart';
+import 'sidebar/sidebar_kit.dart';
 import 'top_toast.dart';
 
-/// Left pane / first screen: the configured servers with a reachability dot.
-/// Tapping one opens a terminal (via [onOpen]).
+/// Where the server list is mounted, which decides its chrome.
+enum ServerListPosture {
+  /// The wide layout's left rail: the sibling sidebar anatomy (Poltergeist's
+  /// plan, 10 §5) with no app bar, a filter field at the top and the bottom
+  /// bar's "+" menu, sync status and gear at the foot.
+  rail,
+
+  /// The narrow layout's home screen, full screen (10 §9, §10.6): an app
+  /// bar, the same sections and rows at the platform's row extent, and a
+  /// "+" button that adds a server.
+  home,
+}
+
+/// The copy the sibling kit renders, in Séance's words. Public so a widget
+/// test can pump a kit header or row exactly as the pane does.
+final SidebarKitStrings serverSidebarStrings = SidebarKitStrings(
+  sectionSemantics: (title, count) =>
+      '$title, $count ${count == 1 ? 'server' : 'servers'}',
+  showSection: 'Show',
+  hideSection: 'Hide',
+  filterHint: 'Filter servers…',
+  filterClear: 'Clear filter',
+  addMenu: 'New server or import',
+  settings: 'Sync & settings',
+  rowMenu: 'More actions',
+);
+
+/// The configured servers with their live state, in the sibling rail's
+/// sections. Tapping one opens a terminal (via [onOpen]).
 class ServerListPane extends StatefulWidget {
   final void Function(ServerConfig server) onOpen;
-  const ServerListPane({super.key, required this.onOpen});
+  final ServerListPosture posture;
 
-  /// Below this many servers the list is short enough to read at a glance and
-  /// the filter would just be chrome. Matches the Snippets pane's threshold.
-  static const int filterThreshold = 5;
+  const ServerListPane({
+    super.key,
+    required this.onOpen,
+    required this.posture,
+  });
+
+  /// Below this many servers the list is short enough to read at a glance
+  /// and the filter would just be chrome (10 §5). The field still shows while
+  /// a query is live, and on demand through [revealFilter].
+  static const int filterThreshold = 8;
+
+  static final List<_ServerListPaneState> _mounted = [];
+
+  /// Show and focus the filter field of the pane on screen (⌥⌘F, or
+  /// Ctrl+Alt+F off Apple platforms). Returns false when no pane is mounted
+  /// to take it. The newest pane wins: during the narrow layout's screen
+  /// switch the outgoing one is still mounted, and is not the one the user
+  /// is looking at.
+  static bool revealFilter() {
+    if (_mounted.isEmpty) return false;
+    _mounted.last._revealFilter();
+    return true;
+  }
 
   @override
   State<ServerListPane> createState() => _ServerListPaneState();
 }
 
 class _ServerListPaneState extends State<ServerListPane> {
-  /// Bottom padding that lets the last row scroll clear of the floating
-  /// Add-server button, so the row's trailing menu is never tapped through
-  /// to the button: 48 (extended button height) + 16 (endFloat margin)
-  /// + 16 (gap). The geometry assertion in server_list_pane_test.dart
-  /// fails if a button change ever erodes the gap.
-  static const double _fabScrollClearance = 48 + 16 + 16;
+  /// Bottom padding that lets the last row scroll clear of the home screen's
+  /// floating "+" button, so a row's "⋮" is never tapped through to the
+  /// button: 56 (button) + 16 (endFloat margin) + 16 (gap). The geometry
+  /// assertion in server_list_pane_test.dart fails if a button change ever
+  /// erodes the gap.
+  static const double _fabScrollClearance = 56 + 16 + 16;
 
-  final _search = TextEditingController();
-  final _searchFocus = FocusNode();
+  /// How often the "Synced · 2 min" age is repainted while it shows.
+  static const Duration _syncAgeRefresh = Duration(seconds: 30);
+
+  /// Where the query outlives the pane. The narrow layout disposes the home
+  /// list while a terminal shows; back must return to the list as it was
+  /// (10 §10.6), so the query and the scroll offset are kept in the route's
+  /// page storage, which outlives the swap.
+  static const String _queryStorageId = 'servers.filter.query';
+
+  final _filterFocus = FocusNode();
   String _query = '';
+  bool _queryRestored = false;
+
+  /// Opened by [ServerListPane.revealFilter] on a list below the threshold;
+  /// Esc on an empty field closes it again.
+  bool _filterOpen = false;
+
+  Timer? _syncAgeTicker;
+
+  @override
+  void initState() {
+    super.initState();
+    ServerListPane._mounted.add(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_queryRestored) return;
+    _queryRestored = true;
+    final saved = PageStorage.maybeOf(
+      context,
+    )?.readState(context, identifier: _queryStorageId);
+    if (saved is String) _query = saved;
+  }
 
   @override
   void dispose() {
-    _search.dispose();
-    _searchFocus.dispose();
+    ServerListPane._mounted.remove(this);
+    _syncAgeTicker?.cancel();
+    _filterFocus.dispose();
     super.dispose();
   }
 
-  void _setQuery(String value) => setState(() => _query = value);
+  void _setQuery(String value) {
+    setState(() => _query = value);
+    PageStorage.maybeOf(
+      context,
+    )?.writeState(context, value, identifier: _queryStorageId);
+  }
 
-  void _clearQuery() {
-    _search.clear();
-    _setQuery('');
+  void _clearQuery() => _setQuery('');
+
+  void _revealFilter() {
+    setState(() => _filterOpen = true);
+    // The field may be mounting in this very frame: focus it after.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _filterFocus.requestFocus();
+    });
+  }
+
+  /// Esc: a live query clears first; an empty field then hands control back
+  /// (and closes, if it was only open on request).
+  void _dismissFilter() {
+    if (_query.isNotEmpty) {
+      _clearQuery();
+      return;
+    }
+    setState(() => _filterOpen = false);
+    _filterFocus.unfocus();
   }
 
   /// Drop a stale query once the list it filtered is empty, so adding a server
@@ -69,8 +171,7 @@ class _ServerListPaneState extends State<ServerListPane> {
   }
 
   /// Open the first match — the fast path for "type three letters, hit return,
-  /// you're on the box". Deliberately works with several matches too; the
-  /// helper text says which one Enter will take.
+  /// you're on the box". Deliberately works with several matches too.
   ///
   /// Matches are recomputed here rather than captured from the build that
   /// wired this up: typing and submitting inside one frame would otherwise act
@@ -79,7 +180,7 @@ class _ServerListPaneState extends State<ServerListPane> {
   /// "First" is the first row the user can *see*, which is why this goes
   /// through the same sectioning the list renders rather than taking the head
   /// of the filtered list: pinning floats a match to the top and grouping
-  /// sorts sections by name, so store order is not what the eye reads. A live
+  /// sorts groups by name, so store order is not what the eye reads. A live
   /// query overrides every collapsed section (see [_serverList]), so no row
   /// counted here is folded away.
   void _openFirstMatch() {
@@ -91,7 +192,7 @@ class _ServerListPaneState extends State<ServerListPane> {
     );
     final first = rows.whereType<ServerRow>().firstOrNull;
     if (first == null) return;
-    _searchFocus.unfocus();
+    _filterFocus.unfocus();
     widget.onOpen(first.server);
   }
 
@@ -99,137 +200,156 @@ class _ServerListPaneState extends State<ServerListPane> {
   ///
   /// One definition, because "the first row" has to mean the same thing to
   /// [_openFirstMatch] as to the eye reading [_serverList] — and pinning is
-  /// exactly what makes those two orders differ from the store's. Stated
-  /// twice, they were held in step by a comment.
-  List<ServerGroupSection> _sections(
-    AppState state,
-    List<ServerConfig> servers,
-  ) => groupServers(servers, pinnedIds: state.pinnedServerIds);
+  /// exactly what makes those two orders differ from the store's.
+  ServerSidebarSections _sections(AppState state, List<ServerConfig> servers) =>
+      groupServers(servers, pinnedIds: state.pinnedServerIds);
+
+  bool get _home => widget.posture == ServerListPosture.home;
+
+  /// The phone home draws as an Android list — 56 dp rows, 40 dp discs,
+  /// the address as a second line — the same list Poltergeist's compact
+  /// Home uses (sibling contract §10.6). The compact density keeps the
+  /// denser one-line touch rows, and the desktop rail and a narrow
+  /// desktop window stay rail-drawn.
+  SidebarKitLayout _layoutFor(BuildContext context, AppState state) {
+    final touch = switch (Theme.of(context).platform) {
+      TargetPlatform.android ||
+      TargetPlatform.iOS ||
+      TargetPlatform.fuchsia => true,
+      TargetPlatform.linux ||
+      TargetPlatform.macOS ||
+      TargetPlatform.windows => false,
+    };
+    return _home &&
+            touch &&
+            state.serverListDensity == ServerListDensity.comfortable
+        ? SidebarKitLayout.list
+        : SidebarKitLayout.rail;
+  }
 
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
+    final chrome = SeanceChrome.of(context);
+    final background = _home
+        ? Theme.of(context).colorScheme.surface
+        : chrome.sidebarBackground;
+    final body = ListenableBuilder(
+      listenable: state,
+      builder: (context, _) => SidebarKitScope(
+        strings: serverSidebarStrings,
+        background: background,
+        layout: _layoutFor(context, state),
+        child: Builder(builder: (context) => _body(context, state)),
+      ),
+    );
+    // A Material rather than a bare fill: the filter field and the kit's
+    // buttons ink on it, and the rail must not depend on a Scaffold above.
+    if (!_home) return Material(color: background, child: body);
     return Scaffold(
+      backgroundColor: background,
       appBar: AppBar(
         title: const Text('Séance'),
         actions: [
           ListenableBuilder(
             listenable: state,
-            builder: (context, _) => _SyncIndicator(
-              state: state,
-              onTap: () => _openSettings(context, SettingsTab.sync),
-            ),
+            builder: (context, _) =>
+                _SyncIndicator(state: state, onRetry: () => _syncNow(state)),
           ),
           ListenableBuilder(
             listenable: state,
             builder: (context, _) => _DensitySwitch(state: state),
           ),
           IconButton(
-            tooltip: 'Import ~/.ssh/config',
+            tooltip: 'Import SSH config',
             icon: const Icon(Icons.download_outlined),
             onPressed: () => _importConfig(context, state),
           ),
           IconButton(
-            tooltip: 'Sync & settings',
+            tooltip: serverSidebarStrings.settings,
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => _openSettings(context),
           ),
         ],
       ),
-      body: ListenableBuilder(
-        listenable: state,
-        builder: (context, _) {
-          if (state.servers.isEmpty) _dropStaleQuery();
-          final matches = filterServers(state.servers, _query);
-          // Keep the field once a query is active even if the match count
-          // drops below the threshold, or filtering would strand an
-          // uneditable filter with no way to clear it.
-          // Never above the onboarding empty state: a filter box beside
-          // "No servers yet" reads as "your servers are hidden" rather than
-          // "you have none".
-          final showFilter =
-              state.servers.isNotEmpty &&
-              (state.servers.length >= ServerListPane.filterThreshold ||
-                  _query.isNotEmpty);
-          final Widget list;
-          if (state.servers.isEmpty) {
-            list = const _EmptyState();
-          } else if (matches.isEmpty) {
-            list = _NoMatches(onClear: _clearQuery);
-          } else {
-            list = _serverList(context, state, matches);
-          }
-          final update = state.updateInfo;
-          return Column(
-            children: [
-              // A newer release exists: a dismissible banner above the list.
-              if (update != null)
-                _UpdateBanner(
-                  info: update,
-                  onDismiss: state.dismissUpdateNotice,
-                ),
-              if (showFilter) _filterField(matches, state.servers.length),
-              Expanded(child: list),
-            ],
-          );
-        },
-      ),
-      floatingActionButton: FloatingActionButton.extended(
+      body: body,
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'New server',
         onPressed: () => _editServer(context, state, null),
-        icon: const Icon(Icons.add),
-        label: const Text('Add server'),
+        child: const Icon(Icons.add),
       ),
     );
   }
 
-  Widget _filterField(List<ServerConfig> matches, int totalServers) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: Shortcuts(
-        // Escape clears rather than propagating; there is nothing else in this
-        // pane for it to dismiss.
-        shortcuts: const {
-          SingleActivator(LogicalKeyboardKey.escape): DismissIntent(),
-        },
-        child: Actions(
-          actions: {
-            DismissIntent: CallbackAction<DismissIntent>(
-              onInvoke: (_) {
-                _clearQuery();
-                return null;
-              },
-            ),
-          },
-          child: TextField(
-            controller: _search,
-            focusNode: _searchFocus,
+  Widget _body(BuildContext context, AppState state) {
+    final servers = state.servers;
+    if (servers.isEmpty) _dropStaleQuery();
+    final matches = filterServers(servers, _query);
+    // Kept once a query is active even if the match count drops below the
+    // threshold, or filtering would strand an uneditable filter with no way
+    // to clear it. Never above the onboarding empty state: a filter box
+    // beside "No servers yet" reads as "your servers are hidden" rather than
+    // "you have none".
+    final showFilter =
+        servers.isNotEmpty &&
+        (servers.length >= ServerListPane.filterThreshold ||
+            _query.isNotEmpty ||
+            _filterOpen);
+    final Widget list;
+    if (servers.isEmpty) {
+      list = _EmptyState(
+        onNewServer: () => _editServer(context, state, null),
+        onImport: () => _importConfig(context, state),
+      );
+    } else if (matches.isEmpty) {
+      list = _NoMatches(onClear: _clearQuery);
+    } else {
+      list = _serverList(context, state, matches);
+    }
+    final update = state.updateInfo;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // A newer release exists: a dismissible banner above the list.
+        if (update != null)
+          _UpdateBanner(info: update, onDismiss: state.dismissUpdateNotice),
+        if (showFilter)
+          SidebarFilterField(
+            key: const ValueKey('servers.filter'),
+            fieldKey: const ValueKey('servers.filter.field'),
+            query: _query,
+            focusNode: _filterFocus,
             onChanged: _setQuery,
-            // _openFirstMatch is a no-op on an empty query, so Enter in an
-            // empty field cannot connect to whichever server is first.
-            onSubmitted: (_) => _openFirstMatch(),
-            textInputAction: TextInputAction.go,
-            decoration: InputDecoration(
-              isDense: true,
-              prefixIcon: const Icon(Icons.search, size: 18),
-              hintText: 'Filter servers…',
-              helperText: _query.isEmpty
-                  ? null
-                  // Enter is a no-op with nothing to open, so don't offer it.
-                  : matches.isEmpty
-                  ? '0 of $totalServers'
-                  : '${matches.length} of $totalServers · ↵ opens the first',
-              border: const OutlineInputBorder(),
-              suffixIcon: _query.isEmpty
-                  ? null
-                  : IconButton(
-                      tooltip: 'Clear filter',
-                      icon: const Icon(Icons.clear, size: 18),
-                      onPressed: _clearQuery,
-                    ),
-            ),
+            onDismiss: _dismissFilter,
+            // A no-op on an empty query, so Enter in an empty field cannot
+            // connect to whichever server is first.
+            onSubmitted: _openFirstMatch,
+            countText: _query.isEmpty
+                ? null
+                : '${matches.length} of ${servers.length}',
           ),
-        ),
-      ),
+        Expanded(child: list),
+        if (!_home)
+          SidebarBottomBar(
+            key: const ValueKey('servers.bottomBar'),
+            addKey: const ValueKey('servers.add'),
+            settingsKey: const ValueKey('servers.settings'),
+            addEntries: () => [
+              SidebarMenuAction(
+                key: const ValueKey('servers.add.newServer'),
+                label: 'New server…',
+                onSelected: () => _editServer(context, state, null),
+              ),
+              SidebarMenuAction(
+                key: const ValueKey('servers.add.import'),
+                label: 'Import SSH config…',
+                onSelected: () => _importConfig(context, state),
+              ),
+            ],
+            sync: _syncChip(state),
+            onSettings: () => _openSettings(context),
+          ),
+      ],
     );
   }
 
@@ -246,76 +366,205 @@ class _ServerListPaneState extends State<ServerListPane> {
       // being broken rather than as the list being tidy.
       collapsedKeys: _query.isEmpty ? state.collapsedServerGroups : const {},
     );
-    // A null padding lets the ListView consume the ambient main-axis insets
-    // (gesture-nav bar on Android) and leave the cross axis to the children.
-    // Rebuild exactly that base, extended by the clearance for the floating
-    // Add-server button, so an explicit EdgeInsets neither drops the bottom
-    // inset nor adds side insets the default never had.
+    // The home screen lets the ListView take the ambient insets (the
+    // gesture-nav bar on Android) and extends the bottom one by the floating
+    // button's clearance; an explicit EdgeInsets must neither drop the
+    // bottom inset nor add side insets the default never had.
     final safeAreaInsets = MediaQuery.paddingOf(context);
-    return ListView.separated(
-      itemCount: rows.length,
-      padding: safeAreaInsets.copyWith(
-        left: 0,
-        right: 0,
-        bottom: safeAreaInsets.bottom + _fabScrollClearance,
-      ),
-      // Rules belong between servers, not under a section header — the
-      // header's own fill already separates it from what follows.
-      separatorBuilder: (_, i) =>
-          rows[i] is ServerRow && rows[i + 1] is ServerRow
-          ? const Divider(height: 1)
-          : const SizedBox.shrink(),
-      itemBuilder: (context, i) => switch (rows[i]) {
-        ServerGroupHeaderRow(
-          :final name,
-          :final key,
-          :final count,
-          :final collapsed,
-        ) =>
-          ServerGroupHeader(
-            name: name,
-            count: count,
-            collapsed: collapsed,
-            onToggle: () => state.toggleServerGroup(key),
-          ),
-        ServerRow(:final server) => _tile(context, state, server),
-      },
+    final padding = _home
+        ? safeAreaInsets.copyWith(
+            left: 0,
+            right: 0,
+            top: safeAreaInsets.top + 4,
+            bottom: safeAreaInsets.bottom + _fabScrollClearance,
+          )
+        : const EdgeInsets.only(top: 4, bottom: 8);
+    // Built eagerly, not lazily: the rows move focus with ↑/↓ through the
+    // focus tree, and a row a lazy list has not built is not in it.
+    return ListView(
+      // Restores the scroll offset when the home list comes back from a
+      // terminal (see [_queryStorageId]).
+      key: PageStorageKey<String>('servers.list.${widget.posture.name}'),
+      padding: padding,
+      children: [
+        for (final row in rows)
+          switch (row) {
+            ServerSectionRow(
+              :final title,
+              :final key,
+              :final count,
+              :final collapsed,
+            ) =>
+              SidebarSectionHeader(
+                key: ValueKey('servers.section.$key'),
+                headerKey: ValueKey('servers.section.header.$key'),
+                title: title,
+                count: count,
+                collapsed: collapsed,
+                onToggle: () => state.toggleServerGroup(key),
+                // SERVERS' "+" adds to it; the shortlist is filled from a
+                // row's menu, so PINNED has none. The home screen's floating
+                // "+" already does this, so a second one is left off there.
+                onAdd: key == kServersKey && !_home
+                    ? () => _editServer(context, state, null)
+                    : null,
+                addKey: const ValueKey('servers.section.add'),
+                addTooltip: 'New server',
+              ),
+            ServerGroupHeaderRow(
+              :final name,
+              :final key,
+              :final count,
+              :final collapsed,
+            ) =>
+              SidebarSectionHeader(
+                key: ValueKey('servers.group.$key'),
+                headerKey: ValueKey('servers.group.header.$key'),
+                nested: true,
+                title: name,
+                count: count,
+                collapsed: collapsed,
+                onToggle: () => state.toggleServerGroup(key),
+              ),
+            ServerRow(:final server, :final depth) => _tile(
+              context,
+              state,
+              server,
+              depth,
+            ),
+          },
+      ],
     );
   }
 
-  Widget _tile(BuildContext context, AppState state, ServerConfig server) {
-    final reachability = state.statuses[server.id] ?? ProbeStatus.unknown;
+  Widget _tile(
+    BuildContext context,
+    AppState state,
+    ServerConfig server,
+    int depth,
+  ) {
     final tabs = state.tabsForServer(server.id);
     final terminals = tabs.whereType<TerminalSession>().toList();
+    final session = aggregateSessionStatus(terminals);
+    final live = terminals.where((t) => t.status == TerminalStatus.connected);
+    final dead =
+        terminals.length == 1 &&
+        (session == TerminalStatus.disconnected ||
+            session == TerminalStatus.error);
     return ServerTile(
-      density: state.serverListDensity,
-      pinned: state.isServerPinned(server.id),
-      onTogglePin: () => state.toggleServerPin(server.id),
-      // Stable identity so a background sync replacing the list
-      // reconciles each tile to its server instead of by position.
+      // Stable identity so a background sync replacing the list reconciles
+      // each row to its server instead of by position.
       key: ValueKey(server.id),
       server: server,
-      connection: _aggregateStatus(terminals),
+      dot: serverDotFor(
+        session: session,
+        probe: state.statuses[server.id] ?? ProbeStatus.unknown,
+      ),
       tabCount: tabs.length,
-      reachability: reachability,
       selected: server.id == state.activeServerId,
-      onTap: () => widget.onOpen(server),
+      pinned: state.isServerPinned(server.id),
+      depth: depth,
+      showAddress:
+          _home && state.serverListDensity == ServerListDensity.comfortable,
+      showMenuButton: _home,
+      onOpen: () => widget.onOpen(server),
       onNewTab: () => state.newTab(server),
       onEdit: () => _editServer(context, state, server),
       onDuplicate: () => _duplicateServer(context, state, server),
       onDelete: () => _deleteServer(context, state, server),
+      onTogglePin: () => state.toggleServerPin(server.id),
       // Disconnect every live terminal; reconnect the lone dead one.
-      onDisconnect: () {
-        for (final t in terminals) {
-          if (t.status == TerminalStatus.connected) {
-            state.disconnect(t.id);
-          }
-        }
-      },
-      onReconnect: terminals.length == 1
-          ? () => state.reconnect(terminals.first.id)
-          : null,
+      onDisconnect: live.isEmpty
+          ? null
+          : () {
+              for (final t in live.toList()) {
+                state.disconnect(t.id);
+              }
+            },
+      onReconnect: dead ? () => state.reconnect(terminals.single.id) : null,
     );
+  }
+
+  /// One sync round now: the chip's retry. The outcome lands in the shared
+  /// sync status the chip repaints from, so nothing is lost by not awaiting
+  /// the error here.
+  void _syncNow(AppState state) {
+    unawaited(
+      state.syncNow().then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stackTrace) {
+          developer.log(
+            'Sync from the server list failed',
+            name: 'seance.app',
+            level: 800,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        },
+      ),
+    );
+  }
+
+  /// The bottom bar's sync status (10 §5): "Synced · 2 min", a spinner, or
+  /// a red "Sync failed" whose click retries; "Sync off" leads to setting it
+  /// up.
+  SidebarSyncChipData _syncChip(AppState state) {
+    const key = ValueKey('servers.syncChip');
+    final ageShown =
+        state.services.isSyncConfigured &&
+        !state.syncing &&
+        state.lastSyncError == null &&
+        state.lastSyncAt != null;
+    _tickSyncAge(ageShown);
+    if (!state.services.isSyncConfigured) {
+      return SidebarSyncChipData(
+        key: key,
+        label: 'Sync off',
+        tone: SidebarSyncTone.muted,
+        tooltip: 'Set up sync',
+        onPressed: () => openSettings(SettingsTab.sync),
+      );
+    }
+    if (state.syncing) {
+      return const SidebarSyncChipData(
+        key: key,
+        label: 'Syncing…',
+        tone: SidebarSyncTone.busy,
+      );
+    }
+    final error = state.lastSyncError;
+    if (error != null) {
+      return SidebarSyncChipData(
+        key: key,
+        label: 'Sync failed',
+        tone: SidebarSyncTone.error,
+        tooltip: '$error\nClick to retry',
+        onPressed: () => _syncNow(state),
+      );
+    }
+    final last = state.lastSyncAt;
+    return SidebarSyncChipData(
+      key: key,
+      label: last == null
+          ? 'Not synced yet'
+          : 'Synced · ${syncAgeLabel(DateTime.now().difference(last))}',
+      tone: SidebarSyncTone.normal,
+      tooltip: 'Sync now',
+      onPressed: () => _syncNow(state),
+    );
+  }
+
+  /// "2 min" goes stale between rounds; a slow ticker repaints it while it
+  /// shows, and stops when it does not.
+  void _tickSyncAge(bool shown) {
+    if (!shown) {
+      _syncAgeTicker?.cancel();
+      _syncAgeTicker = null;
+      return;
+    }
+    _syncAgeTicker ??= Timer.periodic(_syncAgeRefresh, (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   static void _openSettings(
@@ -476,13 +725,23 @@ class _ServerListPaneState extends State<ServerListPane> {
   }
 }
 
-/// A compact header affordance that shows background-sync activity: a spinner
-/// while a round runs, an error badge if the last one failed. Hidden when idle
-/// and healthy (the gear icon already leads to sync). Tapping opens settings.
+/// How long ago a sync round finished, as the chip says it: "just now",
+/// "2 min", "3 h", "2 d".
+String syncAgeLabel(Duration age) {
+  if (age.inMinutes < 1) return 'just now';
+  if (age.inHours < 1) return '${age.inMinutes} min';
+  if (age.inDays < 1) return '${age.inHours} h';
+  return '${age.inDays} d';
+}
+
+/// The home screen's app-bar sync affordance: a spinner while a round runs,
+/// an error badge if the last one failed (tapping retries, as the rail's
+/// chip does). Hidden when idle and healthy: the gear beside it leads to
+/// sync.
 class _SyncIndicator extends StatelessWidget {
   final AppState state;
-  final VoidCallback onTap;
-  const _SyncIndicator({required this.state, required this.onTap});
+  final VoidCallback onRetry;
+  const _SyncIndicator({required this.state, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -500,21 +759,22 @@ class _SyncIndicator extends StatelessWidget {
     }
     if (state.lastSyncError != null) {
       return IconButton(
-        tooltip: 'Last sync failed — open settings',
+        tooltip: 'Sync failed — tap to retry',
         icon: Icon(
-          Icons.cloud_off_outlined,
+          Icons.sync_problem,
           color: Theme.of(context).colorScheme.error,
         ),
-        onPressed: onTap,
+        onPressed: onRetry,
       );
     }
     return const SizedBox.shrink();
   }
 }
 
-/// A dismissible banner shown above the server list when a newer release
-/// exists on GitHub. It only offers a link to the releases page — Séance never
-/// downloads or installs an update; the user decides.
+/// A dismissible banner above the server list when a newer release exists on
+/// GitHub. It only offers a link to the releases page — Séance never
+/// downloads or installs an update; the user decides. Compact, because the
+/// rail it sits in can be 200 px wide.
 class _UpdateBanner extends StatelessWidget {
   final UpdateInfo info;
   final VoidCallback onDismiss;
@@ -522,283 +782,60 @@ class _UpdateBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.secondaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
-        child: Row(
-          children: [
-            Icon(
-              Icons.system_update_outlined,
-              size: 20,
-              color: scheme.onSecondaryContainer,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Séance ${info.latestVersion} is available.',
-                style: TextStyle(color: scheme.onSecondaryContainer),
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final ink = scheme.onSecondaryContainer;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
+      child: Material(
+        color: scheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(10, 4, 2, 4),
+          child: Row(
+            children: [
+              Icon(Icons.system_update_outlined, size: 16, color: ink),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Séance ${info.latestVersion} is available.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: ink),
+                ),
               ),
-            ),
-            TextButton(
-              onPressed: () => launchUrl(
-                info.releasesUrl,
-                mode: LaunchMode.externalApplication,
+              TextButton(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                onPressed: () => launchUrl(
+                  info.releasesUrl,
+                  mode: LaunchMode.externalApplication,
+                ),
+                child: const Text('View release'),
               ),
-              child: const Text('View release'),
-            ),
-            IconButton(
-              tooltip: 'Dismiss',
-              iconSize: 18,
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.close),
-              onPressed: onDismiss,
-            ),
-          ],
+              IconButton(
+                tooltip: 'Dismiss',
+                iconSize: 16,
+                visualDensity: VisualDensity.compact,
+                icon: Icon(Icons.close, color: ink),
+                onPressed: onDismiss,
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// Aggregate a server's tab statuses into the single state shown on its row:
-/// any connecting wins, else any connected, else any error, else
-/// disconnected/none. Only `connected` draws the badge's ring; the rest drive
-/// the row's menu entries (disconnect, reconnect).
-TerminalStatus _aggregateStatus(List<TerminalSession> tabs) {
-  if (tabs.any((t) => t.status == TerminalStatus.connecting)) {
-    return TerminalStatus.connecting;
-  }
-  if (tabs.any((t) => t.status == TerminalStatus.connected)) {
-    return TerminalStatus.connected;
-  }
-  if (tabs.any((t) => t.status == TerminalStatus.error)) {
-    return TerminalStatus.error;
-  }
-  return TerminalStatus.disconnected;
-}
-
-/// One server's row in the list.
+/// The home screen's view control: whether a row spells its address out on a
+/// second line.
 ///
-/// Public, like [ServerGroupHeader] and unlike the rest of this pane's parts,
-/// so a widget test can assert what the row says without standing up an
-/// [AppState]: the sync-exclusion mark is an icon, and what a screen reader
-/// makes of an icon is not something to assume.
-class ServerTile extends StatelessWidget {
-  final ServerConfig server;
-  final TerminalStatus connection;
-
-  /// Number of open sessions (tabs) for this server; a small "×N" appears
-  /// beside the dot when >1.
-  final int tabCount;
-  final ProbeStatus reachability;
-  final bool selected;
-  final VoidCallback onTap;
-  final VoidCallback onNewTab;
-  final VoidCallback onEdit;
-  final VoidCallback onDuplicate;
-  final VoidCallback onDelete;
-  final VoidCallback onDisconnect;
-
-  /// Only offered when the server has exactly one (dead) tab; per-tab
-  /// reconnect otherwise lives in the pane.
-  final VoidCallback? onReconnect;
-
-  /// Whether this server sits in the pinned section at the top of the list.
-  /// Only the menu reads it: the section's own header is what says *which*
-  /// rows are pinned, so a badge on every row would say it twice.
-  final bool pinned;
-  final VoidCallback onTogglePin;
-
-  final ServerListDensity density;
-
-  const ServerTile({
-    super.key,
-    required this.server,
-    required this.connection,
-    required this.tabCount,
-    required this.reachability,
-    required this.selected,
-    required this.onTap,
-    required this.onNewTab,
-    required this.onEdit,
-    required this.onDuplicate,
-    required this.onDelete,
-    required this.onDisconnect,
-    required this.onReconnect,
-    required this.pinned,
-    required this.onTogglePin,
-    this.density = ServerListDensity.comfortable,
-  });
-
-  /// The badge on a compact row, shrunk to what a one-line row can hold
-  /// without setting the row's height itself.
-  static const double _compactAvatarSize = 22;
-
-  /// The bar down the selected row's leading edge.
-  static const double _selectionBarWidth = 3;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final connected = connection == TerminalStatus.connected;
-    final hasSession = tabCount > 0;
-    final compact = density == ServerListDensity.compact;
-    final avatarSize = compact ? _compactAvatarSize : ServerBadge.defaultSize;
-    final address = '${server.username}@${server.host}:${server.port}';
-    final tile = ListTile(
-      selected: selected,
-      // Selection is said three ways, because a tinted title — which is all
-      // ListTile does on its own — is the one the eye is worst at picking out
-      // of a list of tinted badges: a filled row, a bar down its leading edge
-      // in the app's own colour, and a heavier title. The fill is the
-      // standard "selected" surface rather than the server's accent, so it
-      // means the same thing on every row and shows on a neutral one.
-      selectedTileColor: scheme.secondaryContainer,
-      selectedColor: scheme.onSecondaryContainer,
-      titleTextStyle: selected
-          ? theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600)
-          : null,
-      // `dense` shrinks the type; `visualDensity` shrinks the padding around
-      // it. Both, plus dropping the second line, is what halves the row —
-      // either alone leaves a row that is barely tighter than the default.
-      dense: compact,
-      visualDensity: compact ? VisualDensity.compact : null,
-      contentPadding: compact
-          ? const EdgeInsets.symmetric(horizontal: 12)
-          : null,
-      // ListTile reserves 40 for the leading slot by default, which a 22px
-      // badge would rattle around in.
-      minLeadingWidth: compact ? _compactAvatarSize : null,
-      horizontalTitleGap: compact ? 8 : null,
-      leading: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // The server's colour, as a line down the leading edge of the row
-          // rather than a tint on the mark beside it: one treatment whether
-          // the mark is a glyph, an emoji, or a logo that would cover a fill.
-          // It sits inside the tile's content padding, so the selected row's
-          // own bar — the app's colour, hard against the pane edge — stays a
-          // separate mark from this one.
-          ServerAccentBar(
-            tint: ServerTint.of(server),
-            height: ServerAvatar.extentFor(avatarSize),
-          ),
-          SizedBox(width: compact ? 6 : 8),
-          ServerAvatar(
-            server: server,
-            connection: connection,
-            hasSession: hasSession,
-            size: avatarSize,
-          ),
-          if (tabCount > 1)
-            Padding(
-              padding: const EdgeInsets.only(left: 4),
-              child: Text(
-                '×$tabCount',
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-            ),
-        ],
-      ),
-      title: compact
-          // The address has nowhere to go on a one-line row, so it becomes a
-          // tooltip for a pointer and part of the row's spoken label for a
-          // screen reader — which would otherwise simply lose it. The tooltip
-          // stays out of semantics for the reason [_ExcludedFromSyncMark]
-          // spells out: a merged row keeps one tooltip and drops the rest.
-          ? Tooltip(
-              message: address,
-              excludeFromSemantics: true,
-              child: Semantics(
-                label: '${server.label}, $address',
-                excludeSemantics: true,
-                child: MiddleEllipsisText(server.label),
-              ),
-            )
-          : MiddleEllipsisText(server.label),
-      subtitle: compact
-          ? null
-          : Text(address, maxLines: 1, overflow: TextOverflow.ellipsis),
-      onTap: onTap,
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (server.excludeFromSync) const _ExcludedFromSyncMark(),
-          _ReachabilityDot(status: reachability),
-          PopupMenuButton<String>(
-            onSelected: (v) {
-              switch (v) {
-                case 'newTab':
-                  onNewTab();
-                case 'pin':
-                  onTogglePin();
-                case 'edit':
-                  onEdit();
-                case 'duplicate':
-                  onDuplicate();
-                case 'delete':
-                  onDelete();
-                case 'disconnect':
-                  onDisconnect();
-                case 'reconnect':
-                  onReconnect?.call();
-              }
-            },
-            itemBuilder: (_) => [
-              const PopupMenuItem(value: 'newTab', child: Text('New tab')),
-              if (connected)
-                PopupMenuItem(
-                  value: 'disconnect',
-                  child: Text(tabCount > 1 ? 'Disconnect all' : 'Disconnect'),
-                ),
-              if (hasSession && !connected && onReconnect != null)
-                const PopupMenuItem(
-                  value: 'reconnect',
-                  child: Text('Reconnect'),
-                ),
-              PopupMenuItem(
-                value: 'pin',
-                child: Text(pinned ? 'Unpin' : 'Pin to top'),
-              ),
-              const PopupMenuItem(value: 'edit', child: Text('Edit')),
-              const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
-              const PopupMenuItem(value: 'delete', child: Text('Delete')),
-            ],
-          ),
-        ],
-      ),
-    );
-    // The selection bar is painted over the tile rather than through the
-    // tile's shape: a border there is part of the decoration, and the tile
-    // insets its content by the border's width — which is exactly what the
-    // bar must not do, since the row has to keep the alignment of every
-    // unselected row.
-    return selected
-        ? DecoratedBox(
-            position: DecorationPosition.foreground,
-            decoration: BoxDecoration(
-              border: BorderDirectional(
-                start: BorderSide(
-                  color: scheme.primary,
-                  width: _selectionBarWidth,
-                ),
-              ),
-            ),
-            child: tile,
-          )
-        : tile;
-  }
-}
-
-/// The app bar's view control: how tightly the list packs its rows.
-///
-/// A segmented button rather than the menu it used to be: both choices are
-/// in view, the current one is the filled segment, and switching is one tap
-/// rather than a tap and a pick. A third density would be a third segment,
-/// which is why the segments are built from the enum rather than written out.
+/// A segmented button rather than a menu: both choices are in view, the
+/// current one is the filled segment, and switching is one tap. A third
+/// density would be a third segment, which is why the segments are built
+/// from the enum rather than written out. The rail has no such control: its
+/// rows are one line by the sibling anatomy, with the address in the tooltip.
 class _DensitySwitch extends StatelessWidget {
   final AppState state;
   const _DensitySwitch({required this.state});
@@ -842,150 +879,6 @@ class _DensitySwitch extends StatelessWidget {
   }
 }
 
-/// The mark on a row whose server never leaves this device.
-///
-/// Shown whether or not sync is set up: the flag is the user's standing answer
-/// for this server, and hiding it until an account exists would make it look
-/// like it had been forgotten.
-///
-/// The description is carried as a [Semantics] *label* and the [Tooltip] is
-/// kept out of the semantics tree, which is not the obvious way round. A
-/// [ListTile] merges everything under it into one node, and a merge keeps only
-/// one tooltip while concatenating every label — so a tooltip here would be
-/// dropped in favour of some other one on the row (the row already has
-/// several), and a screen reader would be told nothing at all. The tooltip
-/// still does its own job for a pointer.
-class _ExcludedFromSyncMark extends StatelessWidget {
-  const _ExcludedFromSyncMark();
-
-  static const String description = 'Excluded from sync — this device only';
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: description,
-      child: Tooltip(
-        message: description,
-        excludeFromSemantics: true,
-        child: Padding(
-          padding: const EdgeInsets.only(right: 4),
-          child: Icon(
-            Icons.cloud_off_outlined,
-            size: 16,
-            color: Theme.of(context).hintColor,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// A collapsible section header over one group of servers.
-///
-/// Only ever built when at least one server carries a group: a list with none
-/// renders exactly as it always did, with no headers to look past.
-///
-/// Public, unlike the tile beside it, so its semantics can be asserted in a
-/// widget test — it is the app's only collapsible surface, and what a screen
-/// reader makes of a chevron and a bare number is not something to assume.
-class ServerGroupHeader extends StatelessWidget {
-  final String name;
-  final int count;
-  final bool collapsed;
-  final VoidCallback onToggle;
-
-  const ServerGroupHeader({
-    super.key,
-    required this.name,
-    required this.count,
-    required this.collapsed,
-    required this.onToggle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Material(
-      color: scheme.surfaceContainerHigh,
-      // The chevron is the only thing that says which way this row goes, and
-      // it is pure decoration to a screen reader — so the state is declared.
-      // Merged into one node so the row is announced as a single control
-      // ("Production, 3 servers, expanded") rather than as a name, a stray
-      // number, and a button that appear unrelated. The annotation sits
-      // *inside* the merge boundary on purpose: outside it, the fold state
-      // lands on a node above the one carrying the label and the tap, and is
-      // announced as a property of something the label doesn't name.
-      child: MergeSemantics(
-        child: Semantics(
-          expanded: !collapsed,
-          child: InkWell(
-            onTap: onToggle,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 6, 12, 6),
-              child: Row(
-                children: [
-                  Icon(
-                    collapsed ? Icons.chevron_right : Icons.expand_more,
-                    size: 20,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                  // A collapsed group still says how much it is hiding, so
-                  // folding one away never looks like losing servers. Spelled
-                  // out for a screen reader, where a bare "3" between a name
-                  // and a button says nothing about what there are three of.
-                  Text(
-                    '$count',
-                    semanticsLabel:
-                        '$count ${count == 1 ? 'server' : 'servers'}',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// A subtle secondary dot: whether the host is reachable on the network (the
-/// background probe), independent of whether we have a session open.
-class _ReachabilityDot extends StatelessWidget {
-  final ProbeStatus status;
-  const _ReachabilityDot({required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    final (color, label) = switch (status) {
-      ProbeStatus.online => (StatusColors.online(context), 'reachable'),
-      ProbeStatus.offline => (StatusColors.offline(context), 'unreachable'),
-      ProbeStatus.unknown => (
-        StatusColors.unknown(context),
-        'reachability unknown',
-      ),
-    };
-    return Tooltip(
-      message: 'Host $label',
-      child: Icon(Icons.circle_outlined, size: 10, color: color),
-    );
-  }
-}
-
 /// Shown when a filter excludes every server — distinct from having no
 /// servers at all, which needs the onboarding empty state instead.
 class _NoMatches extends StatelessWidget {
@@ -994,19 +887,20 @@ class _NoMatches extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final chrome = SeanceChrome.of(context);
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(32),
+        padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.search_off, size: 40),
-            const SizedBox(height: 12),
+            Icon(Icons.search_off, size: 32, color: chrome.secondaryText),
+            const SizedBox(height: 8),
             Text(
               'No servers match',
-              style: Theme.of(context).textTheme.titleMedium,
+              style: Theme.of(context).textTheme.titleSmall,
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             TextButton(onPressed: onClear, child: const Text('Clear filter')),
           ],
         ),
@@ -1015,34 +909,50 @@ class _NoMatches extends StatelessWidget {
   }
 }
 
+/// The onboarding state: no servers yet. Every way in is a visible button,
+/// because the rail's "+" and gear are small, and a fresh install —
+/// especially on a phone — needs an obvious path to the sync-server setup.
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  final VoidCallback onNewServer;
+  final VoidCallback onImport;
+  const _EmptyState({required this.onNewServer, required this.onImport});
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final chrome = SeanceChrome.of(context);
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.dns_outlined, size: 48),
+            Icon(Icons.dns_outlined, size: 40, color: chrome.secondaryText),
             const SizedBox(height: 12),
-            Text(
-              'No servers yet',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text('No servers yet', style: theme.textTheme.titleMedium),
             const SizedBox(height: 4),
-            const Text(
-              'Add one, or import your ~/.ssh/config.',
+            Text(
+              'Add one, import your ~/.ssh/config, or sign in to sync.',
               textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: chrome.secondaryText,
+              ),
             ),
             const SizedBox(height: 16),
-            // The tooltip-only gear above is invisible on touch; a fresh
-            // install (especially on a phone) needs a visible path to the
-            // sync-server setup.
-            OutlinedButton.icon(
+            FilledButton.tonalIcon(
+              onPressed: onNewServer,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('New server'),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: onImport,
+              icon: const Icon(Icons.download_outlined, size: 18),
+              label: const Text('Import SSH config'),
+            ),
+            TextButton.icon(
               onPressed: () => openSettings(),
-              icon: const Icon(Icons.settings_outlined),
+              icon: const Icon(Icons.settings_outlined, size: 18),
               label: const Text('Sync & settings'),
             ),
           ],

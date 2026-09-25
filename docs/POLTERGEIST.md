@@ -184,6 +184,70 @@ colors, staged responsive collapse, keyboard/command-registry patterns, and
 any bug fix made in a ported file. The `PORTS.md` ledger on the Poltergeist
 side is the tracking mechanism; nothing in that flow blocks Séance work.
 
+## The sidebar kit
+
+The flow also runs the other way. Poltergeist's D32 sidebar (its plan,
+[10 §5 and §10](https://github.com/L-K-M/Poltergeist/blob/main/docs/plan/10-WORKSPACE-REDESIGN.md))
+is built on a portable kit, and Séance's server list now draws with a copy
+of it:
+
+- **Source:** Poltergeist
+  `app/poltergeist_app/lib/ui/sidebar/sidebar_kit.dart` @ `58605fa`, with
+  its test `test/ui/sidebar/sidebar_kit_test.dart`.
+- **Copy:** `app/seance_app/lib/ui/sidebar/sidebar_kit.dart` and
+  `app/seance_app/test/ui/sidebar/sidebar_kit_test.dart`, at the same
+  relative paths so the two files diff cleanly. The kit's one seam,
+  `_chrome()`, returns `SeanceChrome` (the same token names as
+  `PoltergeistChrome`); `middle_ellipsis_text.dart` was already shared.
+
+Séance-side changes, each worth porting back (all in the kit file, with
+tests in the kit test):
+
+1. **Keyboard reach into a row menu (bug).** Shift+F10 or the Menu key
+   opened the menu but left focus on the row: the row's own key handler
+   saw the arrows (walking the rows behind the menu) and Enter (activating
+   the row), because the menu's overlay sits under the row's `Focus` in
+   the focus tree. The row handler now ignores keys unless the row itself
+   has primary focus; `MenuAnchor` gets `childFocusNode: focusNode`; a
+   keyboard-opened menu focuses its first enabled verb
+   (`sidebarMenuWidgets(entries, firstFocus:)`); Esc closes, and an arrow
+   steps into, a right-clicked menu; a secondary tap moves focus to the
+   row like a primary one.
+2. **Touch verb sheet (bug).** `showSidebarMenuSheet` was capped at 9/16
+   of the screen, so seven verbs scrolled with Delete out of sight. It now
+   passes `isScrollControlled: true` and `useSafeArea: true`.
+3. **Focus ring shift (bug).** The ring was a border in the row's and
+   header's `decoration`, which insets the child by 2 px while focused.
+   It is a `foregroundDecoration` now (`_focusRing`).
+4. **Touch posture.** Without hover the section chevron and "+" never
+   appeared; they stay drawn on touch. Headers (36 + 4 on touch, nested
+   rows at the row extent), the filter (40), icon buttons (40) and the
+   bottom bar (48) take touch extents, and the mark and dot grow to 24 and
+   9 (`sidebarMarkExtent(context)` for hosts sizing their marks).
+5. **Hollow dot.** `SidebarDotStyle { solid, ring }` and
+   `SidebarRow.statusStyle`: the sibling dot contract's "probe-reachable,
+   not connected" is a hollow green ring. Séance also draws the probe's
+   "unreachable" as a hollow red ring.
+6. **The row surface.** `SidebarKitScope.background`: the dot's cut-out
+   ring took `sidebarBackground` even on another surface (a phone's home
+   list on the page surface), which drew a halo.
+7. **Row options.** `subtitle` (a second line for touch lists, which
+   have no hover tooltip), `trailingIcon` (a standing mark, Séance's
+   excluded-from-sync cloud), and `showMenuButton` (a visible "⋮" opening
+   the menu at the button on desktop, the sheet on touch).
+   `SidebarKitStrings` gains a required `rowMenu` tooltip for it.
+
+Séance's theme also gives the kit's menus 8 px corners and compact
+desktop items, which Poltergeist gets from its app-wide compact density.
+
+**Converged (Poltergeist 4ba7851).** Poltergeist ported every change above
+back, and Séance in turn adopted Poltergeist's one change: a row's dot is
+one `SidebarRow.status: SidebarStatusDot?` value (colour plus
+`SidebarDotStyle`) instead of separate `statusColor` and `statusStyle`
+fields, so a style without a colour cannot be expressed. The two kit files
+now differ only in this header, the theme import, and `_chrome()`; keep
+them that way by porting any kit change to both.
+
 ## Cross-app behaviors worth knowing about
 
 - In shared-account mode Poltergeist reads `serverConfig` records

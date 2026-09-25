@@ -6,13 +6,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
+import '../services/file_permissions.dart';
 import '../services/managed_remote_file_store.dart';
 import '../services/remote_files_controller.dart';
 import '../theme.dart';
 import 'editor_syntax.dart';
 import 'top_toast.dart';
 
+// The document I/O below (typed refusals, owner-only temp, mode carry-over,
+// symlink refusal, BOM handling on bytes) follows Poltergeist's hardened port
+// of this file: packages/poltergeist_core/lib/src/editor/
+// built_in_text_document.dart.
+
 const builtInEditorMaximumBytes = 4 * 1024 * 1024;
+
+/// A refusal or conflict from the built-in editor's document I/O.
+///
+/// [toString] is the bare message: the editor shows it verbatim in its error
+/// body and its toasts, where a `Bad state:` or `FileSystemException:` prefix
+/// would only be noise.
+class BuiltInEditorException implements Exception {
+  final String message;
+
+  const BuiltInEditorException(this.message);
+
+  @override
+  String toString() => message;
+}
 
 class BuiltInTextDocument {
   final String text;
@@ -40,99 +60,170 @@ Future<BuiltInTextDocument> loadBuiltInTextDocumentDetails(
   File file, {
   int maximumBytes = builtInEditorMaximumBytes,
 }) async {
+  await _requireRegularFile(file);
   final length = await file.length();
   if (length > maximumBytes) {
-    throw StateError(
-      'The built-in editor supports text files up to '
-      '${(maximumBytes / (1024 * 1024)).toStringAsFixed(0)} MB.',
-    );
+    throw BuiltInEditorException(_tooLargeMessage(maximumBytes));
   }
   final before = await streamedFileSha256(file);
   final bytes = await file.readAsBytes();
   if (bytes.length > maximumBytes) {
-    throw StateError(
-      'The built-in editor supports text files up to '
-      '${(maximumBytes / (1024 * 1024)).toStringAsFixed(0)} MB.',
-    );
+    throw BuiltInEditorException(_tooLargeMessage(maximumBytes));
   }
   final after = await streamedFileSha256(file);
   if (before != after) {
-    throw StateError('The local copy changed while it was being opened.');
+    throw const BuiltInEditorException(
+      'The local copy changed while it was being opened.',
+    );
+  }
+  // The BOM comes off the bytes rather than being left to the decoder:
+  // Utf8Decoder drops a BOM at the start of whatever it is handed, so it
+  // would also swallow a second one that is document content. Skip every
+  // leading BOM, decode the rest (which then cannot start with one), and
+  // give back all but the first as U+FEFF characters.
+  var leadingBoms = 0;
+  while (_utf8BomAt(bytes, leadingBoms * _utf8Bom.length)) {
+    leadingBoms++;
   }
   late final String text;
   try {
-    text = const Utf8Decoder(allowMalformed: false).convert(bytes);
+    final content = const Utf8Decoder(
+      allowMalformed: false,
+    ).convert(bytes, leadingBoms * _utf8Bom.length);
+    text = leadingBoms > 1 ? '\uFEFF' * (leadingBoms - 1) + content : content;
   } on FormatException {
-    throw StateError('This file is not valid UTF-8 text.');
+    throw const BuiltInEditorException('This file is not valid UTF-8 text.');
   }
   if (text.contains('\u0000')) {
-    throw StateError('This file appears to be binary, not editable text.');
+    throw const BuiltInEditorException(
+      'This file appears to be binary, not editable text.',
+    );
   }
   final crlfCount = RegExp(r'\r\n').allMatches(text).length;
   final lfCount = RegExp(r'(?<!\r)\n').allMatches(text).length;
   return BuiltInTextDocument(
     text: text,
-    hasUtf8Bom:
-        bytes.length >= 3 &&
-        bytes[0] == 0xef &&
-        bytes[1] == 0xbb &&
-        bytes[2] == 0xbf,
+    hasUtf8Bom: leadingBoms > 0,
     lineEnding: crlfCount > lfCount ? '\r\n' : '\n',
     sha256: after,
   );
 }
 
+const _utf8Bom = [0xef, 0xbb, 0xbf];
+
+bool _utf8BomAt(List<int> bytes, int offset) =>
+    bytes.length >= offset + _utf8Bom.length &&
+    bytes[offset] == _utf8Bom[0] &&
+    bytes[offset + 1] == _utf8Bom[1] &&
+    bytes[offset + 2] == _utf8Bom[2];
+
+String _tooLargeMessage(int maximumBytes) =>
+    'The built-in editor supports text files up to '
+    '${(maximumBytes / (1024 * 1024)).toStringAsFixed(0)} MB.';
+
+/// Refuses anything but a regular file at [file]'s path, without following
+/// links. The editor only opens managed checkouts, which are always regular
+/// files; a link there points somewhere the checkout does not own, and a
+/// save would replace the link with a regular file.
+Future<void> _requireRegularFile(File file) async {
+  switch (await FileSystemEntity.type(file.path, followLinks: false)) {
+    case FileSystemEntityType.file:
+      return;
+    case FileSystemEntityType.link:
+      throw const BuiltInEditorException(
+        'The local copy is a symbolic link, not a regular file.',
+      );
+    default:
+      throw const BuiltInEditorException(
+        'The local copy is missing or no longer a regular file.',
+      );
+  }
+}
+
+/// Writes [text] over [file] atomically: a sibling temp file is written,
+/// digested, and renamed into place, with the original held aside as a
+/// backup until the new file has landed.
+///
+/// The checks around that swap (the regular-file test, the mode read, the
+/// digest of the set-aside original against [expectedSha256], and the
+/// empty-path test before the final rename) are a best-effort guard
+/// against another writer, not a lock. Each is its own system call, so a
+/// change that lands between two of them can still get through, and
+/// between the two renames the path briefly does not exist.
+///
+/// The temp is owner-only before its first byte (at the default umask the
+/// plaintext would otherwise sit group- and world-readable for the whole
+/// write, and a crash would strand it that way), and takes the original's
+/// permission bits just before the rename, so an owner-only checkout stays
+/// owner-only and a script keeps its execute bits. A symlinked [file] is
+/// refused rather than replaced by a regular file.
+///
+/// [observeTemporary] is a test seam: it sees the written temp while it is
+/// still owner-only, the one window where that mode can be checked.
 Future<String> saveBuiltInTextDocument(
   File file,
   String text, {
   bool hasUtf8Bom = false,
   String lineEnding = '\n',
   String? expectedSha256,
+  Future<void> Function(File temporary)? observeTemporary,
 }) async {
   final normalized = _normalizeLineEndings(text, lineEnding);
-  final bytes = <int>[
-    if (hasUtf8Bom) ...const [0xef, 0xbb, 0xbf],
-    ...utf8.encode(normalized),
-  ];
+  final bytes = <int>[if (hasUtf8Bom) ..._utf8Bom, ...utf8.encode(normalized)];
   if (bytes.length > builtInEditorMaximumBytes) {
-    throw StateError('The edited file exceeds the 4 MB built-in editor limit.');
+    throw const BuiltInEditorException(
+      'The edited file exceeds the 4 MB built-in editor limit.',
+    );
   }
   final temporary = File('${file.path}.seance-${uuidV4()}.edit');
   final backup = File('${file.path}.seance-${uuidV4()}.backup');
   RandomAccessFile? handle;
   try {
     await temporary.create(exclusive: true);
+    await _setPermissions(
+      () async => restrictFileToOwner(temporary),
+      'Could not restrict the edited file to its owner.',
+    );
     handle = await temporary.open(mode: FileMode.writeOnly);
     await handle.writeFrom(bytes);
     await handle.flush();
     await handle.close();
     handle = null;
     final savedSha256 = await streamedFileSha256(temporary);
+    await observeTemporary?.call(temporary);
 
-    final type = await FileSystemEntity.type(file.path, followLinks: false);
-    if (type != FileSystemEntityType.file) {
-      throw FileSystemException(
-        'The local checkout is missing or no longer a regular file.',
-        file.path,
-      );
-    }
+    await _requireRegularFile(file);
+    final originalMode = (await file.stat()).mode;
     await file.rename(backup.path);
-    if (expectedSha256 != null &&
-        await streamedFileSha256(backup) != expectedSha256) {
-      await backup.rename(file.path);
-      throw StateError(
-        'The local copy changed in another editor. Reopen it before saving to '
-        'avoid losing those changes.',
-      );
+    if (expectedSha256 != null) {
+      final String backupSha256;
+      try {
+        backupSha256 = await streamedFileSha256(backup);
+      } catch (_) {
+        // The digest is part of the guard window: a failed read must still
+        // put the original back, not strand it at the backup path.
+        await backup.rename(file.path);
+        rethrow;
+      }
+      if (backupSha256 != expectedSha256) {
+        await backup.rename(file.path);
+        throw const BuiltInEditorException(
+          'The local copy changed in another editor. Reopen it before saving '
+          'to avoid losing those changes.',
+        );
+      }
     }
     try {
       if (await FileSystemEntity.type(file.path, followLinks: false) !=
           FileSystemEntityType.notFound) {
-        throw FileSystemException(
+        throw const BuiltInEditorException(
           'The local copy changed while it was being saved.',
-          file.path,
         );
       }
+      await _setPermissions(
+        () async => applyPermissionBits(temporary, originalMode),
+        "Could not keep the local copy's file permissions.",
+      );
       await temporary.rename(file.path);
     } catch (_) {
       if (!await file.exists() && await backup.exists()) {
@@ -153,6 +244,25 @@ Future<String> saveBuiltInTextDocument(
   }
 }
 
+/// Runs a permission change, turning its platform failure into a refusal
+/// the editor can show. Either step failing aborts the save: the content
+/// lands with the intended mode or not at all.
+///
+/// The helpers are synchronous today, but the change is awaited anyway: a
+/// `void Function()` accepts a closure returning a Future without a word,
+/// so a helper that turned asynchronous would be dropped (bytes written
+/// before the restriction, its failure unhandled) with no lint to say so.
+Future<void> _setPermissions(
+  Future<void> Function() change,
+  String failure,
+) async {
+  try {
+    await change();
+  } on Exception {
+    throw BuiltInEditorException(failure);
+  }
+}
+
 String _normalizeLineEndings(String text, String lineEnding) {
   if (lineEnding != '\r\n') return text;
   return text
@@ -160,6 +270,32 @@ String _normalizeLineEndings(String text, String lineEnding) {
       .replaceAll('\r', '\n')
       .replaceAll('\n', '\r\n');
 }
+
+/// The length of [text] encoded as UTF-8, counted without encoding it. An
+/// unpaired surrogate counts 3 bytes, as `utf8.encode` writes it as U+FFFD.
+int utf8EncodedLength(String text) {
+  var bytes = 0;
+  for (var i = 0; i < text.length; i++) {
+    final unit = text.codeUnitAt(i);
+    if (unit < 0x80) {
+      bytes += 1;
+    } else if (unit < 0x800) {
+      bytes += 2;
+    } else if (_isLeadSurrogate(unit) &&
+        i + 1 < text.length &&
+        _isTrailSurrogate(text.codeUnitAt(i + 1))) {
+      bytes += 4;
+      i++;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+bool _isLeadSurrogate(int unit) => unit >= 0xd800 && unit <= 0xdbff;
+
+bool _isTrailSurrogate(int unit) => unit >= 0xdc00 && unit <= 0xdfff;
 
 /// Offsets at which logical lines begin: 0 plus the position after each
 /// `\n`. A trailing newline therefore still counts its empty final line.
@@ -241,6 +377,11 @@ class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   String? _lineStartsFor;
   List<int> _lineStarts = const [0];
 
+  /// Cache for the status bar's byte count, keyed like [_lineStartsFor]: a
+  /// caret move rebuilds the bar without recounting a 4 MB buffer.
+  String? _byteCountFor;
+  int _byteCount = 0;
+
   /// Cache for the gutter's per-line visual offsets — keyed on the text
   /// instance plus the layout inputs (text width, scaler). Language, theme
   /// and search matches also feed `buildTextSpan`, but only through
@@ -289,6 +430,16 @@ class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
       _lineStartsFor = text;
     }
     return _lineStarts;
+  }
+
+  /// UTF-8 size of the current buffer, identity-keyed like [_starts].
+  int get _bytes {
+    final text = _text.text;
+    if (!identical(_byteCountFor, text)) {
+      _byteCount = utf8EncodedLength(text);
+      _byteCountFor = text;
+    }
+    return _byteCount;
   }
 
   /// 1-based line and column of the caret, for the status bar and the
@@ -652,8 +803,10 @@ class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
       } else {
         await customSave(widget.file, value);
       }
-      if (!mounted) return;
-      setState(() => _savedText = value);
+      // The write has committed, so the host's reconcile or upload runs even
+      // when the tab closed mid-save: skipping it would leave the managed
+      // copy's bookkeeping behind what is on disk, with nothing to say so.
+      if (mounted) setState(() => _savedText = value);
       var uploaded = false;
       if (uploadAfterSave) {
         // Upload immediately, no confirmation. The upload reconciles this
@@ -1052,8 +1205,7 @@ class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
         children: [
           Expanded(
             child: Text(
-              'Ln $line, Col $col · ${_starts.length} lines · '
-              '${utf8.encode(_text.text).length} bytes',
+              'Ln $line, Col $col · ${_starts.length} lines · $_bytes bytes',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.labelSmall,

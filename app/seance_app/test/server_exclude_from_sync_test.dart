@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:seance_app/app_state.dart';
+import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/server_editor.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_app/ui/server_status_dot.dart';
+import 'package:seance_app/ui/server_tile.dart';
+import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
 
 /// A server excluded from sync looks no different from any other one unless the
@@ -22,22 +25,23 @@ void main() {
   Future<void> pump(WidgetTester tester, {required bool excluded}) =>
       tester.pumpWidget(
         MaterialApp(
+          theme: SeanceTheme.light(platform: TargetPlatform.macOS),
           home: Scaffold(
-            body: ServerTile(
-              server: config(excluded: excluded),
-              connection: TerminalStatus.disconnected,
-              tabCount: 0,
-              reachability: ProbeStatus.unknown,
-              selected: false,
-              onTap: () {},
-              onNewTab: () {},
-              onEdit: () {},
-              onDuplicate: () {},
-              onDelete: () {},
-              onDisconnect: () {},
-              onReconnect: null,
-              pinned: false,
-              onTogglePin: () {},
+            body: SidebarKitScope(
+              strings: serverSidebarStrings,
+              child: ServerTile(
+                server: config(excluded: excluded),
+                dot: ServerDot.none,
+                tabCount: 0,
+                selected: false,
+                pinned: false,
+                onOpen: () {},
+                onNewTab: () {},
+                onEdit: () {},
+                onDuplicate: () {},
+                onDelete: () {},
+                onTogglePin: () {},
+              ),
             ),
           ),
         ),
@@ -56,24 +60,35 @@ void main() {
   testWidgets('the mark says what it means rather than only drawing it', (
     tester,
   ) async {
-    await pump(tester, excluded: true);
-    // Read off the row's merged node, which is what a screen reader is
-    // handed. A tooltip would not survive that merge — the row carries others
-    // and only one wins — so the description has to arrive as a label.
-    final data = tester
-        .getSemantics(find.byIcon(Icons.cloud_off_outlined))
-        .getSemanticsData();
-    expect(data.label, contains('Excluded from sync'));
-    expect(data.label, contains('this device only'));
-    // Still described for a pointer, just not through the semantics tree.
-    final tooltip = tester.widget<Tooltip>(
-      find.ancestor(
-        of: find.byIcon(Icons.cloud_off_outlined),
-        matching: find.byType(Tooltip),
-      ),
-    );
-    expect(tooltip.message, contains('Excluded from sync'));
-    expect(tooltip.excludeFromSemantics, isTrue);
+    final semantics = tester.ensureSemantics();
+    try {
+      await pump(tester, excluded: true);
+      // Read off the row's node, which is what a screen reader is handed:
+      // the row's visuals are excluded from semantics, so the description
+      // has to arrive in its label.
+      final data = tester
+          .getSemantics(
+            find
+                .descendant(
+                  of: find.byType(SidebarRow),
+                  matching: find.byType(Listener),
+                )
+                .first,
+          )
+          .getSemanticsData();
+      expect(data.label, contains('Excluded from sync'));
+      expect(data.label, contains('this device only'));
+      // Still described for a pointer, in the row's tooltip.
+      final tooltip = tester.widget<Tooltip>(
+        find.descendant(
+          of: find.byType(SidebarRow),
+          matching: find.byType(Tooltip),
+        ),
+      );
+      expect(tooltip.message, contains('Excluded from sync'));
+    } finally {
+      semantics.dispose();
+    }
   });
 
   group('excludingNeedsConfirmation', () {
@@ -111,16 +126,19 @@ void main() {
   group('confirmSyncExclusion', () {
     Future<bool?> tapThrough(WidgetTester tester, String? answer) async {
       bool? result;
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: Builder(
-            builder: (context) => TextButton(
-              onPressed: () async => result = await confirmSyncExclusion(context),
-              child: const Text('open'),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async =>
+                    result = await confirmSyncExclusion(context),
+                child: const Text('open'),
+              ),
             ),
           ),
         ),
-      ));
+      );
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
       expect(find.text('Exclude from sync?'), findsOneWidget);
@@ -149,23 +167,27 @@ void main() {
     });
 
     testWidgets('says what it will take away', (tester) async {
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: Builder(
-            builder: (context) => TextButton(
-              onPressed: () => confirmSyncExclusion(context),
-              child: const Text('open'),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => confirmSyncExclusion(context),
+                child: const Text('open'),
+              ),
             ),
           ),
         ),
-      ));
+      );
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
       final body = tester
-          .widgetList<Text>(find.descendant(
-            of: find.byType(AlertDialog),
-            matching: find.byType(Text),
-          ))
+          .widgetList<Text>(
+            find.descendant(
+              of: find.byType(AlertDialog),
+              matching: find.byType(Text),
+            ),
+          )
           .map((t) => t.data ?? '')
           .join(' ');
       // Naming the credential is the part a user cannot infer from "sync".

@@ -62,6 +62,12 @@ class SyntaxLanguage {
   /// Delimiters of strings that may span lines (`'''`, `"""`, '`').
   final List<String> multilineStrings;
 
+  /// `[open, close]` pairs for multiline strings whose delimiters differ
+  /// (Lua's `[[ ]]`). They take no escapes, so the closer is a plain search.
+  /// Scanned right after [multilineStrings]: after block comments, before
+  /// line comments.
+  final List<List<String>> multilineStringPairs;
+
   /// Single-line string quotes; a missing closer ends the token at newline.
   final List<String> strings;
 
@@ -84,6 +90,7 @@ class SyntaxLanguage {
     this.lineCommentNeedsBoundary = false,
     this.blockComments = const [],
     this.multilineStrings = const [],
+    this.multilineStringPairs = const [],
     this.strings = const [],
     this.metaPattern,
     this.metaGroup,
@@ -265,6 +272,95 @@ class SyntaxLanguages {
     metaPattern: RegExp(r'^#{1,6}[ \t].*$', multiLine: true),
     highlightNumbers: false,
   );
+
+  /// CSS, SCSS and LESS. Property names are meta. The `//` line comments
+  /// SCSS and LESS allow are left out on purpose: that rule would swallow an
+  /// unquoted `url(http://…)` as a comment. The meta rule cannot tell a
+  /// declaration from a selector, so `a:hover` and `max-width:` light up
+  /// too. Keywords are single identifiers, which stop at `-`, so a
+  /// hyphenated at-rule such as `font-face` cannot be one.
+  static final css = SyntaxLanguage(
+    id: 'css',
+    keywords: const {
+      'media', 'supports', 'keyframes', 'import', 'charset', 'namespace',
+      'page', 'important', 'inherit', 'initial', 'unset', 'revert', 'auto',
+      'none',
+    },
+    caseInsensitiveKeywords: true,
+    blockComments: const [
+      ['/*', '*/'],
+    ],
+    strings: const ["'", '"'],
+    metaPattern: RegExp(r'([-a-zA-Z]+)[ \t]*:'),
+    metaGroup: 1,
+  );
+
+  /// Ruby. `=begin`/`=end` block comments only count at the start of a line,
+  /// which the scanner cannot express; they render as plain text.
+  static final ruby = SyntaxLanguage(
+    id: 'ruby',
+    keywords: const {
+      'alias', 'and', 'begin', 'BEGIN', 'break', 'case', 'class', 'def',
+      'defined', 'do', 'else', 'elsif', 'end', 'END', 'ensure', 'false',
+      'for', 'if', 'in', 'module', 'next', 'nil', 'not', 'or', 'redo',
+      'rescue', 'retry', 'return', 'self', 'super', 'then', 'true', 'undef',
+      'unless', 'until', 'when', 'while', 'yield', 'require',
+      'require_relative', 'attr_accessor', 'attr_reader', 'attr_writer',
+      'include', 'extend', 'private', 'protected', 'public', 'raise',
+      'lambda', 'proc', 'puts', 'print',
+    },
+    lineComments: const ['#'],
+    lineCommentNeedsBoundary: true,
+    strings: const ["'", '"'],
+  );
+
+  /// Perl. A `#` counts as a comment only at a line start or after
+  /// whitespace, as for Ruby: glued to a sigil or a delimiter it is syntax
+  /// (`$#list`, `s#a#b#`, `qw#a b#`, `s/#.*//`), and without the boundary
+  /// each greyed out the rest of its line. The cost is that a comment
+  /// glued to code (`1;# note`) renders as code. POD (`=pod` … `=cut`) is
+  /// left out for the same start-of-line reason as Ruby's `=begin`.
+  static final perl = SyntaxLanguage(
+    id: 'perl',
+    keywords: const {
+      'my', 'our', 'local', 'sub', 'use', 'package', 'require', 'if',
+      'elsif', 'else', 'unless', 'while', 'until', 'for', 'foreach', 'last',
+      'next', 'redo', 'return', 'goto', 'do', 'eval', 'die', 'warn', 'print',
+      'say', 'chomp', 'chop', 'push', 'pop', 'shift', 'unshift', 'splice',
+      'grep', 'map', 'sort', 'keys', 'values', 'each', 'exists', 'defined',
+      'undef', 'ref', 'bless', 'tie', 'scalar', 'wantarray', 'caller',
+      'exit', 'open', 'close', 'read', 'and', 'or', 'not', 'xor', 'eq', 'ne',
+      'lt', 'gt', 'le', 'ge', 'cmp',
+    },
+    lineComments: const ['#'],
+    lineCommentNeedsBoundary: true,
+    strings: const ["'", '"'],
+  );
+
+  /// Lua. `--[[ ]]` is declared as a block comment because the scanner tries
+  /// block comments before both line comments and multiline strings, so
+  /// `--[[` never becomes a `--` line comment (stranding `]]`) and the `[[`
+  /// inside it never opens a string. Leveled brackets (`[==[`) are not
+  /// recognized: `--[==[` falls to the line rule, a bare `[==[` to nothing.
+  static final lua = SyntaxLanguage(
+    id: 'lua',
+    keywords: const {
+      'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for',
+      'function', 'goto', 'if', 'in', 'local', 'nil', 'not', 'or', 'repeat',
+      'return', 'then', 'true', 'until', 'while', 'require', 'module',
+      'print', 'pairs', 'ipairs', 'type', 'tostring', 'tonumber', 'error',
+      'pcall', 'xpcall', 'select', 'rawget', 'rawset', 'rawequal',
+      'setmetatable', 'getmetatable', 'next', 'unpack', 'self',
+    },
+    blockComments: const [
+      ['--[[', ']]'],
+    ],
+    lineComments: const ['--'],
+    multilineStringPairs: const [
+      ['[[', ']]'],
+    ],
+    strings: const ["'", '"'],
+  );
 }
 
 const Map<String, String> _extensionLanguages = {
@@ -287,6 +383,10 @@ const Map<String, String> _extensionLanguages = {
   'xml': 'xml', 'html': 'xml', 'htm': 'xml', 'xhtml': 'xml', 'svg': 'xml',
   'plist': 'xml',
   'md': 'markdown', 'markdown': 'markdown',
+  'css': 'css', 'scss': 'css', 'less': 'css',
+  'rb': 'ruby', 'rake': 'ruby', 'gemspec': 'ruby',
+  'pl': 'perl', 'pm': 'perl',
+  'lua': 'lua',
 };
 
 const Map<String, String> _basenameLanguages = {
@@ -301,6 +401,10 @@ const Map<String, String> _basenameLanguages = {
   'config': 'ini', 'ssh_config': 'ini', 'sshd_config': 'ini',
   'authorized_keys': 'ini', 'known_hosts': 'ini', 'hosts': 'ini',
   'fstab': 'ini', 'crontab': 'shell',
+  'gemfile': 'ruby', 'rakefile': 'ruby', 'config.ru': 'ruby',
+  // Apache's per-directory config. `.htpasswd` (`user:hash` lines) matches
+  // no ini rule; it is mapped so it opens as a known config, not unknown.
+  '.htaccess': 'ini', '.htpasswd': 'ini',
 };
 
 SyntaxLanguage? _languageById(String id) => switch (id) {
@@ -316,6 +420,10 @@ SyntaxLanguage? _languageById(String id) => switch (id) {
   'c-family' => SyntaxLanguages.cFamily,
   'xml' => SyntaxLanguages.xml,
   'markdown' => SyntaxLanguages.markdown,
+  'css' => SyntaxLanguages.css,
+  'ruby' => SyntaxLanguages.ruby,
+  'perl' => SyntaxLanguages.perl,
+  'lua' => SyntaxLanguages.lua,
   _ => null,
 };
 
@@ -323,9 +431,10 @@ SyntaxLanguage? _languageById(String id) => switch (id) {
 /// extension, then a `#!` interpreter line from [firstLine]. Returns null for
 /// unrecognized files, which render as plain text.
 SyntaxLanguage? syntaxLanguageFor(String path, {String? firstLine}) {
-  final basename = path
-      .substring(path.contains('/') ? path.lastIndexOf('/') + 1 : 0)
-      .toLowerCase();
+  // Either separator ends a directory: a remote path is POSIX, but a local
+  // Windows path (or a Windows host's) arrives with backslashes.
+  final separator = path.lastIndexOf(RegExp(r'[/\\]'));
+  final basename = path.substring(separator + 1).toLowerCase();
   final byBasename = _basenameLanguages[basename];
   if (byBasename != null) return _languageById(byBasename);
   if (basename.startsWith('dockerfile.') || basename.endsWith('.dockerfile')) {
@@ -343,6 +452,13 @@ SyntaxLanguage? syntaxLanguageFor(String path, {String? firstLine}) {
         shebang.contains('deno') ||
         shebang.contains('bun')) {
       return SyntaxLanguages.javascript;
+    }
+    // Word boundaries match the interpreter both directly (`#!/usr/bin/ruby`)
+    // and after `env`, and keep `lua5.5` or `luabridge` from counting as Lua.
+    if (RegExp(r'\bruby\b').hasMatch(shebang)) return SyntaxLanguages.ruby;
+    if (RegExp(r'\bperl\b').hasMatch(shebang)) return SyntaxLanguages.perl;
+    if (RegExp(r'\blua(?:5\.[1-4]|jit)?\b').hasMatch(shebang)) {
+      return SyntaxLanguages.lua;
     }
     if (RegExp(r'\b(sh|bash|zsh|ksh|dash|ash)\b').hasMatch(shebang)) {
       return SyntaxLanguages.shell;
@@ -380,6 +496,16 @@ List<SyntaxToken> tokenizeSyntax(String text, SyntaxLanguage language) {
     for (final delimiter in language.multilineStrings) {
       if (text.startsWith(delimiter, i)) {
         final end = _scanString(text, i, delimiter, stopAtNewline: false);
+        tokens.add(SyntaxToken(i, end, SyntaxTokenType.string));
+        i = end;
+        continue outer;
+      }
+    }
+
+    for (final pair in language.multilineStringPairs) {
+      if (text.startsWith(pair[0], i)) {
+        final close = text.indexOf(pair[1], i + pair[0].length);
+        final end = close < 0 ? n : close + pair[1].length;
         tokens.add(SyntaxToken(i, end, SyntaxTokenType.string));
         i = end;
         continue outer;
@@ -529,8 +655,11 @@ List<SyntaxToken> _mergeMetaTokens(
       // prefix — true for the YAML key pattern, whose group starts with
       // [^\s#-] while the prefix is only whitespace and dashes. Keep that
       // property when adding grouped patterns.
-      start = match.start + match[0]!.indexOf(match[group]!);
-      end = start + match[group]!.length;
+      // An optional group that did not take part yields no token.
+      final groupText = match[group];
+      if (groupText == null) continue;
+      start = match.start + match[0]!.indexOf(groupText);
+      end = start + groupText.length;
     }
     if (end <= start) continue;
     while (tokenIndex < tokens.length && tokens[tokenIndex].end <= start) {

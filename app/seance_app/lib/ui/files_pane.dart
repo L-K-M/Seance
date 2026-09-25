@@ -29,6 +29,10 @@ class FilesScreen extends StatelessWidget {
       listenable: state,
       builder: (context, _) => Scaffold(
         appBar: AppBar(
+          // The arrow leaves Files from any folder. Only the system back
+          // walks up the tree first (see _RemoteBrowserState), and the
+          // default arrow would ask the same PopScope, so pop outright.
+          leading: BackButton(onPressed: () => Navigator.of(context).pop()),
           title: Text(
             'Files · ${state.activeSession?.config.label ?? 'Session'}',
           ),
@@ -97,6 +101,9 @@ class _RemoteBrowser extends StatefulWidget {
   final RemoteFilesController controller;
   final String identity;
   final TerminalSession session;
+
+  /// True on the pushed [FilesScreen]: staging a path or opening an editor
+  /// tab pops the screen, and system back walks up the tree before it does.
   final bool popAfterTerminalStage;
 
   const _RemoteBrowser({
@@ -218,7 +225,10 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
               ),
           ],
         );
-        if (!_supportsDesktopDrop) return content;
+        final browser = widget.popAfterTerminalStage
+            ? _systemBackGoesUp(controller, content)
+            : content;
+        if (!_supportsDesktopDrop) return browser;
         return DropTarget(
           enable:
               TickerMode.valuesOf(context).enabled &&
@@ -229,9 +239,30 @@ class _RemoteBrowserState extends State<_RemoteBrowser> {
             setState(() => _dragging = false);
             unawaited(_uploadDroppedFiles(details.files));
           },
-          child: content,
+          child: browser,
         );
       },
+    );
+  }
+
+  /// On the pushed Files screen, system back climbs one folder at a time the
+  /// way a file manager's does, and leaves the screen once it reaches the
+  /// root. The app bar's arrow still leaves from anywhere (see [FilesScreen]).
+  /// After a failed listing (a parent the user may not read, say) back
+  /// leaves too, so it can never get stuck retrying the same folder.
+  ///
+  /// Android only: it is the one platform with a system back. On iOS (and
+  /// macOS, whose page transition is Cupertino's too) back is the edge
+  /// swipe, which Flutter disables outright on a route that vetoes its pop,
+  /// so a swipe below the root would do nothing at all instead of leaving.
+  Widget _systemBackGoesUp(RemoteFilesController controller, Widget child) {
+    if (Theme.of(context).platform != TargetPlatform.android) return child;
+    return PopScope(
+      canPop: !controller.canGoUp || controller.error != null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(controller.goUp());
+      },
+      child: child,
     );
   }
 
@@ -1258,9 +1289,7 @@ class _BrowserHeader extends StatelessWidget {
                 _HeaderButton(
                   tooltip: 'Up',
                   icon: Icons.arrow_upward,
-                  onPressed: controller.currentPath == '/'
-                      ? null
-                      : controller.goUp,
+                  onPressed: controller.canGoUp ? controller.goUp : null,
                 ),
                 _HeaderButton(
                   tooltip: 'Home',

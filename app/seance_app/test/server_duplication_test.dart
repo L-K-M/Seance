@@ -1,26 +1,26 @@
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/app_state.dart'
-    show
-        TerminalStatus,
-        SourceServerChanged,
-        duplicationSourceUnchanged,
-        secretStillReferenced;
+    show SourceServerChanged, duplicationSourceUnchanged, secretStillReferenced;
 import 'package:seance_app/services/app_settings.dart'
     show IdentityFileBookmark;
 import 'package:seance_app/services/app_services.dart' show LockedSecretVault;
 import 'package:seance_app/services/secure_master_key.dart'
     show VaultLockedException;
 import 'package:seance_app/services/server_duplication.dart';
+import 'package:seance_app/theme.dart';
 import 'package:seance_app/ui/server_list_pane.dart';
+import 'package:seance_app/ui/server_status_dot.dart';
+import 'package:seance_app/ui/server_tile.dart';
+import 'package:seance_app/ui/sidebar/sidebar_kit.dart';
 import 'package:seance_core/seance_core.dart';
 
 void main() {
   group('duplicateServerLabel', () {
-    test('a source already named as a copy never gets its own label back',
-        () {
+    test('a source already named as a copy never gets its own label back', () {
       // Even when the caller did not list the source among the taken
       // labels; the listed variants are pinned further down.
       expect(duplicateServerLabel('web copy', const []), 'web copy 2');
@@ -49,8 +49,10 @@ void main() {
       // "web copy". Pinned because both rules are defensible and nothing
       // else says which one ships.
       expect(duplicateServerLabel('web', const ['web copy 2']), 'web copy');
-      expect(duplicateServerLabel('web', const ['web', 'web copy']),
-          'web copy 2');
+      expect(
+        duplicateServerLabel('web', const ['web', 'web copy']),
+        'web copy 2',
+      );
       expect(
         duplicateServerLabel('web', const ['web', 'web copy', 'web copy 2']),
         'web copy 3',
@@ -59,8 +61,10 @@ void main() {
 
     test('a copy of a copy continues the series instead of stuttering', () {
       // Not "web copy copy": the suffix comes back off before it goes back on.
-      expect(duplicateServerLabel('web copy', const ['web copy']),
-          'web copy 2');
+      expect(
+        duplicateServerLabel('web copy', const ['web copy']),
+        'web copy 2',
+      );
       expect(
         duplicateServerLabel('web copy 2', const ['web copy', 'web copy 2']),
         'web copy 3',
@@ -72,8 +76,7 @@ void main() {
       // are one name to the person looking at it.
       expect(duplicateServerLabel('web', const ['WEB COPY']), 'web copy 2');
       // And edge whitespace is not a difference either.
-      expect(duplicateServerLabel('web', const ['  web copy  ']),
-          'web copy 2');
+      expect(duplicateServerLabel('web', const ['  web copy  ']), 'web copy 2');
       // The source's own label is matched under the same rules, so a padded
       // or differently-cased source cannot hand back its own name — while
       // the casing the user typed is kept.
@@ -83,8 +86,10 @@ void main() {
     test('a server named "copy" numbers rather than stutters', () {
       // The whole label is the suffix, so the series just continues.
       expect(duplicateServerLabel('copy', const ['copy']), 'copy 2');
-      expect(duplicateServerLabel('copy 2', const ['copy', 'copy 2']),
-          'copy 3');
+      expect(
+        duplicateServerLabel('copy 2', const ['copy', 'copy 2']),
+        'copy 3',
+      );
       // An unnamed server (nothing enforces a label in the store) is the same
       // shape of input and must not produce a leading-spaced name.
       expect(duplicateServerLabel('', const []), 'copy');
@@ -238,40 +243,41 @@ void main() {
     var duplicated = 0;
     await tester.pumpWidget(
       MaterialApp(
+        theme: SeanceTheme.light(platform: TargetPlatform.macOS),
         home: Scaffold(
-          body: ServerTile(
-            server: ServerConfig(
-              id: 's1',
-              label: 'web',
-              host: 'web.example.com',
-              username: 'deploy',
-              createdAt: 1,
-              updatedAt: 2,
+          body: SidebarKitScope(
+            strings: serverSidebarStrings,
+            child: ServerTile(
+              server: const ServerConfig(
+                id: 's1',
+                label: 'web',
+                host: 'web.example.com',
+                username: 'deploy',
+                createdAt: 1,
+                updatedAt: 2,
+              ),
+              dot: ServerDot.none,
+              tabCount: 0,
+              selected: false,
+              pinned: false,
+              onOpen: () {},
+              onNewTab: () {},
+              onEdit: () {},
+              onDuplicate: () => duplicated++,
+              onDelete: () {},
+              onTogglePin: () {},
             ),
-            connection: TerminalStatus.disconnected,
-            tabCount: 0,
-            reachability: ProbeStatus.unknown,
-            selected: false,
-            onTap: () {},
-            onNewTab: () {},
-            onEdit: () {},
-            onDuplicate: () => duplicated++,
-            onDelete: () {},
-            onDisconnect: () {},
-            onReconnect: null,
-            pinned: false,
-            onTogglePin: () {},
           ),
         ),
       ),
     );
 
-    // Scoped to the tile: any other popup menu pumped beside it would make
-    // this ambiguous, and the failure would not say why.
-    await tester.tap(find.descendant(
-      of: find.byType(ServerTile),
-      matching: find.byType(PopupMenuButton<String>),
-    ));
+    // Right-click, as on any desktop row; the menu is the row's own.
+    await tester.tap(
+      find.byType(ServerTile),
+      buttons: kSecondaryButton,
+      kind: PointerDeviceKind.mouse,
+    );
     await tester.pumpAndSettle();
     expect(find.text('Duplicate'), findsOneWidget);
 
@@ -298,51 +304,62 @@ void main() {
       updatedAt: 2,
     );
 
-    test('planning writes nothing, which is what lets the save be aborted',
-        () async {
-      final writes = <String>[];
-      // The guard runs between the plan and the save, so `SourceServerChanged`
-      // can promise nothing was created — but only while planning stays a
-      // read. A vault write moved in here would strand an entry no server
-      // names, and nothing reference-counts those.
-      final store =
-          SecretVault(_RecordingVaultStore(writes), List.filled(32, 7));
-      await store.putSecret(const Secret(
-        id: 'sec-old',
-        kind: SecretKind.password,
-        value: 'hunter2',
-      ));
-      // The recorder is proven to record before it is cleared: without this,
-      // a `putSecret` that stopped routing through `putSecretBlob` would
-      // leave the emptiness assertion below passing for nothing.
-      expect(writes, isNotEmpty);
-      writes.clear();
-      final plan = await planServerDuplication(
-        source(secretRef: 'sec-old'),
-        vault: store,
-        takenLabels: const [],
-        id: 'copy-1',
-        secretId: 'sec-new',
-        now: 100,
-      );
+    test(
+      'planning writes nothing, which is what lets the save be aborted',
+      () async {
+        final writes = <String>[];
+        // The guard runs between the plan and the save, so `SourceServerChanged`
+        // can promise nothing was created — but only while planning stays a
+        // read. A vault write moved in here would strand an entry no server
+        // names, and nothing reference-counts those.
+        final store = SecretVault(
+          _RecordingVaultStore(writes),
+          List.filled(32, 7),
+        );
+        await store.putSecret(
+          const Secret(
+            id: 'sec-old',
+            kind: SecretKind.password,
+            value: 'hunter2',
+          ),
+        );
+        // The recorder is proven to record before it is cleared: without this,
+        // a `putSecret` that stopped routing through `putSecretBlob` would
+        // leave the emptiness assertion below passing for nothing.
+        expect(writes, isNotEmpty);
+        writes.clear();
+        final plan = await planServerDuplication(
+          source(secretRef: 'sec-old'),
+          vault: store,
+          takenLabels: const [],
+          id: 'copy-1',
+          secretId: 'sec-new',
+          now: 100,
+        );
 
-      expect(plan.secret?.id, 'sec-new');
-      // Every write, not just the one id the plan happens to name: a write
-      // under any other id would strand an entry no server references, and
-      // nothing reference-counts those.
-      expect(writes, isEmpty,
-          reason: 'the planned entry is written by the save, not the plan');
-      expect((await store.getSecret('sec-old'))?.value, 'hunter2');
-    });
+        expect(plan.secret?.id, 'sec-new');
+        // Every write, not just the one id the plan happens to name: a write
+        // under any other id would strand an entry no server references, and
+        // nothing reference-counts those.
+        expect(
+          writes,
+          isEmpty,
+          reason: 'the planned entry is written by the save, not the plan',
+        );
+        expect((await store.getSecret('sec-old'))?.value, 'hunter2');
+      },
+    );
 
     test('copies the credential into a vault entry of its own', () async {
       final store = vault();
-      await store.putSecret(const Secret(
-        id: 'sec-old',
-        kind: SecretKind.privateKey,
-        value: 'PEM',
-        keyPassphrase: 'phrase',
-      ));
+      await store.putSecret(
+        const Secret(
+          id: 'sec-old',
+          kind: SecretKind.privateKey,
+          value: 'PEM',
+          keyPassphrase: 'phrase',
+        ),
+      );
 
       final plan = await planServerDuplication(
         source(secretRef: 'sec-old'),
@@ -361,10 +378,7 @@ void main() {
       // is only caught here once the fixture above gives it a non-default
       // value, since one left at its default matches on both sides.
       final original = (await store.getSecret('sec-old'))!;
-      expect(
-        plan.secret!.toJson(),
-        {...original.toJson()}..['id'] = 'sec-new',
-      );
+      expect(plan.secret!.toJson(), {...original.toJson()}..['id'] = 'sec-new');
       // Spelled out as well, because these are the two that stop a copy
       // connecting: the material and the passphrase that opens it.
       expect(plan.secret!.value, 'PEM');
@@ -383,21 +397,23 @@ void main() {
       expect(numbered.config.label, 'web copy 2');
     });
 
-    test('a dangling reference plans as no credential, not as a failure',
-        () async {
-      // The original is already in this state; the copy is not the place to
-      // discover it.
-      final plan = await planServerDuplication(
-        source(secretRef: 'sec-gone'),
-        vault: vault(),
-        takenLabels: const [],
-        id: 'fresh',
-        secretId: 'sec-new',
-        now: 999,
-      );
-      expect(plan.secret, isNull);
-      expect(plan.config.secretRef, isNull);
-    });
+    test(
+      'a dangling reference plans as no credential, not as a failure',
+      () async {
+        // The original is already in this state; the copy is not the place to
+        // discover it.
+        final plan = await planServerDuplication(
+          source(secretRef: 'sec-gone'),
+          vault: vault(),
+          takenLabels: const [],
+          id: 'fresh',
+          secretId: 'sec-new',
+          now: 999,
+        );
+        expect(plan.secret, isNull);
+        expect(plan.config.secretRef, isNull);
+      },
+    );
 
     test('a locked vault fails instead of losing the credential', () async {
       // A duplicate that quietly lost its password would look identical in the
@@ -423,8 +439,10 @@ void main() {
       // Same path the fixture's `identityFilePath` carries: a Browse…-picked
       // key always has both, and a grant minted for some other path is a
       // state this test is not about.
-      const grant =
-          IdentityFileBookmark(path: '/keys/id_ed25519', bookmark: 'b64');
+      const grant = IdentityFileBookmark(
+        path: '/keys/id_ed25519',
+        bookmark: 'b64',
+      );
       final plan = await planServerDuplication(
         source(),
         vault: vault(),
@@ -445,13 +463,13 @@ void main() {
       // grant from the one duplication people actually make — a key server
       // whose key lives outside ~/.ssh.
       final store = vault();
-      await store.putSecret(const Secret(
-        id: 'sec-old',
-        kind: SecretKind.privateKey,
-        value: 'PEM',
-      ));
-      const grant =
-          IdentityFileBookmark(path: '/keys/id_ed25519', bookmark: 'b64');
+      await store.putSecret(
+        const Secret(id: 'sec-old', kind: SecretKind.privateKey, value: 'PEM'),
+      );
+      const grant = IdentityFileBookmark(
+        path: '/keys/id_ed25519',
+        bookmark: 'b64',
+      );
       final plan = await planServerDuplication(
         source(secretRef: 'sec-old'),
         vault: store,
@@ -574,4 +592,3 @@ class _RecordingVaultStore extends InMemoryVaultStore {
     return super.deleteSecret(id);
   }
 }
-

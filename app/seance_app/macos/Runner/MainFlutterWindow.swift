@@ -26,8 +26,10 @@ class MainFlutterWindow: NSWindow {
 
     let flutterViewController = SeanceFlutterViewController()
     self.contentViewController = flutterViewController
-    // Default desktop window size.
-    self.setContentSize(NSSize(width: 1800, height: 1600))
+    // Default desktop window size, matching the Linux and Windows runners
+    // (the window-state service restores the user's own frame after the
+    // first launch); 1800x1600 overflowed most laptop screens.
+    self.setContentSize(NSSize(width: 1280, height: 800))
     self.center()
 
     // Channel used by our menu items to trigger Dart actions.
