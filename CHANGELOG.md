@@ -4,16 +4,32 @@
 
 - Server list: rebuilt on the sidebar Séance now shares with Poltergeist.
   On desktop the list is a rail with no app bar: PINNED, then SERVERS with
-  groups as nested disclosure rows (folds persist), one-line rows with the
-  server's mark and one status dot (green connected, amber connecting, red
-  failed, a hollow ring for what the probe saw), a filter at eight servers
-  or on ⌥⌘F (Ctrl+Alt+F elsewhere), and a bottom bar with a "+" menu (New
+  groups as nested disclosure rows (folds persist), rows with the server's
+  mark and one status dot (green connected, amber connecting, red failed,
+  a hollow ring for what the probe saw), a filter at five servers or on
+  ⌥⌘F (Ctrl+Alt+F elsewhere), and a bottom bar with a "+" menu (New
   server, Import SSH config), the sync status (a click on "Sync failed"
-  retries) and Settings. Right-click, Shift+F10 or the Menu key open a
-  row's verbs; ⌘- or Ctrl-click opens another tab. On a phone the list is
-  the home screen with 48 dp rows, a "⋮" and long-press for the same
-  verbs, and a "+" button; back to the list keeps the filter and scroll
-  position. The sidebar kit is ported from Poltergeist.
+  retries), the density switch and Settings. Right-click, Shift+F10 or
+  the Menu key open a row's verbs; ⌘- or Ctrl-click opens another tab. On
+  a phone the list is the home screen with a "⋮" and long-press for the
+  same verbs, and a "+" button; back to the list keeps the filter and
+  scroll position. The sidebar kit is ported from Poltergeist.
+- Server list: the two views are back, on the desktop rail, on tablets
+  and on the phone home. Comfortable, the default (and what an existing
+  install's stored choice already says), draws two lines under the 32 px
+  badge: the address, led by the state when a session is connecting,
+  failed or blocked or the host is unreachable ("Connection failed ·
+  deploy@host"). The server's colour runs down the row's edge again, a
+  connected server's badge wears its green ring, the "⋮" is in view, and
+  group counts, chevrons and SERVERS' "+" show at rest. Compact keeps the
+  one-line rail. Switch with the control in the rail's bottom bar or the
+  phone home's app bar, or on macOS with View ▸ Use Compact Sidebar Rows
+  (Use Comfortable Sidebar Rows). Also: a folded group, or a filter, that
+  hides a connected server shows its dot on the header; a changed host
+  key you declined marks the row blocked rather than failed; the filter's
+  count says "↵ opens the first" again; the long-press sheet shows the
+  row's second line under its name; and the filter chord no longer
+  latches the field open on an empty list.
 - Android: the system back button on the narrow terminal screen returns to
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving

@@ -7,8 +7,13 @@ Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
 
-_Last updated: 2026-09-24. The server list is the sibling sidebar Séance
-shares with Poltergeist: a rail with PINNED and SERVERS sections, one-line
+_Last updated: 2026-09-25. The server list has its two views back, on the
+rail, on tablets and on the phone home: comfortable (the default) draws
+two lines under the 32 px badge with the colour line, the connected ring
+and a visible "⋮", compact keeps the one-line rail, and a switch in the
+bottom bar, the home app bar and macOS's View menu picks between them.
+Before that, the server list became the sibling sidebar Séance
+shares with Poltergeist: a rail with PINNED and SERVERS sections,
 rows with one status dot, a filter, and a bottom bar with "+", sync status
 and Settings, over a kit ported from Poltergeist (see
 [POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)); on a phone the same list
@@ -58,6 +63,79 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Two views of the server list again (2026-09-25)
+
+The owner's call after the kit port below: aligning the two sidebars
+lost "the two views", so both apps now offer a compact and a comfortable
+density, comfortable by default on every platform (Poltergeist's plan
+records the decision in its `docs/plan/00-OVERVIEW.md`). This supersedes the port's "the
+density preference survives here only" and its one-line rail.
+
+**Density.** The kit gained `SidebarKitDensity` (its record is in
+[POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)). `ServerListPane` maps
+the stored `serverListDensity` to it in one place and every posture
+follows it: the desktop rail, a tablet's touch rail and a narrow desktop
+window draw the rail at that density, and the phone home is the Android
+list when comfortable and one-line touch rows when compact (the kit's
+`sidebarHomeLayout`), so the two gates that each decided "comfortable
+home" are gone. `toJson` always wrote the preference and its old default
+was comfortable, so an existing install comes back comfortable, which is
+the look the owner asked for.
+
+**Rows.** Comfortable rows are 52 px (56 on touch) with a 32 px
+`ServerBadge`, the neutral tile behind an uncoloured glyph, a 14 px title
+and a 12 px second line; compact is the port's 26 px row, unchanged. The
+tile always hands the kit its second line and the kit draws it only when
+comfortable: `user@host` (the port only when not 22), led by the state
+when a session is connecting, failed or blocked or the probe found the
+host unreachable ("Connection failed · deploy@host", Poltergeist's
+order). The server's colour is the kit's 4 px accent line in both
+densities, so the frame an image mark wore in its place is gone, and the
+editor's and colour picker's previews of `ServerAccentBar` describe the
+list again. A connected session rings the badge in green beside the dot
+(the kit's `markRing`, not `ServerAvatar`, which stays unused by the
+list). The "⋮" is the kit's default: drawn when comfortable or on touch.
+Headers draw their count, chevron and SERVERS' "+" at rest when
+comfortable.
+
+**Blocked.** A connect refused at the host-key check of a host this
+device had pinned (a changed key the user declined, or a signature that
+did not verify) sets `TerminalSession.hostKeyBlocked`, from the core's
+new `SshConnectException.isHostKeyRefusal` plus the pinned-key lookup; a
+declined first use stays an ordinary failure. Its row draws the kit's
+blocked dot (the no-entry sign Poltergeist uses) and says "Connection
+blocked" with what unblocks it. Not verified end to end: there is no SSH
+server fake to refuse a key in the widget tests, so the pieces are
+tested apart.
+
+**Hidden live sessions.** A folded group, or a filter, that hides a
+connected or connecting server puts its dot on the header hiding it
+(`hiddenByHeader` in `server_grouping.dart` picks the innermost header
+still on screen). Header dots carry no announcement yet: the kit's
+header label is its title and count.
+
+**Switches.** The kit's `SidebarDensitySwitch` sits in the rail's bottom
+bar and, in a scope of its own, in the phone home's app bar, replacing
+the segmented button. On macOS, View opens with "Use Compact Sidebar
+Rows" or "Use Comfortable Sidebar Rows", one item whose title Dart sets
+over `seance/menu` (`setServerListDensityTitle`); the item calls
+`toggleServerListDensity`. The channel's Dart half moved from `main.dart`
+to `installMacMenu` in `app_menus.dart`, where `mac_menu_test.dart`
+drives it over a mocked channel. The Swift half was not compiled here
+(no Swift toolchain on Linux).
+
+**Filter.** The field shows from five servers again (both apps had five
+before the kit), and the count reads "N of M · ↵ opens the first" while a
+match exists. `ServerListPane.revealFilter()` returns false and latches
+nothing on an empty list, where it used to pop the field open once the
+first server arrived.
+
+**Verification.** `server_list_capture_test.dart` now renders the rail
+comfortable and compact, the rail at its 200 px minimum, a tablet rail,
+the phone home and a narrow desktop window at both densities, and a
+folded group keeping its dot. Not verified: macOS (the View menu item,
+VoiceOver), a real tablet, and the blocked state against a real server.
 
 ## The server list is the sibling sidebar (2026-09-24)
 
@@ -110,7 +188,8 @@ extent (48 dp on touch, with a 24 dp mark) and a visible "⋮"; a
 long-press opens the same verbs as a sheet. The density preference
 survives here only: comfortable adds the address as a second line,
 because touch has no hover to show the tooltip; the rail's rows are one
-line by the anatomy. Back from the terminal returns to the list with its
+line by the anatomy. (Superseded on 2026-09-25: every posture follows
+the density again, see above.) Back from the terminal returns to the list with its
 query and scroll offset, kept in the route's page storage. The back
 handling from a938373, 6643a3b and 367e4ea is untouched and its tests
 pass.
