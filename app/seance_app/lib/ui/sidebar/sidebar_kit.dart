@@ -474,7 +474,8 @@ Future<void> showSidebarMenuSheet(
 /// 11 px semibold caps, or — [nested] — a group's disclosure row among
 /// the rows. Both are one merged semantics node (header + button +
 /// expanded state + "title, N items"), toggle on tap, Enter/Space, and
-/// the expandable pattern's ←/→, and move focus with ↑/↓.
+/// the expandable pattern's ←/→ (a ← or → with nothing to fold or unfold
+/// is swallowed, so focus stays in the sidebar), and move focus with ↑/↓.
 ///
 /// The count shows only while collapsed; the chevron and the optional
 /// "+" appear on hover or keyboard focus (a nested row keeps its
@@ -565,9 +566,17 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
       node.previousFocus();
       return KeyEventResult.handled;
     }
+    // ← and → belong to the disclosure even when there is nothing to fold
+    // or unfold: let through, directional traversal would carry focus out
+    // of the sidebar into the pane beside it (Finder keeps it here).
+    final horizontal =
+        key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight;
     // Repeats may drive traversal, never activation — a held key must
     // not flicker the collapse state.
-    if (event is KeyRepeatEvent) return KeyEventResult.ignored;
+    if (event is KeyRepeatEvent) {
+      return horizontal ? KeyEventResult.handled : KeyEventResult.ignored;
+    }
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
         key == LogicalKeyboardKey.space ||
@@ -578,7 +587,7 @@ class _SidebarSectionHeaderState extends State<SidebarSectionHeader>
       widget.onToggle();
       return KeyEventResult.handled;
     }
-    return KeyEventResult.ignored;
+    return horizontal ? KeyEventResult.handled : KeyEventResult.ignored;
   }
 
   /// Keys on the "+": the arrows rejoin the walk it sits outside of. Tab
@@ -1121,6 +1130,13 @@ class _SidebarRowState extends State<SidebarRow> with _KeyboardFocusRing {
     }
     if (key == LogicalKeyboardKey.arrowUp) {
       node.previousFocus();
+      return KeyEventResult.handled;
+    }
+    // A row has nothing to open sideways, and a ← or → let through would
+    // carry focus out of the sidebar by directional traversal (Finder
+    // keeps it here, as the headers do).
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.enter ||

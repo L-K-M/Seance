@@ -955,4 +955,96 @@ void main() {
       semantics.dispose();
     });
   });
+
+  group('horizontal arrows', () {
+    testWidgets('Left and Right keep focus in the sidebar: a header folds '
+        'or unfolds and otherwise swallows them, and so does a row', (
+      tester,
+    ) async {
+      final outside = FocusNode(debugLabel: 'beside the sidebar');
+      addTearDown(outside.dispose);
+      var collapsed = false;
+      await _pump(
+        tester,
+        StatefulBuilder(
+          builder: (context, setState) => Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 160,
+                child: Column(
+                  children: [
+                    SidebarSectionHeader(
+                      headerKey: const ValueKey('h'),
+                      title: 'Servers',
+                      count: 1,
+                      collapsed: collapsed,
+                      onToggle: () => setState(() => collapsed = !collapsed),
+                    ),
+                    SidebarRow(
+                      key: const ValueKey('r'),
+                      mark: const Icon(Icons.dns_outlined, size: 16),
+                      title: 'alpha',
+                      onActivate: (_) {},
+                    ),
+                  ],
+                ),
+              ),
+              // A pane beside the rail, where directional traversal would
+              // take an arrow the sidebar let through.
+              Focus(
+                focusNode: outside,
+                child: const SizedBox(width: 60, height: 60),
+              ),
+            ],
+          ),
+        ),
+      );
+      final header = Focus.of(tester.element(find.byKey(const ValueKey('h'))));
+      final row = Focus.of(tester.element(find.text('alpha')));
+      header.requestFocus();
+      await tester.pump();
+
+      Future<void> press(LogicalKeyboardKey key, {bool repeat = false}) async {
+        if (repeat) {
+          await tester.sendKeyDownEvent(key);
+          await tester.sendKeyRepeatEvent(key);
+          await tester.sendKeyUpEvent(key);
+        } else {
+          await tester.sendKeyEvent(key);
+        }
+        await tester.pump();
+      }
+
+      // Right on an expanded header, held or not: nothing to open.
+      await press(LogicalKeyboardKey.arrowRight);
+      await press(LogicalKeyboardKey.arrowRight, repeat: true);
+      expect(header.hasPrimaryFocus, isTrue);
+      expect(collapsed, isFalse);
+
+      await press(LogicalKeyboardKey.arrowLeft);
+      expect(collapsed, isTrue);
+      // Left on a collapsed one, held or not: nothing to close.
+      await press(LogicalKeyboardKey.arrowLeft);
+      await press(LogicalKeyboardKey.arrowLeft, repeat: true);
+      expect(header.hasPrimaryFocus, isTrue);
+      expect(collapsed, isTrue);
+      // A held Right opens it once, not on every repeat.
+      await press(LogicalKeyboardKey.arrowRight, repeat: true);
+      expect(collapsed, isFalse);
+      expect(header.hasPrimaryFocus, isTrue);
+
+      row.requestFocus();
+      await tester.pump();
+      for (final key in [
+        LogicalKeyboardKey.arrowRight,
+        LogicalKeyboardKey.arrowLeft,
+      ]) {
+        await press(key);
+        await press(key, repeat: true);
+        expect(row.hasPrimaryFocus, isTrue, reason: '$key');
+      }
+      expect(outside.hasFocus, isFalse);
+    });
+  });
 }
