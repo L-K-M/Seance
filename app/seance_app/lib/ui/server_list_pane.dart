@@ -44,6 +44,8 @@ final SidebarKitStrings serverSidebarStrings = SidebarKitStrings(
   addMenu: 'New server or import',
   settings: 'Sync & settings',
   rowMenu: 'More actions',
+  compactRows: 'Compact rows',
+  comfortableRows: 'Comfortable rows',
 );
 
 /// The configured servers with their live state, in the sibling rail's
@@ -240,6 +242,12 @@ class _ServerListPaneState extends State<ServerListPane> {
         strings: serverSidebarStrings,
         background: background,
         layout: _layoutFor(context, state),
+        // The rail keeps its one-line rows; the home screen follows the
+        // density preference.
+        density:
+            _home && state.serverListDensity == ServerListDensity.comfortable
+            ? SidebarKitDensity.comfortable
+            : SidebarKitDensity.compact,
         child: Builder(builder: (context) => _body(context, state)),
       ),
     );

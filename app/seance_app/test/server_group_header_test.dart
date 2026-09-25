@@ -23,6 +23,8 @@ void main() {
       home: Scaffold(
         body: SidebarKitScope(
           strings: serverSidebarStrings,
+          // The rail's compact headers: the count shows only folded.
+          density: SidebarKitDensity.compact,
           child: SidebarSectionHeader(
             headerKey: const ValueKey('header'),
             nested: nested,

@@ -55,6 +55,11 @@ void main() {
         home: Scaffold(
           body: SidebarKitScope(
             strings: serverSidebarStrings,
+            // As the pane does: the address line is the comfortable
+            // density's, the one-line row the compact one's.
+            density: showAddress
+                ? SidebarKitDensity.comfortable
+                : SidebarKitDensity.compact,
             child: Align(
               alignment: Alignment.topLeft,
               child: SizedBox(

@@ -23,27 +23,49 @@ final _strings = SidebarKitStrings(
   addMenu: 'kit-add',
   settings: 'kit-settings',
   rowMenu: 'kit-more',
+  compactRows: 'kit-compact',
+  comfortableRows: 'kit-comfortable',
 );
+
+/// The production theme the kit paints under, for [brightness] on
+/// [platform] (a sibling's copy of this file names its own here).
+ThemeData _theme(Brightness brightness, TargetPlatform platform) =>
+    brightness == Brightness.dark
+    ? SeanceTheme.dark(platform: platform)
+    : SeanceTheme.light(platform: platform);
 
 Future<void> _pump(
   WidgetTester tester,
   Widget child, {
   TargetPlatform platform = TargetPlatform.macOS,
+  Brightness brightness = Brightness.light,
   Color? background,
+  SidebarKitLayout layout = SidebarKitLayout.rail,
+  SidebarKitDensity? density,
+  double width = 240,
 }) async {
   tester.view.physicalSize = const Size(600, 600);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
     MaterialApp(
-      theme: SeanceTheme.light(platform: platform),
+      theme: _theme(brightness, platform),
       home: Scaffold(
         body: SidebarKitScope(
           strings: _strings,
           background: background,
+          layout: layout,
+          // The kit defaults to comfortable; most of this file pins the
+          // compact rail's one-line anatomy, so compact unless asked (a
+          // list is comfortable by definition).
+          density:
+              density ??
+              (layout == SidebarKitLayout.list
+                  ? SidebarKitDensity.comfortable
+                  : SidebarKitDensity.compact),
           child: Align(
             alignment: Alignment.topLeft,
-            child: SizedBox(width: 240, child: child),
+            child: SizedBox(width: width, child: child),
           ),
         ),
       ),
@@ -400,9 +422,8 @@ void main() {
       expect((dot.border! as Border).top.color, surface);
     });
 
-    testWidgets('a subtitle adds a second line; a trailing icon shows', (
-      tester,
-    ) async {
+    testWidgets('a comfortable subtitle adds a second line; a trailing icon '
+        'shows', (tester) async {
       await _pump(
         tester,
         const SidebarRow(
@@ -413,11 +434,12 @@ void main() {
           trailingIcon: Icons.cloud_off_outlined,
           trailingText: '×2',
         ),
+        density: SidebarKitDensity.comfortable,
       );
       expect(find.text('deploy@demo:22'), findsOneWidget);
       expect(find.byIcon(Icons.cloud_off_outlined), findsOneWidget);
       expect(find.text('×2'), findsOneWidget);
-      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 40);
+      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 52);
     });
 
     testWidgets('the menu button opens the menu on desktop', (tester) async {
@@ -953,6 +975,436 @@ void main() {
       expect(find.text('kit-rename'), findsOneWidget);
       expect(find.semantics.byLabel('kit-rename'), findsOne);
       semantics.dispose();
+    });
+  });
+
+  // The two views: compact is the one-line rail the kit shipped with,
+  // comfortable the roomy two-line rows both apps drew before it.
+  group('density', () {
+    /// A mark that fills the slot the kit reserves, and reports the glyph
+    /// size the kit hands a bare icon.
+    double? glyph;
+    Widget probe() => Builder(
+      builder: (context) {
+        glyph = sidebarGlyphSize(context);
+        return SizedBox.square(
+          key: const ValueKey('mark'),
+          dimension: sidebarMarkExtent(context),
+        );
+      },
+    );
+
+    Finder titleOf(String key) => find.descendant(
+      of: find.byKey(ValueKey(key)),
+      matching: find.byType(MiddleEllipsisText),
+    );
+
+    testWidgets('the scope defaults to comfortable and tells its dependents '
+        'when the density changes', (tester) async {
+      final seen = <SidebarKitDensity>[];
+      // One instance across both pumps: only the scope's notification can
+      // rebuild it.
+      final dependent = Builder(
+        builder: (context) {
+          seen.add(SidebarKitScope.densityOf(context));
+          return const SizedBox();
+        },
+      );
+      await tester.pumpWidget(
+        SidebarKitScope(strings: _strings, child: dependent),
+      );
+      expect(seen, [SidebarKitDensity.comfortable]);
+      await tester.pumpWidget(
+        SidebarKitScope(
+          strings: _strings,
+          density: SidebarKitDensity.compact,
+          child: dependent,
+        ),
+      );
+      expect(seen, [SidebarKitDensity.comfortable, SidebarKitDensity.compact]);
+    });
+
+    test('a list is comfortable by definition', () {
+      expect(
+        () => SidebarKitScope(
+          strings: _strings,
+          layout: SidebarKitLayout.list,
+          density: SidebarKitDensity.compact,
+          child: const SizedBox(),
+        ),
+        throwsAssertionError,
+      );
+      expect(
+        sidebarHomeLayout(SidebarKitDensity.comfortable),
+        SidebarKitLayout.list,
+      );
+      expect(
+        sidebarHomeLayout(SidebarKitDensity.compact),
+        SidebarKitLayout.rail,
+      );
+    });
+
+    testWidgets('comfortable desktop rows are roomy: 52 px, a 32 px mark, a '
+        '14 px title over a 12 px second line', (tester) async {
+      await _pump(
+        tester,
+        Column(
+          children: [
+            SidebarRow(
+              key: const ValueKey('two'),
+              mark: probe(),
+              title: 'demo',
+              subtitle: 'deploy@demo',
+            ),
+            const SidebarRow(
+              key: ValueKey('one'),
+              mark: Icon(Icons.dns_outlined),
+              title: 'bare',
+            ),
+          ],
+        ),
+        density: SidebarKitDensity.comfortable,
+      );
+      expect(tester.getSize(find.byKey(const ValueKey('two'))).height, 52);
+      // Every comfortable row is one height, second line or not.
+      expect(tester.getSize(find.byKey(const ValueKey('one'))).height, 52);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('mark'))),
+        const Size(32, 32),
+      );
+      expect(glyph, 20);
+      expect(
+        tester.widget<MiddleEllipsisText>(titleOf('two')).style?.fontSize,
+        14,
+      );
+      expect(tester.widget<Text>(find.text('deploy@demo')).style?.fontSize, 12);
+      // The second line sits under the title, not beside it.
+      expect(
+        tester.getTopLeft(find.text('deploy@demo')).dy,
+        greaterThanOrEqualTo(tester.getBottomLeft(titleOf('two')).dy),
+      );
+    });
+
+    testWidgets('compact desktop rows stay one 26 px line: an 18 px mark, a '
+        '13 px title, and no second line even when a host passes one', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: probe(),
+          title: 'demo',
+          subtitle: 'deploy@demo',
+        ),
+      );
+      expect(tester.getSize(find.byKey(const ValueKey('r'))).height, 26);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('mark'))),
+        const Size(18, 18),
+      );
+      expect(glyph, 16);
+      expect(
+        tester.widget<MiddleEllipsisText>(titleOf('r')).style?.fontSize,
+        13,
+      );
+      expect(find.text('deploy@demo'), findsNothing);
+    });
+
+    testWidgets('a touch rail follows the density too', (tester) async {
+      for (final (density, extent, mark, glyphSize, twoLines) in [
+        (SidebarKitDensity.comfortable, 56.0, 32.0, 22.0, true),
+        (SidebarKitDensity.compact, 48.0, 24.0, 20.0, false),
+      ]) {
+        await _pump(
+          tester,
+          SidebarRow(
+            key: const ValueKey('r'),
+            mark: probe(),
+            title: 'demo',
+            subtitle: 'deploy@demo',
+          ),
+          platform: TargetPlatform.android,
+          density: density,
+        );
+        final reason = density.name;
+        expect(
+          tester.getSize(find.byKey(const ValueKey('r'))).height,
+          extent,
+          reason: reason,
+        );
+        expect(
+          tester.getSize(find.byKey(const ValueKey('mark'))),
+          Size(mark, mark),
+          reason: reason,
+        );
+        expect(glyph, glyphSize, reason: reason);
+        expect(
+          find.text('deploy@demo'),
+          twoLines ? findsOneWidget : findsNothing,
+          reason: reason,
+        );
+      }
+    });
+
+    testWidgets('the "⋮" follows the density unless the host says '
+        'otherwise: comfortable or touch draws it', (tester) async {
+      Widget row({bool? showMenuButton}) => SidebarRow(
+        mark: const Icon(Icons.dns_outlined),
+        title: 'demo',
+        showMenuButton: showMenuButton,
+        menuEntries: () => [
+          SidebarMenuAction(label: 'kit-open', onSelected: () {}),
+        ],
+      );
+      for (final (platform, density, shown) in [
+        (TargetPlatform.macOS, SidebarKitDensity.compact, false),
+        (TargetPlatform.macOS, SidebarKitDensity.comfortable, true),
+        (TargetPlatform.android, SidebarKitDensity.compact, true),
+        (TargetPlatform.android, SidebarKitDensity.comfortable, true),
+      ]) {
+        await _pump(tester, row(), platform: platform, density: density);
+        expect(
+          find.byTooltip('kit-more'),
+          shown ? findsOneWidget : findsNothing,
+          reason: '$platform ${density.name}',
+        );
+      }
+      await _pump(
+        tester,
+        row(showMenuButton: false),
+        density: SidebarKitDensity.comfortable,
+      );
+      expect(find.byTooltip('kit-more'), findsNothing);
+      await _pump(tester, row(showMenuButton: true));
+      expect(find.byTooltip('kit-more'), findsOneWidget);
+    });
+
+    testWidgets('the long-press sheet shows the subtitle under its title, '
+        'whatever the row draws', (tester) async {
+      await _pump(
+        tester,
+        SidebarRow(
+          key: const ValueKey('r'),
+          mark: const Icon(Icons.dns_outlined),
+          title: 'demo',
+          subtitle: 'deploy@demo',
+          onActivate: (_) {},
+          menuEntries: () => [
+            SidebarMenuAction(label: 'kit-open', onSelected: () {}),
+          ],
+        ),
+        platform: TargetPlatform.android,
+      );
+      // Compact touch rows draw no second line: the sheet is where a
+      // finger gets the fact a pointer reads from the tooltip.
+      expect(find.text('deploy@demo'), findsNothing);
+      await tester.longPress(find.byKey(const ValueKey('r')));
+      await tester.pumpAndSettle();
+      final sheet = find.byType(BottomSheet);
+      expect(sheet, findsOneWidget);
+      final title = find.descendant(of: sheet, matching: find.text('demo'));
+      final subtitle = find.descendant(
+        of: sheet,
+        matching: find.text('deploy@demo'),
+      );
+      expect(subtitle, findsOneWidget);
+      expect(
+        tester.getTopLeft(subtitle).dy,
+        greaterThanOrEqualTo(tester.getBottomLeft(title).dy),
+      );
+      expect(
+        tester.getBottomLeft(subtitle).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.text('kit-open')).dy),
+      );
+    });
+  });
+
+  group('SidebarSectionHeader density', () {
+    Visibility visibilityOf(WidgetTester tester, Finder finder) =>
+        tester.widget<Visibility>(
+          find.ancestor(of: finder, matching: find.byType(Visibility)).first,
+        );
+
+    testWidgets('comfortable headers keep the chevron, the count and the + '
+        'drawn', (tester) async {
+      Widget header({bool nested = false}) => SidebarSectionHeader(
+        title: 'Servers',
+        count: 3,
+        collapsed: false,
+        nested: nested,
+        onToggle: () {},
+        onAdd: nested ? null : () {},
+        addKey: const ValueKey('add'),
+      );
+      await _pump(tester, header(), density: SidebarKitDensity.comfortable);
+      expect(find.text('3'), findsOneWidget);
+      expect(
+        visibilityOf(tester, find.byIcon(Icons.expand_more)).visible,
+        isTrue,
+      );
+      expect(
+        visibilityOf(tester, find.byKey(const ValueKey('add'))).visible,
+        isTrue,
+      );
+
+      await _pump(
+        tester,
+        header(nested: true),
+        density: SidebarKitDensity.comfortable,
+      );
+      expect(find.text('3'), findsOneWidget);
+
+      // Compact keeps them for hover, focus, or a folded section.
+      await _pump(tester, header());
+      expect(find.text('3'), findsNothing);
+      expect(
+        visibilityOf(tester, find.byIcon(Icons.expand_more)).visible,
+        isFalse,
+      );
+      expect(
+        visibilityOf(tester, find.byKey(const ValueKey('add'))).visible,
+        isFalse,
+      );
+    });
+  });
+
+  group('SidebarDensitySwitch', () {
+    testWidgets('two halves in one capsule: the current one selected and '
+        'filled, a tap on the other reports it', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final picked = <SidebarKitDensity>[];
+      await _pump(tester, SidebarDensitySwitch(onChanged: picked.add));
+      expect(find.byIcon(Icons.density_small), findsOneWidget);
+      expect(find.byIcon(Icons.density_medium), findsOneWidget);
+
+      // The node a screen reader lands on: the half's merged one.
+      SemanticsData half(String tooltip) => find.semantics
+          .byPredicate(
+            (node) =>
+                !node.isMergedIntoParent &&
+                node.getSemanticsData().tooltip == tooltip,
+          )
+          .evaluate()
+          .single
+          .getSemanticsData();
+      final compact = half('kit-compact');
+      final comfortable = half('kit-comfortable');
+      expect(compact.flagsCollection.isButton, isTrue);
+      expect(compact.flagsCollection.isInMutuallyExclusiveGroup, isTrue);
+      expect(compact.flagsCollection.isSelected, ui.Tristate.isTrue);
+      expect(comfortable.flagsCollection.isInMutuallyExclusiveGroup, isTrue);
+      expect(comfortable.flagsCollection.isSelected, ui.Tristate.isFalse);
+      expect(comfortable.hasAction(SemanticsAction.tap), isTrue);
+
+      Color? fillOf(IconData icon) => tester
+          .widget<IconButton>(
+            find.ancestor(
+              of: find.byIcon(icon),
+              matching: find.byType(IconButton),
+            ),
+          )
+          .style
+          ?.backgroundColor
+          ?.resolve(const <WidgetState>{});
+      expect(fillOf(Icons.density_small), isNotNull);
+      expect(fillOf(Icons.density_medium), isNull);
+
+      await tester.tap(find.byTooltip('kit-comfortable'));
+      await tester.tap(find.byTooltip('kit-compact'));
+      expect(picked, [SidebarKitDensity.comfortable]);
+      semantics.dispose();
+    });
+
+    testWidgets('an explicit value wins over the scope', (tester) async {
+      await _pump(
+        tester,
+        SidebarDensitySwitch(
+          value: SidebarKitDensity.comfortable,
+          onChanged: (_) {},
+        ),
+      );
+      final button = tester.widget<IconButton>(
+        find.ancestor(
+          of: find.byIcon(Icons.density_medium),
+          matching: find.byType(IconButton),
+        ),
+      );
+      expect(
+        button.style?.backgroundColor?.resolve(const <WidgetState>{}),
+        isNotNull,
+      );
+    });
+
+    testWidgets('the bottom bar draws it before the gear only when asked, '
+        'and nothing overflows at the rail\'s 180 px minimum', (tester) async {
+      final picked = <SidebarKitDensity>[];
+      Widget bar({ValueChanged<SidebarKitDensity>? onDensityChanged}) =>
+          SidebarBottomBar(
+            settingsKey: const ValueKey('gear'),
+            addEntries: () => const [],
+            sync: const SidebarSyncChipData(
+              label: 'kit-synced · 2 min',
+              tone: SidebarSyncTone.normal,
+            ),
+            onSettings: () {},
+            onDensityChanged: onDensityChanged,
+          );
+
+      await _pump(tester, bar());
+      expect(find.byType(SidebarDensitySwitch), findsNothing);
+
+      for (final platform in [TargetPlatform.macOS, TargetPlatform.android]) {
+        await _pump(
+          tester,
+          bar(onDensityChanged: picked.add),
+          platform: platform,
+          width: 180,
+        );
+        expect(tester.takeException(), isNull, reason: '$platform');
+        final toggle = find.byType(SidebarDensitySwitch);
+        final gear = find.byKey(const ValueKey('gear'));
+        expect(toggle, findsOneWidget, reason: '$platform');
+        expect(
+          tester.getTopRight(toggle).dx,
+          lessThanOrEqualTo(tester.getTopLeft(gear).dx),
+          reason: '$platform',
+        );
+        expect(tester.getTopRight(gear).dx, lessThanOrEqualTo(180));
+      }
+      // The desktop chip still reads at the minimum, shortened.
+      await _pump(tester, bar(onDensityChanged: picked.add), width: 180);
+      expect(find.textContaining('kit-synced'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('kit-comfortable'));
+      expect(picked, [SidebarKitDensity.comfortable]);
+    });
+  });
+
+  group('SidebarFilterField count', () {
+    testWidgets('the count reads under the field, where a long hint fits', (
+      tester,
+    ) async {
+      const hint = '2 of 9 · ↵ opens the first';
+      Widget field(String query) => SidebarFilterField(
+        fieldKey: const ValueKey('f'),
+        query: query,
+        countText: hint,
+        onChanged: (_) {},
+        onDismiss: () {},
+      );
+      await _pump(tester, field('web'), width: 180);
+      expect(tester.takeException(), isNull);
+      expect(find.text(hint), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text(hint)).dy,
+        greaterThanOrEqualTo(
+          tester.getBottomLeft(find.byKey(const ValueKey('f'))).dy,
+        ),
+      );
+      // No query, no count.
+      await _pump(tester, field(''), width: 180);
+      expect(find.text(hint), findsNothing);
     });
   });
 
