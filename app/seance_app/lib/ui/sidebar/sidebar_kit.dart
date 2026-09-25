@@ -152,9 +152,9 @@ const _compactDesktop = _RowMetrics(
   accentGap: 4,
 );
 
-/// Compact on touch: 40 dp rows, Material's dense list item (compact is
-/// the density picked to fit more rows than the 56 dp list), the mark and
-/// dot scaled with them.
+/// Compact on touch: 40 dp rows, deliberately tighter than Material's
+/// 48 dp one-line list item so compact fits more rows than the 56 dp
+/// list, the mark and dot scaled with them.
 const _compactTouch = _RowMetrics(
   rowExtent: null,
   markExtent: 24,
