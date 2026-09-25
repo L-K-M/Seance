@@ -9,7 +9,10 @@ import 'sidebar/sidebar_kit.dart';
 
 /// One server's row in the list, drawn by the sibling kit's [SidebarRow]
 /// (Poltergeist's plan, 10 §5): the server's badge with its one status dot,
-/// the name, and `×N` while it has several tabs open.
+/// the name, and `×N` while it has several tabs open. At either density the
+/// server's colour runs down the row's edge and a connected server's badge
+/// wears the green ring; a comfortable row adds the address, or the state
+/// that leads it, as a second line.
 ///
 /// Public so a widget test can assert what the row says without standing up
 /// an `AppState`: the dot and the sync-exclusion mark are pictures, and what
