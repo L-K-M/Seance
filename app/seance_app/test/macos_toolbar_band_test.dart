@@ -209,6 +209,47 @@ void main() {
     await unmount(tester);
   });
 
+  testWidgets('macOS: the dividers still resize from the keyboard', (
+    tester,
+  ) async {
+    final band = ValueNotifier(true);
+    addTearDown(band.dispose);
+    await pumpShell(tester, platform: TargetPlatform.macOS, band: band);
+    expect(find.byType(HeaderToolbar), findsOneWidget);
+
+    Future<double> stepRight(Key handleKey, Key paneKey) async {
+      final handle = find.byKey(handleKey);
+      Focus.of(
+        tester.element(
+          find.descendant(of: handle, matching: find.byType(GestureDetector)),
+        ),
+      ).requestFocus();
+      await tester.pump();
+      final before = tester.getSize(find.byKey(paneKey)).width;
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      return tester.getSize(find.byKey(paneKey)).width - before;
+    }
+
+    // The rail's handle sits inside the band's passthrough, and the
+    // utility handle below the header; both keep their keyboard steps.
+    expect(
+      await stepRight(
+        AdaptivePaneLayout.listResizeHandleKey,
+        AdaptivePaneLayout.listPaneKey,
+      ),
+      16,
+    );
+    expect(
+      await stepRight(
+        AdaptivePaneLayout.utilityResizeHandleKey,
+        AdaptivePaneLayout.utilityPaneKey,
+      ),
+      -16,
+    );
+    await unmount(tester);
+  });
+
   testWidgets('macOS: a pushed route keeps its controls below the band', (
     tester,
   ) async {
