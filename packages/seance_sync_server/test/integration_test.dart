@@ -207,10 +207,12 @@ void main() {
 
     await expectLater(
       SyncEngine(store).sync(client),
-      throwsA(isA<ApiError>()
-          .having((e) => e.code, 'code', 'payload_too_large')),
+      throwsA(isA<SyncRecordsRefused>()
+          .having((e) => e.code, 'code', 'payload_too_large')
+          .having((e) => e.recordIds, 'recordIds', ['huge'])),
       reason: 'the record past the blob cap can never be accepted, so the '
-          'failure must still surface rather than be swallowed',
+          'failure must still surface rather than be swallowed, and it names '
+          'that record: the server\'s 413 reaches the engine as its own code',
     );
 
     final onServer = await client.pull(since: 0);

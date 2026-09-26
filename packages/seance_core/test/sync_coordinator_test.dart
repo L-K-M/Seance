@@ -2899,6 +2899,168 @@ void main() {
       );
     });
   });
+
+  group('a record the server refuses as too large', () {
+    // Snippet bodies have no cap, and an operator can lower the server's
+    // per-record limit below what a config with an image mark seals to. Such
+    // a record is refused on every round, and it used to end the round before
+    // anything pulled reached the stores: the device never saw another
+    // device's edit or deletion again, and each sync reported a 413 that did
+    // not say which record was to blame.
+    const cap = 64 * 1024;
+
+    SyncCoordinator coord(
+      String deviceId,
+      ConfigStore configStore, {
+      SnippetStore? snippets,
+      TombstoneStore? tombstones,
+    }) =>
+        SyncCoordinator(
+          configStore: configStore,
+          hostKeyStore: InMemoryHostKeyStore(),
+          snippetStore: snippets,
+          codec: _sharedCodec,
+          // Fresh every round, as `AppServices.runSync` builds it.
+          local: InMemoryLocalRecordStore(),
+          deviceId: deviceId,
+          tombstoneStore: tombstones,
+        );
+
+    Snippet script(int bodyBytes, int updatedAt) => Snippet(
+          id: 'big',
+          title: 'deploy.sh',
+          body: 'x' * bodyBytes,
+          createdAt: 1,
+          updatedAt: updatedAt,
+        );
+
+    test('does not keep the rest of the round from landing', () async {
+      final remote = _BlobCapServer(cap);
+      final cfgA = InMemoryConfigStore();
+      final cfgB = InMemoryConfigStore();
+      final snippetsB = InMemorySnippetStore();
+      final tombstonesB = InMemoryTombstoneStore();
+      await cfgA.putServer(server('s1', 'alpha', 10));
+      await cfgA.putServer(server('s2', 'beta', 10));
+      await coord('A', cfgA).run(remote);
+      await coord('B', cfgB, snippets: snippetsB, tombstones: tombstonesB)
+          .run(remote);
+
+      // B saves a pasted script past the cap and deletes a server; A renames
+      // the other one.
+      await snippetsB.putSnippet(script(100 * 1024, 20));
+      await cfgB.deleteServer('s2');
+      await tombstonesB.add(
+          EncryptedRecord.tombstone(id: 's2', updatedAt: 25, deviceId: 'B'));
+      await cfgA.putServer(server('s1', 'alpha-renamed', 30));
+      await coord('A', cfgA).run(remote);
+      remote.refusedPushes = 0;
+
+      final failure = await _refusal(
+          coord('B', cfgB, snippets: snippetsB, tombstones: tombstonesB)
+              .run(remote));
+
+      expect(failure.recordIds, ['snippet:big'],
+          reason: 'the round still fails, and names the record to blame');
+      expect(failure.records.single.kind, RecordKind.snippet);
+      expect(failure.records.single.name, 'deploy.sh');
+      expect(failure.toString(), contains('Snippet "deploy.sh"'));
+      expect(failure.code, 'payload_too_large',
+          reason: 'still the server\'s own error, for callers that knew it');
+      expect(failure.outcome.pulled, greaterThan(0));
+      expect(failure.outcome.pushed, greaterThan(0),
+          reason: 'the tombstone the round did land is still counted');
+      expect((await cfgB.getServer('s1'))!.label, 'alpha-renamed',
+          reason: 'what the round pulled still reaches the stores');
+      expect(remote.stored('s2')!.deleted, isTrue,
+          reason: 'the deletion is still pushed');
+      expect(await tombstonesB.all(), isEmpty,
+          reason: 'and its tombstone is pruned once the server has it');
+      expect(remote.stored('snippet:big'), isNull);
+      expect((await snippetsB.listSnippets()).single.body.length, 100 * 1024,
+          reason: 'the refused snippet stays on the device that has it');
+      expect(remote.refusedPushes, 1,
+          reason: 'a record the server refused is not re-sent on every one '
+              'of the engine\'s rounds');
+    });
+
+    test('is retried on later rounds, and lands once it fits', () async {
+      final remote = _BlobCapServer(cap);
+      final snippetsB = InMemorySnippetStore();
+      await snippetsB.putSnippet(script(100 * 1024, 20));
+      await _refusal(
+          coord('B', InMemoryConfigStore(), snippets: snippetsB).run(remote));
+      await _refusal(
+          coord('B', InMemoryConfigStore(), snippets: snippetsB).run(remote));
+      expect(remote.refusedPushes, 2,
+          reason: 'each round tries again, in case the limit was raised');
+
+      await snippetsB.putSnippet(script(1024, 40));
+      await coord('B', InMemoryConfigStore(), snippets: snippetsB).run(remote);
+
+      final snippetsA = InMemorySnippetStore();
+      await coord('A', InMemoryConfigStore(), snippets: snippetsA).run(remote);
+      expect((await snippetsA.listSnippets()).single.body.length, 1024);
+    });
+
+    test('names a server by its label', () async {
+      final remote = _BlobCapServer(cap);
+      final cfg = InMemoryConfigStore();
+      await cfg.putServer(
+          server('s1', 'prod', 10).copyWith(loginScript: 'x' * (100 * 1024)));
+
+      final failure = await _refusal(coord('A', cfg).run(remote));
+
+      expect(failure.records.single.kind, RecordKind.serverConfig);
+      expect(failure.toString(), startsWith('Server "prod" is too large'));
+    });
+
+    test('is reported by its id when the mirror cannot read it back',
+        () async {
+      // Naming the record is only for the message; a store that fails to
+      // read it back must not replace the refusal with its own error, or
+      // the caller never learns the round applied what it pulled.
+      final remote = _BlobCapServer(cap);
+      final snippets = InMemorySnippetStore();
+      await snippets.putSnippet(script(100 * 1024, 20));
+
+      final failure = await _refusal(SyncCoordinator(
+        configStore: InMemoryConfigStore(),
+        hostKeyStore: InMemoryHostKeyStore(),
+        snippetStore: snippets,
+        codec: _sharedCodec,
+        local: _UnreadableRecordStore('snippet:big'),
+        deviceId: 'B',
+      ).run(remote));
+
+      expect(failure.recordIds, ['snippet:big']);
+      expect(failure.records.single.kind, RecordKind.unknown);
+      expect(failure.records.single.name, isNull);
+    });
+
+    test('any other push failure still ends the round', () async {
+      final remote = _FailingPushServer();
+      final cfg = InMemoryConfigStore();
+      await cfg.putServer(server('s1', 'alpha', 10));
+
+      await expectLater(
+        coord('A', cfg).run(remote),
+        throwsA(isA<ApiError>()
+            .having((e) => e.code, 'code', 'storage_busy')
+            .having((e) => e, 'error', isNot(isA<SyncRecordsRefused>()))),
+      );
+    });
+  });
+}
+
+/// Awaits a round that must end in [SyncRecordsRefused], and returns it.
+Future<SyncRecordsRefused> _refusal(Future<Object?> round) async {
+  try {
+    await round;
+  } on SyncRecordsRefused catch (error) {
+    return error;
+  }
+  fail('the round was expected to report a refused record');
 }
 
 /// One key for every device in this group: they are one account's devices, so
@@ -2998,4 +3160,60 @@ class _WithheldKeyStore implements AssistantSettingsStore {
   @override
   Future<void> putAssistantSettings(AssistantSettings value) async =>
       settings = value;
+}
+
+/// A [FakeServer] that refuses an over-sized blob the way the real server
+/// does: a 413 for the whole push, with the cap advertised on every pull so
+/// the client sends such a record alone.
+class _BlobCapServer extends FakeServer {
+  final int maxBlobBytes;
+
+  /// Pushes refused for carrying a blob past [maxBlobBytes].
+  int refusedPushes = 0;
+
+  _BlobCapServer(this.maxBlobBytes);
+
+  @override
+  Future<PullResponse> pull({required int since}) async {
+    final response = await super.pull(since: since);
+    return PullResponse(
+      records: response.records,
+      latestSeq: response.latestSeq,
+      limits: PushLimits(maxBlobBytes: maxBlobBytes),
+    );
+  }
+
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) async {
+    if (records.any((r) => r.blob.length > maxBlobBytes)) {
+      refusedPushes++;
+      throw ApiError(
+        code: 'payload_too_large',
+        message: 'A record blob exceeds the $maxBlobBytes-byte limit',
+      );
+    }
+    return super.push(records);
+  }
+}
+
+/// A mirror whose read of one record fails, as a store with an I/O or
+/// decode error would.
+class _UnreadableRecordStore extends InMemoryLocalRecordStore {
+  final String unreadableId;
+
+  _UnreadableRecordStore(this.unreadableId);
+
+  @override
+  Future<EncryptedRecord?> getRecord(String id) async {
+    if (id == unreadableId) throw StateError('cannot read $id');
+    return super.getRecord(id);
+  }
+}
+
+/// A server whose storage fails every push: a failure no record is to blame
+/// for.
+class _FailingPushServer extends FakeServer {
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) async =>
+      throw const ApiError(code: 'storage_busy', message: 'Storage is busy');
 }
