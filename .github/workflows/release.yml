@@ -313,7 +313,7 @@ jobs:
             type=semver,pattern={{version}},value=${{ inputs.tag || github.ref_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag || github.ref_name }}
             type=raw,value=latest
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           # Build context is the repo root so the pub workspace resolves
           # (same contract as the local `docker build -f … .`).
