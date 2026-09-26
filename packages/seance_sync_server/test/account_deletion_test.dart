@@ -36,11 +36,15 @@ Future<String> _seed(
   return storage.createToken(username);
 }
 
-Future<void> _expectAccountIntact(SqliteStorage storage, String token) async {
-  expect(await storage.getAccount(_username), isNotNull);
-  expect(await storage.usernameForToken(token), _username);
-  expect(await storage.latestSeq(_username), 1);
-  final records = await storage.recordsSince(_username, 0);
+Future<void> _expectAccountIntact(
+  SqliteStorage storage,
+  String token, {
+  String username = _username,
+}) async {
+  expect(await storage.getAccount(username), isNotNull);
+  expect(await storage.usernameForToken(token), username);
+  expect(await storage.latestSeq(username), 1);
+  final records = await storage.recordsSince(username, 0);
   expect(records.single.id, 'record');
   expect(records.single.blob, [1, 2, 3]);
 }
@@ -71,6 +75,23 @@ void main() {
       await _expectAccountIntact(storage, token);
       expect(database.autocommit, isTrue);
 
+      final response =
+          await SyncServer(
+            storage: storage,
+            settings: ServerSettings(),
+          ).handler(
+            Request(
+              'DELETE',
+              Uri.parse('http://localhost/v1/account'),
+              headers: {'authorization': 'Bearer $token'},
+            ),
+          );
+      expect(response.statusCode, 500);
+      final error = jsonDecode(await response.readAsString());
+      expect(error['error'], 'internal_error');
+      expect(error.toString(), isNot(contains('injected deletion failure')));
+      await _expectAccountIntact(storage, token);
+
       database.execute('DROP TRIGGER fail_delete');
       await storage.deleteAccount(_username);
       await _expectAccountDeleted(storage, token);
@@ -92,10 +113,7 @@ void main() {
       storage = SqliteStorage.open(path);
 
       await _expectAccountDeleted(storage, token);
-      expect(await storage.getAccount('bob'), isNotNull);
-      expect(await storage.usernameForToken(otherToken), 'bob');
-      expect(await storage.latestSeq('bob'), 1);
-      expect(await storage.recordsSince('bob', 0), hasLength(1));
+      await _expectAccountIntact(storage, otherToken, username: 'bob');
     },
   );
 

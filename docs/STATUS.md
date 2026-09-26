@@ -3,12 +3,6 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
-Sync account deletion now removes the account, tokens, records and sequence
-counter in one SQLite write transaction. Failure rolls back the whole deletion;
-writer contention returns the existing retryable `503 storage_busy` response.
-Failure-injection tests cover each table, retry and persisted deletion. Token
-hashing/revocation and concurrent login/deletion lifecycle work remain separate.
-
 Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
@@ -1191,6 +1185,12 @@ regression failed against pre-privacy `41d5261` (no throw; empty entries
 returned) and passes on main. All 457 app tests pass with clean analysis.
 
 ## Test inventory (what proves what)
+
+Sync account deletion removes the account, tokens, records and sequence counter
+in one SQLite write transaction. Failure-injection tests cover every table,
+complete rollback, retry, persisted deletion and HTTP error responses; writer
+contention returns the retryable `503 storage_busy` response. Token hashing,
+revocation and concurrent login/deletion lifecycle work remain separate.
 
 - `packages/seance_protocol/test/crypto_test.dart` — KDF determinism + domain separation,
   seal/open round-trip, wrong-key & tamper rejection, auth-verifier hashing,
