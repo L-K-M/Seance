@@ -860,7 +860,7 @@ not certify later commits or native behavior.
 
 | PR | Final reviewed head | Remote checks and review |
 |---|---|---|
-| #132 | `8bfd0eb` | Eight build/test checks passed, including all five client builds and Docker. Five assessments completed; the fifth was a full review with no agreed important finding in the implemented forms. A sixth full assessment of this same head is running; its outcome is pending. |
+| #132 | `8bfd0eb` | Eight build/test checks passed, including all five client builds, package/app tests and Docker; both final full-review checks passed. Six assessments completed; the final two were full reviews of this same revision with no agreed important finding in the implemented forms. One superseded hybrid refresh was cancelled and is excluded. |
 | #133 | `659e034` | All nine checks passed, including five client builds, package/app tests, Docker and review. Two completed distinct-revision assessments, no agreed important findings. |
 | #134 | `1322090` | All nine checks passed, including five client builds, package/app tests, Docker and review. Two completed full assessments on distinct revisions, no agreed important findings. |
 
@@ -928,3 +928,23 @@ format context and their own tests. The superseded hybrid refresh had included
 inherited main changes; it was cancelled and replaced with a full-current-PR
 assessment, not counted as a completed round. The shared reviewer-scope task
 is recorded in Poltergeist's ANALYSIS.md.
+
+The sixth assessment completed successfully at `8bfd0eb` after three output-limit
+failures and smaller-chunk retries; it did not time out. Its proposed
+`RangeError` is prevented by the existing guard: an emitted value starts at or
+after `match.end`, and that end cannot precede `copiedThrough`. Its generic
+`env`/`FOO` examples are not recognized secret labels. The escaped-space claim
+overlooks the later `=` branch's `_shellWordEnd` result; the whitespace claim
+overlooks the assignment regex's trailing whitespace consumption. Built-in
+masking and scanner/provider tests are present. These claims and the repeated
+synthetic-fixture warning were rejected with source/test evidence; seven direct
+probes of cited inputs and equivalent recognized labels passed. The stated
+YAML/dynamic-shell gaps remain tracked work, not a secrecy guarantee.
+
+Optional mock-client teardown, request-count diagnostics, label-list linking,
+phase-order documentation, assertion wording and tighter benchmark timing were
+deferred. Reinstating a value-length floor or guessing that ordinary-looking
+words are public would expose valid short/word-based secrets. The final two
+full assessments establish the requested feedback steady state on one revision;
+they are not two distinct-revision rounds under the repository's default metric.
+The PR remains open for owner review and merging.
