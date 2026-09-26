@@ -125,5 +125,15 @@
   keeps others from reading or writing it, such as a 0600 key or an
   ordinary 0644 file, is staged owner-only while it uploads, so other users
   on the server can neither read the new bytes nor write into them.
+- Terminal: find in the scrollback with ⌘F on a Mac or iPad and
+  Ctrl+Shift+F elsewhere, or Find… in the terminal's right-click menu;
+  plain Ctrl+F still goes to the shell. A small bar at the top right
+  searches the whole scrollback, matching text that wraps across rows,
+  highlights every hit and marks the current one, and counts them ("3 of
+  17"). Enter and Shift+Enter, ⌘G and ⇧⌘G, or F3 and Shift+F3 move between
+  hits, the terminal scrolls to the current one, Aa makes the search match
+  case, and Escape closes the bar and returns you to the shell. New output
+  updates the hits while the bar is open, and the terminal does not resize
+  when it opens.
 
 Earlier history lives in the commit log and any GitHub releases.

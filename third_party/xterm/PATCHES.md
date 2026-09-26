@@ -404,6 +404,34 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
       group a link's cells for hover highlighting, which this terminal does not
       do; targets containing semicolons are rejoined rather than truncated.
 
+### Search highlights (regressions: `test/src/ui/controller_test.dart`, `test/src/core/buffer/buffer_test.dart`)
+
+31. **Highlights can recolour cells instead of covering them**
+    (`ui/controller.dart#highlight`, `ui/render.dart#_collectRecolors`,
+    `ui/painter.dart#paintLine`): upstream painted a highlight as a rect over
+    the glyphs, so the opaque `searchHitBackground` hid the very text it
+    marked. A highlight given a `foreground` is now painted as the covered
+    cells' own background and foreground (RGB, alpha dropped), so the fill
+    sits under the text and the text takes a colour chosen to read on it
+    (`searchHitForeground`). Only visible rows are visited, however far a
+    highlight reaches (the S4-20 culling, for this path). Where two overlap,
+    the newest wins, as with overlays. Highlights without a foreground keep
+    upstream's overlay.
+
+32. **Highlights anchored in the other buffer are not painted**
+    (`ui/render.dart#_visibleRange`): a highlight anchored in the main
+    buffer painted at its row numbers over the alternate screen (vim, less).
+    Both anchors must belong to the active buffer, as selections already do
+    (patch 15).
+
+33. **Anchors can detach on trim** (`core/buffer/line.dart#AnchorTrimBehavior`,
+    `Buffer.createAnchor`/`createAnchorFromOffset`): patch 9 made every
+    anchor on a trimmed line migrate to the new oldest line, right for a
+    selection and wrong for a search hit, which would collapse onto row 0
+    and linger there. `onTrim: AnchorTrimBehavior.detach` disposes the
+    anchor with its line instead (ring-buffer eviction and CSI 3J alike);
+    `migrate` stays the default.
+
 ### App-layer notes (outside this package)
 
 - The app passes `shortcuts: {}` and instead routes ⌘C/⌘V/⌘A on

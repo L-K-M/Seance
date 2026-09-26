@@ -1,4 +1,4 @@
-import 'dart:math' show max;
+import 'dart:math' show max, min;
 import 'dart:ui';
 
 import 'package:flutter/rendering.dart';
@@ -654,11 +654,14 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final effectFirstLine = firstLine.clamp(0, lines.length - 1);
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
 
+    final recolor = _collectRecolors(effectFirstLine, effectLastLine);
+
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       _painter.paintLine(
         canvas,
         offset.translate(0, (i * charHeight + _lineOffset).truncateToDouble()),
         lines[i],
+        recolor?[i - effectFirstLine],
       );
     }
 
@@ -749,6 +752,51 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     }
   }
 
+  /// [seance fork] The whole range of [highlight] when any of it is on
+  /// screen, or null when none is; callers clip it to the viewport. A highlight anchored in the other buffer (the main one
+  /// while vim holds the alternate screen, or the reverse) is never visible:
+  /// its rows index a different set of lines.
+  BufferRange? _visibleRange(
+    TerminalHighlight highlight,
+    int firstLine,
+    int lastLine,
+  ) {
+    if (!_terminal.buffer.ownsAnchor(highlight.p1) ||
+        !_terminal.buffer.ownsAnchor(highlight.p2)) {
+      return null;
+    }
+    final range = highlight.range?.normalized;
+    if (range == null || range.begin.y > lastLine || range.end.y < firstLine) {
+      return null;
+    }
+    return range;
+  }
+
+  /// [seance fork] The spans of the highlights that recolour cells
+  /// ([TerminalHighlight.foreground]), per visible line — index 0 is
+  /// [firstLine] — or null when there are none. Only on-screen rows are
+  /// visited, however far a highlight reaches into the scrollback.
+  List<List<CellRecolor>?>? _collectRecolors(int firstLine, int lastLine) {
+    List<List<CellRecolor>?>? byLine;
+    for (final highlight in _controller.highlights) {
+      final foreground = highlight.foreground;
+      if (foreground == null) continue;
+      final range = _visibleRange(highlight, firstLine, lastLine);
+      if (range == null) continue;
+      byLine ??= List.filled(lastLine - firstLine + 1, null);
+      final last = min(range.end.y, lastLine);
+      for (var y = max(range.begin.y, firstLine); y <= last; y++) {
+        (byLine[y - firstLine] ??= []).add(CellRecolor(
+          y == range.begin.y ? range.begin.x : 0,
+          y == range.end.y ? range.end.x : _terminal.viewWidth,
+          highlight.color.toARGB32(),
+          foreground.toARGB32(),
+        ));
+      }
+    }
+    return byLine;
+  }
+
   void _paintHighlights(
     Canvas canvas,
     List<TerminalHighlight> highlights,
@@ -756,13 +804,11 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     int lastLine,
   ) {
     for (var highlight in _controller.highlights) {
-      final range = highlight.range?.normalized;
+      // [seance fork] Recolouring highlights were painted with their lines.
+      if (highlight.foreground != null) continue;
 
-      if (range == null ||
-          range.begin.y > lastLine ||
-          range.end.y < firstLine) {
-        continue;
-      }
+      final range = _visibleRange(highlight, firstLine, lastLine);
+      if (range == null) continue;
 
       for (var segment in range.toSegments()) {
         if (segment.line < firstLine) {

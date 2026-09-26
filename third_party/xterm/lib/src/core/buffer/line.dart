@@ -356,8 +356,11 @@ class BufferLine with IndexedItem {
     return builder.toString();
   }
 
-  CellAnchor createAnchor(int offset) {
-    final anchor = CellAnchor(offset, owner: this);
+  CellAnchor createAnchor(
+    int offset, {
+    AnchorTrimBehavior onTrim = AnchorTrimBehavior.migrate,
+  }) {
+    final anchor = CellAnchor(offset, owner: this, onTrim: onTrim);
     _anchors.add(anchor);
     return anchor;
   }
@@ -367,12 +370,18 @@ class BufferLine with IndexedItem {
   /// base sits in a trimmed line then degrades to "from the top of the
   /// remaining scrollback" instead of silently vanishing (which used to break
   /// select-all — anchored at row 0, the first line to trim — the moment
-  /// output streamed).
+  /// output streamed). Anchors created with [AnchorTrimBehavior.detach]
+  /// mark this line's text and nothing else, so they go with it.
   @override
   void migrateOnEvict(covariant BufferLine? successor) {
     if (successor == null) return;
     for (final anchor in _anchors.toList()) {
-      anchor.reparent(successor, 0);
+      switch (anchor.onTrim) {
+        case AnchorTrimBehavior.migrate:
+          anchor.reparent(successor, 0);
+        case AnchorTrimBehavior.detach:
+          anchor.dispose();
+      }
     }
   }
 
@@ -389,13 +398,32 @@ class BufferLine with IndexedItem {
   }
 }
 
+/// [seance fork] What a [CellAnchor] does when the line it sits on is trimmed
+/// off the top of a full scrollback (or cleared from it).
+enum AnchorTrimBehavior {
+  /// Move to the start of the new oldest line, so a range that began in
+  /// trimmed output now begins at the top of what is left (selections).
+  migrate,
+
+  /// Detach, as if disposed, for an anchor that marks text on its line and
+  /// means nothing once that text is gone (search hits).
+  detach,
+}
+
 /// A handle to a cell in a [BufferLine] that can be used to track the location
 /// of the cell. Anchors are guaranteed to be stable, retaining their relative
 /// position to each other after mutations to the buffer.
 class CellAnchor {
-  CellAnchor(int offset, {BufferLine? owner})
-      : _offset = offset,
+  CellAnchor(
+    int offset, {
+    BufferLine? owner,
+    this.onTrim = AnchorTrimBehavior.migrate,
+  })  : _offset = offset,
         _owner = owner;
+
+  /// [seance fork] What this anchor does when its line is trimmed off a full
+  /// scrollback.
+  final AnchorTrimBehavior onTrim;
 
   int _offset;
 

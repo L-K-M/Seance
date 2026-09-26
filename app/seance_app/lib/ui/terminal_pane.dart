@@ -9,6 +9,7 @@ import 'package:xterm/xterm.dart';
 import '../app_state.dart';
 import '../family_hues.dart';
 import '../main.dart';
+import '../services/terminal_search.dart';
 import '../services/web_links.dart';
 import '../services/xterm_engine.dart';
 import '../theme.dart';
@@ -22,6 +23,7 @@ import 'server_list_pane.dart';
 import 'session_label.dart';
 import 'sidebar_panel.dart';
 import 'terminal_appearance.dart';
+import 'terminal_find_bar.dart';
 import 'terminal_keyboard_bar.dart';
 import 'top_toast.dart';
 
@@ -1021,6 +1023,15 @@ class _SessionViewState extends State<_SessionView> {
   final FocusNode _focus = FocusNode();
   // Our own controller so the copy/paste menu can read (and set) the selection.
   final TerminalController _terminalController = TerminalController();
+
+  // Find in scrollback: the view's key and scroll position let a search
+  // reveal a hit; the session exists only while the find bar is open.
+  final GlobalKey<TerminalViewState> _viewKey = GlobalKey();
+  final ScrollController _scroll = ScrollController();
+  final GlobalKey<TerminalFindBarState> _findBarKey = GlobalKey();
+  TerminalSearchSession? _search;
+  String _lastFindQuery = '';
+  bool _lastFindCaseSensitive = false;
   @override
   void initState() {
     super.initState();
@@ -1053,8 +1064,10 @@ class _SessionViewState extends State<_SessionView> {
     if (identical(widget.tab.controller, _terminalController)) {
       widget.tab.controller = null;
     }
+    _search?.dispose();
     _focus.dispose();
     _terminalController.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -1088,13 +1101,35 @@ class _SessionViewState extends State<_SessionView> {
     // anchoring, edge autoscroll) live in the vendored xterm fork — one owner
     // in the gesture arena. The old app-side Listener machine raced xterm's
     // recognizers: its selections were force-cleared ~100ms later.
+    _search?.theme = appearance.theme;
+    final search = _search;
     return ColoredBox(
       // The padding around the grid is outside xterm's own painted area, so
       // without this the app surface would frame the terminal in a mismatched
       // color at every edge.
       color: appearance.theme.background,
-      child: TerminalView(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          _terminalView(tab, appearance),
+          if (search != null)
+            TerminalFindBarOverlay(
+              child: TerminalFindBar(
+                key: _findBarKey,
+                session: search,
+                onClose: _closeFind,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _terminalView(TerminalSession tab, TerminalAppearance appearance) =>
+      TerminalView(
         tab.engine.terminal,
+        key: _viewKey,
+        scrollController: _scroll,
         controller: _terminalController,
         focusNode: _focus,
         autofocus: widget.isActive,
@@ -1111,8 +1146,52 @@ class _SessionViewState extends State<_SessionView> {
         onSecondaryTapDown: (details, _) =>
             _showContextMenu(context, details.globalPosition),
         padding: const EdgeInsets.all(6),
-      ),
-    );
+      );
+
+  /// Opens the find bar, or focuses it when it is already open. A one-line
+  /// selection becomes the query; otherwise the last query comes back.
+  void _openFind() {
+    if (_search != null) {
+      _findBarKey.currentState?.focusQuery();
+      return;
+    }
+    final terminal = widget.tab.engine.terminal;
+    final selection = _terminalController.selection;
+    final selected = selection == null
+        ? ''
+        : terminal.buffer.getText(selection).trim();
+    final query =
+        selected.isNotEmpty &&
+            !selected.contains('\n') &&
+            selected.length <= 200
+        ? selected
+        : _lastFindQuery;
+    setState(() {
+      _search =
+          TerminalSearchSession(
+              terminal: terminal,
+              controller: _terminalController,
+              viewport: TerminalViewSearchViewport(_viewKey, _scroll),
+              theme: TerminalAppearance.resolve(
+                widget.state.services.settings,
+                Theme.of(context).brightness,
+              ).theme,
+            )
+            ..caseSensitive = _lastFindCaseSensitive
+            ..search(query);
+    });
+  }
+
+  /// Closes the find bar, clearing its highlights, and hands the keyboard
+  /// back to the shell.
+  void _closeFind() {
+    final search = _search;
+    if (search == null) return;
+    _lastFindQuery = search.query;
+    _lastFindCaseSensitive = search.caseSensitive;
+    setState(() => _search = null);
+    search.dispose();
+    _focus.requestFocus();
   }
 
   Future<void> _openLink(Uri uri) async {
@@ -1171,6 +1250,15 @@ class _SessionViewState extends State<_SessionView> {
         ServerListPane.revealFilter()) {
       return KeyEventResult.handled;
     }
+    // Find in scrollback: ⌘F / Ctrl+Shift+F. Plain Ctrl+F stays readline's
+    // forward-char, and a held Alt is the filter chord above or, on
+    // Windows, AltGr typing a character.
+    if (clip &&
+        !keys.isAltPressed &&
+        event.logicalKey == LogicalKeyboardKey.keyF) {
+      _openFind();
+      return KeyEventResult.handled;
+    }
     // Open another tab for this server: ⌘T / Ctrl+Shift+T.
     if (clip && event.logicalKey == LogicalKeyboardKey.keyT) {
       widget.state.newTab(widget.tab.config);
@@ -1207,7 +1295,8 @@ class _SessionViewState extends State<_SessionView> {
     return KeyEventResult.ignored;
   }
 
-  /// Right-click menu: Copy (when there's a selection), Paste, Select all.
+  /// Right-click menu: Copy (when there's a selection), Paste, Select all,
+  /// Find.
   Future<void> _showContextMenu(
     BuildContext context,
     Offset globalPosition,
@@ -1231,6 +1320,7 @@ class _SessionViewState extends State<_SessionView> {
         const PopupMenuItem(value: 'paste', child: Text('Paste')),
         const PopupMenuDivider(),
         const PopupMenuItem(value: 'selectAll', child: Text('Select all')),
+        const PopupMenuItem(value: 'find', child: Text('Find…')),
       ],
     );
     switch (choice) {
@@ -1240,6 +1330,8 @@ class _SessionViewState extends State<_SessionView> {
         await terminalPaste(widget.tab);
       case 'selectAll':
         terminalSelectAll(widget.tab);
+      case 'find':
+        _openFind();
     }
   }
 }

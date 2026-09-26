@@ -612,13 +612,23 @@ class Buffer {
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
-  CellAnchor createAnchor(int x, int y) {
-    return lines[y].createAnchor(x);
+  ///
+  /// [seance fork] [onTrim] decides what the anchor does when its line is
+  /// trimmed off the scrollback; see [AnchorTrimBehavior].
+  CellAnchor createAnchor(
+    int x,
+    int y, {
+    AnchorTrimBehavior onTrim = AnchorTrimBehavior.migrate,
+  }) {
+    return lines[y].createAnchor(x, onTrim: onTrim);
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
-  CellAnchor createAnchorFromOffset(CellOffset offset) {
-    return lines[offset.y].createAnchor(offset.x);
+  CellAnchor createAnchorFromOffset(
+    CellOffset offset, {
+    AnchorTrimBehavior onTrim = AnchorTrimBehavior.migrate,
+  }) {
+    return lines[offset.y].createAnchor(offset.x, onTrim: onTrim);
   }
 
   CellAnchor createAnchorFromCursor() {

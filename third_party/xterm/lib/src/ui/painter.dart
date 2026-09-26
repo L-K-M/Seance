@@ -139,16 +139,21 @@ class TerminalPainter {
 
   /// Paints [line] to [canvas] at [offset]. The x offset of [offset] is usually
   /// 0, and the y offset is the top of the line.
+  ///
+  /// [seance fork] Cells inside one of [recolor]'s spans are painted in that
+  /// span's colours instead of their own.
   void paintLine(
     Canvas canvas,
     Offset offset,
-    BufferLine line,
-  ) {
+    BufferLine line, [
+    List<CellRecolor>? recolor,
+  ]) {
     final cellData = CellData.empty();
     final cellWidth = _cellSize.width;
 
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
+      if (recolor != null) _recolorCell(cellData, i, recolor);
 
       final charWidth = cellData.content >> CellContent.widthShift;
       final cellOffset = offset.translate(i * cellWidth, 0);
@@ -158,6 +163,24 @@ class TerminalPainter {
       if (charWidth == 2) {
         i++;
       }
+    }
+  }
+
+  /// [seance fork] Gives [cellData] (the cell at column [x]) the colours of
+  /// the span covering it, as an RGB background and foreground. Spans come in
+  /// highlight creation order and the newest wins, as overlay highlights,
+  /// painted in that order, would show it. Clearing
+  /// inverse keeps the pair the right way round. Going through the cell's
+  /// own colour words rather than a side channel keeps the paragraph cache
+  /// honest: its key already hashes them.
+  @pragma('vm:prefer-inline')
+  void _recolorCell(CellData cellData, int x, List<CellRecolor> recolor) {
+    for (final span in recolor.reversed) {
+      if (x < span.start || x >= span.end) continue;
+      cellData.background = CellColor.rgb | (span.background & CellColor.valueMask);
+      cellData.foreground = CellColor.rgb | (span.foreground & CellColor.valueMask);
+      cellData.flags &= ~CellFlags.inverse;
+      return;
     }
   }
 
@@ -276,4 +299,17 @@ class TerminalPainter {
         return Color(colorValue | 0xFF000000);
     }
   }
+}
+
+/// [seance fork] Columns [start] to [end] (exclusive) of one line, painted
+/// with [background] under the text and [foreground] for it, both as
+/// 0xAARRGGBB with the alpha ignored: the cell colours they stand in for are
+/// opaque.
+class CellRecolor {
+  const CellRecolor(this.start, this.end, this.background, this.foreground);
+
+  final int start;
+  final int end;
+  final int background;
+  final int foreground;
 }
