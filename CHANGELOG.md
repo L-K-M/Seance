@@ -81,5 +81,12 @@
   from Poltergeist. Language detection also finds the file name after a
   backslash.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
+- Sync server: registration, prelogin and login read at most 16 KiB of
+  request body, so a client that has not signed in can no longer make the
+  server buffer megabytes per request, and every body is buffered more
+  compactly. New usernames must be 1 to 256 bytes with no control
+  characters (accounts created before still sign in), a username that is
+  not a string is a 400 instead of a server error, and registration checks
+  the verifier and salt lengths every client sends.
 
 Earlier history lives in the commit log and any GitHub releases.
