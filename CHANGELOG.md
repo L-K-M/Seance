@@ -121,5 +121,14 @@
   keeps others from reading or writing it, such as a 0600 key or an
   ordinary 0644 file, is staged owner-only while it uploads, so other users
   on the server can neither read the new bytes nor write into them.
+- Keyboard shortcuts for tabs: close the current tab with ⌘W (Ctrl+Shift+W
+  on Linux and Windows), step through a server's tabs with Ctrl+Tab and
+  Ctrl+Shift+Tab (also ⇧⌘] and ⇧⌘[ on a Mac, Ctrl+Page Down and Ctrl+Page
+  Up elsewhere), and jump to a tab with ⌘1 to ⌘9 (Alt+1 to Alt+9 on Linux
+  and Windows; 9 is always the last tab). They work in the terminal and
+  anywhere else in the window, and closing asks about unsaved edits and
+  local copies just as the close button does. Plain Ctrl+W, Ctrl+C and
+  Ctrl+A still go to the shell; Alt+digit now switches tabs instead of
+  reaching readline. The terminal's right-click menu lists every shortcut.
 
 Earlier history lives in the commit log and any GitHub releases.

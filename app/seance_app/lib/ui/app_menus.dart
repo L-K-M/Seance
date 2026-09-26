@@ -10,6 +10,7 @@ import 'command_generator.dart';
 import 'server_list_density.dart';
 import 'server_list_pane.dart';
 import 'settings_screen.dart';
+import 'tab_close.dart';
 import 'top_toast.dart';
 
 bool _settingsRouteOpen = false;
@@ -221,10 +222,194 @@ final class _ServerFilterChord extends ShortcutActivator {
   String debugDescribeKeys() => _chord.debugDescribeKeys();
 }
 
+/// What a tab shortcut does. Each acts on the active tab's server: the
+/// strip only ever shows one server's tabs, so stepping never leaves it.
+sealed class TabCommand {
+  const TabCommand();
+
+  /// Whether holding the keys repeats the command. Only stepping does: a
+  /// held close would take out a row of tabs before the key came back up.
+  bool get repeats => false;
+}
+
+/// Close the active tab, behind its close button's guards
+/// ([confirmAndCloseTab]).
+final class CloseTabCommand extends TabCommand {
+  const CloseTabCommand();
+}
+
+/// Move [step] tabs along the strip (1 the next, -1 the previous), wrapping
+/// round at either end.
+final class StepTabCommand extends TabCommand {
+  const StepTabCommand(this.step);
+
+  final int step;
+
+  @override
+  bool get repeats => true;
+}
+
+/// Show the [number]th tab, counting from 1. [last] is the last tab however
+/// many there are, as in browsers and other terminals; any other number
+/// past the end does nothing.
+final class GoToTabCommand extends TabCommand {
+  const GoToTabCommand(this.number);
+
+  static const int last = 9;
+
+  final int number;
+}
+
+/// One tab shortcut: [chord] runs [command].
+final class TabShortcut {
+  const TabShortcut._(this.chord, this.command, {this.leftAltOnly = false});
+
+  /// Accepts held repeats (the [SingleActivator] default), so a held chord
+  /// is still recognized when its command does not repeat, and swallowed.
+  final SingleActivator chord;
+
+  final TabCommand command;
+
+  /// The chord stands down while the right Alt is held (see [tabShortcuts]).
+  final bool leftAltOnly;
+
+  bool _matches(KeyEvent event, HardwareKeyboard keys) =>
+      chord.accepts(event, keys) &&
+      !(leftAltOnly &&
+          keys.logicalKeysPressed.contains(LogicalKeyboardKey.altRight));
+}
+
+/// The tab shortcuts on [platform]: one table for both places that honour
+/// them, the terminal's key handler, which has to see them before xterm
+/// turns them into bytes for the shell, and [AppMenus], for focus anywhere
+/// else in the window.
+///
+/// Apple platforms use ⌘, which never reaches a shell. Elsewhere the chords
+/// stay off what a shell reads: close is Ctrl+Shift+W because plain Ctrl+W
+/// is readline's word erase, and the numbers are Alt+1 to Alt+9 (GNOME
+/// Terminal's), which does take readline's digit-argument prefix (Alt+3,
+/// then a key typed three times) away from the shell. Only the left Alt
+/// counts: the right one is AltGr on most non-US layouts, where AltGr+digit
+/// types @, #, [, ] and more, and a handled key would swallow the character
+/// (Windows reports AltGr as Ctrl + right Alt, and some Linux setups as the
+/// right Alt). Only the top-row digits count too: on Windows, Alt with the
+/// keypad's types a character by its code (Alt+0169 is ©).
+///
+/// Ctrl+Tab and Ctrl+Shift+Tab step on every platform: unlike ⇧⌘] and ⇧⌘[,
+/// they need no bracket keys, which many layouts put behind Option.
+List<TabShortcut> tabShortcuts(TargetPlatform platform) => switch (platform) {
+  TargetPlatform.macOS || TargetPlatform.iOS => _appleTabShortcuts,
+  _ => _otherTabShortcuts,
+};
+
+const List<LogicalKeyboardKey> _tabNumberKeys = [
+  LogicalKeyboardKey.digit1,
+  LogicalKeyboardKey.digit2,
+  LogicalKeyboardKey.digit3,
+  LogicalKeyboardKey.digit4,
+  LogicalKeyboardKey.digit5,
+  LogicalKeyboardKey.digit6,
+  LogicalKeyboardKey.digit7,
+  LogicalKeyboardKey.digit8,
+  LogicalKeyboardKey.digit9,
+];
+
+const List<TabShortcut> _ctrlTabShortcuts = [
+  TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.tab, control: true),
+    StepTabCommand(1),
+  ),
+  TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.tab, control: true, shift: true),
+    StepTabCommand(-1),
+  ),
+];
+
+final List<TabShortcut> _appleTabShortcuts = [
+  const TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.keyW, meta: true),
+    CloseTabCommand(),
+  ),
+  const TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.bracketRight, meta: true, shift: true),
+    StepTabCommand(1),
+  ),
+  const TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.bracketLeft, meta: true, shift: true),
+    StepTabCommand(-1),
+  ),
+  ..._ctrlTabShortcuts,
+  for (final (i, key) in _tabNumberKeys.indexed)
+    TabShortcut._(SingleActivator(key, meta: true), GoToTabCommand(i + 1)),
+];
+
+final List<TabShortcut> _otherTabShortcuts = [
+  const TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.keyW, control: true, shift: true),
+    CloseTabCommand(),
+  ),
+  ..._ctrlTabShortcuts,
+  const TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.pageDown, control: true),
+    StepTabCommand(1),
+  ),
+  const TabShortcut._(
+    SingleActivator(LogicalKeyboardKey.pageUp, control: true),
+    StepTabCommand(-1),
+  ),
+  for (final (i, key) in _tabNumberKeys.indexed)
+    TabShortcut._(
+      SingleActivator(key, alt: true),
+      GoToTabCommand(i + 1),
+      leftAltOnly: true,
+    ),
+];
+
+/// Run the tab shortcut [event] is, if it is one ([tabShortcuts]): the one
+/// decision behind both places they work, so the two cannot drift. A match
+/// is always handled, even a held repeat its command does not act on:
+/// ignored, the terminal would send it to the shell as the keys underneath
+/// (Ctrl+Shift+W is ^W there, Alt+1 is Esc 1).
+KeyEventResult handleTabShortcut(
+  BuildContext context,
+  AppState state,
+  KeyEvent event,
+) {
+  final keys = HardwareKeyboard.instance;
+  for (final shortcut in tabShortcuts(Theme.of(context).platform)) {
+    if (!shortcut._matches(event, keys)) continue;
+    if (event is KeyDownEvent || shortcut.command.repeats) {
+      _runTabCommand(context, state, shortcut.command);
+    }
+    return KeyEventResult.handled;
+  }
+  return KeyEventResult.ignored;
+}
+
+void _runTabCommand(BuildContext context, AppState state, TabCommand command) {
+  final active = state.activeTab;
+  if (active == null) return;
+  final strip = state.tabsForServer(active.serverId);
+  switch (command) {
+    case CloseTabCommand():
+      unawaited(confirmAndCloseTab(context, state, active.id));
+    case StepTabCommand(:final step):
+      // Dart's % is never negative for a positive divisor: -1 wraps to the end.
+      state.focusTab(strip[(strip.indexOf(active) + step) % strip.length].id);
+    case GoToTabCommand(:final number):
+      final index = number == GoToTabCommand.last
+          ? strip.length - 1
+          : number - 1;
+      if (index < strip.length) state.focusTab(strip[index].id);
+  }
+}
+
 /// Cross-platform keyboard shortcuts for the menu commands. On macOS the native
 /// menu (wired in MainFlutterWindow.swift) owns ⌘T, ⌘, and ⌘K; this also covers
 /// Linux/Windows, where there is no system menu bar. The native menu and these
-/// shortcuts share the same Dart actions.
+/// shortcuts share the same Dart actions. The tab shortcuts ([tabShortcuts])
+/// are Dart's alone on every platform: the native menu has no item for them,
+/// so ⌘W reaches here instead of closing the window.
 class AppMenus extends StatelessWidget {
   final Widget child;
   const AppMenus({super.key, required this.child});
@@ -240,12 +425,24 @@ class AppMenus extends StatelessWidget {
             openNewTab(state),
         const SingleActivator(LogicalKeyboardKey.keyT, control: true): () =>
             openNewTab(state),
+        // The terminal's own New Tab chord, so it works wherever focus is.
+        const SingleActivator(
+          LogicalKeyboardKey.keyT,
+          control: true,
+          shift: true,
+        ): () =>
+            openNewTab(state),
         const SingleActivator(LogicalKeyboardKey.comma, meta: true):
             openSettings,
         const SingleActivator(LogicalKeyboardKey.comma, control: true):
             openSettings,
       },
-      child: child,
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: (_, event) => handleTabShortcut(context, state, event),
+        child: child,
+      ),
     );
   }
 }

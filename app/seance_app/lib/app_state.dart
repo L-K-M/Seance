@@ -305,10 +305,11 @@ class EditorTab extends PaneTab {
   /// notifier throws. With no subscribers left it is simply collected.
   final ValueNotifier<bool> dirty = ValueNotifier(false);
 
-  /// Handle to the mounted editor — the strip's close button asks it whether
-  /// unsaved changes may be discarded. `currentState` is null before the
-  /// tab's first frame (nothing to lose yet) and while its pane is offstage —
-  /// the close path refuses to drop a dirty buffer it cannot ask about.
+  /// Handle to the mounted editor — closing the tab (`confirmAndCloseTab`)
+  /// asks it whether unsaved changes may be discarded. `currentState` is
+  /// null before the tab's first frame (nothing to lose yet) and while its
+  /// pane is offstage — the close path refuses to drop a dirty buffer it
+  /// cannot ask about.
   final GlobalKey<BuiltInTextEditorScreenState> editorKey = GlobalKey();
 }
 

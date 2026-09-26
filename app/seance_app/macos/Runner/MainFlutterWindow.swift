@@ -191,6 +191,10 @@ class MainFlutterWindow: NSWindow {
   /// items for New Tab (⌘T) and Generate Command… (⌘K), put the server list's
   /// density switch at the top of View, and route Edit ▸ Copy/Paste/Select All
   /// through us so they can reach the terminal — all fire back into Dart.
+  ///
+  /// Deliberately no File ▸ Close (⌘W) item: ⌘W closes the active tab, in
+  /// Dart (`tabShortcuts` in app_menus.dart), and a native key equivalent
+  /// would take the key first.
   private func installMenuItems() {
     guard let mainMenu = NSApp.mainMenu else { return }
 

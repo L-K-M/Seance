@@ -760,7 +760,7 @@ class BuiltInTextEditorScreenState extends State<BuiltInTextEditorScreen>
   }
 
   /// Ask whether the buffer may be dropped — runs the unsaved-changes
-  /// dialog. A hosting tab calls this from its close button.
+  /// dialog. Closing a hosting tab calls this, by button or shortcut.
   Future<bool> confirmDiscard() async {
     if (!_dirty) return true;
     return await showDialog<bool>(
