@@ -511,14 +511,12 @@ class AppState extends ChangeNotifier {
   }
 
   Future<List<String>> _promptKeyboardInteractive(
-    List<String> prompts,
-    String name,
-    String instruction,
+    KeyboardInteractiveChallenge challenge,
   ) async {
     final responder = keyboardInteractiveResponder;
     return responder == null
         ? const <String>[]
-        : responder(prompts, name, instruction);
+        : responder(challenge);
   }
 
   /// Try [config] the way a real connection would — the same host-key and
@@ -557,6 +555,7 @@ class AppState extends ChangeNotifier {
         hostKeys: services.hostKeyStore,
         onHostKey: _promptForHostKey,
         onKeyboardInteractive: _promptKeyboardInteractive,
+        resolveJumpHost: services.resolveJumpHost,
       ),
       log: log,
     );
@@ -1242,6 +1241,7 @@ class AppState extends ChangeNotifier {
           tofu: services.tofu,
           onHostKey: hostKey.prompt,
           onKeyboardInteractive: _promptKeyboardInteractive,
+          resolveJumpHost: services.resolveJumpHost,
         ),
         config: tab.config,
         credentials: credentials,

@@ -284,10 +284,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     _group = TextEditingController(text: e?.group ?? '');
     _tint = e == null ? ServerTint.none : ServerTint.of(e);
     _mark = e?.mark ?? _defaultMark;
-    // Default new servers to password: ssh-agent is offered but not yet
-    // supported by the backend, so defaulting to it would dead-end the very
-    // first "add a server and connect".
-    _auth = e?.authMethod ?? AuthMethod.password;
+    _auth = e?.authMethod ?? AuthMethod.agent;
     _keyPath.text = e?.identityFilePath ?? '';
     _referenceKeyFile = e?.identityFilePath != null;
     _loginScript.text = e?.loginScript ?? '';
@@ -598,12 +595,6 @@ class _ServerEditorState extends State<_ServerEditor> {
       case AuthMethod.agent:
         return [
           const Text('Keys are provided by your ssh-agent; nothing is stored.'),
-          const SizedBox(height: 8),
-          Text(
-            'ssh-agent auth isn\'t supported yet — connecting will fail. '
-            'Choose Password or Private key for now.',
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
-          ),
         ];
       case AuthMethod.password:
         return [
@@ -925,6 +916,8 @@ class _ServerEditorState extends State<_ServerEditor> {
       username: _user.text.trim(),
       authMethod: _auth,
       secretRef: secretRef,
+      // ProxyJump editing is not exposed yet; preserve the saved route.
+      jumpHostId: existing?.jumpHostId,
       // Blank reads as "no file referenced", not as a path made of nothing:
       // the validator blocks an empty path, and a caller that ever reached
       // here without it would otherwise ask the SSH layer to read `''`.

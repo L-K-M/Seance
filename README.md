@@ -24,7 +24,8 @@ that for the full rationale, alternatives considered, and roadmap).
   links a program marks with OSC 8 open their real target even when the text
   on screen is a label or the program broke the URL across lines.
 - **SSH** via [dartssh2](https://pub.dev/packages/dartssh2): password,
-  private-key (stored or referenced-on-disk), and keyboard-interactive (2FA).
+  private-key (stored or referenced-on-disk), local ssh-agent, and
+  keyboard-interactive (2FA), including saved-host ProxyJump chains.
 - **Trust-on-first-use host keys** with a hard, un-dismissable block when a
   pinned key changes.
 - **Layered secret storage** — OS keystore holds a master key; passwords/keys

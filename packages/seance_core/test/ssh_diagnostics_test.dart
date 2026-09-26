@@ -1,8 +1,17 @@
 import 'dart:convert';
+import 'dart:io' show SocketException;
+import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart'
-    show SSHAuthAbortError, SSHAuthFailError, SSHHostkeyError;
+    show
+        SSHAuthAbortError,
+        SSHAuthFailError,
+        SSHHostkeyError,
+        SSHIdentity,
+        SSHInternalError,
+        SSHRawHostKey;
 import 'package:seance_core/seance_core.dart';
+import 'package:seance_core/src/ssh/ssh_agent.dart';
 import 'package:test/test.dart';
 
 ServerConfig _server() => ServerConfig(
@@ -14,6 +23,18 @@ ServerConfig _server() => ServerConfig(
       authMethod: AuthMethod.password,
       createdAt: 0,
       updatedAt: 0,
+    );
+
+SSHIdentity _agentIdentity() => SSHIdentity.custom(
+      type: 'ssh-ed25519',
+      publicKey: SSHRawHostKey(Uint8List.fromList([
+        0, 0, 0, 11,
+        ...utf8.encode('ssh-ed25519'),
+        0, 0, 0, 32, ...List.filled(32, 7),
+      ])),
+      signer: (_) => throw StateError('signing is not reached'),
+      comment: 'test agent key',
+      shouldProbe: true,
     );
 
 void main() {
@@ -200,6 +221,38 @@ void main() {
       expect(msg, isNot(contains('prohibit-password')));
     });
 
+    test('auth summary explains rejected ssh-agent keys', () {
+      final msg = SshSessionManager.summarizeFailureForTest(
+        SSHAuthFailError('All authentication methods failed'),
+        config('root'),
+        const SshCredentials.agent(),
+        logWith(['publickey']),
+      );
+      expect(msg, contains('ssh-agent'));
+      expect(msg, contains('rejected'));
+      expect(msg, isNot(contains('prohibit-password')));
+    });
+
+    test('auth summary preserves an ssh-agent signing failure', () {
+      final msg = SshSessionManager.summarizeFailureForTest(
+        SSHAuthAbortError(
+          'Connection closed before authentication',
+          SSHInternalError(
+            const SshAgentException('The ssh-agent refused confirmation.'),
+          ),
+        ),
+        config('deploy'),
+        const SshCredentials.agent(),
+        logWith(['publickey']),
+      );
+
+      expect(msg, contains('ssh-agent refused confirmation'));
+      expect(
+        msg.toLowerCase(),
+        isNot(contains('connection closed before authentication')),
+      );
+    });
+
     test('auth summary says check-the-credential for a non-root password reject',
         () {
       final msg = SshSessionManager.summarizeFailureForTest(
@@ -211,12 +264,17 @@ void main() {
       expect(msg, contains('Check the credential'));
     });
 
-    test('agent auth is rejected before any network activity', () async {
+    test('an agent loader failure is actionable before network activity',
+        () async {
+      var connectorCalled = false;
       final mgr = SshSessionManager(
         tofu: TofuVerifier(InMemoryHostKeyStore()),
         onHostKey: (_) async => true,
-        connect: (host, port, timeout) async =>
-            throw StateError('should not connect'),
+        connect: (host, port, timeout) async {
+          connectorCalled = true;
+          throw StateError('should not connect');
+        },
+        loadAgentIdentities: () async => throw StateError('agent unavailable'),
       );
       final engine = HeadlessTerminalEngine();
       await expectLater(
@@ -225,15 +283,21 @@ void main() {
           credentials: const SshCredentials.agent(),
           engine: engine,
         ),
-        throwsA(isA<UnsupportedError>()),
+        throwsA(isA<SshConnectException>().having(
+          (error) => error.message,
+          'message',
+          contains('ssh-agent'),
+        )),
       );
+      expect(connectorCalled, isFalse);
       await engine.dispose();
     });
   });
 
   group('SshSessionManager.openAuthenticatedClient diagnostics', () {
-    test('agent auth is rejected before opening a socket', () async {
+    test('agent identities are loaded before opening a socket', () async {
       final log = SshConnectionLog();
+      var connectorCalled = false;
 
       await expectLater(
         () => openAuthenticatedClient(
@@ -241,14 +305,23 @@ void main() {
           credentials: const SshCredentials.agent(),
           tofu: TofuVerifier(InMemoryHostKeyStore()),
           onHostKey: (_) async => true,
-          connect: (host, port, timeout) async =>
-              throw StateError('should not connect'),
+          connect: (host, port, timeout) async {
+            connectorCalled = true;
+            throw const SocketException('connection refused');
+          },
+          loadAgentIdentities: () async => [_agentIdentity()],
           log: log,
         ),
-        throwsA(isA<UnsupportedError>()),
+        throwsA(isA<SshConnectException>().having(
+          (error) => error.message,
+          'message',
+          contains('Could not reach'),
+        )),
       );
 
-      expect(log.toString(), isNot(contains('Connecting to')));
+      expect(connectorCalled, isTrue);
+      expect(log.toString(), contains('Auth method: ssh-agent'));
+      expect(log.toString(), contains('test agent key'));
     });
 
     test('opens authentication without requiring a terminal engine', () async {

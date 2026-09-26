@@ -1,11 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/ui/keyboard_interactive_dialog.dart';
+import 'package:seance_core/seance_core.dart';
 
 void main() {
+  KeyboardInteractiveChallenge challenge(List<String> prompts) =>
+      KeyboardInteractiveChallenge(
+        server: ServerConfig(
+          id: 'jump',
+          label: 'Jump host',
+          host: 'jump.example.com',
+          port: 2222,
+          username: 'deploy',
+          createdAt: 0,
+          updatedAt: 0,
+        ),
+        prompts: prompts,
+        name: 'Server authentication',
+        instruction: 'Answer the server challenge.',
+      );
+
   Future<void> openDialog(
     WidgetTester tester, {
     List<String> prompts = const ['Password', 'One-time code'],
+    KeyboardInteractiveChallenge? customChallenge,
     ValueChanged<List<String>>? onResult,
   }) async {
     await tester.pumpWidget(
@@ -16,9 +34,7 @@ void main() {
               onPressed: () async {
                 final result = await showKeyboardInteractiveDialog(
                   context,
-                  prompts,
-                  'Authentication',
-                  'Answer the server challenge.',
+                  customChallenge ?? challenge(prompts),
                 );
                 onResult?.call(result);
               },
@@ -31,6 +47,61 @@ void main() {
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('shows the trusted endpoint separately from server text', (
+    tester,
+  ) async {
+    await openDialog(tester);
+
+    expect(find.text('deploy@jump.example.com:2222'), findsOneWidget);
+    expect(find.text('Authentication'), findsOneWidget);
+    expect(find.text('Answer the server challenge.'), findsOneWidget);
+  });
+
+  testWidgets('separates the trusted endpoint from prompt-only challenges', (
+    tester,
+  ) async {
+    await openDialog(
+      tester,
+      customChallenge: KeyboardInteractiveChallenge(
+        server: challenge(const []).server,
+        prompts: const ['Password'],
+        name: '',
+        instruction: '',
+      ),
+    );
+
+    final endpointBottom = tester
+        .getBottomLeft(find.text('deploy@jump.example.com:2222'))
+        .dy;
+    final promptTop = tester.getTopLeft(find.byType(TextField)).dy;
+
+    expect(promptTop - endpointBottom, greaterThanOrEqualTo(12));
+  });
+
+  testWidgets('brackets a bare IPv6 host in the trusted target', (
+    tester,
+  ) async {
+    await openDialog(
+      tester,
+      customChallenge: KeyboardInteractiveChallenge(
+        server: ServerConfig(
+          id: 'v6',
+          label: 'IPv6',
+          host: '2001:db8::1',
+          port: 22,
+          username: 'root',
+          createdAt: 0,
+          updatedAt: 0,
+        ),
+        prompts: const ['Password'],
+        name: '',
+        instruction: '',
+      ),
+    );
+
+    expect(find.text('root@[2001:db8::1]:22'), findsOneWidget);
+  });
 
   /// Opens the dialog above a pushed page, as a real prompt does, so the
   /// page below is a concrete route a stray pop could take with it.
@@ -49,11 +120,11 @@ void main() {
           child: Builder(
             builder: (context) => TextButton(
               onPressed: () async => recorded.add(
-                  await showKeyboardInteractiveDialog(
-                      context,
-                      const ['Password', 'One-time code'],
-                      'Authentication',
-                      'Answer the server challenge.')),
+                await showKeyboardInteractiveDialog(
+                  context,
+                  challenge(const ['Password', 'One-time code']),
+                ),
+              ),
               child: const Text('open-dialog'),
             ),
           ),
@@ -172,7 +243,12 @@ void main() {
     expect(fields.first.controller!.text, 'operator');
     expect(fields.last.obscureText, isTrue);
     expect(fields.first.enableIMEPersonalizedLearning, isFalse);
-    final editable = tester.widget<EditableText>(find.byType(EditableText).first);
+    final editable = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byType(TextField).first,
+        matching: find.byType(EditableText),
+      ),
+    );
     expect(editable.focusNode.hasFocus, isTrue);
     expect(tester.testTextInput.isVisible, isTrue);
 

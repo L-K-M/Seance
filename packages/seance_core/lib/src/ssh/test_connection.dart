@@ -54,6 +54,7 @@ HostAuthenticator liveHostAuthenticator({
   required HostKeyStore hostKeys,
   required HostKeyPrompter onHostKey,
   KeyboardInteractiveResponder? onKeyboardInteractive,
+  SshJumpHostResolver? resolveJumpHost,
   Duration timeout = const Duration(seconds: 15),
 }) {
   return (config, credentials, log) async {
@@ -67,6 +68,7 @@ HostAuthenticator liveHostAuthenticator({
       tofu: tofu,
       onHostKey: onHostKey,
       onKeyboardInteractive: onKeyboardInteractive,
+      resolveJumpHost: resolveJumpHost,
       timeout: timeout,
       log: log,
     );
@@ -122,8 +124,7 @@ class ConnectionTestResult {
   /// failed connection shows, so the two never disagree about the same host.
   final String summary;
 
-  /// Things true of the trial but not of the summary — a jump host that was
-  /// not used, for instance. Empty is the common case.
+  /// Things true of the trial but not of the summary. Empty is the common case.
   final List<String> notes;
 
   /// The full handshake transcript.
@@ -174,14 +175,7 @@ Future<ConnectionTestResult> runConnectionTest({
   // Read-only: the same instance flows into all three results, and a caller
   // that sorted or filtered it in place would be editing a result it was
   // handed rather than a list of its own.
-  final notes = List<String>.unmodifiable(<String>[
-    if (config.jumpHostId != null)
-      'This server is configured to tunnel through a jump host, which Séance '
-          // Present tense on purpose: this note rides every result,
-          // including the failures it exists to explain, and "connected"
-          // would assert a connection next to "could not reach the host".
-          'does not execute yet — this test goes straight to the host.',
-  ]);
+  const notes = <String>[];
   var authenticating = false;
   try {
     final resolved = await credentials();
@@ -255,13 +249,6 @@ Future<ConnectionTestResult> runConnectionTest({
       log: transcript.toString(),
     );
   } catch (error, stackTrace) {
-    // No unwrapping: `AgentAuthUnsupportedError` overrides `toString` to be
-    // its message, so the sentence the SSH layer wrote arrives here whole.
-    // Reaching for `.message` was this branch working around the
-    // "Unsupported operation: " prefix one caller at a time, which left the
-    // prefix in place for every other renderer of the same object — and had
-    // a `?? '$error'` tail that would have put `Instance of …` in front of a
-    // user. The type still matters below, for the trace.
     final summary = '$error';
     // An `Error` is a bug rather than a fact about the host, and its message
     // alone rarely says where it came from. `Exception`s raised while
@@ -275,12 +262,7 @@ Future<ConnectionTestResult> runConnectionTest({
     // authenticated` throws — and that is caught above. So a bare `Exception`
     // arriving from `authenticate` is one nothing was written to expect,
     // which is exactly when the trace is the only thing that locates it.
-    //
-    // `AgentAuthUnsupportedError` stays out either way: it is an Error, but a
-    // known and deliberate one (the ssh-agent path the backend does not
-    // implement).
-    if (error is! AgentAuthUnsupportedError &&
-        (error is Error || authenticating)) {
+    if (error is Error || authenticating) {
       transcript.add('$stackTrace');
     }
     // Last, after any trace: [ConnectionTestResult.log] documents a failure
@@ -301,9 +283,8 @@ Future<ConnectionTestResult> runConnectionTest({
     // duplicate with the only thing that locates an unexpected `Error`, and
     // dropping the second summary would end a failure transcript on a stack
     // frame, which is the one thing [ConnectionTestResult.log] promises it
-    // does not do. So the guard is real on the quiet paths
-    // (`AgentAuthUnsupportedError`, a plain `Exception` from `credentials()`)
-    // and a no-op on the loud ones.
+    // does not do. So the guard is real on quiet credential-resolution
+    // exceptions and a no-op on the loud paths.
     if (transcript.lines.lastOrNull != summary) {
       transcript.add(summary);
     }
@@ -319,6 +300,7 @@ Future<ConnectionTestResult> runConnectionTest({
 /// How authentication completed, in the words the editor shows.
 String authKindLabel(AuthKind kind) => switch (kind) {
   AuthKind.key => 'public key',
+  AuthKind.agent => 'ssh-agent',
   AuthKind.storedPassword => 'stored password',
   AuthKind.keyboardInteractive => 'keyboard-interactive',
   AuthKind.promptedPassword => 'password',

@@ -392,8 +392,11 @@ Do not "simplify" these away — they are load-bearing:
   `fingerprintSha256`; `publicKeyBase64` is only known from a known_hosts import.
 - **dartssh2 does not expose `SSHUserInfoRequest`** from its barrel — the
   keyboard-interactive handler lets the lambda parameter type be inferred.
-- **dartssh2 has no local ssh-agent auth path.** `AuthMethod.agent` throws
-  `UnsupportedError` in `SshSessionManager.connect` (see §7 gaps).
+- **dartssh2 has no built-in local ssh-agent path.** `SshAgentClient` speaks
+  the OpenSSH agent protocol and exposes each key through
+  `SSHIdentity.custom`; Unix uses `$SSH_AUTH_SOCK`, while Windows performs
+  blocking named-pipe I/O on a worker isolate. Keep those platform mechanics
+  behind that class.
 - **xterm 4.0**: `Terminal(maxLines:)`, settable `onOutput`/`onResize`,
   `write(String)`, `buffer.getText()`, `TerminalView(terminal, ...)`. SSH is
   bytes; the engine decodes UTF-8 leniently (`allowMalformed: true`).

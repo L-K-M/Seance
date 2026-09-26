@@ -7,9 +7,9 @@ only `package:seance_core/seance_core.dart`.
 ## Modules
 
 - **SSH** (`src/ssh/ssh_session.dart`): `SshSessionManager` over dartssh2 —
-  password / private-key auth, keyboard-interactive, keepalives, resize; TOFU
-  host-key verification via a public, testable `verifyHostKey`. (`AuthMethod.agent`
-  currently throws — see docs/STATUS.md.)
+  password / private-key / native ssh-agent auth, keyboard-interactive,
+  saved-host ProxyJump chains, keepalives, resize; TOFU host-key verification
+  via a public, testable `verifyHostKey`.
 - **TOFU** (`src/hostkey/tofu.dart`): first-use / trusted / **changed** verdicts;
   never auto-updates a changed key.
 - **Terminal** (`src/terminal/`): the `TerminalEngine` seam (xterm backend lives
