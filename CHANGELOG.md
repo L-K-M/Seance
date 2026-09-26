@@ -14,6 +14,10 @@
 - On phones and tablets, the server filter field is full height again
   instead of a thin strip above an empty gap, and compact server rows
   are 40 dp instead of 48.
+- Sync: a snippet or server too large for the sync server no longer cuts
+  this device off from your other devices. Their edits and deletions
+  still arrive, and the sync status names the record that stays behind,
+  so you know what to make smaller.
 - Tabs switch in place. Settings, the side panel and the server mark
   picker showed the new tab by scrolling the content sideways to it, and
   a sideways swipe or trackpad scroll flipped between tabs. The new tab
@@ -88,9 +92,13 @@
   server, and ordinary terminal output could report such a name to the Git
   tab, which probes it automatically. Reported directories that contain
   control characters are now ignored.
-- Sync: a snippet or server too large for the sync server no longer cuts
-  this device off from your other devices. Their edits and deletions
-  still arrive, and the sync status names the record that stays behind,
-  so you know what to make smaller.
+- Files: an upload no longer replaces a symbolic link on the server. Choosing
+  Replace over a link used to swap the link for a regular file anyone could
+  write (mode 0777) and leave its target unchanged; the upload now stops and
+  says the item is a link. FIFOs, sockets and devices are refused the same
+  way, and so is a folder, before any bytes are sent. A file whose mode
+  keeps others from reading or writing it, such as a 0600 key or an
+  ordinary 0644 file, is staged owner-only while it uploads, so other users
+  on the server can neither read the new bytes nor write into them.
 
 Earlier history lives in the commit log and any GitHub releases.
