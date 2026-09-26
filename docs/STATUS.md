@@ -1186,6 +1186,12 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
 
 ## Test inventory (what proves what)
 
+Sync account deletion removes the account, tokens, records and sequence counter
+in one SQLite write transaction. Failure-injection tests cover every table,
+complete rollback, retry, persisted deletion and HTTP error responses; writer
+contention returns the retryable `503 storage_busy` response. Token hashing,
+revocation and concurrent login/deletion lifecycle work remain separate.
+
 - `packages/seance_protocol/test/crypto_test.dart` — KDF determinism + domain separation,
   seal/open round-trip, wrong-key & tamper rejection, auth-verifier hashing,
   recovery-code round-trip + corruption detection.
