@@ -91,6 +91,43 @@ be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
 
+## The macOS titlebar is part of the window (2026-09-26)
+
+The main window on macOS now looks like Poltergeist's: no separate title
+bar, the traffic lights over the server rail, and a 52 pt header across
+the terminal and the side panel. The header shows the active server's
+badge, label and `user@host` (a title a standard titlebar would otherwise
+carry) and Generate command as its one labelled button; the tab strip
+below keeps "+" and drops its own Generate button while the header is
+there. Linux, Windows and the narrow layout keep their native titlebars
+and the strip as it was.
+
+How: `macos_window_utils` 1.9.1 (Poltergeist's pin) hosts the Flutter
+view in its controller, with `SeanceFlutterViewController` inside, and
+`MacosTitlebar.install()` makes the titlebar transparent over full-size
+content and adds an empty unified toolbar from `main()`, while the window
+is still hidden. A failed install restores the standard titlebar and
+reserves no band. The header's button and the full-height rail handle
+take clicks through `MacosToolbarPassthrough`; the title does not, so it
+drags and zooms the window. `ReserveMacosToolbarBand` keeps every route,
+dialog and toast below the band, and the wide layout claims it back. In
+full screen the runner hides the toolbar and says so on `seance/window`,
+and the reservation drops to zero. The Settings window keeps its standard
+titlebar. Ported pieces and divergences are listed in
+[POLTERGEIST.md](POLTERGEIST.md#the-integrated-titlebar-macos).
+
+`macos_titlebar_test.dart` covers the install (success, restored into
+full screen, failure and reset) and the band channel.
+`macos_toolbar_band_test.dart` pumps the shell as the app composes it:
+the header at the top of the band and right of the rail, the rail and
+strip below it, the side panel not pushed down, passthrough on the
+controls and not on the title, pushed routes below the band and back up
+in full screen, a narrow macOS window's app bars below the band, and no
+header without the titlebar or on Linux. **Not verified here:** there is
+no Mac in this container, so the Swift is compiled by CI's macOS client
+build only, and the window has not been driven on a Mac (clicks in the
+band, drag and zoom, full screen).
+
 ## Accessible pane resizing (2026-09-26)
 
 The wide layout's server-list and utility dividers can now be reached with

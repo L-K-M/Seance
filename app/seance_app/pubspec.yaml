@@ -47,6 +47,11 @@ dependencies:
   # Enumerates connected displays so a frame saved on a now-disconnected
   # monitor falls back to the default placement instead of opening off-screen.
   screen_retriever: ^0.2.2
+  # The macOS integrated titlebar: a transparent titlebar over full-size
+  # content with an empty unified toolbar, and click passthrough for the
+  # header's buttons inside it (lib/services/macos_titlebar.dart). Pinned to
+  # the version Poltergeist runs, whose titlebar this one follows.
+  macos_window_utils: 1.9.1
   # Owner-only mode bits for path-bearing local files (identity audit log);
   # the calls are guarded to desktop POSIX, other platforms use storage ACLs.
   posix: ^6.5.0
