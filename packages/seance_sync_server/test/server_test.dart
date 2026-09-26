@@ -673,6 +673,11 @@ void main() {
         'newline': 'a\nb',
         'DEL': 'a\u007fb',
         'C1': 'a\u0085b',
+        'soft hyphen': 'a\u00adb',
+        'zero-width space': 'a\u200bb',
+        'right-to-left override': 'a\u202eb',
+        'word joiner': 'a\u2060b',
+        'byte-order mark': '\ufeffab',
         '257 ASCII bytes': 'a' * 257,
         '258 UTF-8 bytes': 'é' * 129,
       };
@@ -855,6 +860,16 @@ void main() {
           body: {...registerReq('shape').toJson(), 'argonSalt': bytes(32)},
         );
         expect(status, 200);
+
+        // A malformed payload is refused before the name is looked up, so
+        // it cannot tell a taken name from a free one.
+        final (takenStatus, takenBody) = await c.send(
+          'POST',
+          '/v1/register',
+          body: {...registerReq('shape').toJson(), 'authVerifier': bytes(31)},
+        );
+        expect(takenStatus, 400);
+        expect(takenBody['error'], 'bad_request');
       },
     );
   });

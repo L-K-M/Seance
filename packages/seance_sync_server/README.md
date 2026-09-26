@@ -110,9 +110,10 @@ most 16 KiB of request body (less if `SEANCE_MAX_BODY_BYTES` is lower) and
 answer a larger one with 413 `payload_too_large`; only a push gets the full
 body cap. A username is 1 to 256
 bytes of UTF-8 on every route, and registration also refuses control
-characters (C0, DEL, C1); either failure is a 400 `bad_username`. Login and
-prelogin skip the control-character check, so an account registered before it
-existed keeps working. Registration also requires a 32-byte auth verifier and
+characters (C0, DEL, C1) and invisible format characters (zero-width and bidi
+marks, soft hyphen, byte-order mark); either failure is a 400 `bad_username`.
+Login and prelogin skip the character check, so an account registered before
+it existed keeps working as long as its name is 1 to 256 bytes. Registration also requires a 32-byte auth verifier and
 an Argon2 salt of at least 16 bytes.
 
 ### Sync transaction semantics

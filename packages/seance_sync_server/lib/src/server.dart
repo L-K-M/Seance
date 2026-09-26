@@ -30,9 +30,15 @@ class SyncServer {
   /// keys, which live for a whole window, small.
   static const _maxUsernameBytes = 256;
 
-  /// C0 controls, DEL and C1 controls. None belongs in a name, and one stored
-  /// verbatim garbles or disguises the name wherever it is later displayed.
-  static final _controlCharacter = RegExp('[\u0000-\u001f\u007f-\u009f]');
+  /// C0 controls, DEL, C1 controls, and the format characters that render as
+  /// nothing: soft hyphen, zero-width spaces and joiners, bidi marks,
+  /// embeddings, overrides and isolates, and the byte-order mark. None belongs
+  /// in a name, and one stored verbatim garbles or disguises the name wherever
+  /// it is later displayed.
+  static final _controlCharacter = RegExp(
+    '[\u0000-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u2028-\u202e'
+    '\u2060-\u206f\ufeff]',
+  );
 
   /// What every client has always sent: `VaultCrypto` derives a 32-byte
   /// verifier, and clients mint 16-byte Argon2 salts (a minimum, as a longer
@@ -128,9 +134,6 @@ class SyncServer {
             'control characters',
       );
     }
-    if (await storage.getAccount(r.username) != null) {
-      return _error(409, 'account_exists', 'Username already registered');
-    }
     final authVerifier = _tryBase64Decode(r.authVerifier);
     // Decoded with the same decoder a client uses at prelogin, so a salt
     // stored here is one every client can read back.
@@ -140,6 +143,11 @@ class SyncServer {
         argonSalt == null ||
         argonSalt.length < _minArgonSaltBytes) {
       return _error(400, 'bad_request', 'Invalid register payload');
+    }
+    // After every check that needs no storage, so a malformed request costs
+    // no lookup and learns nothing about which names are taken.
+    if (await storage.getAccount(r.username) != null) {
+      return _error(409, 'account_exists', 'Username already registered');
     }
     final verifierSalt = secureRandomBytes(16);
     final hash = VaultCrypto.hashAuthVerifier(authVerifier, verifierSalt);
