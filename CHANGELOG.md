@@ -70,6 +70,14 @@
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving
   the screen. The app opts into predictive back.
+- Assistant: turning off "Include terminal output" now stays off. It used
+  to switch itself back on whenever the assistant was rebuilt: each time
+  the phone drawer reopened, or when the window crossed the wide/narrow
+  breakpoint. The next message then sent the terminal output you had
+  chosen to withhold. The choice is now saved on this device. The command
+  generator's "Use recent terminal output as context" is the same
+  setting, so turning it off in either place turns it off in both. It
+  still starts on.
 - Built-in editor: saving keeps the local copy's permissions (an owner-only
   0600 checkout stays owner-only, a script keeps its execute bits), and the
   replacement file is owner-only while it is written. Symlinked copies are

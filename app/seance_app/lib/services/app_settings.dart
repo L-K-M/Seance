@@ -69,6 +69,17 @@ class AppSettings {
 
   bool redactionEnabled;
 
+  /// Whether assistant requests carry the active session's recent output:
+  /// the chat's "Include terminal output" chip and the command generator's
+  /// checkbox, which are one choice. On by default, as both always were.
+  ///
+  /// Stored here rather than in either widget because an opt-out has to
+  /// outlast the widget it was made in. The chat is unmounted every time the
+  /// phone drawer closes, and a flag in its state came back on at the next
+  /// open, so the following message sent the screen the user had just
+  /// withheld. Device-local: the synced assistant record does not carry it.
+  bool includeTerminalContext;
+
   /// When the assistant's configuration was last edited on any device, or 0
   /// while it has never been published.
   ///
@@ -244,6 +255,7 @@ class AppSettings {
     this.braveApiKeyRef,
     this.zaiApiKeyRef,
     this.redactionEnabled = true,
+    this.includeTerminalContext = true,
     this.assistantUpdatedAt = 0,
     this.syncBaseUrl,
     this.syncUsername,
@@ -290,6 +302,7 @@ class AppSettings {
     if (braveApiKeyRef != null) 'braveApiKeyRef': braveApiKeyRef,
     if (zaiApiKeyRef != null) 'zaiApiKeyRef': zaiApiKeyRef,
     'redactionEnabled': redactionEnabled,
+    'includeTerminalContext': includeTerminalContext,
     'assistantUpdatedAt': assistantUpdatedAt,
     // Sorted for the same reason as [collapsedServerGroups]: an unchanged set
     // has to write byte-identical JSON.
@@ -344,6 +357,7 @@ class AppSettings {
     braveApiKeyRef: json['braveApiKeyRef'] as String?,
     zaiApiKeyRef: json['zaiApiKeyRef'] as String?,
     redactionEnabled: json['redactionEnabled'] as bool? ?? true,
+    includeTerminalContext: json['includeTerminalContext'] as bool? ?? true,
     assistantUpdatedAt: (json['assistantUpdatedAt'] as num?)?.toInt() ?? 0,
     unwrittenAssistantKeyRefs: _stringSet(json['unwrittenAssistantKeyRefs']),
     heldAssistantKeyRefs: _stringSet(json['heldAssistantKeyRefs']),
