@@ -99,6 +99,17 @@ void main() {
     expect(reports, [(316.0, 340.0), (332.0, 340.0)]);
   });
 
+  testWidgets('a rapid direction reversal uses the current bound', (
+    tester,
+  ) async {
+    await pumpResizable(tester, list: 480);
+    await focusHandle(tester, AdaptivePaneLayout.listResizeHandleKey);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 480);
+  });
+
   testWidgets('screen reader adjustments name and resize the owned pane', (
     tester,
   ) async {

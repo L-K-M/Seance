@@ -282,6 +282,8 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
                   constraints.maxWidth,
                   delta,
                 ),
+                onStep: (delta) =>
+                    _stepPane(_PaneEdge.leading, currentWidths()!, delta),
                 onStart: () => _startListResize(currentWidths()!),
                 onDelta: _resizeList,
                 onEnd: _endListResize,
@@ -305,6 +307,8 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
                   constraints.maxWidth,
                   delta,
                 ),
+                onStep: (delta) =>
+                    _stepPane(_PaneEdge.trailing, currentWidths()!, delta),
                 onStart: () => _startUtilityResize(currentWidths()!),
                 onDelta: _resizeUtility,
                 onEnd: _endUtilityResize,
@@ -328,6 +332,32 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   double? _utilityDragStart;
   double _utilityDragDelta = 0;
   double _utilityDragMaximum = AdaptiveShell.maximumUtilityWidth;
+
+  /// Read bounds with each event, not from the handle's last frame: an
+  /// immediate reversal after leaving a bound must not see the old width.
+  void _stepPane(_PaneEdge edge, AdaptivePaneWidths widths, double delta) {
+    final leading = edge == _PaneEdge.leading;
+    final growing = (leading ? delta : -delta) > 0;
+    final width = leading ? widths.list : widths.utility;
+    final minimum = leading
+        ? AdaptiveShell.minimumListWidth
+        : AdaptiveShell.minimumUtilityWidth;
+    final maximum = leading
+        ? _maximumListWidth(widths)
+        : _maximumUtilityWidth(widths);
+    if ((growing && width >= maximum) || (!growing && width <= minimum)) {
+      return;
+    }
+    if (leading) {
+      _startListResize(widths);
+      _resizeList(delta);
+      _endListResize();
+    } else {
+      _startUtilityResize(widths);
+      _resizeUtility(delta);
+      _endUtilityResize();
+    }
+  }
 
   /// A completed step releases the temporary sibling constraint just like
   /// a finished drag. Announce the resulting allocation, which may differ
@@ -453,6 +483,7 @@ class _ResizeHandle extends StatefulWidget {
   final double maximumWidth;
   final _PaneEdge edge;
   final double Function(double delta) widthAfterStep;
+  final ValueChanged<double> onStep;
   final VoidCallback onStart;
   final ValueChanged<double> onDelta;
   final VoidCallback onEnd;
@@ -465,6 +496,7 @@ class _ResizeHandle extends StatefulWidget {
     required this.maximumWidth,
     required this.edge,
     required this.widthAfterStep,
+    required this.onStep,
     required this.onStart,
     required this.onDelta,
     required this.onEnd,
@@ -477,20 +509,6 @@ class _ResizeHandle extends StatefulWidget {
 class _ResizeHandleState extends State<_ResizeHandle> {
   bool _focused = false;
 
-  /// A delta toward the row's trailing edge, independent of text direction.
-  void _step(double delta) {
-    // A key at a bound is a no-op: starting a resize would otherwise adopt
-    // a clamped width and disturb the saved preference without moving it.
-    final growing = delta * _grow > 0;
-    if ((growing && widget.width >= widget.maximumWidth) ||
-        (!growing && widget.width <= widget.minimumWidth)) {
-      return;
-    }
-    widget.onStart();
-    widget.onDelta(delta);
-    widget.onEnd();
-  }
-
   double get _direction =>
       Directionality.of(context) == TextDirection.rtl ? -1 : 1;
 
@@ -501,9 +519,9 @@ class _ResizeHandleState extends State<_ResizeHandle> {
       return KeyEventResult.ignored;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      _step(_resizeKeyStep * _direction);
+      widget.onStep(_resizeKeyStep * _direction);
     } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      _step(-_resizeKeyStep * _direction);
+      widget.onStep(-_resizeKeyStep * _direction);
     } else {
       return KeyEventResult.ignored;
     }
@@ -522,10 +540,10 @@ class _ResizeHandleState extends State<_ResizeHandle> {
       increasedValue: _value(widget.widthAfterStep(_resizeKeyStep)),
       decreasedValue: _value(widget.widthAfterStep(-_resizeKeyStep)),
       onIncrease: widget.width < widget.maximumWidth
-          ? () => _step(_resizeKeyStep * _grow)
+          ? () => widget.onStep(_resizeKeyStep * _grow)
           : null,
       onDecrease: widget.width > widget.minimumWidth
-          ? () => _step(-_resizeKeyStep * _grow)
+          ? () => widget.onStep(-_resizeKeyStep * _grow)
           : null,
       child: Focus(
         onFocusChange: (focused) => setState(() => _focused = focused),
