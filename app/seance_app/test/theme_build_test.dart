@@ -39,7 +39,7 @@ ColorScheme _legacyScheme(Brightness brightness) {
 }
 
 void main() {
-  group('the default palette draws what the app always drew', () {
+  group('the Séance palette draws what the app always drew', () {
     for (final platform in [TargetPlatform.macOS, TargetPlatform.android]) {
       for (final brightness in Brightness.values) {
         test('${brightness.name} on ${platform.name}', () {
@@ -136,11 +136,21 @@ void main() {
     }
 
     test('the MaterialApp gets both, following the system', () {
-      final themes = SeanceTheme.forAppearance(AppAppearance.initial);
+      final themes = SeanceTheme.forAppearance(
+        AppAppearance(palette: ThemePresets.seance),
+      );
       expect(themes.themeMode, ThemeMode.system);
       expect(themes.theme.colorScheme, _legacyScheme(Brightness.light));
       expect(themes.darkTheme.colorScheme, _legacyScheme(Brightness.dark));
     });
+  });
+
+  test('a new device is drawn in Terminal, whatever the system says', () {
+    final themes = SeanceTheme.forAppearance(AppAppearance.initial);
+    expect(themes.theme, same(themes.darkTheme));
+    expect(themes.theme.brightness, Brightness.dark);
+    expect(themes.theme.colorScheme.surface, ThemePresets.terminal.surface);
+    expect(themes.theme.colorScheme.primary, ThemePresets.terminal.accent);
   });
 
   group('a palette lands where it says', () {
@@ -234,7 +244,7 @@ void main() {
 
     test('another accent gets a selection white text reads on', () {
       final chrome = SeanceTheme.build(
-        ThemePresets.initial.copyWith(accent: const Color(0xFF7FD1FF)),
+        ThemePresets.seance.copyWith(accent: const Color(0xFF7FD1FF)),
         Brightness.dark,
       ).extension<SeanceChrome>()!;
       expect(chrome.onSelection, const Color(0xFFFFFFFF));
@@ -248,7 +258,7 @@ void main() {
 
   group('brightness', () {
     test('a surface decides it; otherwise the mode, then the system', () {
-      final automatic = ThemePresets.initial;
+      final automatic = ThemePresets.seance;
       expect(
         resolveBrightness(
           automatic,
@@ -324,7 +334,7 @@ void main() {
   group('shape and type', () {
     test('the corner scale reaches the components and the chrome', () {
       final theme = SeanceTheme.build(
-        ThemePresets.initial.copyWith(cornerScale: 0.5),
+        ThemePresets.seance.copyWith(cornerScale: 0.5),
         Brightness.light,
       );
       expect(
@@ -362,7 +372,7 @@ void main() {
 
     test('the interface font reaches the text theme', () {
       final theme = SeanceTheme.build(
-        ThemePresets.initial.withFontFamily('Inter'),
+        ThemePresets.seance.withFontFamily('Inter'),
         Brightness.light,
         platform: TargetPlatform.linux,
       );

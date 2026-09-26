@@ -371,7 +371,13 @@ void main() {
 
     /// What the clipboard holds, as the platform channel answers for it.
     String? clipboard;
-    setUp(() => clipboard = null);
+    setUp(() {
+      clipboard = null;
+      // Start from Séance, the all-Automatic preset, rather than the
+      // Terminal a new device starts in: most of these are about
+      // Automatic colours and the mode they follow.
+      backend.settings.themePalette = ThemePresets.seance;
+    });
 
     void mockClipboard(WidgetTester tester) {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -469,7 +475,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(backend.appearances.last.$2, ThemeModePreference.dark);
-      expect(lastPalette(), ThemePresets.initial);
+      expect(lastPalette(), ThemePresets.seance);
     });
 
     testWidgets('Automatic hands a colour back, and back again restores it', (
@@ -504,7 +510,7 @@ void main() {
       expect(
         lastPalette().text,
         SeanceTheme.resolvedSlots(
-          ThemePresets.initial,
+          ThemePresets.seance,
           Brightness.light,
         )[ThemeSlot.text],
       );
@@ -598,14 +604,14 @@ void main() {
         ..themeMode = ThemeModePreference.dark;
       await pumpAppearance(tester);
 
-      await tester.tap(find.text('Reset to Séance'));
+      await tester.tap(find.text('Reset to Terminal'));
       await tester.pumpAndSettle();
       expect(find.text('Reset the theme?'), findsOneWidget);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
       expect(backend.appearances, isEmpty);
 
-      await tester.tap(find.text('Reset to Séance'));
+      await tester.tap(find.text('Reset to Terminal'));
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(FilledButton, 'Reset'));
       await tester.pumpAndSettle();

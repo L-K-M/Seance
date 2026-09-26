@@ -9,10 +9,11 @@ import 'theme_palette.dart';
 /// into the device's palette, which the user is then free to change. Every
 /// one with its own surface is complete — its own surface, rail, lines,
 /// selection, status colours and terminal — because a preset that left
-/// the rail Automatic would frame a Solarized pane in slate. The default
-/// leaves everything Automatic, which is what reproduces the app as it
-/// looked before themes existed, and Graphite changes only the accent and
-/// the corners over the same Automatic neutrals.
+/// the rail Automatic would frame a Solarized pane in slate. The first,
+/// Séance, leaves everything Automatic, which is what reproduces the app
+/// as it looked before themes existed, and Graphite changes only the
+/// accent and the corners over the same Automatic neutrals. A new device
+/// starts in Terminal instead ([initial]).
 ///
 /// Each has to pass `theme_presets_test.dart`: text and secondary text on
 /// its surface and rail, the accent and every status colour on its
@@ -21,8 +22,11 @@ import 'theme_palette.dart';
 /// meet. The accents are Vervellum's, except Bubblegum's, which is a shade
 /// deeper than Vervellum's #FF59AD: that pink is 2.7:1 on its own surface.
 abstract final class ThemePresets {
-  /// The default: Séance's violet over the sibling neutrals, which follow
-  /// the system's light or dark appearance.
+  /// Séance's own look: its violet over the sibling neutrals, which follow
+  /// the system's light or dark appearance. Not what a new device starts
+  /// in ([initial]), but the palette every Automatic colour belongs to, so
+  /// it is what a partial theme is completed from and what a host theme
+  /// with no Séance extensions is drawn in.
   static final ThemePalette seance = ThemePalette(
     name: 'Séance',
     accent: SeanceTheme.seed,
@@ -388,7 +392,7 @@ abstract final class ThemePresets {
   );
 
   /// Every preset, in the order the Appearance tab shows them: the two
-  /// that follow the system's light or dark (the default first), then the
+  /// that follow the system's light or dark (Séance first), then the
   /// light ones with surfaces of their own, then the dark ones, then the
   /// loud ones.
   static final List<ThemePalette> all = List.unmodifiable([
@@ -404,6 +408,7 @@ abstract final class ThemePresets {
     highContrast,
   ]);
 
-  /// What a device starts with, and what Reset puts back.
-  static ThemePalette get initial => seance;
+  /// What a device starts with, and what Reset puts back: green on black,
+  /// for a terminal app.
+  static ThemePalette get initial => terminal;
 }
