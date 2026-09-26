@@ -83,6 +83,33 @@ void main() {
     });
   }
 
+  testWidgets('modified arrows leave pane widths unchanged', (tester) async {
+    final reports = <(double, double)>[];
+    await pumpResizable(
+      tester,
+      onChanged: (list, utility) => reports.add((list, utility)),
+    );
+    for (final handle in [
+      AdaptivePaneLayout.listResizeHandleKey,
+      AdaptivePaneLayout.utilityResizeHandleKey,
+    ]) {
+      await focusHandle(tester, handle);
+      for (final modifier in [
+        LogicalKeyboardKey.altLeft,
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.metaLeft,
+      ]) {
+        await tester.sendKeyDownEvent(modifier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.sendKeyUpEvent(modifier);
+        await tester.pump();
+        expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 300);
+        expect(paneWidth(tester, AdaptivePaneLayout.utilityPaneKey), 340);
+        expect(reports, isEmpty);
+      }
+    }
+  });
+
   testWidgets('successive keyboard steps accumulate before a new frame', (
     tester,
   ) async {

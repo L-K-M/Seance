@@ -84,12 +84,14 @@ existing keyboard/semantics interaction contract without introducing a new
 layout or changing the terminal's minimum width.
 
 Six accessibility regression cases failed before implementation; the final
-resize and narrow-navigation suites pass 33 tests. Coverage includes both
+resize and narrow-navigation suites pass 34 tests. Coverage includes both
 handles, RTL, Tab traversal and focus appearance, repeated steps and rapid
-direction reversals before a frame, bounds, window shrink, truthful adjustment announcements and the
-existing persistence/drag behavior. Full Flutter analysis is clean. Local
-validation used Flutter 3.47.3 on macOS; CI retains 3.47.2. VoiceOver/NVDA
-walkthroughs remain a native verification item.
+direction reversals before a frame, bounds, window shrink, truthful adjustment
+announcements and the existing persistence/drag behavior. Modified arrows with
+Alt, Control or Meta leave the dividers alone, preserving app shortcuts.
+Full Flutter analysis is clean. Local validation used Flutter 3.47.3 on
+macOS; CI retains 3.47.2. VoiceOver/NVDA walkthroughs remain a native
+verification item.
 
 ## ssh-agent authentication and ProxyJump (2026-09-26)
 

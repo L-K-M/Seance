@@ -518,6 +518,12 @@ class _ResizeHandleState extends State<_ResizeHandle> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isAltPressed ||
+        keyboard.isControlPressed ||
+        keyboard.isMetaPressed) {
+      return KeyEventResult.ignored;
+    }
     if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
       widget.onStep(_resizeKeyStep * _direction);
     } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
