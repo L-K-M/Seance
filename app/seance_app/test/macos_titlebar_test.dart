@@ -28,18 +28,20 @@ void main() {
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
   /// Delivers a runner-to-Dart call on [channel], as the Swift side would.
-  Future<ByteData?> fromRunner(MethodCall call) {
-    final completer = messenger.handlePlatformMessage(
+  Future<void> fromRunner(MethodCall call) async {
+    await messenger.handlePlatformMessage(
       channel.name,
       const StandardMethodCodec().encodeMethodCall(call),
       (_) {},
     );
-    return completer.then((_) => null);
   }
 
   group('install', () {
     test('an installed titlebar reports its band', () async {
-      messenger.setMockMethodCallHandler(channel, (call) async => true);
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        expect(call.method, 'isToolbarBandVisible');
+        return true;
+      });
       final adapter = _FakeTitlebar();
       final band = await MacosTitlebar.install(
         adapter: adapter,
@@ -67,6 +69,28 @@ void main() {
         expect(band!.value, isFalse);
       },
     );
+
+    // The band is cosmetic and install runs in main() before the window is
+    // shown, so a runner that fails the query must not stop the launch.
+    for (final (name, reply) in <(String, Future<Object?> Function())>[
+      ('an error', () async => throw PlatformException(code: 'BOOM')),
+      ('a non-bool reply', () async => 'yes'),
+    ]) {
+      test('a band query that answers with $name keeps the band', () async {
+        messenger.setMockMethodCallHandler(channel, (call) => reply());
+        final adapter = _FakeTitlebar();
+        final band = await MacosTitlebar.install(
+          adapter: adapter,
+          channel: channel,
+        );
+        addTearDown(() => band?.dispose());
+        // The titlebar is installed, so the band stays reserved in the
+        // windowed layout.
+        expect(band, isNotNull);
+        expect(band!.value, isTrue);
+        expect(adapter.resets, 0);
+      });
+    }
 
     test('a failed install puts the standard titlebar back', () async {
       final adapter = _FakeTitlebar(failInstall: true);

@@ -112,12 +112,19 @@ final class MacosToolbarBandChannel extends ValueNotifier<bool> {
 
   /// Asks the runner for the band's state, which a window restored
   /// straight into full screen changed before the handler was set.
+  ///
+  /// Never throws: [MacosTitlebar.install] awaits this in `main` before
+  /// the hidden-at-launch window is shown, and the band is only a layout
+  /// hint, so any failure leaves the windowed layout instead.
   Future<void> start() async {
     try {
       final visible = await _channel.invokeMethod<bool>('isToolbarBandVisible');
       if (visible != null) value = visible;
     } on MissingPluginException {
       // No runner side: the windowed layout stands.
+    } catch (error) {
+      // A runner error, or a reply that is not a bool (a cast error).
+      debugPrint('Toolbar band state unavailable: $error');
     }
   }
 
