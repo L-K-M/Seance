@@ -8,8 +8,9 @@
   colour, the status colours, the terminal's colours, the interface font
   and how round the corners are; the app repaints as you go. Colours left
   on Automatic follow light or dark as you choose. Copy theme and Paste
-  theme carry a theme between devices; themes do not sync. An existing
-  install looks exactly as before.
+  theme carry a theme between devices; themes do not sync. The app starts
+  in Terminal, green on black; pick Séance for the violet look it had
+  before themes.
 - On phones and tablets, the server filter field is full height again
   instead of a thin strip above an empty gap, and compact server rows
   are 40 dp instead of 48.
@@ -65,6 +66,13 @@
   the first" again; the long-press sheet shows the row's second line
   under its name; and the filter chord no longer latches the field open
   on an empty list.
+- Sync server: registration, prelogin and login read at most 16 KiB of
+  request body, so a client that has not signed in can no longer make the
+  server buffer megabytes per request, and every body is buffered more
+  compactly. New usernames must be 1 to 256 bytes with no control
+  characters (accounts created before still sign in), a username that is
+  not a string is a 400 instead of a server error, and registration checks
+  the verifier and salt lengths every client sends.
 - Android: the system back button on the narrow terminal screen returns to
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving
@@ -81,12 +89,11 @@
   from Poltergeist. Language detection also finds the file name after a
   backslash.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
-- Sync server: registration, prelogin and login read at most 16 KiB of
-  request body, so a client that has not signed in can no longer make the
-  server buffer megabytes per request, and every body is buffered more
-  compactly. New usernames must be 1 to 256 bytes with no control
-  characters (accounts created before still sign in), a username that is
-  not a string is a 400 instead of a server error, and registration checks
-  the verifier and salt lengths every client sends.
+- Security: the Git tab and the staged `cd` now quote paths and arguments
+  so fish reads them literally too. Before, when your login shell was fish,
+  a directory name with a backslash and a quote could run commands on the
+  server, and ordinary terminal output could report such a name to the Git
+  tab, which probes it automatically. Reported directories that contain
+  control characters are now ignored.
 
 Earlier history lives in the commit log and any GitHub releases.

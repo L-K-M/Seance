@@ -96,7 +96,8 @@ void main() {
     await tester.pump();
     MaterialApp app() => tester.widget<MaterialApp>(find.byType(MaterialApp));
     final before = app();
-    expect(before.themeMode, ThemeMode.system);
+    // A fresh settings file: a new device starts in Terminal.
+    expect(before.theme?.colorScheme.surface, ThemePresets.terminal.surface);
 
     state.terminalAppearanceChanged();
     await tester.pump();
