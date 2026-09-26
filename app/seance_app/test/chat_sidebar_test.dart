@@ -77,6 +77,8 @@ class _State extends ChangeNotifier implements AppState {
   @override
   int get llmConfigVersion => 0;
   @override
+  bool get includeTerminalContext => true;
+  @override
   _Session? activeSession;
   final List<_Session> terminals = [];
   @override

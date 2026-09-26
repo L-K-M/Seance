@@ -99,6 +99,34 @@ void main() {
     expect(AppSettings.fromJson(json).keepSessionsAliveInBackground, isTrue);
   });
 
+  test('the terminal-output opt-out defaults on and persists', () async {
+    expect(AppSettings().includeTerminalContext, isTrue);
+
+    final directory = await Directory.systemTemp.createTemp(
+      'seance-settings-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final store = SettingsStore(File('${directory.path}/settings.json'));
+    await store.save(AppSettings(includeTerminalContext: false));
+    expect((await store.load()).includeTerminalContext, isFalse);
+
+    // A settings file from before the choice was stored reads as on, which
+    // is what every earlier build sent.
+    final json = AppSettings(includeTerminalContext: false).toJson();
+    expect(json.containsKey('includeTerminalContext'), isTrue);
+    json.remove('includeTerminalContext');
+    expect(AppSettings.fromJson(json).includeTerminalContext, isTrue);
+
+    final settings = AppSettings();
+    final before = assistantSyncFingerprint(settings);
+    settings.includeTerminalContext = false;
+    expect(
+      assistantSyncFingerprint(settings),
+      before,
+      reason: 'device-local: not part of the assistant record',
+    );
+  });
+
   test('remote editor and path bookmarks round-trip safely', () {
     final settings = AppSettings(
       editorRegistry: EditorRegistry(

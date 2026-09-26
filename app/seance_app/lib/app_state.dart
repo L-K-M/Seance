@@ -1109,6 +1109,19 @@ class AppState extends ChangeNotifier {
     await services.saveSettings();
   }
 
+  /// Whether assistant requests carry the active session's recent output.
+  /// See [AppSettings.includeTerminalContext].
+  bool get includeTerminalContext => services.settings.includeTerminalContext;
+
+  /// Applied before the write, so a request sent while the save is still in
+  /// flight already honours the choice.
+  Future<void> setIncludeTerminalContext(bool include) async {
+    if (services.settings.includeTerminalContext == include) return;
+    services.settings.includeTerminalContext = include;
+    notifyListeners();
+    await services.saveSettings();
+  }
+
   /// Persist the tiled panes' widths after a resize drag. No notifyListeners:
   /// the layout already renders these — the save is only for the next launch.
   Future<void> setPaneWidths({

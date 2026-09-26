@@ -81,5 +81,13 @@
   from Poltergeist. Language detection also finds the file name after a
   backslash.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
+- Assistant: turning off "Include terminal output" now stays off. It used
+  to switch itself back on whenever the assistant was rebuilt: each time
+  the phone drawer reopened, or when the window crossed the wide/narrow
+  breakpoint. The next message then sent the terminal output you had
+  chosen to withhold. The choice is now saved on this device. The command
+  generator's "Use recent terminal output as context" is the same
+  setting, so turning it off in either place turns it off in both. It
+  still starts on.
 
 Earlier history lives in the commit log and any GitHub releases.
