@@ -97,10 +97,11 @@ the jump host's server-supplied name, instructions, and prompts.
 `ssh_agent_test.dart` pins message framing, key enumeration, signing, RSA
 flags, response validation, and bounds. `ssh_agent_unix_test.dart` exercises a
 fragmented reply over a real Unix socket, request timeout cleanup, and
-missing-agent errors.
+missing-agent errors. The Windows client matrix compiles the named-pipe
+transport; CI has no live Windows agent for a runtime exchange.
 `ssh_proxy_jump_test.dart` covers direct, one-hop, and multi-hop routing,
-pre-network validation, forwarding and constructor failures, and chain
-ownership.
+pre-network validation, forwarding, constructor and later-hop authentication
+failures, per-hop forwarding ownership, and complete chain cleanup.
 
 ## Themes (2026-09-25)
 

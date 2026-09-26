@@ -51,7 +51,11 @@ void main() {
           const SshCredentials.password('unused'),
           SshConnectionLog(),
         ),
-        throwsA(isA<SshConnectException>()),
+        throwsA(isA<SshConnectException>().having(
+          (error) => error.message,
+          'message',
+          contains('bastion'),
+        )),
       );
       expect(requested, ['bastion']);
     });
@@ -388,7 +392,8 @@ void main() {
     });
 
     test('a stock UnsupportedError is a bug and keeps its trace', () async {
-      // The quiet treatment is for the one deliberate throw, not for the type:
+      // No error is deliberately quieted; every unexpected Error keeps a
+      // trace:
       // `UnsupportedError` is stock Dart, raised by unmodifiable collections,
       // platform stubs and any package under here. Matched by type alone, a
       // real bug would come back as a polished sentence about the host with

@@ -85,7 +85,7 @@ void main() {
           ),
         );
 
-        final socket = await accepted;
+        final socket = await accepted.timeout(const Duration(seconds: 5));
         await expectLater(socket.drain<void>(), completes);
         await socket.close();
       } finally {

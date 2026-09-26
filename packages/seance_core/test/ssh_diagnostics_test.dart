@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show SocketException;
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart'
@@ -29,7 +30,7 @@ SSHIdentity _agentIdentity() => SSHIdentity.custom(
       publicKey: SSHRawHostKey(Uint8List.fromList([
         0, 0, 0, 11,
         ...utf8.encode('ssh-ed25519'),
-        0, 0, 0, 1, 7,
+        0, 0, 0, 32, ...List.filled(32, 7),
       ])),
       signer: (_) => throw StateError('signing is not reached'),
       comment: 'test agent key',
@@ -246,7 +247,10 @@ void main() {
       );
 
       expect(msg, contains('ssh-agent refused confirmation'));
-      expect(msg, isNot(contains('connection closed before authentication')));
+      expect(
+        msg.toLowerCase(),
+        isNot(contains('connection closed before authentication')),
+      );
     });
 
     test('auth summary says check-the-credential for a non-root password reject',
@@ -303,7 +307,7 @@ void main() {
           onHostKey: (_) async => true,
           connect: (host, port, timeout) async {
             connectorCalled = true;
-            throw StateError('connection refused');
+            throw const SocketException('connection refused');
           },
           loadAgentIdentities: () async => [_agentIdentity()],
           log: log,

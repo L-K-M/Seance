@@ -23,6 +23,7 @@ void main() {
   Future<void> openDialog(
     WidgetTester tester, {
     List<String> prompts = const ['Password', 'One-time code'],
+    KeyboardInteractiveChallenge? customChallenge,
     ValueChanged<List<String>>? onResult,
   }) async {
     await tester.pumpWidget(
@@ -33,7 +34,7 @@ void main() {
               onPressed: () async {
                 final result = await showKeyboardInteractiveDialog(
                   context,
-                  challenge(prompts),
+                  customChallenge ?? challenge(prompts),
                 );
                 onResult?.call(result);
               },
@@ -55,6 +56,51 @@ void main() {
     expect(find.text('deploy@jump.example.com:2222'), findsOneWidget);
     expect(find.text('Authentication'), findsOneWidget);
     expect(find.text('Answer the server challenge.'), findsOneWidget);
+  });
+
+  testWidgets('separates the trusted endpoint from prompt-only challenges', (
+    tester,
+  ) async {
+    await openDialog(
+      tester,
+      customChallenge: KeyboardInteractiveChallenge(
+        server: challenge(const []).server,
+        prompts: const ['Password'],
+        name: '',
+        instruction: '',
+      ),
+    );
+
+    final endpointBottom = tester
+        .getBottomLeft(find.text('deploy@jump.example.com:2222'))
+        .dy;
+    final promptTop = tester.getTopLeft(find.byType(TextField)).dy;
+
+    expect(promptTop - endpointBottom, greaterThanOrEqualTo(12));
+  });
+
+  testWidgets('brackets a bare IPv6 host in the trusted target', (
+    tester,
+  ) async {
+    await openDialog(
+      tester,
+      customChallenge: KeyboardInteractiveChallenge(
+        server: ServerConfig(
+          id: 'v6',
+          label: 'IPv6',
+          host: '2001:db8::1',
+          port: 22,
+          username: 'root',
+          createdAt: 0,
+          updatedAt: 0,
+        ),
+        prompts: const ['Password'],
+        name: '',
+        instruction: '',
+      ),
+    );
+
+    expect(find.text('root@[2001:db8::1]:22'), findsOneWidget);
   });
 
   /// Opens the dialog above a pushed page, as a real prompt does, so the

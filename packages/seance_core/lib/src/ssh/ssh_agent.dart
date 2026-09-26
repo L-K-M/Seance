@@ -256,6 +256,11 @@ Future<Uint8List> _exchangeWithUnixAgent(
       0,
       timeout: requestTimeout,
     );
+    // Socket.connect can succeed just after our whole-request deadline fires.
+    if (timedOut) {
+      throw _agentTimeoutException('ssh-agent', requestTimeout);
+    }
+
     reader = _StreamReader(socket);
     socket.add(request);
     await socket.flush();
@@ -521,9 +526,8 @@ final class _WindowsAgentPipe {
           requestTimeout,
         );
         if (transferred == 0) {
-          throw SshAgentException(
-            'Reading from the Windows ssh-agent failed '
-            '(Windows error ${_getLastError()}).',
+          throw const SshAgentException(
+            'The Windows ssh-agent closed the pipe mid-response.',
           );
         }
         offset += transferred;

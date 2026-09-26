@@ -87,9 +87,9 @@ class _KeyboardInteractiveDialogState
             _trustedTarget(widget.challenge.server),
             style: Theme.of(context).textTheme.titleSmall,
           ),
+          const SizedBox(height: 12),
           if (widget.challenge.name.isNotEmpty ||
               widget.challenge.instruction.isNotEmpty) ...[
-            const SizedBox(height: 12),
             Text(
               'Server message',
               style: Theme.of(context).textTheme.labelMedium,

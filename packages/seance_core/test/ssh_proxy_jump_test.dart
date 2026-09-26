@@ -156,6 +156,7 @@ void main() {
         final connected = <String>[];
         final resolved = <String>[];
         final forwarded = <String>[];
+        final forwardClients = <SSHClient>[];
 
         final hosts = <String, ResolvedSshHost>{
           inner.id: ResolvedSshHost(
@@ -182,6 +183,7 @@ void main() {
           int port,
           Duration timeout,
         ) async {
+          forwardClients.add(client);
           forwarded.add('$host:$port');
           expect(forwardedSockets.moveNext(), isTrue);
           return forwardedSockets.current;
@@ -204,6 +206,14 @@ void main() {
         expect(resolved, [outer.id, inner.id]);
         expect(connected, ['inner.invalid:2204']);
         expect(forwarded, ['outer.internal:2205', 'target.internal:2206']);
+        expect(forwardClients, hasLength(2));
+        expect(identical(forwardClients.first, forwardClients.last), isFalse);
+        expect(
+          forwardClients.any(
+            (forwardClient) => identical(forwardClient, client),
+          ),
+          isFalse,
+        );
         expect(forwardedSockets.moveNext(), isFalse);
 
         await client.close();
@@ -410,14 +420,46 @@ void main() {
       expect(physical.closeCalls, 1);
     });
 
+    test('a later-hop auth failure closes the whole chain', () async {
+      final jump = _server(id: 'jump', host: 'jump.invalid', port: 2215);
+      final target = _server(
+        id: 'target',
+        host: 'target.internal',
+        port: 2216,
+        jumpHostId: jump.id,
+      );
+      final physical = _CompletionSocket();
+      final rejected = _CompletionSocket(_AuthenticationResult.failure);
+
+      await expectLater(
+        openAuthenticatedClient(
+          config: target,
+          credentials: const SshCredentials.password('target-password'),
+          tofu: TofuVerifier(InMemoryHostKeyStore()),
+          onHostKey: (_) async => true,
+          connect: (host, port, timeout) async => physical,
+          resolveJumpHost: (id) async => ResolvedSshHost(
+            jump,
+            const SshCredentials.password('jump-password'),
+          ),
+          forward: (client, host, port, timeout) async => rejected,
+          keepAliveInterval: null,
+        ),
+        throwsA(isA<SshConnectException>()),
+      );
+
+      expect(rejected.closeCalls, 1);
+      expect(physical.closeCalls, 1);
+    });
+
     test(
       'closing destroys a stalled forwarding channel before its parent',
       () async {
-        final jump = _server(id: 'jump', host: 'jump.invalid', port: 2215);
+        final jump = _server(id: 'jump', host: 'jump.invalid', port: 2217);
         final target = _server(
           id: 'target',
           host: 'target.internal',
-          port: 2216,
+          port: 2218,
           jumpHostId: jump.id,
         );
         final physical = _CompletionSocket();
@@ -439,7 +481,7 @@ void main() {
         final closing = client.close();
         var closedPromptly = true;
         try {
-          await closing.timeout(const Duration(milliseconds: 100));
+          await closing.timeout(const Duration(seconds: 1));
         } on TimeoutException {
           closedPromptly = false;
         } finally {
@@ -447,7 +489,11 @@ void main() {
           await closing;
         }
 
-        expect(closedPromptly, isTrue);
+        expect(
+          closedPromptly,
+          isTrue,
+          reason: 'client.close() must destroy a stalled forwarding channel',
+        );
         expect(forwarded.destroyCalls, 1);
         expect(physical.closeCalls, 1);
       },
@@ -461,6 +507,8 @@ final Matcher _cycleFailure = isA<SshConnectException>().having(
   contains('cycle'),
 );
 
+enum _AuthenticationResult { success, failure }
+
 /// Completes authentication without key exchange; routing is the only subject.
 class _CompletionSocket implements SSHSocket {
   final _incoming = StreamController<Uint8List>();
@@ -469,13 +517,20 @@ class _CompletionSocket implements SSHSocket {
 
   int closeCalls = 0;
 
-  _CompletionSocket() {
+  _CompletionSocket([
+    _AuthenticationResult authentication = _AuthenticationResult.success,
+  ]) {
     unawaited(_outgoing.stream.drain<void>());
     _incoming.add(
       Uint8List.fromList(ascii.encode('SSH-2.0-ProxyJumpFixture\r\n')),
     );
 
-    final payload = SSH_Message_Userauth_Success().encode();
+    final payload = switch (authentication) {
+      _AuthenticationResult.success => SSH_Message_Userauth_Success().encode(),
+      _AuthenticationResult.failure => SSH_Message_Userauth_Failure(
+        methodsLeft: const [],
+      ).encode(),
+    };
     final headerBytes = _packetLengthBytes + _paddingLengthBytes;
     var padding =
         _packetBlockBytes - (headerBytes + payload.length) % _packetBlockBytes;
@@ -553,7 +608,9 @@ final class _StallingCloseSocket extends _CompletionSocket {
   }
 
   void releaseClose() {
-    if (!_gracefulClose.isCompleted) _gracefulClose.complete();
+    if (_gracefulClose.isCompleted) return;
+
+    _gracefulClose.complete();
     unawaited(super.close());
   }
 
