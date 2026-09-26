@@ -752,8 +752,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     }
   }
 
-  /// [seance fork] The visible part of [highlight], or null when none of it
-  /// is on screen. A highlight anchored in the other buffer (the main one
+  /// [seance fork] The whole range of [highlight] when any of it is on
+  /// screen, or null when none is; callers clip it to the viewport. A highlight anchored in the other buffer (the main one
   /// while vim holds the alternate screen, or the reverse) is never visible:
   /// its rows index a different set of lines.
   BufferRange? _visibleRange(

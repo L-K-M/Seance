@@ -178,6 +178,64 @@ void main() {
       expect(pixel(glyph(0)), isNot(hitForeground));
     });
 
+    // [seance fork] Where recolouring highlights overlap, the newest wins,
+    // as it does for overlay highlights, which paint in creation order.
+    testWidgets('overlapping foregrounds: the newest highlight wins',
+        (tester) async {
+      const newerBackground = Color(0xFF602040);
+      const newerForeground = Color(0xFF80E0C0);
+      final terminal = Terminal();
+      final controller = TerminalController();
+      final boundary = GlobalKey();
+      final render = await pumpTerminal(
+        tester,
+        terminal,
+        controller,
+        boundary: boundary,
+      );
+      terminal.write('MMMM');
+      controller.highlight(
+        p1: terminal.buffer.createAnchor(0, 0),
+        p2: terminal.buffer.createAnchor(3, 0),
+        color: hitBackground,
+        foreground: hitForeground,
+      );
+      controller.highlight(
+        p1: terminal.buffer.createAnchor(2, 0),
+        p2: terminal.buffer.createAnchor(4, 0),
+        color: newerBackground,
+        foreground: newerForeground,
+      );
+      await tester.pump();
+
+      final pixels = await tester.runAsync(() async {
+        final image = await (boundary.currentContext!.findRenderObject()!
+                as RenderRepaintBoundary)
+            .toImage();
+        final bytes = await image.toByteData();
+        return (image.width, bytes!);
+      });
+      final (width, bytes) = pixels!;
+      Color pixel(Offset at) {
+        final i = (at.dy.round() * width + at.dx.round()) * 4;
+        return Color.fromARGB(
+          bytes.getUint8(i + 3),
+          bytes.getUint8(i),
+          bytes.getUint8(i + 1),
+          bytes.getUint8(i + 2),
+        );
+      }
+
+      final cell = render.cellSize;
+      Offset glyph(int x) =>
+          render.localToGlobal(render.getOffset(CellOffset(x, 0))) +
+          cell.center(Offset.zero);
+
+      expect(pixel(glyph(1)), hitForeground);
+      expect(pixel(glyph(2)), newerForeground);
+      expect(pixel(glyph(3)), newerForeground);
+    });
+
     // [seance fork] Rows of the main buffer index nothing on the alternate
     // screen: a highlight anchored there must not paint over vim.
     testWidgets('anchored in the other buffer is not painted',

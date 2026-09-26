@@ -414,8 +414,9 @@ Regressions: `test/src/ui/selection_gesture_test.dart`, "void past the content".
     cells' own background and foreground (RGB, alpha dropped), so the fill
     sits under the text and the text takes a colour chosen to read on it
     (`searchHitForeground`). Only visible rows are visited, however far a
-    highlight reaches (the S4-20 culling, for this path). Highlights without
-    a foreground keep upstream's overlay.
+    highlight reaches (the S4-20 culling, for this path). Where two overlap,
+    the newest wins, as with overlays. Highlights without a foreground keep
+    upstream's overlay.
 
 32. **Highlights anchored in the other buffer are not painted**
     (`ui/render.dart#_visibleRange`): a highlight anchored in the main

@@ -167,13 +167,15 @@ class TerminalPainter {
   }
 
   /// [seance fork] Gives [cellData] (the cell at column [x]) the colours of
-  /// the span covering it, as an RGB background and foreground. Clearing
+  /// the span covering it, as an RGB background and foreground. Spans come in
+  /// highlight creation order and the newest wins, as overlay highlights,
+  /// painted in that order, would show it. Clearing
   /// inverse keeps the pair the right way round. Going through the cell's
   /// own colour words rather than a side channel keeps the paragraph cache
   /// honest: its key already hashes them.
   @pragma('vm:prefer-inline')
   void _recolorCell(CellData cellData, int x, List<CellRecolor> recolor) {
-    for (final span in recolor) {
+    for (final span in recolor.reversed) {
       if (x < span.start || x >= span.end) continue;
       cellData.background = CellColor.rgb | (span.background & CellColor.valueMask);
       cellData.foreground = CellColor.rgb | (span.foreground & CellColor.valueMask);
