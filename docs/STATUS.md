@@ -13,6 +13,14 @@ are recognized too, including prefixed `AWS_SECRET_ACCESS_KEY` assignments.
 Non-empty labeled values are masked regardless of length to protect short
 secrets; assignment-like prose such as `the token: is invalid` can therefore
 produce false positives.
+Adjacent recognized labels remain covered when a preceding unquoted value
+consumes their label. For `=` assignments the filter masks a complete static
+shell word, including joined quoted pieces, `$'...'` / `$"..."` prefixes and
+escaped spaces. Ambiguous single-quote escapes are interpreted conservatively,
+which can mask following public text. This is not a shell or YAML parser:
+command substitutions/backticks, YAML tags such as `password: !!str value`, and
+block scalars such as `password: |` followed by indented secret lines remain
+outside the supported value grammar and need structured parsing in follow-up.
 
 Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.

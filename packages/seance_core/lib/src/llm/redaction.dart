@@ -40,21 +40,55 @@ class SecretRedactor {
   // A closing quote permits JSON/YAML keys; the opening quote stays in the
   // copied prefix. This also recognizes DB_PASSWORD without notpassword.
   static final RegExp _assignment = RegExp(
-    r'''(?<![A-Za-z0-9])(password|passwd|secret[_-]?(?:access[_-]?)?key|secret|api[_-]?key|token)["']?\s*[=:]\s*''',
+    r'''(?<![A-Za-z0-9])(password|passwd|secret[_-]?(?:access[_-]?)?key|secret|api[_-]?key|token)["']?\s*([=:])\s*''',
     caseSensitive: false,
   );
   // Punctuation may be part of a shell credential; only whitespace/quotes
   // ended an unquoted value in the original filter, so keep that boundary.
   static final RegExp _unquotedEnd = RegExp(r'''[\s'"]''');
 
+  // Static shell words can join quoted/unquoted pieces and escaped spaces.
+  // This does not evaluate substitutions or parse shell commands.
+  static int _shellWordEnd(String text, int start) {
+    var end = start;
+    var quote = 0;
+    var ansiSingleQuote = false;
+    while (end < text.length) {
+      final unit = text.codeUnitAt(end);
+      if (unit == 0x5c && (quote != 0x27 || ansiSingleQuote)) {
+        end += end + 1 < text.length ? 2 : 1;
+        continue;
+      }
+      if (quote != 0) {
+        if (unit == quote) quote = 0;
+      } else if (unit == 0x24 &&
+          end + 1 < text.length &&
+          text.codeUnitAt(end + 1) == 0x27) {
+        quote = 0x27;
+        ansiSingleQuote = true;
+        end += 2;
+        continue;
+      } else if (unit == 0x22 || unit == 0x27) {
+        quote = unit;
+        ansiSingleQuote = false;
+      } else if (_unquotedEnd.matchAsPrefix(text, end) != null) {
+        break;
+      }
+      end++;
+    }
+    return end;
+  }
+
   static String _redactAssignments(String text) {
     final out = StringBuffer();
     var copiedThrough = 0;
     for (final match in _assignment.allMatches(text)) {
-      if (match.start < copiedThrough || match.end == text.length) continue;
+      // A prior unquoted value can consume another label without its value.
+      // Keep equality: the uncovered value may start at this opening quote.
+      if (match.end < copiedThrough || match.end == text.length) continue;
       final first = text.codeUnitAt(match.end);
-      final quoted = first == 0x22 || first == 0x27;
-      final valueStart = match.end + (quoted ? 1 : 0);
+      var quoted = first == 0x22 || first == 0x27;
+      var valueStart = match.end + (quoted ? 1 : 0);
       var valueEnd = valueStart;
       while (valueEnd < text.length) {
         final unit = text.codeUnitAt(valueEnd);
@@ -76,6 +110,20 @@ class SecretRedactor {
           break;
         }
         valueEnd++;
+      }
+      if (match[2] == '=') {
+        final wordEnd = _shellWordEnd(text, match.end);
+        if (!quoted) {
+          valueEnd = wordEnd;
+        } else if (valueEnd < text.length && wordEnd > valueEnd + 1) {
+          // A joined suffix belongs to the same shell value. Mask the whole
+          // word when one pair of quotes no longer encloses the whole secret.
+          quoted = false;
+          valueStart = match.end;
+          valueEnd = wordEnd;
+        }
+        // Otherwise retain the first scan's conservative extent, including
+        // ambiguous single-quote escapes in non-shell text and truncation.
       }
       if (valueEnd == valueStart) continue;
       out
