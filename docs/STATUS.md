@@ -220,9 +220,9 @@ status colours; its scrim and card fill are panel-specific.
 **Known limits.** Editor syntax colours still follow the brightness, not
 the palette. Server badge fills and accent lines are derived per
 brightness as before, not per palette. The bootstrap spinner draws in the
-default theme, because the settings are read during bootstrap, and the
-user's theme fades in when the shell appears. The sidebar kit's corner
-change is Séance-only for now (see
+default theme (Terminal), because the settings are read during
+bootstrap, and the user's theme fades in when the shell appears. The
+sidebar kit's corner change is Séance-only for now (see
 [POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)). Verified by the test
 suite only: the tab has not been driven in a built app on any platform.
 

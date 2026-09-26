@@ -15,16 +15,21 @@ const _mark = 3.0;
 /// every brightness it can be drawn at: its own surface's, or both for the
 /// two that leave the surface Automatic.
 void main() {
-  test('the default comes first and changes nothing', () {
-    final initial = ThemePresets.all.first;
-    expect(initial, same(ThemePresets.initial));
-    expect(initial.accent, SeanceTheme.seed);
+  test('Séance comes first and changes nothing', () {
+    final first = ThemePresets.all.first;
+    expect(first, same(ThemePresets.seance));
+    expect(first.accent, SeanceTheme.seed);
     for (final slot in ThemeSlot.values) {
-      expect(initial.slot(slot), isNull, reason: slot.name);
+      expect(first.slot(slot), isNull, reason: slot.name);
     }
-    expect(initial.terminal, isNull);
-    expect(initial.fontFamily, isNull);
-    expect(initial.cornerScale, 1);
+    expect(first.terminal, isNull);
+    expect(first.fontFamily, isNull);
+    expect(first.cornerScale, 1);
+  });
+
+  test('a new device starts in Terminal', () {
+    expect(ThemePresets.initial, same(ThemePresets.terminal));
+    expect(ThemePresets.all, contains(ThemePresets.initial));
   });
 
   test('ten presets with unique names, each its own match', () {
