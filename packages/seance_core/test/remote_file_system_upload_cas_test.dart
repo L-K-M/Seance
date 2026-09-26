@@ -15,7 +15,8 @@ import 'package:test/test.dart';
 /// in-memory SFTP fake — no sockets, no timing sleeps. Tests that mutate the
 /// target mid-upload gate on the first staged write and hold the content
 /// stream open, so the mutation always lands strictly between the two
-/// preflights.
+/// preflights. The replace-safety group covers what an overwrite may
+/// replace and which modes the staged file gets.
 /// Matches the adapter's exclusive sibling temp files in /srv, so tests
 /// and the fake's helpers share one statement of the staging layout.
 final tempPathPattern = RegExp(
@@ -268,6 +269,235 @@ void main() {
       },
     );
   });
+
+  group('DartSshRemoteFileSystem upload replace safety', () {
+    // Full lstat modes: file-type field plus permission bits.
+    const symlinkMode = 0xA1FF; // S_IFLNK | 0777
+    const fifoMode = 0x11A4; // S_IFIFO | 0644
+    const directoryMode = 0x41ED; // S_IFDIR | 0755
+    const setuidExecutableMode = 0x89ED; // S_IFREG | 04755
+    const privateFileMode = 0x81A0; // S_IFREG | 0640
+    const ownerOnlyStagingMode = 0x8180; // S_IFREG | 0600
+
+    final cases = [
+      (
+        name: 'a symbolic link',
+        mode: symlinkMode,
+        passLstatAsExpectedTarget: false,
+        message:
+            '"report.txt" is a symbolic link; replacing it would '
+            'replace the link, not its target.',
+      ),
+      // The folder upload hands over the lstat entry it just read, which
+      // the link's own snapshot matches.
+      (
+        name: 'a symbolic link matching expectedTarget',
+        mode: symlinkMode,
+        passLstatAsExpectedTarget: true,
+        message:
+            '"report.txt" is a symbolic link; replacing it would '
+            'replace the link, not its target.',
+      ),
+      (
+        name: 'a FIFO',
+        mode: fifoMode,
+        passLstatAsExpectedTarget: false,
+        message:
+            '"report.txt" is not reported as a regular file, so the '
+            'upload will not replace it.',
+      ),
+    ];
+    for (final testCase in cases) {
+      test('refuses to replace ${testCase.name}', () async {
+        final client = _PathAwareSftpClient();
+        client.putSpecial(
+          targetPath,
+          mode: testCase.mode,
+          modifyTime: firstModifySecond,
+        );
+        final fileSystem = DartSshRemoteFileSystem(client);
+        final expectedTarget = testCase.passLstatAsExpectedTarget
+            ? await fileSystem.stat(targetPath, followLinks: false)
+            : null;
+
+        await expectLater(
+          fileSystem.upload(
+            targetPath,
+            Stream.value(Uint8List.fromList([7, 8, 9])),
+            length: 3,
+            overwrite: true,
+            expectedTarget: expectedTarget,
+          ),
+          throwsA(
+            conflictUpload.having(
+              (error) => error.message,
+              'message',
+              testCase.message,
+            ),
+          ),
+        );
+
+        expect(client.writeOpens, isEmpty);
+        expect(client.readOpens, isEmpty);
+        expect(client.modeSetStats, isEmpty);
+        expect(client.renames, isEmpty);
+        expect(client.hasTemporaryUpload(), isFalse);
+        expect(client.modeOf(targetPath), testCase.mode);
+      });
+    }
+
+    test(
+      'refuses a symbolic link that replaced the target mid-upload',
+      () async {
+        final client = _PathAwareSftpClient();
+        client.putFile(targetPath, [1, 2, 3], modifyTime: firstModifySecond);
+        final fileSystem = DartSshRemoteFileSystem(client);
+
+        final staged = Completer<void>();
+        client.onWrite = (_) {
+          if (!staged.isCompleted) staged.complete();
+        };
+        final content = StreamController<List<int>>();
+        final upload = fileSystem.upload(
+          targetPath,
+          content.stream,
+          length: 3,
+          overwrite: true,
+        );
+
+        content.add([7, 8, 9]);
+        await staged.future.timeout(
+          stagingTimeout,
+          onTimeout: () {
+            unawaited(content.close());
+            upload.ignore();
+            throw StateError(stagingTimeoutMessage);
+          },
+        );
+        client.putSpecial(
+          targetPath,
+          mode: symlinkMode,
+          modifyTime: laterModifySecond,
+        );
+        await content.close();
+
+        await expectLater(upload, throwsA(conflictUpload));
+        expect(client.renames, isEmpty);
+        expect(client.modeOf(targetPath), symlinkMode);
+        expect(client.hasTemporaryUpload(), isFalse);
+        expect(client.removes.single, matches(tempPathPattern));
+      },
+    );
+
+    test('does not give a file the mode of a directory', () async {
+      final client = _PathAwareSftpClient();
+      client.putSpecial(
+        targetPath,
+        mode: directoryMode,
+        modifyTime: firstModifySecond,
+      );
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      // The server's rename refuses a file over a directory.
+      await expectLater(
+        fileSystem.upload(
+          targetPath,
+          Stream.value(Uint8List.fromList([7, 8, 9])),
+          length: 3,
+          overwrite: true,
+        ),
+        throwsA(isA<RemoteFileException>()),
+      );
+
+      expect(client.modeSetStats, isEmpty);
+      expect(client.modeHandleSetStats, isEmpty);
+      expect(client.modeOf(targetPath), directoryMode);
+      expect(client.hasTemporaryUpload(), isFalse);
+    });
+
+    test('keeps only the permission bits of a replaced file', () async {
+      final client = _PathAwareSftpClient();
+      client.putFile(
+        targetPath,
+        [1, 2, 3],
+        modifyTime: firstModifySecond,
+        mode: setuidExecutableMode,
+      );
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      await fileSystem.upload(
+        targetPath,
+        Stream.value(Uint8List.fromList([5, 6])),
+        length: 2,
+        overwrite: true,
+      );
+
+      // The file-type field never goes over the wire; setuid, setgid and
+      // sticky are permission bits and stay.
+      expect(client.modeSetStats, hasLength(1));
+      expect(client.modeSetStats.single.$1, matches(tempPathPattern));
+      expect(client.modeSetStats.single.$2, setuidExecutableMode & 0xFFF);
+      // Group and others may read the result, so staging has nothing to
+      // hide and costs no extra request.
+      expect(client.modeHandleSetStats, isEmpty);
+      expect(client.modeOf(targetPath), setuidExecutableMode);
+    });
+
+    test('masks the file-type bits of an explicit preserveMode', () async {
+      final client = _PathAwareSftpClient();
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      await fileSystem.upload(
+        targetPath,
+        Stream.value(Uint8List.fromList([5, 6])),
+        length: 2,
+        preserveMode: regularFileMode,
+      );
+
+      expect(client.modeSetStats.single.$2, regularFileMode & 0xFFF);
+      expect(client.modeOf(targetPath), regularFileMode);
+    });
+
+    test('stages a private file owner-only before the first byte', () async {
+      final client = _PathAwareSftpClient();
+      client.putFile(
+        targetPath,
+        [1, 2, 3],
+        modifyTime: firstModifySecond,
+        mode: privateFileMode,
+      );
+      final fileSystem = DartSshRemoteFileSystem(client);
+      int? modeAtFirstWrite;
+      client.onWrite = (path) => modeAtFirstWrite ??= client.modeOf(path);
+
+      await fileSystem.upload(
+        targetPath,
+        Stream.value(Uint8List.fromList([5, 6])),
+        length: 2,
+        overwrite: true,
+      );
+
+      expect(modeAtFirstWrite, ownerOnlyStagingMode);
+      expect(client.modeHandleSetStats.single.$2, ownerOnlyStagingMode & 0xFFF);
+      expect(client.modeSetStats.single.$2, privateFileMode & 0xFFF);
+      expect(client.modeOf(targetPath), privateFileMode);
+    });
+
+    test('leaves a new file at the server default mode', () async {
+      final client = _PathAwareSftpClient();
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      await fileSystem.upload(
+        targetPath,
+        Stream.value(Uint8List.fromList([5, 6])),
+        length: 2,
+      );
+
+      expect(client.modeSetStats, isEmpty);
+      expect(client.modeHandleSetStats, isEmpty);
+      expect(client.modeOf(targetPath), regularFileMode);
+    });
+  });
 }
 
 /// One in-memory remote file. [modifyTime] is whole seconds, matching what
@@ -299,13 +529,34 @@ class _PathAwareSftpClient implements SftpClient {
   /// Recorded remove calls — the temporary-file cleanup path.
   final List<String> removes = [];
 
+  /// Raw mode values sent through path setstat, as (path, mode) — what
+  /// went over the wire, before the server's own permission mask.
+  final List<(String, int)> modeSetStats = [];
+
+  /// Raw mode values sent through handle setstat (fsetstat), as
+  /// (path, mode).
+  final List<(String, int)> modeHandleSetStats = [];
+
   /// Invoked after each write-mode byte write lands. Tests gate on the
   /// first call to know staging has begun; no timing sleeps anywhere.
   void Function(String path)? onWrite;
 
-  void putFile(String path, List<int> bytes, {required int modifyTime}) {
-    _files[path] = _StoredFile(List.of(bytes), modifyTime, _regularMode);
+  void putFile(
+    String path,
+    List<int> bytes, {
+    required int modifyTime,
+    int mode = _regularMode,
+  }) {
+    _files[path] = _StoredFile(List.of(bytes), modifyTime, mode);
   }
+
+  /// A non-regular node. [stat] models lstat, which is all the upload
+  /// path asks for, so the node itself is reported rather than a target.
+  void putSpecial(String path, {required int mode, required int modifyTime}) {
+    _files[path] = _StoredFile([], modifyTime, mode);
+  }
+
+  int modeOf(String path) => _files[path]!.mode;
 
   void deletePath(String path) {
     _files.remove(path);
@@ -367,6 +618,8 @@ class _PathAwareSftpClient implements SftpClient {
       // SSH_FXF_EXCL semantics: a real server refuses an existing path.
       throw SftpStatusError(SftpStatusCode.failure, 'file already exists');
     }
+    // Created with the server's default mode (umask 022), as dartssh2
+    // sends no attributes with the open request.
     final stored = _StoredFile([], _tempModifySecond, _regularMode);
     _files[path] = stored;
     return _FakeWritableSftpFile(this, path, stored, onWrite);
@@ -378,9 +631,29 @@ class _PathAwareSftpClient implements SftpClient {
     if (stored == null) {
       throw SftpStatusError(SftpStatusCode.noSuchFile, 'no such file');
     }
-    if (attrs.mode != null) stored.mode = attrs.mode!.value;
+    if (attrs.mode case final mode?) {
+      modeSetStats.add((path, mode.value));
+      _chmod(stored, mode.value);
+    }
     if (attrs.modifyTime != null) stored.modifyTime = attrs.modifyTime!;
   }
+
+  void _handleSetStat(String path, _StoredFile stored, SftpFileAttrs attrs) {
+    if (attrs.mode case final mode?) {
+      modeHandleSetStats.add((path, mode.value));
+      _chmod(stored, mode.value);
+    }
+  }
+
+  /// OpenSSH's sftp-server applies `perm & 07777`: setstat never changes
+  /// the file type, whatever the client sends.
+  static void _chmod(_StoredFile stored, int mode) {
+    stored.mode = (stored.mode & ~_permissionBits) | (mode & _permissionBits);
+  }
+
+  static const int _permissionBits = 0xFFF;
+  static const int _fileTypeBits = 0xF000;
+  static const int _directoryType = 0x4000;
 
   @override
   Future<void> rename(String oldPath, String newPath) async {
@@ -389,6 +662,11 @@ class _PathAwareSftpClient implements SftpClient {
     // destination), which the adapter's commit relies on. Bare
     // SSH_FXP_RENAME would refuse an existing [newPath]; modeling that
     // extension-less server would sit below this API's negotiation.
+    // rename(2) still refuses a file over a directory (EISDIR).
+    if (_files[newPath] case final target?
+        when target.mode & _fileTypeBits == _directoryType) {
+      throw SftpStatusError(SftpStatusCode.failure, 'is a directory');
+    }
     final stored = _files.remove(oldPath);
     if (stored == null) {
       throw SftpStatusError(SftpStatusCode.noSuchFile, 'no such file');
@@ -444,16 +722,17 @@ class _FakeReadableSftpFile extends SftpFile {
 }
 
 class _FakeWritableSftpFile extends SftpFile {
-  _FakeWritableSftpFile(
-    SftpClient client,
-    this.path,
-    this.stored,
-    this._onWrite,
-  ) : super(client, Uint8List(0));
+  _FakeWritableSftpFile(this._owner, this.path, this.stored, this._onWrite)
+    : super(_owner, Uint8List(0));
 
+  final _PathAwareSftpClient _owner;
   final String path;
   final _StoredFile stored;
   final void Function(String path)? _onWrite;
+
+  @override
+  Future<void> setStat(SftpFileAttrs attrs) async =>
+      _owner._handleSetStat(path, stored, attrs);
 
   @override
   Future<void> writeBytes(Uint8List data, {int offset = 0}) async {

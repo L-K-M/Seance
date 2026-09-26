@@ -1282,7 +1282,11 @@ returned) and passes on main. All 457 app tests pass with clean analysis.
   hash), and a matching-target success control with committed bytes, one commit rename, and no inline digest. Each
   guard was proven live by an isolated, reverted mutation of the adapter
   (preflight bypasses, digest bypass, cleanup bypass); refusal cases assert no
-  commit rename, preservation of the external target, and temp cleanup.
+  commit rename, preservation of the external target, and temp cleanup. A
+  replace-safety group refuses a symbolic link (at either preflight, and
+  with its own lstat as `expectedTarget`) or a FIFO, and checks the modes
+  sent: permission bits only, never a directory's, and owner-only staging
+  before the first byte of a file group or others may not read.
 - `app/seance_app/test/remote_files_controller_test.dart` — SFTP browser home,
   sorting/filtering/selection/bookmarks, OSC-directory follow, aggregate
   recursive transfers, durable managed copies, concurrent checkout, and

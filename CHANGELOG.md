@@ -81,5 +81,11 @@
   from Poltergeist. Language detection also finds the file name after a
   backslash.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
+- Files: an upload no longer replaces a symbolic link on the server. Choosing
+  Replace over a link used to swap the link for a regular file anyone could
+  write (mode 0777) and leave its target unchanged; the upload now stops and
+  says the item is a link. FIFOs, sockets and devices are refused the same
+  way. Replacing a file that others may not read, such as a 0600 key, no
+  longer stages the new bytes readable by everyone while they upload.
 
 Earlier history lives in the commit log and any GitHub releases.

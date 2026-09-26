@@ -137,7 +137,10 @@ abstract interface class RemoteFileSystem {
 
   /// Uploads through a sibling temporary file and renames only after every byte
   /// has reached the server. Existing targets are rejected unless [overwrite]
-  /// is explicitly true.
+  /// is explicitly true, and a symbolic link, FIFO, socket or device is
+  /// refused as a conflict even then: the rename would replace the node
+  /// itself. Only the permission bits of [preserveMode] (or of a replaced
+  /// regular file's mode) are applied.
   ///
   /// [computeHash] skips the inline SHA-256 when false; see [download].
   Future<RemoteFileEntry> upload(
@@ -499,6 +502,8 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
             'A remote item named "${remoteBasename(path)}" already exists.',
       );
     }
+    // Before the CAS below, whose content hash would read through a link.
+    if (existing != null) _checkReplaceable(path, existing);
     if (expectedTarget != null &&
         (existing == null ||
             !await _matchesExpectedTarget(
@@ -517,6 +522,17 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
       );
     }
 
+    // Only a regular file's mode describes what the upload replaces, and
+    // setstat takes permission bits, not the file-type field entry modes
+    // carry. setuid, setgid and sticky stay: the server's own
+    // `perm & 07777` applied them before, and Replace keeps doing so.
+    final inheritedMode =
+        existing != null && existing.type == RemoteFileType.file
+        ? existing.mode
+        : null;
+    final requestedMode = preserveMode ?? inheritedMode;
+    final mode = requestedMode == null ? null : requestedMode & _permissionBits;
+
     cancellation?.throwIfCancelled();
     final tempPath = _temporaryPath(path);
     SftpFile? file;
@@ -530,6 +546,20 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
                 SftpFileOpenMode.exclusive,
           )
           .timeout(operationTimeout);
+      // dartssh2 sends no attributes with the open, so the temp file starts
+      // at the server's default mode, typically world-readable. When the
+      // final mode withholds read from group or others, restrict the handle
+      // before the first byte; the final mode is applied after the last
+      // write. This narrows the exposure rather than closing it: a reader
+      // that opens the empty file before this request lands keeps its
+      // descriptor.
+      if (mode != null && (mode & _groupAndOtherRead) != _groupAndOtherRead) {
+        await file
+            .setStat(
+              SftpFileAttrs(mode: const SftpFileMode.value(_ownerOnlyMode)),
+            )
+            .timeout(operationTimeout);
+      }
       var transferred = 0;
       final digestSink = computeHash ? _DigestSink() : null;
       final hashInput = digestSink == null
@@ -561,7 +591,6 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
       await file.close().timeout(operationTimeout);
       file = null;
 
-      final mode = preserveMode ?? existing?.mode;
       if (mode != null) {
         await _client
             .setStat(tempPath, SftpFileAttrs(mode: SftpFileMode.value(mode)))
@@ -578,6 +607,7 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
               'while the upload was running.',
         );
       }
+      if (latest != null) _checkReplaceable(path, latest);
       if (expectedTarget != null &&
           (latest == null ||
               !await _matchesExpectedTarget(
@@ -671,6 +701,38 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
   }
 
   static const int _maxUint32 = 0xFFFFFFFF;
+
+  /// Permission plus setuid/setgid/sticky: what chmod can set. An entry's
+  /// mode also carries the file-type field above these bits.
+  static const int _permissionBits = 0xFFF;
+  static const int _groupAndOtherRead = 0x24; // 0o044
+  static const int _ownerOnlyMode = 0x180; // 0o600
+
+  /// The commit rename replaces whatever node sits at [path]. Over a
+  /// symbolic link that swaps the link for a regular file and leaves its
+  /// target stale; over a FIFO, socket or device it destroys the node.
+  /// Neither is a replace, so both are refused. A directory is left to the
+  /// server, whose rename refuses a file over one.
+  static void _checkReplaceable(String path, RemoteFileEntry target) {
+    final name = remoteBasename(path);
+    final message = switch (target.type) {
+      RemoteFileType.file || RemoteFileType.directory => null,
+      RemoteFileType.symbolicLink =>
+        '"$name" is a symbolic link; replacing it would replace the link, '
+            'not its target.',
+      // Also a server that reported no type at all: nothing says it is safe.
+      RemoteFileType.other =>
+        '"$name" is not reported as a regular file, so the upload will not '
+            'replace it.',
+    };
+    if (message == null) return;
+    throw RemoteFileException(
+      kind: RemoteFileErrorKind.conflict,
+      operation: 'upload',
+      path: path,
+      message: message,
+    );
+  }
 
   Future<RemoteFileEntry?> _statOrNull(String path) async {
     try {
