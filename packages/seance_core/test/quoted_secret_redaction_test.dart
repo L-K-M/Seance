@@ -39,7 +39,7 @@ api-key: unquoted-secret, host: example.test'''),
         '''DB_PASSWORD="«redacted»" other=visible
 'passwd': '«redacted»'
 secret = "«redacted»"
-api-key: «redacted», host: example.test''',
+api-key: «redacted» host: example.test''',
       );
     });
 
@@ -60,6 +60,13 @@ api-key: «redacted», host: example.test''',
         );
       },
     );
+
+    test('unquoted shell values keep punctuation inside the secret', () {
+      for (final value in ['prefix,private', 'prefix}private', 'prefix]private']) {
+        final result = redactor.redact('PASSWORD=$value next=visible');
+        expect(result, 'PASSWORD=«redacted» next=visible');
+      }
+    });
 
     test('redacts truncated quoted values through the available tail', () {
       expect(

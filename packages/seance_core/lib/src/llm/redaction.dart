@@ -43,7 +43,9 @@ class SecretRedactor {
     r'''(?<![A-Za-z0-9])(password|passwd|secret|api[_-]?key|token)["']?\s*[=:]\s*''',
     caseSensitive: false,
   );
-  static final RegExp _unquotedEnd = RegExp(r'''[\s'",}\];]''');
+  // Punctuation may be part of a shell credential; only whitespace/quotes
+  // ended an unquoted value in the original filter, so keep that boundary.
+  static final RegExp _unquotedEnd = RegExp(r'''[\s'"]''');
 
   static String _redactAssignments(String text) {
     final out = StringBuffer();
@@ -108,7 +110,7 @@ class SecretRedactor {
         return _mask;
       });
     }
-    // Seal off PEM blocks first: scanning an unquoted assignment before the
+    // Mask PEM blocks first: scanning an unquoted assignment before the
     // block pattern could replace its header and leave key material behind.
     // Assignment matches skip consumed values, so many keys inside one
     // malformed quoted value do not cause repeated suffix scans.
