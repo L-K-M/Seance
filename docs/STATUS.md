@@ -3,6 +3,12 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
+Sync account deletion now removes the account, tokens, records and sequence
+counter in one SQLite write transaction. Failure rolls back the whole deletion;
+writer contention returns the existing retryable `503 storage_busy` response.
+Failure-injection tests cover each table, retry and persisted deletion. Token
+hashing/revocation and concurrent login/deletion lifecycle work remain separate.
+
 Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
