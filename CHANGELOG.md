@@ -8,8 +8,9 @@
   colour, the status colours, the terminal's colours, the interface font
   and how round the corners are; the app repaints as you go. Colours left
   on Automatic follow light or dark as you choose. Copy theme and Paste
-  theme carry a theme between devices; themes do not sync. An existing
-  install looks exactly as before.
+  theme carry a theme between devices; themes do not sync. The app starts
+  in Terminal, green on black; pick Séance for the violet look it had
+  before themes.
 - On phones and tablets, the server filter field is full height again
   instead of a thin strip above an empty gap, and compact server rows
   are 40 dp instead of 48.
@@ -76,16 +77,22 @@
   without "Bad state:" prefixes. A save that finishes after its tab closed
   still reconciles or uploads the copy. Ported from Poltergeist's hardened
   copy of this editor.
-- Built-in editor: syntax highlighting for CSS/SCSS/LESS, Ruby, Perl and
-  Lua, `.htaccess`/`.htpasswd` as ini, and Ruby/Perl/Lua shebangs, ported
-  from Poltergeist. Language detection also finds the file name after a
-  backslash.
-- Linux: the window is titled "Séance" and first opens at 1280x800.
 - Files: local copies of server files are no longer deleted when the
   record of them is lost or unreadable. They used to be kept for one
   launch and then removed, unsaved edits included; they now stay in the
   app's `sftp-checkouts` folder until you remove them. A local copy that
   cannot be read or deleted, for example because another program has it
   open, no longer stops Séance from starting.
+- Built-in editor: syntax highlighting for CSS/SCSS/LESS, Ruby, Perl and
+  Lua, `.htaccess`/`.htpasswd` as ini, and Ruby/Perl/Lua shebangs, ported
+  from Poltergeist. Language detection also finds the file name after a
+  backslash.
+- Linux: the window is titled "Séance" and first opens at 1280x800.
+- Security: the Git tab and the staged `cd` now quote paths and arguments
+  so fish reads them literally too. Before, when your login shell was fish,
+  a directory name with a backslash and a quote could run commands on the
+  server, and ordinary terminal output could report such a name to the Git
+  tab, which probes it automatically. Reported directories that contain
+  control characters are now ignored.
 
 Earlier history lives in the commit log and any GitHub releases.
