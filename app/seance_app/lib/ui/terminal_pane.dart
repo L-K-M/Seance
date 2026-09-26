@@ -49,11 +49,16 @@ class TerminalPane extends StatelessWidget {
   final bool showAssistantAffordance;
   final bool showAppBar;
 
+  /// Whether the tab strip carries Generate command; false under the macOS
+  /// header ([HeaderToolbar]), which carries it instead.
+  final bool showGenerateCommandInStrip;
+
   const TerminalPane({
     super.key,
     this.onBack,
     this.showAssistantAffordance = false,
     this.showAppBar = true,
+    this.showGenerateCommandInStrip = true,
   });
 
   @override
@@ -89,7 +94,9 @@ class TerminalPane extends StatelessWidget {
                   onFocus: state.focusTab,
                   onClose: (id) => _closeTab(context, state, id),
                   onNewTab: () => state.newTab(active.config),
-                  onGenerateCommand: () => openCommandGenerator(state),
+                  onGenerateCommand: showGenerateCommandInStrip
+                      ? () => openCommandGenerator(state)
+                      : null,
                   onRename: state.renameSession,
                   // In the wide layout the strip is the only chrome the
                   // terminal has, so it carries the server's colour: the
@@ -326,7 +333,10 @@ class TerminalTabStrip extends StatelessWidget {
   final ValueChanged<String> onFocus;
   final ValueChanged<String> onClose;
   final VoidCallback onNewTab;
-  final VoidCallback onGenerateCommand;
+
+  /// Null leaves Generate command out of the strip, for a window whose
+  /// header carries it.
+  final VoidCallback? onGenerateCommand;
 
   /// Called with a tab's id and its new name, or null to clear it back to
   /// automatic naming. Optional so the strip can be built without one.
@@ -343,7 +353,7 @@ class TerminalTabStrip extends StatelessWidget {
     required this.onFocus,
     required this.onClose,
     required this.onNewTab,
-    required this.onGenerateCommand,
+    this.onGenerateCommand,
     this.onRename,
     this.accent,
   });
@@ -448,25 +458,27 @@ class TerminalTabStrip extends StatelessWidget {
             icon: const Icon(Icons.add),
             onPressed: onNewTab,
           ),
-          VerticalDivider(
-            width: 1,
-            indent: 7,
-            endIndent: 7,
-            color: scheme.outlineVariant,
-          ),
-          IconButton(
-            tooltip: 'Generate command',
-            iconSize: 18,
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 38),
-            // The assistant's purple (Poltergeist's D34).
-            icon: Icon(
-              Icons.auto_fix_high,
-              color: FamilyPalette.of(context).glyph(FamilyHue.purple),
+          if (onGenerateCommand case final generate?) ...[
+            VerticalDivider(
+              width: 1,
+              indent: 7,
+              endIndent: 7,
+              color: scheme.outlineVariant,
             ),
-            onPressed: onGenerateCommand,
-          ),
+            IconButton(
+              tooltip: 'Generate command',
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 40, minHeight: 38),
+              // The assistant's purple (Poltergeist's D34).
+              icon: Icon(
+                Icons.auto_fix_high,
+                color: FamilyPalette.of(context).glyph(FamilyHue.purple),
+              ),
+              onPressed: generate,
+            ),
+          ],
         ],
       ),
     );

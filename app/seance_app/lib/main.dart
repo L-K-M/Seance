@@ -1,12 +1,13 @@
 import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show ValueListenable, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_state.dart';
 import 'services/app_services.dart';
+import 'services/macos_titlebar.dart';
 import 'services/secure_master_key.dart';
 import 'services/settings_window.dart';
 import 'services/window_state.dart';
@@ -17,6 +18,7 @@ import 'ui/adaptive_shell.dart';
 import 'ui/app_menus.dart';
 import 'ui/host_key_dialog.dart';
 import 'ui/keyboard_interactive_dialog.dart';
+import 'ui/macos_toolbar_band.dart';
 import 'ui/top_toast.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -33,11 +35,16 @@ Future<void> main(List<String> args) async {
     await runSettingsWindow();
     return;
   }
+  // macOS: the integrated titlebar goes in while the window is still
+  // hidden, so it never shows the standard one first.
+  final toolbarBand = !kIsWeb && Platform.isMacOS
+      ? await MacosTitlebar.install()
+      : null;
   // Put the desktop window back where it was closed (size, monitor,
   // maximized/full-screen) before the first frame, and keep tracking it.
   // On macOS this is also what makes the hidden-at-launch window visible.
   await WindowStateService.restoreAndTrack();
-  runApp(const SeanceApp());
+  runApp(SeanceApp(toolbarBand: toolbarBand));
 }
 
 /// Exposes [AppState] to the widget tree. The instance itself never changes
@@ -59,21 +66,32 @@ class AppScope extends InheritedWidget {
 }
 
 class SeanceApp extends StatelessWidget {
-  const SeanceApp({super.key, @visibleForTesting this.initOverride});
+  const SeanceApp({
+    super.key,
+    @visibleForTesting this.initOverride,
+    this.toolbarBand,
+  });
 
   /// Test seam: replaces [_BootstrapState._init], whose platform-channel
   /// calls never complete in the widget-test environment.
   final Future<AppState> Function()? initOverride;
 
+  /// Whether the macOS unified toolbar band shows, when the window has the
+  /// integrated titlebar ([MacosTitlebar.install]); null everywhere else,
+  /// and then no surface reserves a band.
+  final ValueListenable<bool>? toolbarBand;
+
   @override
-  Widget build(BuildContext context) => _Bootstrap(initOverride: initOverride);
+  Widget build(BuildContext context) =>
+      _Bootstrap(initOverride: initOverride, toolbarBand: toolbarBand);
 }
 
 /// Initializes services asynchronously, then installs the app shell and wires
 /// the host-key / keyboard-interactive dialog hooks.
 class _Bootstrap extends StatefulWidget {
-  const _Bootstrap({this.initOverride});
+  const _Bootstrap({this.initOverride, this.toolbarBand});
   final Future<AppState> Function()? initOverride;
+  final ValueListenable<bool>? toolbarBand;
   @override
   State<_Bootstrap> createState() => _BootstrapState();
 }
@@ -256,7 +274,12 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
           theme: themes.theme,
           darkTheme: themes.darkTheme,
           themeMode: themes.themeMode,
-          builder: (context, child) => AppScope(state: _state, child: child!),
+          // The band is reserved above every route; the wide layout's
+          // header takes it back (ClaimMacosToolbarBand).
+          builder: (context, child) => AppScope(
+            state: _state,
+            child: withMacosToolbarBand(widget.toolbarBand, child: child!),
+          ),
           home: home,
         );
       },

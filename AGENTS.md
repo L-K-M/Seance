@@ -436,6 +436,25 @@ Do not "simplify" these away — they are load-bearing:
   setups their "logical" spaces disagree — physical is the one space both map
   into exactly (`WindowStateSnapshot` doc has the details).
 
+- **The macOS integrated titlebar is macos_window_utils', not
+  window_manager's.** The main window draws its header under an empty
+  unified NSToolbar (a 52 pt band) over full-size content, as Poltergeist
+  does. Three things hold it together. The runner hosts the Flutter view in
+  `MacOSWindowUtilsViewController` (the package's passthrough code
+  force-casts to it), with `SeanceFlutterViewController` inside so the
+  accessibility guard stays. `MainFlutterWindowManipulator.start` resets the
+  window to a standard titlebar, so `MacosTitlebar.install()` re-applies it
+  from `main()` *before* `restoreAndTrack()` shows the hidden window. Never
+  also pass `titleBarStyle` to window_manager: its `setTitleBarStyle`
+  rewrites the same window properties. In full screen the runner hides the
+  toolbar (AppKit would keep it in an opaque strip over the header) and
+  reports it on `seance/window` from will-enter/will-exit *notifications*,
+  because window_manager owns the window delegate. Controls inside the band
+  take clicks only through `MacosToolbarPassthrough`; every other surface
+  keeps below it (`ReserveMacosToolbarBand` above the navigator,
+  `ClaimMacosToolbarBand` for the wide layout). The Settings window keeps a
+  standard titlebar: the passthrough serves one window.
+
 - **A second window is a second engine.** Flutter stable has no
   multi-window API (the framework's is `@internal`, master-channel only in
   3.47, and macOS admits a second view on one engine only after a private

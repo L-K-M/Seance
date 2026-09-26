@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- On macOS the window no longer has a separate title bar. The traffic
+  lights sit over the server list, and a header across the terminal and
+  side panel shows the server you are on (name and `user@host`) with
+  Generate command beside it, the way Poltergeist's window looks. Drag
+  the header's empty space to move the window; double-click it to zoom.
+  In full screen the header stays and the title bar slides in with the
+  menu bar. Linux and Windows keep their title bars.
 - Themes: Settings has an Appearance tab. Pick one of ten themes
   (Séance, Graphite, Paper, Newsprint, Solarized, Midnight, Terminal,
   Vapor, Bubblegum, High contrast) as a starting point, then change any
