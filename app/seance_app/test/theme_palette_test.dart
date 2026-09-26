@@ -172,6 +172,18 @@ void main() {
       }
     });
 
+    test('any one value is enough for a stored theme to be read', () {
+      // Every key the stored form holds but the name: a stored map with
+      // only one of them is still a theme, not a stray map the default
+      // replaces, so a key the gate forgets fails here.
+      final full = ThemePresets.paper.withFontFamily('Inter').toJson();
+      expect(full.keys, contains('terminal'));
+      for (final key in full.keys.where((key) => key != 'name')) {
+        final decoded = ThemePalette.decodeStored({key: full[key]});
+        expect(decoded.toJson()[key], full[key], reason: key);
+      }
+    });
+
     test('only colours drawn over something keep their alpha', () {
       final palette = ThemePalette.fromJson(const {
         'accent': '#FF000080',

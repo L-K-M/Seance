@@ -8,7 +8,7 @@
   colour, the status colours, the terminal's colours, the interface font
   and how round the corners are; the app repaints as you go. Colours left
   on Automatic follow light or dark as you choose. Copy theme and Paste
-  theme carry a theme between devices; themes do not sync. Séance starts
+  theme carry a theme between devices; themes do not sync. The app starts
   in Terminal, green on black; pick Séance for the violet look it had
   before themes.
 - On phones and tablets, the server filter field is full height again
