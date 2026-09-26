@@ -2,7 +2,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Invalidates native text fields before Flutter tears down their accessibility tree.
+/// Preserves injected Command shortcuts and invalidates native text fields
+/// before Flutter tears down their accessibility tree.
 @interface SeanceFlutterViewController : FlutterViewController
 @end
 

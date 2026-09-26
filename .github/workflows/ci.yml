@@ -148,6 +148,9 @@ jobs:
       - name: Test native accessibility lifecycle
         if: matrix.target == 'macos'
         run: scripts/test-macos-accessibility.sh
+      - name: Test native keyboard modifiers
+        if: matrix.target == 'macos'
+        run: scripts/test-macos-keyboard.sh
       # Exercise the same packaging the release workflow ships (keep the two
       # in step) and expose the artifacts for inspection on every CI run.
       - name: Package Linux artifacts (.deb + AppImage)

@@ -3,6 +3,15 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
+macOS now preserves Command shortcuts injected with only the aggregate
+Command flag, such as Easydict's synthetic Command+C. The native controller
+supplies a missing device-side bit before Flutter processes key-down and
+key-up events. Physical Command sides, unrelated modifiers, event metadata
+and Flutter's key-equivalent marker are preserved. The isolated native
+regression fails against stock Flutter and passes through both native
+keyboard responders; it gates macOS CI and release builds. See the
+[compatibility and validation notes](macos-keyboard-compatibility.md).
+
 Secret redaction now covers quoted JSON/YAML keys and complete quoted values,
 including spaces, escaped quotes, short secrets and truncated output. The
 regression suite checks actual assistant request bodies for both providers and
