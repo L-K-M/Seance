@@ -37,7 +37,12 @@ void main() {
     });
 
     test('followApp tracks the ambient brightness', () {
-      final settings = AppSettings(terminalPalette: TerminalPalette.followApp);
+      // Séance's palette has no terminal of its own, so the built-in
+      // light and dark terminals stand in for it.
+      final settings = AppSettings(
+        terminalPalette: TerminalPalette.followApp,
+        themePalette: ThemePresets.seance,
+      );
       expect(
         TerminalAppearance.resolve(settings, Brightness.dark).theme.background,
         SeanceTerminalThemes.dark.background,
@@ -46,6 +51,16 @@ void main() {
         TerminalAppearance.resolve(settings, Brightness.light).theme.background,
         SeanceTerminalThemes.light.background,
       );
+    });
+
+    test('a new device\'s terminal is the Terminal preset\'s', () {
+      final terminal = ThemePresets.terminal.terminal!;
+      for (final brightness in Brightness.values) {
+        final theme = TerminalAppearance.resolve(AppSettings(), brightness)
+            .theme;
+        expect(theme.background, terminal.background, reason: '$brightness');
+        expect(theme.foreground, terminal.foreground, reason: '$brightness');
+      }
     });
 
     test('a pinned palette ignores the ambient brightness', () {

@@ -60,18 +60,18 @@ void main() {
   });
 
   group('lenient decode', () {
-    test('an empty object is the default, named for it', () {
+    test('an empty object is Séance, the all-Automatic preset', () {
       final palette = ThemePalette.fromJson(const {});
-      expect(palette.name, ThemePresets.initial.name);
-      expect(palette.accent, ThemePresets.initial.accent);
+      expect(palette.name, ThemePresets.seance.name);
+      expect(palette.accent, ThemePresets.seance.accent);
       for (final slot in ThemeSlot.values) {
         expect(palette.slot(slot), isNull, reason: slot.name);
       }
       expect(palette.terminal, isNull);
       expect(palette.fontFamily, isNull);
       expect(palette.cornerScale, 1);
-      // Its values are the default's, so it is that preset again.
-      expect(palette.matchingPreset, same(ThemePresets.initial));
+      // Its values are Séance's, so it is that preset again.
+      expect(palette.matchingPreset, same(ThemePresets.seance));
     });
 
     test('a bad value costs only itself', () {
@@ -86,12 +86,12 @@ void main() {
         'fontFamily': 12,
       });
       expect(palette.name, 'Mine');
-      expect(palette.accent, ThemePresets.initial.accent);
+      expect(palette.accent, ThemePresets.seance.accent);
       expect(palette.surface, const Color(0xFF102030));
       expect(palette.text, isNull);
       expect(palette.sidebar, isNull);
       expect(palette.online, const Color(0xFF00FF00));
-      expect(palette.cornerScale, ThemePresets.initial.cornerScale);
+      expect(palette.cornerScale, ThemePresets.seance.cornerScale);
       expect(palette.fontFamily, isNull);
     });
 
@@ -160,6 +160,9 @@ void main() {
         42,
         const ['#FFFFFF'],
         {1: 'non-string key'},
+        // A map, but one that says nothing about how anything looks.
+        const <String, Object?>{},
+        const {'name': 'Mine'},
       ]) {
         expect(
           ThemePalette.decodeStored(stored),
@@ -243,7 +246,7 @@ void main() {
     });
 
     test('Automatic values are left out of the stored form', () {
-      final json = ThemePresets.initial.toJson();
+      final json = ThemePresets.seance.toJson();
       expect(json.keys, unorderedEquals(['name', 'accent', 'cornerScale']));
     });
   });
