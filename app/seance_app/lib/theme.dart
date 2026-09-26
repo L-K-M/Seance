@@ -308,9 +308,9 @@ class SeanceChrome extends ThemeExtension<SeanceChrome> {
     final theme = Theme.of(context);
     return theme.extension<SeanceChrome>() ??
         _chromeFor(
-          _neutralsFor(ThemePresets.initial, theme.brightness),
+          _neutralsFor(ThemePresets.seance, theme.brightness),
           theme.platform,
-          cornerScale: ThemePresets.initial.cornerScale,
+          cornerScale: ThemePresets.seance.cornerScale,
         );
   }
 
@@ -455,13 +455,14 @@ class SeanceTheme {
   /// it when no accent is chosen yet.
   static const Color seed = Color(0xFF6B5BD2);
 
-  /// The default palette's themes. [platform] overrides the host platform
-  /// the type ramp and row extents are chosen for — tests and captures
-  /// render the desktop rail and the phone home from one host.
+  /// The Séance preset's themes, the Automatic palette at each
+  /// brightness. [platform] overrides the host platform the type ramp and
+  /// row extents are chosen for — tests and captures render the desktop
+  /// rail and the phone home from one host.
   static ThemeData light({TargetPlatform? platform}) =>
-      build(ThemePresets.initial, Brightness.light, platform: platform);
+      build(ThemePresets.seance, Brightness.light, platform: platform);
   static ThemeData dark({TargetPlatform? platform}) =>
-      build(ThemePresets.initial, Brightness.dark, platform: platform);
+      build(ThemePresets.seance, Brightness.dark, platform: platform);
 
   /// The three theme arguments of a MaterialApp drawn in [appearance].
   ///
@@ -698,7 +699,7 @@ class SeanceStatusColors extends ThemeExtension<SeanceStatusColors> {
   static SeanceStatusColors of(BuildContext context) {
     final theme = Theme.of(context);
     return theme.extension<SeanceStatusColors>() ??
-        _statusFor(ThemePresets.initial, theme.brightness);
+        _statusFor(ThemePresets.seance, theme.brightness);
   }
 
   @override

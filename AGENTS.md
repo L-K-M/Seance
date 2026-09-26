@@ -484,8 +484,11 @@ Do not "simplify" these away — they are load-bearing:
   terminal block, a font family and a corner scale, stored as one JSON
   object in `settings.json` (device-local) and decoded leniently: a bad
   key costs only itself. `ThemePresets.all` are starting points copied in,
-  recognised by value (`matchingPreset`); the first is the default and
-  must keep drawing the pre-theme look (`theme_build_test.dart`).
+  recognised by value (`matchingPreset`); the first (Séance, every
+  colour Automatic) must keep drawing the pre-theme look
+  (`theme_build_test.dart`) and is what partial themes and extension-less
+  host themes fall back to, while `ThemePresets.initial` (Terminal) is
+  what a new device starts in and Reset puts back.
   `SeanceTheme.build` resolves Automatic slots from the sibling tables, or
   from the palette's own surface once it sets one. Hand-drawn corners opt
   in through `SeanceChrome.corner`; the MaterialApps rebuild from
