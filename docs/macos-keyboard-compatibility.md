@@ -29,14 +29,18 @@ scripts/test-macos-keyboard.sh
 
 Alternatively, set `FLUTTER_ROOT` to an SDK with its macOS release engine
 cached. The fixture compiles the production controller and uses the real
-Flutter keyboard manager and both native keyboard responders. Only outbound
-framework replies are supplied by the fixture. It starts no Dart application
-or window and posts no input to the system.
+Flutter keyboard manager and both native keyboard responders. Framework
+replies and the receiving endpoints for unhandled text/native dispatch are
+supplied by the fixture. It starts no Dart application or window and posts no
+input to the system.
 
-Six scenario groups cover aggregate-only Command+C; physical left, right and
+Seven scenario groups cover aggregate-only Command+C; physical left, right and
 both Command keys; metadata, repeats, marker preservation and idempotence;
-Shift release around an injected shortcut; unrelated modifier flags; and
-controller replacement plus Command+V. Pressed-key state is checked after
+Shift release around an injected shortcut; unrelated modifier flags;
+controller replacement plus Command+V; and unhandled dispatch through the
+real keyboard manager. The dispatch fixture verifies the normalized event
+identity and key-equivalent marker while Flutter recognizes it as in-flight,
+and confirms that state clears afterward. Pressed-key state is checked after
 key-down, repeat and key-up events. The same fixture with
 `scripts/test-macos-keyboard.sh --stock-engine` fails its first assertion that
 Command+C reaches Flutter with Meta pressed, proving it catches the original

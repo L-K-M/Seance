@@ -30,6 +30,10 @@ static void require(BOOL condition, NSString *message) {
 @property(nonatomic, readonly) BOOL running;
 @end
 
+@interface FlutterViewController (FixtureRedispatch)
+- (BOOL)isDispatchingKeyEvent:(NSEvent *)event;
+@end
+
 // Leave the real controller, manager, and both native keyboard responders
 // intact. Only the two outbound transports have an immediate framework sink.
 @interface KeyboardFixtureEngine : FlutterEngine
@@ -38,6 +42,7 @@ static void require(BOOL condition, NSString *message) {
 @property(nonatomic) NSMutableDictionary<NSNumber *, NSNumber *> *pressed;
 @property(nonatomic) NSMutableArray<NSEvent *> *nativeEvents;
 @property(nonatomic) NSMutableArray<NSDictionary *> *channelEvents;
+@property(nonatomic) BOOL frameworkHandlesEvents;
 @end
 
 @implementation KeyboardFixtureEngine
@@ -48,6 +53,7 @@ static void require(BOOL condition, NSString *message) {
     _pressed = [NSMutableDictionary dictionary];
     _nativeEvents = [NSMutableArray array];
     _channelEvents = [NSMutableArray array];
+    _frameworkHandlesEvents = YES;
   }
   return self;
 }
@@ -72,17 +78,51 @@ static void require(BOOL condition, NSString *message) {
     @"character": event.character ? @(event.character) : @"",
     @"pressed": [self.pressed copy],
   }];
-  if (callback) callback(true, userData);
+  if (callback) callback(self.frameworkHandlesEvents, userData);
 }
 
 - (void)sendOnChannel:(NSString *)channel message:(NSData *)message
          binaryReply:(FlutterBinaryReply)reply {
   if ([channel isEqualToString:@"flutter/keyevent"]) {
     [self.channelEvents addObject:[[FlutterJSONMessageCodec sharedInstance] decode:message]];
-    if (reply) reply([[FlutterJSONMessageCodec sharedInstance] encode:@{@"handled": @YES}]);
+    if (reply) reply([[FlutterJSONMessageCodec sharedInstance]
+        encode:@{@"handled": @(self.frameworkHandlesEvents)}]);
     return;
   }
   if (reply) reply(nil);
+}
+@end
+
+// These endpoints observe the real manager's unhandled-event handoff. They
+// deliberately stop before native text editing, NSWindow, or menu dispatch;
+// this proves the manager boundary, not a complete IME integration.
+@interface UnhandledFixtureController : FixtureController
+@property(nonatomic) NSMutableArray<NSEvent *> *textEvents;
+@end
+
+@implementation UnhandledFixtureController
+- (BOOL)onTextInputKeyEvent:(NSEvent *)event {
+  [self.textEvents addObject:event];
+  return NO;
+}
+@end
+
+@interface FixtureNextResponder : NSResponder
+@property(nonatomic, weak) FlutterViewController *controller;
+@property(nonatomic) NSMutableArray<NSEvent *> *events;
+@end
+
+@implementation FixtureNextResponder
+- (void)recordEvent:(NSEvent *)event {
+  require([self.controller isDispatchingKeyEvent:event],
+          @"Real manager marks this exact event during next-responder dispatch");
+  [self.events addObject:event];
+}
+- (void)keyDown:(NSEvent *)event {
+  [self recordEvent:event];
+}
+- (void)keyUp:(NSEvent *)event {
+  [self recordEvent:event];
 }
 @end
 
@@ -257,6 +297,61 @@ static void checkOtherModifiers(FixtureController *controller,
   NSLog(@"PASS: unrelated modifier flags and physical sides");
 }
 
+static void checkUnhandledDispatch(void) {
+  KeyboardFixtureEngine *engine = [[KeyboardFixtureEngine alloc] initFixture];
+  UnhandledFixtureController *controller = [[UnhandledFixtureController alloc]
+      initWithEngine:engine nibName:nil bundle:nil];
+  controller.textEvents = [NSMutableArray array];
+  FixtureNextResponder *next = [[FixtureNextResponder alloc] init];
+  next.controller = controller;
+  next.events = [NSMutableArray array];
+  controller.nextResponder = next;
+  engine.frameworkHandlesEvents = NO;
+
+  NSEvent *down = keyEvent(NSEventTypeKeyDown, NSEventModifierFlagCommand);
+  [down markAsKeyEquivalent];
+  [controller keyDown:down];
+  NSEvent *forwarded = engine.nativeEvents.lastObject;
+  require(controller.textEvents.count == 1 && next.events.count == 1 &&
+          controller.textEvents.lastObject == forwarded && next.events.lastObject == forwarded,
+          @"Unhandled Command key-down reaches both handoffs exactly once with the same event");
+  require(forwarded != down && [forwarded isKeyEquivalent] &&
+          forwarded.modifierFlags == (NSEventModifierFlagCommand | NX_DEVICELCMDKEYMASK),
+          @"Unhandled handoff preserves normalized Command and the key-equivalent marker");
+  requireMetadata(down, forwarded);
+  require(down.modifierFlags == NSEventModifierFlagCommand && [down isKeyEquivalent],
+          @"Unhandled dispatch leaves the original marked event unchanged");
+  require(![controller isDispatchingKeyEvent:forwarded],
+          @"Real manager clears its redispatch marker after key-down returns");
+  require(metaPressed(lastCharacterEvent(engine, kPhysicalKeyC)[@"pressed"]),
+          @"Unhandled Command+C still reaches Flutter with Meta pressed");
+
+  NSEvent *up = keyEvent(NSEventTypeKeyUp, NSEventModifierFlagCommand);
+  [controller keyUp:up];
+  forwarded = engine.nativeEvents.lastObject;
+  require(controller.textEvents.count == 2 && next.events.count == 2 &&
+          controller.textEvents.lastObject == forwarded && next.events.lastObject == forwarded &&
+          forwarded.type == NSEventTypeKeyUp,
+          @"Unhandled key-up reaches both handoffs exactly once with the same event");
+  requireMetadata(up, forwarded);
+  require(forwarded != up && ![forwarded isKeyEquivalent] &&
+          forwarded.modifierFlags == (NSEventModifierFlagCommand | NX_DEVICELCMDKEYMASK) &&
+          up.modifierFlags == NSEventModifierFlagCommand,
+          @"Unhandled key-up is normalized without changing its original event or marker");
+  require(![controller isDispatchingKeyEvent:forwarded],
+          @"Real manager clears its redispatch marker after key-up returns");
+  require(engine.nativeEvents.count == 2 && engine.channelEvents.count == 2,
+          @"Neither native ingress nor the channel responder receives duplicate events");
+
+  engine.frameworkHandlesEvents = YES;
+  releaseWithPlainInput(controller, engine);
+  require(controller.textEvents.count == 2 && next.events.count == 2,
+          @"Handled input bypasses both unhandled-event handoffs");
+  require(!controller.viewLoaded && !engine.running,
+          @"Unhandled-event checks start no native view or Dart application");
+  NSLog(@"PASS: unhandled manager handoff, event identity, and redispatch marker lifecycle");
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -305,6 +400,8 @@ int main(void) {
             @"All checks run without a window or Dart application");
     require(engine.channelEvents.count > 0, @"Real legacy channel responder also completes");
     NSLog(@"PASS: controller replacement, Command+V, both native responder transports");
+
+    checkUnhandledDispatch();
 
     method_setImplementation(down, originalKeyDown);
     method_setImplementation(up, originalKeyUp);
