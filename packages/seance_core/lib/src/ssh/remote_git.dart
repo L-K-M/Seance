@@ -1,3 +1,4 @@
+import '../terminal/shell_command.dart';
 import 'remote_command.dart';
 
 /// Which half of the working-tree/index pair a [GitFileStatus] entry
@@ -210,7 +211,7 @@ class RemoteGit {
     List<String> args, {
     Duration? timeout,
   }) => _run(
-    '${_cdPrefix(directory)}git ${args.map(_quotePosix).join(' ')}',
+    '${_cdPrefix(directory)}git ${args.map(quoteShellWord).join(' ')}',
     timeout: timeout,
   );
 
@@ -263,9 +264,9 @@ class RemoteGit {
     if (directory == null || directory.isEmpty) return '';
     if (directory == '~' || directory == '~/') return 'cd -- ~ && ';
     if (directory.startsWith('~/')) {
-      return 'cd -- ~/${_quotePosix(directory.substring(2))} && ';
+      return 'cd -- ~/${quoteShellWord(directory.substring(2))} && ';
     }
-    return 'cd -- ${_quotePosix(directory)} && ';
+    return 'cd -- ${quoteShellWord(directory)} && ';
   }
 
   /// An exit that means "git never parsed this command": usage errors come
@@ -576,8 +577,3 @@ GitRepoStatus _parseV1(_StatusPayload payload) {
     changes: changes,
   );
 }
-
-/// POSIX single-quote for one argument — the same spelling
-/// `buildChangeDirectoryCommand` emits, kept private so each file owns its
-/// quoting dialect.
-String _quotePosix(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";

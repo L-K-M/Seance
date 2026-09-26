@@ -81,5 +81,11 @@
   from Poltergeist. Language detection also finds the file name after a
   backslash.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
+- Security: the Git tab and the staged `cd` now quote paths and arguments
+  so fish reads them literally too. Before, when your login shell was fish,
+  a directory name with a backslash and a quote could run commands on the
+  server, and ordinary terminal output could report such a name to the Git
+  tab, which probes it automatically. Reported directories that contain
+  control characters are now ignored.
 
 Earlier history lives in the commit log and any GitHub releases.
