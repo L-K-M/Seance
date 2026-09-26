@@ -230,6 +230,12 @@ does not launch the Dart app or use saved user data. See
 [the crash investigation](docs/macos-accessibility-crash.md) for the native
 compatibility boundary and the limits of the reproduction.
 
+`scripts/test-macos-keyboard.sh` also gates macOS CI and release builds. It
+checks injected Command shortcuts against the real native keyboard pipeline
+without launching the app or posting system input. See
+[the keyboard compatibility note](docs/macos-keyboard-compatibility.md) for
+the fixture, stock-engine reproduction, and limits.
+
 The platform folders (android/ios/linux/macos/windows) ARE committed — they
 carry real configuration: the display name (`Séance` — AndroidManifest label;
 macOS `CFBundleName`/`CFBundleDisplayName`, while `PRODUCT_NAME` stays ASCII

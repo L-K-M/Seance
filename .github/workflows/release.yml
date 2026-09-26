@@ -236,6 +236,9 @@ jobs:
       - name: Test native accessibility lifecycle
         if: matrix.target == 'macos'
         run: scripts/test-macos-accessibility.sh
+      - name: Test native keyboard modifiers
+        if: matrix.target == 'macos'
+        run: scripts/test-macos-keyboard.sh
       # Stage each platform's product under its release asset name. Names
       # match the sync-server tarballs: product + platform, no version (the
       # release page already carries the version) — except the .deb, whose
