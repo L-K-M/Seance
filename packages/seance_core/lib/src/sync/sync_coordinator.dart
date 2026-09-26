@@ -1078,9 +1078,9 @@ class SyncCoordinator {
   /// sealed. Naming is only for the message, so a record that cannot be read
   /// back is reported by its id rather than failing the report of a refusal.
   Future<RefusedRecord> _describeRefused(String id) async {
-    final sealed = await local.getRecord(id);
-    if (sealed == null) return RefusedRecord(id);
     try {
+      final sealed = await local.getRecord(id);
+      if (sealed == null) return RefusedRecord(id);
       final dec = await codec.decrypt(sealed);
       final name = switch (dec.kind) {
         RecordKind.snippet => Snippet.fromJson(dec.data).title,

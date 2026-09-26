@@ -2968,6 +2968,8 @@ void main() {
       expect(failure.code, 'payload_too_large',
           reason: 'still the server\'s own error, for callers that knew it');
       expect(failure.outcome.pulled, greaterThan(0));
+      expect(failure.outcome.pushed, greaterThan(0),
+          reason: 'the tombstone the round did land is still counted');
       expect((await cfgB.getServer('s1'))!.label, 'alpha-renamed',
           reason: 'what the round pulled still reaches the stores');
       expect(remote.stored('s2')!.deleted, isTrue,
@@ -3011,6 +3013,29 @@ void main() {
 
       expect(failure.records.single.kind, RecordKind.serverConfig);
       expect(failure.toString(), startsWith('Server "prod" is too large'));
+    });
+
+    test('is reported by its id when the mirror cannot read it back',
+        () async {
+      // Naming the record is only for the message; a store that fails to
+      // read it back must not replace the refusal with its own error, or
+      // the caller never learns the round applied what it pulled.
+      final remote = _BlobCapServer(cap);
+      final snippets = InMemorySnippetStore();
+      await snippets.putSnippet(script(100 * 1024, 20));
+
+      final failure = await _refusal(SyncCoordinator(
+        configStore: InMemoryConfigStore(),
+        hostKeyStore: InMemoryHostKeyStore(),
+        snippetStore: snippets,
+        codec: _sharedCodec,
+        local: _UnreadableRecordStore('snippet:big'),
+        deviceId: 'B',
+      ).run(remote));
+
+      expect(failure.recordIds, ['snippet:big']);
+      expect(failure.records.single.kind, RecordKind.unknown);
+      expect(failure.records.single.name, isNull);
     });
 
     test('any other push failure still ends the round', () async {
@@ -3168,6 +3193,20 @@ class _BlobCapServer extends FakeServer {
       );
     }
     return super.push(records);
+  }
+}
+
+/// A mirror whose read of one record fails, as a store with an I/O or
+/// decode error would.
+class _UnreadableRecordStore extends InMemoryLocalRecordStore {
+  final String unreadableId;
+
+  _UnreadableRecordStore(this.unreadableId);
+
+  @override
+  Future<EncryptedRecord?> getRecord(String id) async {
+    if (id == unreadableId) throw StateError('cannot read $id');
+    return super.getRecord(id);
   }
 }
 

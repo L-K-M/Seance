@@ -57,8 +57,8 @@ class RefusedRecord {
 /// own and nothing else in the run has to pay for it: the run carries on and
 /// this is thrown at the end, with [outcome] describing what did happen. Only
 /// a refused push of that one record is put down to it: a refused batch of
-/// several names no culprit, and it ends the run where it happens, as every
-/// other failure does.
+/// several records names no culprit, and it ends the run where it happens, as
+/// every other failure does.
 ///
 /// An [ApiError] with the server's own code, so a caller that handled the
 /// refusal before it was isolated still recognises it.
@@ -194,7 +194,8 @@ class SyncEngine {
   /// Batches go out in sequence and each response is applied before the next
   /// request leaves, so a batch that fails costs the batches behind it, never
   /// the bookkeeping for the ones already accepted. The counts returned still
-  /// cover the whole dirty set, which is what [sync]'s no-progress guard reads.
+  /// cover the whole dirty set but for the records in [refused], which is what
+  /// [sync]'s no-progress guard reads.
   ///
   /// Records in [refused] are skipped, and a record the server refuses as too
   /// large is added to it.
