@@ -3,6 +3,25 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
+Secret redaction now covers quoted JSON/YAML keys and complete quoted values,
+including spaces, escaped quotes, short secrets and truncated output. The
+regression suite checks actual assistant request bodies for both providers and
+large malformed inputs. This remains a best-effort filter; arbitrary secrets
+without a recognized label or token format are not guaranteed to be detected.
+Common `secret_key`, `secret-key`, `secretkey` and `secret_access_key` labels
+are recognized too, including prefixed `AWS_SECRET_ACCESS_KEY` assignments.
+Non-empty labeled values are masked regardless of length to protect short
+secrets; assignment-like prose such as `the token: is invalid` can therefore
+produce false positives.
+Adjacent recognized labels remain covered when a preceding unquoted value
+consumes their label. For `=` assignments the filter masks a complete static
+shell word, including joined quoted pieces, `$'...'` / `$"..."` prefixes and
+escaped spaces. Ambiguous single-quote escapes are interpreted conservatively,
+which can mask following public text. This is not a shell or YAML parser:
+command substitutions/backticks, YAML tags such as `password: !!str value`, and
+block scalars such as `password: |` followed by indented secret lines remain
+outside the supported value grammar and need structured parsing in follow-up.
+
 Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
@@ -71,6 +90,27 @@ guards; before that, a server can
 be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
+
+## Accessible pane resizing (2026-09-26)
+
+The wide layout's server-list and utility dividers can now be reached with
+Tab and moved with Left/Right arrows. Focus thickens and accents the divider.
+Assistive-technology increase/decrease actions announce the owned pane's
+width and resulting adjustment, using the same clamping and persistence
+boundary as a drag. Pointer and arrow directions follow the physical divider
+in both left-to-right and right-to-left layouts. This follows Poltergeist's
+existing keyboard/semantics interaction contract without introducing a new
+layout or changing the terminal's minimum width.
+
+Six accessibility regression cases failed before implementation; the final
+resize and narrow-navigation suites pass 34 tests. Coverage includes both
+handles, RTL, Tab traversal and focus appearance, repeated steps and rapid
+direction reversals before a frame, bounds, window shrink, truthful adjustment
+announcements and the existing persistence/drag behavior. Modified arrows with
+Alt, Control or Meta leave the dividers alone, preserving app shortcuts.
+Full Flutter analysis is clean. Local validation used Flutter 3.47.3 on
+macOS; CI retains 3.47.2. VoiceOver/NVDA walkthroughs remain a native
+verification item.
 
 ## ssh-agent authentication and ProxyJump (2026-09-26)
 
@@ -220,9 +260,9 @@ status colours; its scrim and card fill are panel-specific.
 **Known limits.** Editor syntax colours still follow the brightness, not
 the palette. Server badge fills and accent lines are derived per
 brightness as before, not per palette. The bootstrap spinner draws in the
-default theme, because the settings are read during bootstrap, and the
-user's theme fades in when the shell appears. The sidebar kit's corner
-change is Séance-only for now (see
+default theme (Terminal), because the settings are read during
+bootstrap, and the user's theme fades in when the shell appears. The
+sidebar kit's corner change is Séance-only for now (see
 [POLTERGEIST.md](POLTERGEIST.md#the-sidebar-kit)). Verified by the test
 suite only: the tab has not been driven in a built app on any platform.
 
@@ -1185,6 +1225,12 @@ regression failed against pre-privacy `41d5261` (no throw; empty entries
 returned) and passes on main. All 457 app tests pass with clean analysis.
 
 ## Test inventory (what proves what)
+
+Sync account deletion removes the account, tokens, records and sequence counter
+in one SQLite write transaction. Failure-injection tests cover every table,
+complete rollback, retry, persisted deletion and HTTP error responses; writer
+contention returns the retryable `503 storage_busy` response. Token hashing,
+revocation and concurrent login/deletion lifecycle work remain separate.
 
 - `packages/seance_protocol/test/crypto_test.dart` — KDF determinism + domain separation,
   seal/open round-trip, wrong-key & tamper rejection, auth-verifier hashing,

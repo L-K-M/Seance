@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:seance_core/seance_core.dart';
 import 'package:test/test.dart';
+
+import 'support/local_shells.dart';
 
 /// NUL, spelled without a Dart escape so the intent survives formatters.
 final _nul = String.fromCharCode(0);
@@ -369,6 +373,51 @@ void main() {
         "'it'\"'\"'s done & dusted'",
       );
     });
+
+    test('keeps backslashes outside single quotes', () async {
+      // fish reads `\'` inside single quotes as an escaped quote, so the
+      // POSIX-only spelling let this directory end the quoting early.
+      final runner = _FakeRunner([_result('')]);
+      await RemoteGit(
+        runner.call,
+      ).run(r'''/tmp/x\'";touch PWNED;#''', ['log', r'a\b']);
+      expect(
+        runner.commands.single,
+        r"""cd -- '/tmp/x'"\\""'"'";touch PWNED;#' && git 'log' 'a'"\\"'b'""",
+      );
+    });
+
+    for (final shell in localShells.keys) {
+      test('a hostile directory stays literal when $shell parses the '
+          'probe', () async {
+        final cwd = await Directory.systemTemp.createTemp('seance-git-');
+        addTearDown(() => cwd.delete(recursive: true));
+        Future<RemoteCommandResult> runner(
+          String command, {
+          Duration? timeout,
+        }) async {
+          final result = await runInShell(
+            shell,
+            command,
+            workingDirectory: cwd.path,
+          );
+          return RemoteCommandResult(
+            stdout: result.stdout as String,
+            stderr: result.stderr as String,
+            exitCode: result.exitCode,
+          );
+        }
+
+        // What an OSC 7 report in ordinary terminal output can deliver.
+        const payload = r'''x\'";touch pwned;#''';
+        final git = RemoteGit(runner);
+        await git.probe('/nonexistent/$payload');
+        await git.probe('~/$payload');
+        await git.run('/nonexistent/$payload', ['log', payload]);
+
+        expect(File('${cwd.path}/pwned').existsSync(), isFalse);
+      }, skip: shellSkipReason(shell));
+    }
 
     test('branches lists local heads', () async {
       final runner = _FakeRunner([_result('main\nfeature/x\n')]);
