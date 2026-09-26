@@ -33,6 +33,30 @@ String sha256Fingerprint(String s) => 'SHA256:$s';
 Uint8List fingerprint(String s) => utf8.encode(sha256Fingerprint(s));
 
 void main() {
+  group('liveHostAuthenticator', () {
+    test('passes the jump-host resolver to the transport', () async {
+      final requested = <String>[];
+      final authenticate = liveHostAuthenticator(
+        hostKeys: InMemoryHostKeyStore(),
+        onHostKey: (_) async => true,
+        resolveJumpHost: (id) async {
+          requested.add(id);
+          return null;
+        },
+      );
+
+      await expectLater(
+        authenticate(
+          config(jumpHostId: 'bastion'),
+          const SshCredentials.password('unused'),
+          SshConnectionLog(),
+        ),
+        throwsA(isA<SshConnectException>()),
+      );
+      expect(requested, ['bastion']);
+    });
+  });
+
   group('runConnectionTest', () {
     test('reports how authentication completed, not merely that it did',
         () async {
@@ -235,18 +259,15 @@ void main() {
       expect(result.log.trimRight().split('\n').last, 'auth failed');
     });
 
-    test('the unimplemented agent path reads as a sentence, not a crash',
-        () async {
+    test('agent authentication is named in a successful result', () async {
       final result = await runConnectionTest(
         config: config(),
         credentials: () async => const SshCredentials.agent(),
-        authenticate: (_, _, _) async =>
-            throw AgentAuthUnsupportedError('Agent auth is not available yet.'),
+        authenticate: (_, _, _) async => AuthKind.agent,
       );
 
-      expect(result.ok, isFalse);
-      expect(result.summary, 'Agent auth is not available yet.');
-      expect(result.summary, isNot(contains('Unsupported operation')));
+      expect(result.ok, isTrue);
+      expect(result.summary, contains('ssh-agent'));
     });
 
     // The host field is free text, so a literal pasted out of
@@ -283,9 +304,7 @@ void main() {
       });
     }
 
-    test('a jump host is called out rather than silently ignored', () async {
-      // ProxyJump is modelled but not executed, so a direct success here does
-      // not mean the server is reachable the way it will be used.
+    test('a jump host is exercised without a caveat', () async {
       final result = await runConnectionTest(
         config: config(jumpHostId: 'bastion'),
         credentials: () async => const SshCredentials.password('x'),
@@ -299,14 +318,10 @@ void main() {
       // deploy@…" with nothing about how — passed the whole suite, so the
       // two kinds were pinned at very different strengths. Measured.
       expect(result.summary, contains('stored password'));
-      expect(result.notes, hasLength(1));
-      expect(result.notes.single, contains('jump host'));
+      expect(result.notes, isEmpty);
     });
 
-    test('the jump-host caveat also accompanies a failure', () async {
-      // The caveat matters most on the failure it explains: "could not reach
-      // the host" means something different for a host only reachable through
-      // a bastion the test did not use.
+    test('a jump-host failure has no obsolete caveat', () async {
       final result = await runConnectionTest(
         config: config(jumpHostId: 'bastion'),
         credentials: () async => const SshCredentials.password('x'),
@@ -318,7 +333,7 @@ void main() {
       );
 
       expect(result.ok, isFalse);
-      expect(result.notes.single, contains('jump host'));
+      expect(result.notes, isEmpty);
       // Unmodifiable on this path too: `notes` is built at two
       // construction sites and only the success one was pinned.
       expect(() => result.notes.add('late'), throwsUnsupportedError);
@@ -370,31 +385,6 @@ void main() {
       expect(unexpected.ok, isFalse);
       expect(unexpected.log, contains('unwrapped transport failure'));
       expect(unexpected.log, contains('runConnectionTest'));
-    });
-
-    test('AgentAuthUnsupportedError stays quiet wherever it is thrown',
-        () async {
-      // The one Error that stays quiet: the ssh-agent path the backend
-      // deliberately does not implement.
-      final unsupported = await runConnectionTest(
-        config: config(),
-        credentials: () async => const SshCredentials.password('pw'),
-        authenticate: (_, _, _) async =>
-            throw AgentAuthUnsupportedError('no agent'),
-      );
-      expect(unsupported.ok, isFalse);
-      expect(unsupported.log, contains('no agent'));
-      expect(unsupported.log, isNot(contains('runConnectionTest')));
-      // "Wherever": the resolver reaches the same catch, and a future split
-      // of the two stages has to keep both of them quiet.
-      final fromResolver = await runConnectionTest(
-        config: config(),
-        credentials: () async => throw AgentAuthUnsupportedError('no agent yet'),
-        authenticate: (_, _, _) async => fail('must not be reached'),
-      );
-      expect(fromResolver.ok, isFalse);
-      expect(fromResolver.log, contains('no agent yet'));
-      expect(fromResolver.log, isNot(contains('runConnectionTest')));
     });
 
     test('a stock UnsupportedError is a bug and keeps its trace', () async {

@@ -643,6 +643,10 @@ class AppServices {
   }) async {
     String? draft(String? value) =>
         (value == null || value.isEmpty) ? null : value;
+    if (config.authMethod == AuthMethod.agent) {
+      return const SshCredentials.agent();
+    }
+
     // A cross-file contract with the editor, which builds the grant from the
     // path it is about (`_bookmarkFor` returns null without one). Without the
     // path this branch never runs, so a bookmark passed alone would be
@@ -720,6 +724,14 @@ class AppServices {
           keyPassphrase: draft(draftKeyPassphrase) ?? secret?.keyPassphrase,
         );
     }
+  }
+
+  /// Resolves a saved jump host at connection time, including its credential.
+  Future<ResolvedSshHost?> resolveJumpHost(String id) async {
+    final config = await configStore.getServer(id);
+    if (config == null) return null;
+
+    return ResolvedSshHost(config, await resolveCredentials(config));
   }
 
   /// Read a "reference, don't store" identity file for [config], through the

@@ -1,23 +1,27 @@
 import 'package:flutter/material.dart';
+import 'package:seance_core/seance_core.dart';
 
 /// Prompts for keyboard-interactive auth (e.g. a 2FA/TOTP code). Returns one
 /// answer per prompt, in order. An empty list cancels the attempt.
 Future<List<String>> showKeyboardInteractiveDialog(
   BuildContext context,
-  List<String> prompts,
-  String name,
-  String instruction,
+  KeyboardInteractiveChallenge challenge,
 ) async {
   final result = await showDialog<List<String>>(
     context: context,
     barrierDismissible: false,
-    builder: (_) => _KeyboardInteractiveDialog(
-      prompts: prompts,
-      name: name,
-      instruction: instruction,
-    ),
+    builder: (_) => _KeyboardInteractiveDialog(challenge: challenge),
   );
   return result ?? const <String>[];
+}
+
+String _trustedTarget(ServerConfig server) {
+  final rawHost = server.host;
+  final host = rawHost.contains(':') &&
+          !(rawHost.startsWith('[') && rawHost.endsWith(']'))
+      ? '[$rawHost]'
+      : rawHost;
+  return '${server.username}@$host:${server.port}';
 }
 
 /// Owns the prompt controllers in its [State] so they are disposed in
@@ -29,15 +33,9 @@ Future<List<String>> showKeyboardInteractiveDialog(
 /// builds whenever an IME composing region is active. Same lifecycle as the
 /// snippet placeholder dialog (regression: test/placeholder_dialog_test.dart).
 class _KeyboardInteractiveDialog extends StatefulWidget {
-  const _KeyboardInteractiveDialog({
-    required this.prompts,
-    required this.name,
-    required this.instruction,
-  });
+  const _KeyboardInteractiveDialog({required this.challenge});
 
-  final List<String> prompts;
-  final String name;
-  final String instruction;
+  final KeyboardInteractiveChallenge challenge;
 
   @override
   State<_KeyboardInteractiveDialog> createState() =>
@@ -47,7 +45,7 @@ class _KeyboardInteractiveDialog extends StatefulWidget {
 class _KeyboardInteractiveDialogState
     extends State<_KeyboardInteractiveDialog> {
   late final List<TextEditingController> _controllers = [
-    for (final _ in widget.prompts) TextEditingController(),
+    for (final _ in widget.challenge.prompts) TextEditingController(),
   ];
 
   final Set<int> _revealed = {};
@@ -76,16 +74,33 @@ class _KeyboardInteractiveDialogState
     return AlertDialog(
       // Long challenges must remain reachable above the software keyboard.
       scrollable: true,
-      title: Text(widget.name.isEmpty ? 'Authentication' : widget.name),
+      title: const Text('Authentication'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (widget.instruction.isNotEmpty) ...[
-            Text(widget.instruction),
+          Text(
+            'Request from',
+            style: Theme.of(context).textTheme.labelMedium,
+          ),
+          SelectableText(
+            _trustedTarget(widget.challenge.server),
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          if (widget.challenge.name.isNotEmpty ||
+              widget.challenge.instruction.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Server message',
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+            if (widget.challenge.name.isNotEmpty)
+              Text(widget.challenge.name),
+            if (widget.challenge.instruction.isNotEmpty)
+              Text(widget.challenge.instruction),
             const SizedBox(height: 12),
           ],
-          for (var i = 0; i < widget.prompts.length; i++)
+          for (var i = 0; i < widget.challenge.prompts.length; i++)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: TextField(
@@ -98,7 +113,7 @@ class _KeyboardInteractiveDialogState
                 enableSuggestions: false,
                 enableIMEPersonalizedLearning: false,
                 decoration: InputDecoration(
-                  labelText: widget.prompts[i],
+                  labelText: widget.challenge.prompts[i],
                   suffixIcon: IconButton(
                     tooltip: _revealed.contains(i) ? 'Hide answer' : 'Show answer',
                     icon: Icon(_revealed.contains(i)

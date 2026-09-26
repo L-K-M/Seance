@@ -134,6 +134,43 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  group('Authentication', () {
+    testWidgets('a new server defaults to ssh-agent auth', (tester) async {
+      await boot(tester);
+      await openEditor(tester);
+
+      expect(
+        find.text('Keys are provided by your ssh-agent; nothing is stored.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('isn\'t supported yet'), findsNothing);
+    });
+
+    testWidgets('editing preserves the saved jump host', (tester) async {
+      await boot(tester);
+      final existing = ServerConfig(
+        id: 'target',
+        label: 'target',
+        host: 'target.internal',
+        username: 'deploy',
+        jumpHostId: 'jump',
+        createdAt: 1,
+        updatedAt: 1,
+      );
+      await tester.runAsync(() => state!.saveServer(existing));
+      await openEditor(tester, existing: existing);
+      await scrollTo(tester, find.widgetWithText(FilledButton, 'Save'));
+
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await waitUntil(() => state!.servers.single.updatedAt > 1);
+      });
+      await tester.pumpAndSettle();
+
+      expect(state!.servers.single.jumpHostId, 'jump');
+    });
+  });
+
   group('Return', () {
     testWidgets('in a one-line field saves the server', (tester) async {
       await boot(tester);

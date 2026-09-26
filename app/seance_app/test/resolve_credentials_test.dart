@@ -32,8 +32,8 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  ServerConfig config(AuthMethod auth) => ServerConfig(
-        id: 's1',
+  ServerConfig config(AuthMethod auth, {String id = 's1'}) => ServerConfig(
+        id: id,
         label: 'prod',
         host: 'prod.example.com',
         username: 'deploy',
@@ -113,5 +113,27 @@ void main() {
     expect(credentials.method, AuthMethod.password);
     expect(credentials.password, 'pw');
     expect(credentials.privateKeyPem, isNull);
+  });
+
+  test('agent auth ignores a stale vault reference', () async {
+    services.vault = LockedSecretVault(services.vault.store);
+    services.vaultKey = null;
+    final agent = config(AuthMethod.agent).copyWith(secretRef: 'stale-secret');
+
+    final credentials = await services.resolveCredentials(agent);
+
+    expect(credentials.method, AuthMethod.agent);
+    expect(services.vaultKey, isNull, reason: 'agent auth must not unlock vault');
+  });
+
+  test('resolves a saved jump host with its credentials', () async {
+    final jump = config(AuthMethod.agent, id: 'jump');
+    await services.configStore.putServer(jump);
+
+    final resolved = await services.resolveJumpHost(jump.id);
+
+    expect(resolved?.config, jump);
+    expect(resolved?.credentials.method, AuthMethod.agent);
+    expect(await services.resolveJumpHost('missing'), isNull);
   });
 }

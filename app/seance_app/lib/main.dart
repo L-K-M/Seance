@@ -127,10 +127,10 @@ class _BootstrapState extends State<_Bootstrap> with WidgetsBindingObserver {
       if (ctx == null) return false;
       return showHostKeyDialog(ctx, decision);
     };
-    state.keyboardInteractiveResponder = (prompts, name, instruction) async {
+    state.keyboardInteractiveResponder = (challenge) async {
       final ctx = navigatorKey.currentContext;
       if (ctx == null) return const <String>[];
-      return showKeyboardInteractiveDialog(ctx, prompts, name, instruction);
+      return showKeyboardInteractiveDialog(ctx, challenge);
     };
 
     await state.load();

@@ -51,8 +51,8 @@ flutter run -d linux     # or macos / windows / a device
 - **Local store**: JSON files (configs, encrypted vault, pinned host keys). The
   proposal's SQLite/drift backend is a drop-in future swap behind the same
   `seance_core` interfaces — chosen to avoid `build_runner` codegen for v1.
-- **ssh-agent auth** is modelled but not yet wired through the dartssh2 backend
-  (see `SshSessionManager.connect`); use password or private-key auth for now.
+- **ssh-agent auth** uses `SSH_AUTH_SOCK` on Unix and the OpenSSH named pipe on
+  Windows; private keys remain in the agent.
 - **Sync & the vault key**: the account password authenticates with the sync
   server; a separate encryption passphrase derives the end-to-end key and
   re-keys the local vault (re-encrypting secrets referenced by current servers).
