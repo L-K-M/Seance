@@ -244,4 +244,60 @@ void main() {
       expect(terminal.buffer.lines[2].toString(), '');
     });
   });
+
+  group('AnchorTrimBehavior', () {
+    Terminal fullTerminal() {
+      final terminal = Terminal(maxLines: 30);
+      terminal.resize(20, 5);
+      for (var i = 0; i < 40; i++) {
+        terminal.write('line $i\r\n');
+      }
+      return terminal;
+    }
+
+    test('a detaching anchor goes with its trimmed line', () {
+      final terminal = fullTerminal();
+      final buffer = terminal.buffer;
+      final migrating = buffer.createAnchor(3, 0);
+      final detaching = buffer.createAnchor(
+        3,
+        0,
+        onTrim: AnchorTrimBehavior.detach,
+      );
+      final survivor = buffer.createAnchor(
+        3,
+        1,
+        onTrim: AnchorTrimBehavior.detach,
+      );
+
+      terminal.write('more\r\n'); // The buffer is full: row 0 is trimmed.
+
+      expect(migrating.attached, isTrue);
+      expect(migrating.offset, const CellOffset(0, 0));
+      expect(detaching.attached, isFalse);
+      expect(survivor.attached, isTrue);
+      expect(survivor.offset, const CellOffset(3, 0));
+    });
+
+    test('clearing the scrollback detaches them too', () {
+      final terminal = fullTerminal();
+      final buffer = terminal.buffer;
+      final inScrollback = buffer.createAnchor(
+        2,
+        1,
+        onTrim: AnchorTrimBehavior.detach,
+      );
+      final onScreen = buffer.createAnchor(
+        2,
+        buffer.height - 1,
+        onTrim: AnchorTrimBehavior.detach,
+      );
+
+      terminal.write('\x1b[3J'); // CSI 3J, what `clear` sends.
+
+      expect(inScrollback.attached, isFalse);
+      expect(onScreen.attached, isTrue);
+      expect(onScreen.y, buffer.height - 1);
+    });
+  });
 }

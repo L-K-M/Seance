@@ -165,16 +165,22 @@ class TerminalController with ChangeNotifier {
   /// Creates a new highlight on the terminal from [p1] to [p2] with the given
   /// [color]. The highlight will be removed when the returned object is
   /// disposed.
+  ///
+  /// [seance fork] With a [foreground] the highlight recolours the cells it
+  /// covers instead of washing [color] over them; see
+  /// [TerminalHighlight.foreground].
   TerminalHighlight highlight({
     required CellAnchor p1,
     required CellAnchor p2,
     required Color color,
+    Color? foreground,
   }) {
     final highlight = TerminalHighlight(
       this,
       p1: p1,
       p2: p2,
       color: color,
+      foreground: foreground,
     );
 
     _highlights.add(highlight);
@@ -198,11 +204,21 @@ class TerminalHighlight with Disposable {
 
   final Color color;
 
+  /// [seance fork] The text colour inside the highlight, or null for
+  /// upstream's overlay. With one, the covered cells are painted as if they
+  /// had [color] as their background and this as their foreground (both
+  /// opaque): the fill goes under the glyphs rather than over them, so an
+  /// opaque colour such as `TerminalTheme.searchHitBackground` marks text
+  /// without hiding it, in a text colour chosen to read on it
+  /// (`TerminalTheme.searchHitForeground`).
+  final Color? foreground;
+
   TerminalHighlight(
     this.owner, {
     required this.p1,
     required this.p2,
     required this.color,
+    this.foreground,
   });
 
   /// Returns the range of the highlight. May be null if the anchors that
