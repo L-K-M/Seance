@@ -40,7 +40,7 @@ class SecretRedactor {
   // A closing quote permits JSON/YAML keys; the opening quote stays in the
   // copied prefix. This also recognizes DB_PASSWORD without notpassword.
   static final RegExp _assignment = RegExp(
-    r'''(?<![A-Za-z0-9])(password|passwd|secret|api[_-]?key|token)["']?\s*[=:]\s*''',
+    r'''(?<![A-Za-z0-9])(password|passwd|secret[_-]?key|secret|api[_-]?key|token)["']?\s*[=:]\s*''',
     caseSensitive: false,
   );
   // Punctuation may be part of a shell credential; only whitespace/quotes

@@ -8,6 +8,10 @@ including spaces, escaped quotes, short secrets and truncated output. The
 regression suite checks actual assistant request bodies for both providers and
 large malformed inputs. This remains a best-effort filter; arbitrary secrets
 without a recognized label or token format are not guaranteed to be detected.
+Common `secret_key`, `secret-key` and `secretkey` labels are recognized too.
+Non-empty labeled values are masked regardless of length to protect short
+secrets; assignment-like prose such as `the token: is invalid` can therefore
+produce false positives.
 
 Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.

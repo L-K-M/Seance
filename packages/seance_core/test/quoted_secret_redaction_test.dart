@@ -43,6 +43,17 @@ api-key: «redacted» host: example.test''',
       );
     });
 
+    test('masks common secret-key labels and short unquoted secrets', () {
+      expect(
+        redactor.redact('''SECRET_KEY='synthetic fixture words'
+{"secret_key": "two words", "secret-key": "fixture"}
+secretkey=x secret=x secretName=visible'''),
+        '''SECRET_KEY='«redacted»'
+{"secret_key": "«redacted»", "secret-key": "«redacted»"}
+secretkey=«redacted» secret=«redacted» secretName=visible''',
+      );
+    });
+
     test(
       'handles escaped quotes and backslashes without exposing a suffix',
       () {
