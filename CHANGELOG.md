@@ -81,5 +81,11 @@
   from Poltergeist. Language detection also finds the file name after a
   backslash.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
+- Files: local copies of server files are no longer deleted when the
+  record of them is lost or unreadable. They used to be kept for one
+  launch and then removed, unsaved edits included; they now stay in the
+  app's `sftp-checkouts` folder until you remove them. A local copy that
+  cannot be read or deleted, for example because another program has it
+  open, no longer stops Séance from starting.
 
 Earlier history lives in the commit log and any GitHub releases.
