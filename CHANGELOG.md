@@ -85,7 +85,9 @@
   Replace over a link used to swap the link for a regular file anyone could
   write (mode 0777) and leave its target unchanged; the upload now stops and
   says the item is a link. FIFOs, sockets and devices are refused the same
-  way. Replacing a file that others may not read, such as a 0600 key, no
-  longer stages the new bytes readable by everyone while they upload.
+  way, and so is a folder, before any bytes are sent. A file whose mode
+  keeps others from reading or writing it, such as a 0600 key or an
+  ordinary 0644 file, is staged owner-only while it uploads, so other users
+  on the server can neither read the new bytes nor write into them.
 
 Earlier history lives in the commit log and any GitHub releases.

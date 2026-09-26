@@ -113,9 +113,10 @@ shell exits, but that requires an explicit lifecycle and reauthentication UX.
 Uploads write a sibling temporary remote file and rename it into place after a
 complete transfer. Existing targets require an explicit overwrite decision.
 Where the server supports it, the original mode is preserved; a file whose
-mode withholds read from group or others is staged owner-only. A symbolic
-link, FIFO, socket or device at the target is refused rather than replaced,
-since the rename would replace the node itself, not a link's target.
+mode withholds read or write from group or others is staged owner-only. A
+symbolic link, FIFO, socket or device at the target is refused rather than
+replaced, since the rename would replace the node itself, not a link's target;
+a folder is refused before the transfer instead of failing at the rename.
 
 Opening a remote file locally is a managed checkout:
 

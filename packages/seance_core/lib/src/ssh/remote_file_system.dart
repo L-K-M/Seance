@@ -547,13 +547,17 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
           )
           .timeout(operationTimeout);
       // dartssh2 sends no attributes with the open, so the temp file starts
-      // at the server's default mode, typically world-readable. When the
-      // final mode withholds read from group or others, restrict the handle
+      // at the server's default mode: world-readable, and group-writable
+      // under a collaborative umask such as 002. When the final mode
+      // withholds read or write from group or others, restrict the handle
       // before the first byte; the final mode is applied after the last
-      // write. This narrows the exposure rather than closing it: a reader
-      // that opens the empty file before this request lands keeps its
-      // descriptor.
-      if (mode != null && (mode & _groupAndOtherRead) != _groupAndOtherRead) {
+      // write. Otherwise another local user could read the bytes as they
+      // stream or, worse, write into them, and the rename would commit the
+      // result: the inline digest covers only what was sent. This narrows
+      // the exposure rather than closing it: a process that opens the empty
+      // file before this request lands keeps its descriptor.
+      if (mode != null &&
+          (mode & _groupAndOtherReadWrite) != _groupAndOtherReadWrite) {
         await file
             .setStat(
               SftpFileAttrs(mode: const SftpFileMode.value(_ownerOnlyMode)),
@@ -705,18 +709,21 @@ class DartSshRemoteFileSystem implements RemoteFileSystem {
   /// Permission plus setuid/setgid/sticky: what chmod can set. An entry's
   /// mode also carries the file-type field above these bits.
   static const int _permissionBits = 0xFFF;
-  static const int _groupAndOtherRead = 0x24; // 0o044
+  static const int _groupAndOtherReadWrite = 0x36; // 0o066
   static const int _ownerOnlyMode = 0x180; // 0o600
 
   /// The commit rename replaces whatever node sits at [path]. Over a
   /// symbolic link that swaps the link for a regular file and leaves its
   /// target stale; over a FIFO, socket or device it destroys the node.
-  /// Neither is a replace, so both are refused. A directory is left to the
-  /// server, whose rename refuses a file over one.
+  /// Neither is a replace, so both are refused. So is a directory: the
+  /// server's rename would refuse a file over one anyway, but only after
+  /// the whole transfer, and with an error that does not say why.
   static void _checkReplaceable(String path, RemoteFileEntry target) {
     final name = remoteBasename(path);
     final message = switch (target.type) {
-      RemoteFileType.file || RemoteFileType.directory => null,
+      RemoteFileType.file => null,
+      RemoteFileType.directory =>
+        '"$name" is a folder; the upload will not replace it.',
       RemoteFileType.symbolicLink =>
         '"$name" is a symbolic link; replacing it would replace the link, '
             'not its target.',

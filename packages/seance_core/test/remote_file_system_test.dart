@@ -717,6 +717,10 @@ class _FakeWritableSftpFile extends SftpFile {
     writes.add(data);
   }
 
+  /// Owner-only staging before the first write (see `upload`).
+  @override
+  Future<void> setStat(SftpFileAttrs attrs) async {}
+
   @override
   Future<void> close() async {}
 }

@@ -398,7 +398,7 @@ void main() {
       );
       final fileSystem = DartSshRemoteFileSystem(client);
 
-      // The server's rename refuses a file over a directory.
+      // Refused up front, not after a transfer the rename would fail.
       await expectLater(
         fileSystem.upload(
           targetPath,
@@ -406,9 +406,14 @@ void main() {
           length: 3,
           overwrite: true,
         ),
-        throwsA(isA<RemoteFileException>()),
+        throwsA(
+          isA<RemoteFileException>()
+              .having((e) => e.kind, 'kind', RemoteFileErrorKind.conflict)
+              .having((e) => e.message, 'message', contains('is a folder')),
+        ),
       );
 
+      expect(client.renames, isEmpty);
       expect(client.modeSetStats, isEmpty);
       expect(client.modeHandleSetStats, isEmpty);
       expect(client.modeOf(targetPath), directoryMode);
@@ -437,10 +442,27 @@ void main() {
       expect(client.modeSetStats, hasLength(1));
       expect(client.modeSetStats.single.$1, matches(tempPathPattern));
       expect(client.modeSetStats.single.$2, setuidExecutableMode & 0xFFF);
-      // Group and others may read the result, so staging has nothing to
-      // hide and costs no extra request.
-      expect(client.modeHandleSetStats, isEmpty);
+      // Group and others may not write the result, so the temp is staged
+      // owner-only rather than at a server default that might let them.
+      expect(client.modeHandleSetStats.single.$2, ownerOnlyStagingMode & 0xFFF);
       expect(client.modeOf(targetPath), setuidExecutableMode);
+    });
+
+    test('skips staging when the final mode hides nothing', () async {
+      final client = _PathAwareSftpClient();
+      final fileSystem = DartSshRemoteFileSystem(client);
+
+      await fileSystem.upload(
+        targetPath,
+        Stream.value(Uint8List.fromList([5, 6])),
+        length: 2,
+        preserveMode: 0x81B6, // S_IFREG | 0666
+      );
+
+      // Group and others may read and write the result, so no default the
+      // server picks is more permissive: no extra request.
+      expect(client.modeHandleSetStats, isEmpty);
+      expect(client.modeSetStats.single.$2, 0x1B6);
     });
 
     test('masks the file-type bits of an explicit preserveMode', () async {
@@ -479,6 +501,24 @@ void main() {
 
       expect(modeAtFirstWrite, ownerOnlyStagingMode);
       expect(client.modeHandleSetStats.single.$2, ownerOnlyStagingMode & 0xFFF);
+      expect(client.modeSetStats.single.$2, privateFileMode & 0xFFF);
+      expect(client.modeOf(targetPath), privateFileMode);
+    });
+
+    test('stages an explicitly private new file owner-only', () async {
+      final client = _PathAwareSftpClient();
+      final fileSystem = DartSshRemoteFileSystem(client);
+      int? modeAtFirstWrite;
+      client.onWrite = (path) => modeAtFirstWrite ??= client.modeOf(path);
+
+      await fileSystem.upload(
+        targetPath,
+        Stream.value(Uint8List.fromList([5, 6])),
+        length: 2,
+        preserveMode: privateFileMode,
+      );
+
+      expect(modeAtFirstWrite, ownerOnlyStagingMode);
       expect(client.modeSetStats.single.$2, privateFileMode & 0xFFF);
       expect(client.modeOf(targetPath), privateFileMode);
     });
