@@ -1549,6 +1549,16 @@ class AppState extends ChangeNotifier {
           servers = await services.configStore.listServers();
           snippets = await services.snippetStore.listSnippets();
           return result;
+        } on SyncRecordsRefused {
+          // The round applied everything else before reporting the records
+          // the server refused as too large, and it will refuse them again on
+          // every round until they shrink. Refreshed only on success, another
+          // device's edits would reach the stores and never the screen.
+          servers = await services.configStore.listServers();
+          snippets = await services.snippetStore.listSnippets();
+          services.probe.updateServers(servers);
+          _recomputeSuggestions();
+          rethrow;
         } finally {
           // Sampled while this round still holds the queue, so the answer
           // cannot depend on what runs between the release and this method's

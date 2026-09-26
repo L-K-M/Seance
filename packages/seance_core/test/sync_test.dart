@@ -56,6 +56,14 @@ class FakeServer implements SyncApi {
           code: 'payload_too_large',
           message: 'Request body too large ($bodyBytes bytes)');
     }
+    for (final incoming in records) {
+      if (incoming.blob.length > _enforced.maxBlobBytes) {
+        throw ApiError(
+            code: 'payload_too_large',
+            message: 'A record blob exceeds the '
+                '${_enforced.maxBlobBytes}-byte limit');
+      }
+    }
     final results = <PushResult>[];
     for (final incoming in records) {
       final existing = _store[incoming.id];
@@ -153,6 +161,42 @@ class FailingBatchApi implements SyncApi {
     _pushes++;
     if (_pushes >= failFromPush) {
       throw const ApiError(code: 'storage_busy', message: 'Storage is busy');
+    }
+    return server.push(records);
+  }
+}
+
+/// Refuses every push as too large, the way a server whose real limits are
+/// tighter than the ones it advertised would: a batch the client sized to fit
+/// is refused whole, and no one record in it is to blame.
+class RefuseAsTooLargeApi implements SyncApi {
+  @override
+  Future<PullResponse> pull({required int since}) async =>
+      const PullResponse(records: [], latestSeq: 0);
+
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) async =>
+      throw const ApiError(
+          code: 'payload_too_large', message: 'Request body too large');
+}
+
+/// Lands another device's copy of [newer]'s record on [server] the first time
+/// this device pushes its own, as if the two raced.
+class SupersedeOnPushApi implements SyncApi {
+  final FakeServer server;
+  final EncryptedRecord newer;
+  bool _landed = false;
+
+  SupersedeOnPushApi(this.server, this.newer);
+
+  @override
+  Future<PullResponse> pull({required int since}) => server.pull(since: since);
+
+  @override
+  Future<PushResponse> push(List<EncryptedRecord> records) async {
+    if (!_landed && records.any((r) => r.id == newer.id)) {
+      _landed = true;
+      await server.push([newer]);
     }
     return server.push(records);
   }
@@ -453,7 +497,11 @@ void main() {
         await store.putLocal(bulky('small', 100));
 
         await expectLater(
-            SyncEngine(store).sync(server), throwsA(isA<ApiError>()));
+          SyncEngine(store).sync(server),
+          throwsA(isA<SyncRecordsRefused>()
+              .having((e) => e.recordIds, 'recordIds', ['huge'])
+              .having((e) => e.code, 'code', 'payload_too_large')),
+        );
 
         // The refusal is reported rather than counted as a benign rejection:
         // nothing local can make this record fit, so a sync that returned
@@ -463,6 +511,112 @@ void main() {
             ['small']);
         expect((await store.dirtyRecords()).map((r) => r.id), ['huge']);
         expect(server.pushedBatchSizes, [1, 1]);
+      });
+
+      test('records refused as too large are each reported once, at the end',
+          () async {
+        const limits = PushLimits(maxBlobBytes: 1024);
+        final server = FakeServer(advertisedLimits: limits);
+        final other = InMemoryLocalRecordStore();
+        await other.putLocal(rec('theirs', 5, 'B'));
+        await SyncEngine(other).sync(server);
+        server.pushedBatchSizes.clear();
+        final store = InMemoryLocalRecordStore();
+        await store.putLocal(bulky('fat-1', 4096));
+        await store.putLocal(bulky('fat-2', 4096));
+        await store.putLocal(rec('mine', 10, 'A'));
+
+        await expectLater(
+          SyncEngine(store).sync(server),
+          throwsA(isA<SyncRecordsRefused>()
+              .having((e) => e.recordIds, 'recordIds',
+                  unorderedEquals(['fat-1', 'fat-2']))
+              .having((e) => e.outcome.pushed, 'pushed', 1)
+              .having((e) => e.outcome.rounds, 'rounds', greaterThan(1))),
+        );
+
+        // The first refusal used to end the run: the second record past the
+        // cap was never tried, and the rounds after it never ran.
+        expect(await store.getRecord('theirs'), isNotNull);
+        expect(
+            (await server.pull(since: 0)).records.map((r) => r.id).toSet(),
+            {'theirs', 'mine'});
+        expect((await store.dirtyRecords()).map((r) => r.id).toSet(),
+            {'fat-1', 'fat-2'},
+            reason: 'a refused record stays dirty, so a later run retries it '
+                'in case it shrank or the limit was raised');
+        expect(server.pushedBatchSizes, [1, 1, 1],
+            reason: 'each refused record is sent once per run, not once per '
+                'round: nothing between rounds can make it fit');
+      });
+
+      test('a refused record a pulled copy settles is not reported', () async {
+        const limits = PushLimits(maxBlobBytes: 1024);
+        final server = FakeServer(advertisedLimits: limits);
+        final store = InMemoryLocalRecordStore();
+        await store.putLocal(bulky('shared', 4096));
+        await store.putLocal(rec('mine', 10, 'A'));
+        final newer = rec('shared', 20, 'B');
+
+        await SyncEngine(store).sync(SupersedeOnPushApi(server, newer));
+
+        // Another device's later copy won last-write-wins, so the refused
+        // version was going to be replaced anyway: nothing stays behind.
+        expect((await store.getRecord('shared'))!.updatedAt, 20);
+        expect(await store.dirtyRecords(), isEmpty);
+      });
+
+      test('a refusal reads as a sentence naming each record', () {
+        const outcome = SyncOutcome(pulled: 0, pushed: 0, rounds: 1);
+        final blank = SyncRecordsRefused([
+          const RefusedRecord('snippet:x', kind: RecordKind.snippet, name: ' '),
+        ], outcome: outcome);
+        expect(blank.toString(), startsWith('Snippet (snippet:x) is too large'),
+            reason: 'a blank title falls back to the id, not to ""');
+
+        final two = SyncRecordsRefused([
+          const RefusedRecord('s1', kind: RecordKind.serverConfig, name: 'prod'),
+          const RefusedRecord('secret:k'),
+        ], outcome: outcome);
+        expect(two.toString(), startsWith('2 records are too large'));
+        expect(two.toString(), contains(': server "prod", record (secret:k).'));
+      });
+
+      test('a batch refused whole still ends the run', () async {
+        final store = InMemoryLocalRecordStore();
+        await store.putLocal(rec('a', 10, 'A'));
+        await store.putLocal(rec('b', 10, 'A'));
+
+        await expectLater(
+          SyncEngine(store).sync(RefuseAsTooLargeApi()),
+          throwsA(isA<ApiError>()
+              .having((e) => e.code, 'code', 'payload_too_large')
+              .having((e) => e, 'error', isNot(isA<SyncRecordsRefused>()))),
+          reason: 'a refused batch of several names no culprit, so it is not '
+              'set aside as one record\'s failure',
+        );
+        expect(await store.dirtyRecords(), hasLength(2));
+      });
+
+      test('any other failure of a one-record push still ends the run',
+          () async {
+        const limits = PushLimits(maxRecordsPerPush: 1);
+        final server = FakeServer(advertisedLimits: limits);
+        final api = FailingBatchApi(server, failFromPush: 2);
+        final store = InMemoryLocalRecordStore();
+        for (var i = 0; i < 3; i++) {
+          await store.putLocal(rec('r$i', 10, 'A'));
+        }
+
+        await expectLater(
+          SyncEngine(store).sync(api),
+          throwsA(isA<ApiError>()
+              .having((e) => e.code, 'code', 'storage_busy')
+              .having((e) => e, 'error', isNot(isA<SyncRecordsRefused>()))),
+        );
+        expect(server.pushedBatchSizes, [1],
+            reason: 'nothing is pushed after the failure');
+        expect(await store.dirtyRecords(), hasLength(2));
       });
 
       test('a server that rejects every batch still terminates', () async {

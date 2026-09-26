@@ -81,5 +81,9 @@
   from Poltergeist. Language detection also finds the file name after a
   backslash.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
+- Sync: a snippet or server too large for the sync server no longer cuts
+  this device off from your other devices. Their edits and deletions
+  still arrive, and the sync status names the record that stays behind,
+  so you know what to make smaller.
 
 Earlier history lives in the commit log and any GitHub releases.

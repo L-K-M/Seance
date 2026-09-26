@@ -1019,10 +1019,32 @@ class SyncCoordinator {
   }
 
   /// One full synchronization round.
+  ///
+  /// Throws [SyncRecordsRefused] if the server refused records as too large,
+  /// but only once everything else is done: what was pulled is applied and
+  /// confirmed tombstones are pruned first. Thrown straight from the engine, a
+  /// record the server refuses on every round would keep this device from
+  /// ever applying another device's edit or deletion. The mirror is rebuilt
+  /// per round, so nothing pulled would survive to the next one.
   Future<SyncOutcome> run(SyncApi api) async {
     await collectLocal();
     final engine = SyncEngine(local);
-    final first = await engine.sync(api);
+    // The latest pass's answer, not the union of both: a second pass pushes
+    // every refused record that is still dirty again, so it knows which are
+    // still refused and which a pulled copy has since settled.
+    var refused = const <RefusedRecord>[];
+    Future<SyncOutcome> pass() async {
+      try {
+        final outcome = await engine.sync(api);
+        refused = const [];
+        return outcome;
+      } on SyncRecordsRefused catch (error) {
+        refused = error.records;
+        return error.outcome;
+      }
+    }
+
+    final first = await pass();
     // A retraction the server outranked has been re-dated to beat the record
     // that beat it. Push it now: the next run would only re-mint the same
     // losing date [collectLocal] computes, so waiting never resolves it. One
@@ -1032,17 +1054,42 @@ class SyncCoordinator {
     // applied — which would double every round's traffic on the hot path,
     // hidden inside the summed outcome.
     final redated = await applyToStores();
-    if (redated == 0) {
-      await _pruneConfirmedTombstones();
-      return first;
+    var outcome = first;
+    if (redated != 0) {
+      final second = await pass();
+      await applyToStores();
+      outcome = SyncOutcome(
+        pulled: first.pulled + second.pulled,
+        pushed: first.pushed + second.pushed,
+        rounds: first.rounds + second.rounds,
+      );
     }
-    final second = await engine.sync(api);
-    await applyToStores();
     await _pruneConfirmedTombstones();
-    return SyncOutcome(
-      pulled: first.pulled + second.pulled,
-      pushed: first.pushed + second.pushed,
-      rounds: first.rounds + second.rounds,
+    if (refused.isEmpty) return outcome;
+    throw SyncRecordsRefused(
+      [for (final record in refused) await _describeRefused(record.id)],
+      outcome: outcome,
     );
+  }
+
+  /// A refused record as the user knows it: what it is and what it is called.
+  ///
+  /// Read back from the mirror, where it is still the dirty copy this device
+  /// sealed. Naming is only for the message, so a record that cannot be read
+  /// back is reported by its id rather than failing the report of a refusal.
+  Future<RefusedRecord> _describeRefused(String id) async {
+    final sealed = await local.getRecord(id);
+    if (sealed == null) return RefusedRecord(id);
+    try {
+      final dec = await codec.decrypt(sealed);
+      final name = switch (dec.kind) {
+        RecordKind.snippet => Snippet.fromJson(dec.data).title,
+        RecordKind.serverConfig => ServerConfig.fromJson(dec.data).label,
+        _ => null,
+      };
+      return RefusedRecord(id, kind: dec.kind, name: name);
+    } catch (_) {
+      return RefusedRecord(id);
+    }
   }
 }
