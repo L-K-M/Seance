@@ -77,6 +77,12 @@
   without "Bad state:" prefixes. A save that finishes after its tab closed
   still reconciles or uploads the copy. Ported from Poltergeist's hardened
   copy of this editor.
+- Files: local copies of server files are no longer deleted when the
+  record of them is lost or unreadable. They used to be kept for one
+  launch and then removed, unsaved edits included; they now stay in the
+  app's `sftp-checkouts` folder until you remove them. A local copy that
+  cannot be read or deleted, for example because another program has it
+  open, no longer stops Séance from starting.
 - Built-in editor: syntax highlighting for CSS/SCSS/LESS, Ruby, Perl and
   Lua, `.htaccess`/`.htpasswd` as ini, and Ruby/Perl/Lua shebangs, ported
   from Poltergeist. Language detection also finds the file name after a

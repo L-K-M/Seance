@@ -644,7 +644,20 @@ class AppState extends ChangeNotifier {
     // app can be backgrounded mid-handshake right after opening a tab.
     _keepAlive.setEnabled(services.settings.keepSessionsAliveInBackground);
     servers = await services.configStore.listServers();
-    await _restoreManagedEditSessions();
+    // Managed edits are a side feature: a checkout folder the store cannot
+    // read costs the restored edit tabs, never startup. The local copies stay
+    // on disk, and the store retries on its next use.
+    try {
+      await _restoreManagedEditSessions();
+    } catch (error, stackTrace) {
+      developer.log(
+        'Could not restore managed edit sessions',
+        name: 'seance.app',
+        level: 1000,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
     await _seedDefaultSnippets();
     snippets = await services.snippetStore.listSnippets();
     await refreshLlmConfigured();

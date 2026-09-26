@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -315,6 +316,180 @@ void main() {
       expect(await File('${outside.path}/new.txt').exists(), isFalse);
     },
     skip: Platform.isWindows,
+  );
+
+  ManagedRemoteFileStore relaunch() =>
+      ManagedRemoteFileStore(indexFile: indexFile, checkoutRoot: checkoutRoot);
+
+  test('checkouts outlive a quarantined index on every later launch', () async {
+    final managed = await _createManagedCheckout(
+      store,
+      id: 'edit-1',
+      serverId: 'server-a',
+      sessionId: 'session-a',
+      content: 'original',
+    );
+    await store.put(managed);
+    final local = store.checkoutFile(managed.localPath);
+    await local.writeAsString('unsaved edit');
+    await indexFile.writeAsString('{"version":1,"files":[');
+
+    // The launch that quarantines, then one that finds no index at all.
+    expect(await relaunch().reconcileAll(), isEmpty);
+    expect(await File('${indexFile.path}.corrupt').exists(), isTrue);
+    expect(await relaunch().reconcileAll(), isEmpty);
+    expect(await local.readAsString(), 'unsaved edit');
+
+    // A new checkout commits a fresh, trusted index. It has to carry the
+    // preservation forward, or the launch after it sweeps the edit.
+    final next = relaunch();
+    await next.put(
+      await _createManagedCheckout(
+        next,
+        id: 'edit-2',
+        serverId: 'server-a',
+        sessionId: 'session-b',
+        content: 'two',
+      ),
+    );
+    expect((await relaunch().reconcileAll()).single.id, 'edit-2');
+    expect(await local.readAsString(), 'unsaved edit');
+  });
+
+  test('a missing index never sweeps existing checkouts', () async {
+    final managed = await _createManagedCheckout(
+      store,
+      id: 'edit-1',
+      serverId: 'server-a',
+      sessionId: 'session-a',
+      content: 'edited',
+    );
+    await store.put(managed);
+    final local = store.checkoutFile(managed.localPath);
+    // Lost without a quarantine, as when Windows' replace-then-rename
+    // fallback deletes the index and then fails to rename the new one in.
+    await indexFile.delete();
+
+    expect(await relaunch().list(), isEmpty);
+    expect(await relaunch().list(), isEmpty);
+    expect(await local.readAsString(), 'edited');
+  });
+
+  test('a trusted index sweeps abandoned, not preserved, checkouts', () async {
+    // Preserved while no index existed, then recorded by the next write.
+    final preserved = store.checkoutFile(
+      store.checkoutPathFor(id: 'lost', fileName: 'lost.txt'),
+    );
+    await preserved.create(recursive: true);
+    final first = relaunch();
+    await first.put(
+      await _createManagedCheckout(
+        first,
+        id: 'edit-1',
+        serverId: 'server-a',
+        sessionId: 'session-a',
+        content: 'kept',
+      ),
+    );
+
+    // A checkout abandoned before its record committed, once the index is
+    // trusted: nothing but this store could have written it.
+    final debris = store.checkoutFile(
+      store.checkoutPathFor(id: 'abandoned', fileName: 'partial.txt'),
+    );
+    await debris.create(recursive: true);
+
+    expect((await relaunch().list()).single.id, 'edit-1');
+    expect(await debris.parent.exists(), isFalse);
+    expect(await preserved.exists(), isTrue);
+
+    // Once the user clears a preserved directory away, the index forgets it.
+    await preserved.parent.delete(recursive: true);
+    final pruned = relaunch();
+    await pruned.remove('edit-1');
+    final decoded = jsonDecode(await indexFile.readAsString()) as Map;
+    expect(decoded, isNot(contains('preserved')));
+  });
+
+  test('an undeletable stray checkout does not fail the load', () async {
+    final managed = await _createManagedCheckout(
+      store,
+      id: 'edit-1',
+      serverId: 'server-a',
+      sessionId: 'session-a',
+      content: 'kept',
+    );
+    await store.put(managed);
+    final stray = File('${checkoutRoot.path}/deadbeef/locked.txt');
+    await stray.create(recursive: true);
+
+    // Windows refuses to delete a file another program holds open.
+    final restored = await IOOverrides.runZoned(
+      () => relaunch().reconcileAll(),
+      createDirectory: (path) => path.endsWith('deadbeef')
+          ? _UndeletableDirectory(path)
+          : Zone.root.run(() => Directory(path)),
+    );
+
+    expect(restored.single.id, 'edit-1');
+    expect(await stray.exists(), isTrue);
+  });
+
+  test('a checkout that cannot be read reconciles as dirty', () async {
+    final managed = await _createManagedCheckout(
+      store,
+      id: 'edit-1',
+      serverId: 'server-a',
+      sessionId: 'session-a',
+      content: 'kept',
+    );
+    await store.put(managed);
+    final local = store.checkoutFile(managed.localPath);
+
+    final restored = await IOOverrides.runZoned(
+      () => relaunch().reconcileAll(),
+      createFile: (path) => path == local.path
+          ? _UnreadableFile(path)
+          : Zone.root.run(() => File(path)),
+    );
+
+    // Dirty, so nothing overwrites a file whose contents are unknown.
+    expect(restored.single.dirty, isTrue);
+    expect(restored.single.missing, isFalse);
+  });
+}
+
+class _UndeletableDirectory extends Fake implements Directory {
+  _UndeletableDirectory(this.path);
+
+  @override
+  final String path;
+
+  @override
+  Future<FileSystemEntity> delete({bool recursive = false}) async =>
+      throw FileSystemException(
+        'Deletion failed',
+        path,
+        const OSError('The file is in use by another process', 32),
+      );
+}
+
+class _UnreadableFile extends Fake implements File {
+  _UnreadableFile(this.path);
+
+  @override
+  final String path;
+
+  @override
+  File get absolute => this;
+
+  @override
+  Stream<List<int>> openRead([int? start, int? end]) => Stream.error(
+    FileSystemException(
+      'Read failed',
+      path,
+      const OSError('Input/output error', 5),
+    ),
   );
 }
 
