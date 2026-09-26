@@ -34,7 +34,6 @@ class _CommandGeneratorDialog extends StatefulWidget {
 
 class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
   late final TextEditingController _input;
-  bool _includeContext = true;
   bool _busy = false;
   String? _error;
 
@@ -73,7 +72,7 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
       final redactor = SecretRedactor(
           enabled: widget.state.services.settings.redactionEnabled);
       var prompt = request;
-      if (_includeContext) {
+      if (widget.state.includeTerminalContext) {
         final recent = widget.session.engine.recentText(maxLines: 40);
         if (recent.trim().isNotEmpty) {
           prompt =
@@ -177,13 +176,19 @@ class _CommandGeneratorDialogState extends State<_CommandGeneratorDialog> {
                 ),
                 onSubmitted: (_) => _generate(),
               ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                controlAffinity: ListTileControlAffinity.leading,
-                value: _includeContext,
-                onChanged: (v) => setState(() => _includeContext = v ?? true),
-                title: const Text('Use recent terminal output as context'),
+              // The chat's "Include terminal output" under another name: an
+              // opt-out made in either place holds in both.
+              ListenableBuilder(
+                listenable: widget.state,
+                builder: (context, _) => CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: widget.state.includeTerminalContext,
+                  onChanged: (v) =>
+                      widget.state.setIncludeTerminalContext(v ?? true),
+                  title: const Text('Use recent terminal output as context'),
+                ),
               ),
               if (_error != null)
                 Padding(

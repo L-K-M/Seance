@@ -20,7 +20,6 @@ class ChatSidebar extends StatefulWidget {
 class _ChatSidebarState extends State<ChatSidebar> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
-  bool _includeContext = true;
 
   @override
   void dispose() {
@@ -66,7 +65,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
       final targetSession = state.activeSession;
       final controller = await _ensureController(state, turn);
       if (!chat.isCurrentTurn(turn)) return;
-      final context = _includeContext
+      final context = state.includeTerminalContext
           ? targetSession?.engine.recentText(maxLines: 200)
           : null;
       chat.addReply(
@@ -180,11 +179,17 @@ class _ChatSidebarState extends State<ChatSidebar> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          FilterChip(
-            selected: _includeContext,
-            label: const Text('Include terminal output'),
-            avatar: const Icon(Icons.article_outlined, size: 16),
-            onSelected: (v) => setState(() => _includeContext = v),
+          // Listens itself: this widget is a const child, so the app's
+          // rebuilds stop above it, and the command generator can change the
+          // shared choice while the wide layout keeps this chip on screen.
+          ListenableBuilder(
+            listenable: state,
+            builder: (context, _) => FilterChip(
+              selected: state.includeTerminalContext,
+              label: const Text('Include terminal output'),
+              avatar: const Icon(Icons.article_outlined, size: 16),
+              onSelected: state.setIncludeTerminalContext,
+            ),
           ),
           const SizedBox(height: 8),
           Row(

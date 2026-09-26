@@ -644,7 +644,20 @@ class AppState extends ChangeNotifier {
     // app can be backgrounded mid-handshake right after opening a tab.
     _keepAlive.setEnabled(services.settings.keepSessionsAliveInBackground);
     servers = await services.configStore.listServers();
-    await _restoreManagedEditSessions();
+    // Managed edits are a side feature: a checkout folder the store cannot
+    // read costs the restored edit tabs, never startup. The local copies stay
+    // on disk, and the store retries on its next use.
+    try {
+      await _restoreManagedEditSessions();
+    } catch (error, stackTrace) {
+      developer.log(
+        'Could not restore managed edit sessions',
+        name: 'seance.app',
+        level: 1000,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
     await _seedDefaultSnippets();
     snippets = await services.snippetStore.listSnippets();
     await refreshLlmConfigured();
@@ -1109,6 +1122,19 @@ class AppState extends ChangeNotifier {
     await services.saveSettings();
   }
 
+  /// Whether assistant requests carry the active session's recent output.
+  /// See [AppSettings.includeTerminalContext].
+  bool get includeTerminalContext => services.settings.includeTerminalContext;
+
+  /// Applied before the write, so a request sent while the save is still in
+  /// flight already honours the choice.
+  Future<void> setIncludeTerminalContext(bool include) async {
+    if (services.settings.includeTerminalContext == include) return;
+    services.settings.includeTerminalContext = include;
+    notifyListeners();
+    await services.saveSettings();
+  }
+
   /// Persist the tiled panes' widths after a resize drag. No notifyListeners:
   /// the layout already renders these — the save is only for the next launch.
   Future<void> setPaneWidths({
@@ -1209,7 +1235,12 @@ class AppState extends ChangeNotifier {
 
   /// Open an additional session (tab) for [config], adjacent to that server's
   /// existing tabs, and connect it.
+  ///
+  /// Dials the server as it is saved now, as [reconnect] does. Most callers
+  /// (⌘T, the tab strip's "+", the macOS New Tab item) pass the config an
+  /// open tab connected with, which predates any edit made since.
   Future<void> newTab(ServerConfig config) async {
+    config = _configFor(config.id) ?? config;
     final id = uuidV4();
     final tab = TerminalSession(
       id: id,

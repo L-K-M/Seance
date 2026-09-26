@@ -77,6 +77,14 @@
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving
   the screen. The app opts into predictive back.
+- Assistant: turning off "Include terminal output" now stays off. It used
+  to switch itself back on whenever the assistant was rebuilt: each time
+  the phone drawer reopened, or when the window crossed the wide/narrow
+  breakpoint. The next message then sent the terminal output you had
+  chosen to withhold. The choice is now saved on this device. The command
+  generator's "Use recent terminal output as context" is the same
+  setting, so turning it off in either place turns it off in both. It
+  still starts on.
 - Built-in editor: saving keeps the local copy's permissions (an owner-only
   0600 checkout stays owner-only, a script keeps its execute bits), and the
   replacement file is owner-only while it is written. Symlinked copies are
@@ -84,10 +92,20 @@
   without "Bad state:" prefixes. A save that finishes after its tab closed
   still reconciles or uploads the copy. Ported from Poltergeist's hardened
   copy of this editor.
+- Files: local copies of server files are no longer deleted when the
+  record of them is lost or unreadable. They used to be kept for one
+  launch and then removed, unsaved edits included; they now stay in the
+  app's `sftp-checkouts` folder until you remove them. A local copy that
+  cannot be read or deleted, for example because another program has it
+  open, no longer stops Séance from starting.
 - Built-in editor: syntax highlighting for CSS/SCSS/LESS, Ruby, Perl and
   Lua, `.htaccess`/`.htpasswd` as ini, and Ruby/Perl/Lua shebangs, ported
   from Poltergeist. Language detection also finds the file name after a
   backslash.
+- A new tab for a server you edited while one of its tabs was open (⌘T,
+  Ctrl+Shift+T, the tab strip's "+" or the macOS New Tab item) now
+  connects with the saved settings. It used to dial the host, port and user
+  the open tab had connected with.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
 - Security: the Git tab and the staged `cd` now quote paths and arguments
   so fish reads them literally too. Before, when your login shell was fish,
@@ -95,5 +113,13 @@
   server, and ordinary terminal output could report such a name to the Git
   tab, which probes it automatically. Reported directories that contain
   control characters are now ignored.
+- Files: an upload no longer replaces a symbolic link on the server. Choosing
+  Replace over a link used to swap the link for a regular file anyone could
+  write (mode 0777) and leave its target unchanged; the upload now stops and
+  says the item is a link. FIFOs, sockets and devices are refused the same
+  way, and so is a folder, before any bytes are sent. A file whose mode
+  keeps others from reading or writing it, such as a 0600 key or an
+  ordinary 0644 file, is staged owner-only while it uploads, so other users
+  on the server can neither read the new bytes nor write into them.
 
 Earlier history lives in the commit log and any GitHub releases.
