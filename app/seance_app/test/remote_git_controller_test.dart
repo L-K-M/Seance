@@ -135,6 +135,8 @@ void main() {
       terminalTitle.value = null;
       await _settle();
     }
+    // The clean title did probe, so the check below is not vacuous.
+    expect(runner.commands, isNotEmpty);
     expect(runner.commands.where((c) => !c.contains("~/'proj'")), isEmpty);
   });
 

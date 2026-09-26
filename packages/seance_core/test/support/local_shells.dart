@@ -15,9 +15,11 @@ const localShells = <String, List<String>>{
 /// installed here, false when it is. Only `sh` is expected everywhere the
 /// suite runs; the others are exercised wherever a developer has them.
 Object shellSkipReason(String shell) {
+  // The tests compare POSIX `pwd` output, which a Windows sh.exe prints in
+  // MSYS form (/c/Users/...), so say so rather than blame a missing shell.
+  if (Platform.isWindows) return 'POSIX shell output differs on Windows';
   final path = Platform.environment['PATH'] ?? '';
-  final separator = Platform.isWindows ? ';' : ':';
-  for (final directory in path.split(separator)) {
+  for (final directory in path.split(':')) {
     if (directory.isEmpty) continue;
     if (File('$directory/$shell').existsSync()) return false;
   }
