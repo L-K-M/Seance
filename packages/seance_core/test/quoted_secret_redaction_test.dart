@@ -47,10 +47,16 @@ api-key: «redacted» host: example.test''',
       expect(
         redactor.redact('''SECRET_KEY='synthetic fixture words'
 {"secret_key": "two words", "secret-key": "fixture"}
-secretkey=x secret=x secretName=visible'''),
+secretkey=x secret=x secretName=visible
+client_secret_key='prefixed fixture'
+AWS_SECRET_ACCESS_KEY='synthetic access fixture'
+{"secret_access_key":"synthetic fixture", "secret-access-key":"fixture"}'''),
         '''SECRET_KEY='«redacted»'
 {"secret_key": "«redacted»", "secret-key": "«redacted»"}
-secretkey=«redacted» secret=«redacted» secretName=visible''',
+secretkey=«redacted» secret=«redacted» secretName=visible
+client_secret_key='«redacted»'
+AWS_SECRET_ACCESS_KEY='«redacted»'
+{"secret_access_key":"«redacted»", "secret-access-key":"«redacted»"}''',
       );
     });
 
@@ -182,7 +188,9 @@ custom-private''';
         await controller.send(
           'Inspect {"password":"typed private words"}',
           terminalContext:
-              '{"token":"terminal private words","host":"visible"}',
+              '{"token":"terminal private words","host":"visible",'
+              '"aws_secret_access_key":"synthetic AWS secret",'
+              '"client_secret_key":"synthetic client secret"}',
         );
         await controller.send('Follow up without terminal context');
 
@@ -190,6 +198,8 @@ custom-private''';
           final wire = jsonEncode(request);
           expect(wire, isNot(contains('typed private words')));
           expect(wire, isNot(contains('terminal private words')));
+          expect(wire, isNot(contains('synthetic AWS secret')));
+          expect(wire, isNot(contains('synthetic client secret')));
           expect(wire, contains('«redacted»'));
         }
         expect(jsonEncode(requests.first), contains('visible'));
