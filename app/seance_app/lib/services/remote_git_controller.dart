@@ -60,11 +60,18 @@ class RemoteGitController extends ChangeNotifier {
   /// Ubuntu/Debian's default Bash emits only an OSC 0 title such as
   /// `root@host: ~/src`, whose `~` form is kept verbatim — the probe command
   /// expands it on the remote side, so no local knowledge of $HOME is needed.
+  ///
+  /// Both reports are ordinary terminal output, which anything the user views
+  /// can forge, and a new one is probed through the remote shell unasked. A
+  /// real directory name with a control character is rare and a forged one is
+  /// an attack, so such a report is ignored rather than handed to the shell.
   String? get reportedDirectory {
     final oscDirectory = shellDirectory.value;
-    if (_isAbsolutePath(oscDirectory)) return oscDirectory;
+    if (_isAbsolutePath(oscDirectory) && !_hasControlCharacter(oscDirectory!)) {
+      return oscDirectory;
+    }
     final title = terminalTitle.value?.trim();
-    if (title == null) return null;
+    if (title == null || _hasControlCharacter(title)) return null;
     final separator = title.indexOf(': ');
     if (separator < 1 || !title.substring(0, separator).contains('@')) {
       return null;
@@ -78,6 +85,12 @@ class RemoteGitController extends ChangeNotifier {
 
   static bool _isAbsolutePath(String? path) =>
       path != null && path.startsWith('/');
+
+  /// C0, DEL, or C1.
+  static bool _hasControlCharacter(String text) => text.runes.any(
+    (codePoint) =>
+        codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f),
+  );
 
   Future<void> initialize() {
     if (initialized) return Future.value();

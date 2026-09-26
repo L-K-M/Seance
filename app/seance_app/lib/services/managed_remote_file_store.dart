@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -22,6 +23,12 @@ class ManagedRemoteFileStore {
   final Directory checkoutRoot;
 
   final Map<String, ManagedRemoteFile> _files = {};
+
+  /// Checkout-root entries found while no trustworthy index existed. Any of
+  /// them may hold the only copy of an edit, so every index written afterwards
+  /// records them and the sweep never touches them. An entry leaves the set
+  /// only once it is gone from disk.
+  final Set<String> _preserved = {};
   Future<void> _operationTail = Future<void>.value();
   bool _loaded = false;
 
@@ -247,8 +254,12 @@ class ManagedRemoteFileStore {
 
   Future<void> _loadUnlocked() async {
     if (_loaded) return;
-    var canSweepUnindexed = true;
-    if (await indexFile.exists()) {
+    // A failed load is retried by the next operation, so it starts clean: a
+    // half-read index left behind would read as duplicate ids.
+    _files.clear();
+    _preserved.clear();
+    var indexTrusted = await indexFile.exists();
+    if (indexTrusted) {
       try {
         final decoded = jsonDecode(await indexFile.readAsString());
         if (decoded is! Map) {
@@ -279,41 +290,106 @@ class ManagedRemoteFileStore {
           }
           _files[file.id] = file;
         }
+        // Absent from an index that never had anything to preserve.
+        final preserved = json['preserved'] ?? const <Object?>[];
+        if (preserved is! List || preserved.any((name) => name is! String)) {
+          throw const FormatException(
+            'Managed-file index preserved must be a list of names',
+          );
+        }
+        _preserved.addAll(preserved.cast<String>());
       } catch (_) {
         _files.clear();
+        _preserved.clear();
         await quarantineCorruptFile(indexFile);
-        // Without a trustworthy index, any checkout may contain the only copy
-        // of an edit. Preserve all plaintext directories for manual recovery.
-        canSweepUnindexed = false;
+        indexTrusted = false;
       }
     }
-    if (canSweepUnindexed) await _sweepUnindexedCheckouts();
+    if (indexTrusted) {
+      await _sweepUnindexedCheckouts();
+    } else {
+      // Without a trustworthy index, any checkout may hold the only copy of
+      // an edit. Preserve every entry, durably: the next index written
+      // records them. A root that cannot be listed fails the load rather
+      // than leave an entry unrecorded for a later launch's sweep to delete.
+      final entries = await _checkoutRootEntries() ?? const [];
+      _preserved.addAll(entries.map(_entryName));
+      if (_preserved.isNotEmpty) {
+        developer.log(
+          'The managed-edit index is missing or unreadable; keeping '
+          '${_preserved.length} checkout entries in ${checkoutRoot.path} for '
+          'manual recovery',
+          name: 'seance.app',
+          level: 900,
+        );
+      }
+    }
     _loaded = true;
   }
 
+  /// Removes checkout-root entries the trusted index neither records nor
+  /// preserves: checkouts abandoned before their record committed. Failures
+  /// are logged and retried at the next launch; a file another program holds
+  /// open on Windows must not stop the store from loading.
   Future<void> _sweepUnindexedCheckouts() async {
+    final List<FileSystemEntity>? entries;
+    try {
+      entries = await _checkoutRootEntries();
+    } on FileSystemException catch (error, stackTrace) {
+      _logSweepFailure(error, stackTrace);
+      return;
+    }
+    if (entries == null) return;
+    // A preserved entry the user has since cleared away needs no protecting.
+    _preserved.retainAll(entries.map(_entryName));
+    final retained = {
+      ..._preserved,
+      for (final file in _files.values) file.localPath.split('/').first,
+    };
+    for (final entity in entries) {
+      if (retained.contains(_entryName(entity))) continue;
+      try {
+        final type = await FileSystemEntity.type(
+          entity.path,
+          followLinks: false,
+        );
+        if (type == FileSystemEntityType.directory) {
+          await Directory(entity.path).delete(recursive: true);
+        } else if (type == FileSystemEntityType.file) {
+          await File(entity.path).delete();
+        } else if (type == FileSystemEntityType.link) {
+          await Link(entity.path).delete();
+        }
+      } on FileSystemException catch (error, stackTrace) {
+        _logSweepFailure(error, stackTrace);
+      }
+    }
+  }
+
+  void _logSweepFailure(FileSystemException error, StackTrace stackTrace) {
+    developer.log(
+      'Could not sweep an abandoned managed-edit checkout; the next launch '
+      'tries again',
+      name: 'seance.app',
+      level: 900,
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
+
+  /// The checkout root's direct children, links unfollowed, or null when the
+  /// root is missing or is not a real directory.
+  Future<List<FileSystemEntity>?> _checkoutRootEntries() async {
     final rootType = await FileSystemEntity.type(
       checkoutRoot.path,
       followLinks: false,
     );
-    if (rootType == FileSystemEntityType.notFound) return;
-    if (rootType != FileSystemEntityType.directory) return;
-    final retained = {
-      for (final file in _files.values) file.localPath.split('/').first,
-    };
-    await for (final entity in checkoutRoot.list(followLinks: false)) {
-      final name = entity.path.split(Platform.pathSeparator).last;
-      if (retained.contains(name)) continue;
-      final type = await FileSystemEntity.type(entity.path, followLinks: false);
-      if (type == FileSystemEntityType.directory) {
-        await Directory(entity.path).delete(recursive: true);
-      } else if (type == FileSystemEntityType.file) {
-        await File(entity.path).delete();
-      } else if (type == FileSystemEntityType.link) {
-        await Link(entity.path).delete();
-      }
-    }
+    if (rootType != FileSystemEntityType.directory) return null;
+    return checkoutRoot.list(followLinks: false).toList();
   }
+
+  static String _entryName(FileSystemEntity entity) =>
+      entity.path.split(Platform.pathSeparator).last;
 
   Future<void> _flushUnlocked() async {
     final files = _files.values.toList()..sort((a, b) => a.id.compareTo(b.id));
@@ -322,6 +398,7 @@ class ManagedRemoteFileStore {
       jsonEncode({
         'version': _indexVersion,
         'files': files.map((file) => file.toJson()).toList(),
+        if (_preserved.isNotEmpty) 'preserved': _preserved.toList()..sort(),
       }),
     );
   }
@@ -367,7 +444,12 @@ class ManagedRemoteFileStore {
         _files[managed.id] = missing;
         return missing;
       }
-      rethrow;
+      // Present but unreadable: locked by another program, or its
+      // permissions changed. Dirty keeps a refresh from overwriting contents
+      // nobody can see, and keeps one file from failing every reconcile.
+      final unreadable = managed.copyWith(dirty: true, missing: false);
+      _files[managed.id] = unreadable;
+      return unreadable;
     }
   }
 

@@ -108,6 +108,38 @@ void main() {
     );
   });
 
+  test('ignores reported directories that carry control characters', () async {
+    // OSC 7 and titles are ordinary terminal output that anything the user
+    // views can forge, and each new report is probed through the shell.
+    runner.onRun = (_) => _repo();
+    await controller.initialize();
+    for (final control in [0x01, 0x0a, 0x1b, 0x7f, 0x85, 0x9b]) {
+      final c = String.fromCharCode(control);
+      shellDirectory.value = '/srv/a${c}b';
+      terminalTitle.value = 'root@server: ~/a${c}b';
+      await _settle();
+      expect(
+        controller.reportedDirectory,
+        isNull,
+        reason: 'U+${control.toRadixString(16)}',
+      );
+
+      // A clean title still counts once the forged OSC 7 is set aside.
+      terminalTitle.value = 'root@server: ~/proj';
+      await _settle();
+      expect(
+        controller.reportedDirectory,
+        '~/proj',
+        reason: 'U+${control.toRadixString(16)}',
+      );
+      terminalTitle.value = null;
+      await _settle();
+    }
+    // The clean title did probe, so the check below is not vacuous.
+    expect(runner.commands, isNotEmpty);
+    expect(runner.commands.where((c) => !c.contains("~/'proj'")), isEmpty);
+  });
+
   test('re-probes when the reported directory changes', () async {
     shellDirectory.value = '/srv/app';
     runner.onRun = (_) => _repo();

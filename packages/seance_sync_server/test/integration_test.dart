@@ -228,6 +228,23 @@ void main() {
     );
   });
 
+  test('an oversized login body is a structured 413 over HTTP', () async {
+    // Answered before the body is read, so the client must still receive the
+    // error rather than a reset connection.
+    final baseUrl = await startServer();
+    final client = HttpSyncClient(baseUrl: baseUrl);
+    addTearDown(client.close);
+
+    await expectLater(
+      client.login(
+        LoginRequest(username: 'someone', authVerifier: 'A' * (17 * 1024)),
+      ),
+      throwsA(
+        isA<ApiError>().having((e) => e.code, 'code', 'payload_too_large'),
+      ),
+    );
+  });
+
   test('server rejects a bad login verifier over HTTP', () async {
     final baseUrl = await startServer();
     final client = HttpSyncClient(baseUrl: baseUrl);

@@ -496,13 +496,16 @@ class ThemePalette {
   };
 
   /// A palette from [json], leniently: a missing or unreadable accent or
-  /// corner scale takes the default preset's, a missing or unreadable
+  /// corner scale takes the Séance preset's, a missing or unreadable
   /// Automatic-able colour is Automatic, and a terminal block is taken whole
-  /// or not at all ([ThemeTerminalColors.fromJson]). A blank or missing
-  /// name is whatever the values match ([relabelled]), so a hand-written
-  /// theme that says nothing but the default's colours is the default.
+  /// or not at all ([ThemeTerminalColors.fromJson]). The gaps fill from
+  /// Séance rather than from the default ([ThemePresets.initial]) because
+  /// Séance is the preset whose colours are all Automatic, so a partial
+  /// theme completes as one look. A blank or missing name is whatever the
+  /// values match ([relabelled]), so a hand-written theme that says
+  /// nothing but a preset's colours is that preset.
   factory ThemePalette.fromJson(Map<String, Object?> json) {
-    final fallback = ThemePresets.initial;
+    final fallback = ThemePresets.seance;
     final name = json['name'];
     final named = name is String && name.trim().isNotEmpty;
     final family = json['fontFamily'];
@@ -530,10 +533,13 @@ class ThemePalette {
   }
 
   /// The palette a settings file holds under its key: the default preset
-  /// when it holds nothing usable. Never throws — a theme is not worth a
-  /// failed launch.
+  /// when it holds nothing usable, which includes a map that names none
+  /// of a palette's values. Never throws — a theme is not worth a failed
+  /// launch.
   static ThemePalette decodeStored(Object? json) {
-    if (json is! Map) return ThemePresets.initial;
+    if (json is! Map || !json.keys.any(_valueKeys.contains)) {
+      return ThemePresets.initial;
+    }
     try {
       return ThemePalette.fromJson(json.cast<String, Object?>());
     } catch (_) {
