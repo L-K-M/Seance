@@ -62,7 +62,11 @@ api-key: «redacted» host: example.test''',
     );
 
     test('unquoted shell values keep punctuation inside the secret', () {
-      for (final value in ['prefix,private', 'prefix}private', 'prefix]private']) {
+      for (final value in [
+        'prefix,private',
+        'prefix}private',
+        'prefix]private',
+      ]) {
         final result = redactor.redact('PASSWORD=$value next=visible');
         expect(result, 'PASSWORD=«redacted» next=visible');
       }
@@ -107,6 +111,16 @@ custom-private''';
         expect(result, isNot(contains(secret)));
       }
     });
+
+    test(
+      'custom patterns cannot hide a secret label before built-in masking',
+      () {
+        final result = SecretRedactor(
+          extraPatterns: [RegExp('password')],
+        ).redact('{"password":"private words"}');
+        expect(result, '{"«redacted»":"«redacted»"}');
+      },
+    );
 
     test('large malformed values and many adjacent fields stay bounded', () {
       // A missing closing quote must consume one suffix once, rather than

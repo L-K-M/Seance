@@ -6,7 +6,7 @@
 class SecretRedactor {
   static const String _mask = '«redacted»';
 
-  final List<RegExp> _patterns;
+  final List<RegExp> _extraPatterns;
 
   /// When false, [redact] is a pass-through. This lets the app honor the
   /// user's "Redact secrets before sending" toggle (the safe default is on);
@@ -14,7 +14,7 @@ class SecretRedactor {
   final bool enabled;
 
   SecretRedactor({List<RegExp> extraPatterns = const [], this.enabled = true})
-    : _patterns = [..._builtin, ...extraPatterns];
+    : _extraPatterns = List.unmodifiable(extraPatterns);
 
   static final List<RegExp> _builtin = [
     // Whole private-key blocks (PEM / OpenSSH).
@@ -98,7 +98,14 @@ class SecretRedactor {
   String redact(String text) {
     if (!enabled) return text;
     var out = text;
-    for (final p in _patterns) {
+    for (final p in _builtin) {
+      out = out.replaceAll(p, _mask);
+    }
+    // Mask PEM blocks before scanning values so an unquoted assignment cannot
+    // lose its PEM header and expose the remaining key. Mask assignments
+    // before custom patterns, which might themselves obscure a secret's label.
+    out = _redactAssignments(out);
+    for (final p in _extraPatterns) {
       out = out.replaceAllMapped(p, (m) {
         // Keep an assignment's key visible, mask only the value.
         final match = m[0]!;
@@ -110,11 +117,7 @@ class SecretRedactor {
         return _mask;
       });
     }
-    // Mask PEM blocks first: scanning an unquoted assignment before the
-    // block pattern could replace its header and leave key material behind.
-    // Assignment matches skip consumed values, so many keys inside one
-    // malformed quoted value do not cause repeated suffix scans.
-    return _redactAssignments(out);
+    return out;
   }
 
   /// True if redaction changed anything — useful to warn the user.
