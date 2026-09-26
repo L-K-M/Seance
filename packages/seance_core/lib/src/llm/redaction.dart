@@ -33,14 +33,63 @@ class SecretRedactor {
     RegExp(r'\bAIza[0-9A-Za-z_\-]{35}\b'), // Google API key
     // JWTs.
     RegExp(r'\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}'),
-    // Bearer tokens and inline password/secret assignments. The lookbehind
-    // (rather than \b) lets `DB_PASSWORD=...` match, since `_` is a word char.
+    // Bearer tokens. Assignments need a separate value scanner below.
     RegExp(r'\bbearer\s+[A-Za-z0-9._\-]{16,}', caseSensitive: false),
-    RegExp(
-      r'''(?<![A-Za-z0-9])(password|passwd|secret|api[_-]?key|token)\s*[=:]\s*['"]?[^\s'"]{6,}''',
-      caseSensitive: false,
-    ),
   ];
+
+  // A closing quote permits JSON/YAML keys; the opening quote stays in the
+  // copied prefix. This also recognizes DB_PASSWORD without notpassword.
+  static final RegExp _assignment = RegExp(
+    r'''(?<![A-Za-z0-9])(password|passwd|secret|api[_-]?key|token)["']?\s*[=:]\s*''',
+    caseSensitive: false,
+  );
+  static final RegExp _unquotedEnd = RegExp(r'''[\s'",}\];]''');
+
+  static String _redactAssignments(String text) {
+    final out = StringBuffer();
+    var copiedThrough = 0;
+    for (final match in _assignment.allMatches(text)) {
+      if (match.start < copiedThrough || match.end == text.length) continue;
+      final first = text.codeUnitAt(match.end);
+      final quoted = first == 0x22 || first == 0x27;
+      final valueStart = match.end + (quoted ? 1 : 0);
+      var valueEnd = valueStart;
+      while (valueEnd < text.length) {
+        final unit = text.codeUnitAt(valueEnd);
+        if (!quoted) {
+          if (_unquotedEnd.matchAsPrefix(text, valueEnd) != null) break;
+        } else if (unit == 0x5c) {
+          // An escaped quote is part of the value, not its end. If truncated,
+          // consume the available tail instead of leaking it after the mask.
+          valueEnd += valueEnd + 1 < text.length ? 2 : 1;
+          continue;
+        } else if (unit == first) {
+          // YAML single-quoted strings escape a quote by doubling it.
+          if (first == 0x27 &&
+              valueEnd + 1 < text.length &&
+              text.codeUnitAt(valueEnd + 1) == first) {
+            valueEnd += 2;
+            continue;
+          }
+          break;
+        }
+        valueEnd++;
+      }
+      if (valueEnd == valueStart) continue;
+      out
+        ..write(text.substring(copiedThrough, valueStart))
+        ..write(_mask);
+      copiedThrough = valueEnd;
+      // Retain a closing quote without scanning assignment-like text inside
+      // the value again. Unterminated values conservatively consume the tail.
+      if (quoted && valueEnd < text.length) {
+        out.writeCharCode(first);
+        copiedThrough++;
+      }
+    }
+    out.write(text.substring(copiedThrough));
+    return out.toString();
+  }
 
   /// Returns [text] with any matched secret spans replaced by a mask. When
   /// [enabled] is false this is a pass-through and returns [text] unchanged.
@@ -59,7 +108,11 @@ class SecretRedactor {
         return _mask;
       });
     }
-    return out;
+    // Seal off PEM blocks first: scanning an unquoted assignment before the
+    // block pattern could replace its header and leave key material behind.
+    // Assignment matches skip consumed values, so many keys inside one
+    // malformed quoted value do not cause repeated suffix scans.
+    return _redactAssignments(out);
   }
 
   /// True if redaction changed anything — useful to warn the user.

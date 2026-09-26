@@ -3,6 +3,12 @@
 Living snapshot of where Séance is, what's proven, and what to pick up next.
 Read [AGENTS.md](../AGENTS.md) first for how to build/test.
 
+Secret redaction now covers quoted JSON/YAML keys and complete quoted values,
+including spaces, escaped quotes, short secrets and truncated output. The
+regression suite checks actual assistant request bodies for both providers and
+large malformed inputs. This remains a best-effort filter; arbitrary secrets
+without a recognized label or token format are not guaranteed to be detected.
+
 Review update (2026-09-12): fixed defects in shared-credential sync and
 enrollment, concurrent persistence, assistant lifecycle, and terminal behavior.
 See [the review findings and verification](review-2026-09-12.md).
