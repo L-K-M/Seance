@@ -1222,7 +1222,12 @@ class AppState extends ChangeNotifier {
 
   /// Open an additional session (tab) for [config], adjacent to that server's
   /// existing tabs, and connect it.
+  ///
+  /// Dials the server as it is saved now, as [reconnect] does. Most callers
+  /// (⌘T, the tab strip's "+", the macOS New Tab item) pass the config an
+  /// open tab connected with, which predates any edit made since.
   Future<void> newTab(ServerConfig config) async {
+    config = _configFor(config.id) ?? config;
     final id = uuidV4();
     final tab = TerminalSession(
       id: id,

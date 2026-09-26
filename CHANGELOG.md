@@ -87,6 +87,10 @@
   Lua, `.htaccess`/`.htpasswd` as ini, and Ruby/Perl/Lua shebangs, ported
   from Poltergeist. Language detection also finds the file name after a
   backslash.
+- A new tab for a server you edited while one of its tabs was open (⌘T,
+  Ctrl+Shift+T, the tab strip's "+" or the macOS New Tab item) now
+  connects with the saved settings. It used to dial the host, port and user
+  the open tab had connected with.
 - Linux: the window is titled "Séance" and first opens at 1280x800.
 - Security: the Git tab and the staged `cd` now quote paths and arguments
   so fish reads them literally too. Before, when your login shell was fish,
