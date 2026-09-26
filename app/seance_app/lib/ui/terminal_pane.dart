@@ -16,11 +16,13 @@ import 'app_menus.dart';
 import 'command_generator.dart';
 import 'connection_log_view.dart';
 import 'files_pane.dart';
+import 'keyboard_shortcuts_dialog.dart';
 import 'middle_ellipsis_text.dart';
 import 'server_appearance.dart';
 import 'server_list_pane.dart';
 import 'session_label.dart';
 import 'sidebar_panel.dart';
+import 'tab_close.dart';
 import 'terminal_appearance.dart';
 import 'terminal_keyboard_bar.dart';
 import 'top_toast.dart';
@@ -87,7 +89,7 @@ class TerminalPane extends StatelessWidget {
                   tabs: state.tabsForServer(active.serverId),
                   activeTabId: state.activeTabId,
                   onFocus: state.focusTab,
-                  onClose: (id) => _closeTab(context, state, id),
+                  onClose: (id) => confirmAndCloseTab(context, state, id),
                   onNewTab: () => state.newTab(active.config),
                   onGenerateCommand: () => openCommandGenerator(state),
                   onRename: state.renameSession,
@@ -110,90 +112,6 @@ class TerminalPane extends StatelessWidget {
         );
       },
     );
-  }
-
-  Future<void> _closeTab(
-    BuildContext context,
-    AppState state,
-    String tabId,
-  ) async {
-    final tab = state.tabById(tabId);
-    if (tab == null) return;
-    if (tab is EditorTab) {
-      if (await _editorMayClose(context, tab)) await state.closeTab(tabId);
-      return;
-    }
-    if (tab is! TerminalSession) return;
-    // Its editor tabs die with the session (the checkouts they write to are
-    // deleted): a declined unsaved-buffer confirm aborts the whole close.
-    final session = tab;
-    for (final editor in state.editorTabsOwnedBy(session)) {
-      if (!await _editorMayClose(context, editor)) return;
-    }
-    final localCopyCount =
-        (session.files?.localCopies.length ?? 0) +
-        session.retainedLocalCopies.length;
-    if (localCopyCount > 0) {
-      // The guard lives here rather than above: a session with no local
-      // copies needs no dialog and no context, so it still closes.
-      if (!context.mounted) return;
-      final close = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Close session and local edits?'),
-          content: Text(
-            '$localCopyCount downloaded ${localCopyCount == 1 ? 'file has' : 'files have'} '
-            'a managed local copy. Closing this tab deletes '
-            '${localCopyCount == 1 ? 'it' : 'them'}, including changes that '
-            'have not been uploaded.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Close and Delete'),
-            ),
-          ],
-        ),
-      );
-      if (close != true) return;
-    }
-    await state.closeTab(tabId);
-  }
-
-  /// Whether an editor tab's buffer may be dropped. A clean buffer needs no
-  /// ask; a dirty one is asked through the editor's own confirm dialog when
-  /// its state is mounted, or — when the widget is somehow unreachable —
-  /// through a plain dialog on the pane's context, so the close click never
-  /// silently does nothing while unsaved text is at stake.
-  Future<bool> _editorMayClose(BuildContext context, EditorTab tab) async {
-    if (!tab.dirty.value) return true;
-    final confirmed = await tab.editorKey.currentState?.confirmDiscard();
-    if (confirmed != null) return confirmed;
-    if (!context.mounted) return false;
-    final discard = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Discard unsaved changes?'),
-        content: Text(
-          '${sanitizeRemoteLabel(tab.remotePath)} has unsaved changes.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Keep editing'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Discard'),
-          ),
-        ],
-      ),
-    );
-    return discard ?? false;
   }
 
   PreferredSizeWidget _appBar(
@@ -297,8 +215,8 @@ class TerminalPane extends StatelessWidget {
   /// One entry's content in the stack. Keyed by tab id (not server id): a
   /// reconnect swaps in a new session with a new id, so a fresh _SessionView
   /// mounts and binds its controller in initState — no didUpdateWidget
-  /// rebind needed. The editor equivalent holds its key on [EditorTab] so the
-  /// strip's close button can ask about unsaved changes.
+  /// rebind needed. The editor equivalent holds its key on [EditorTab] so
+  /// closing the tab can ask about unsaved changes.
   Widget _tabChild(PaneTab tab, AppState state, {required bool isActive}) =>
       switch (tab) {
         TerminalSession() => _SessionView(
@@ -1121,9 +1039,10 @@ class _SessionViewState extends State<_SessionView> {
   }
 
   /// Intercept a few shortcuts before the terminal consumes the keystroke: the
-  /// command generator, and copy/paste. Copy/paste use ⌘C/⌘V on macOS and
-  /// Ctrl+Shift+C/V elsewhere (leaving Ctrl+C as the shell interrupt). Plain
-  /// Ctrl+K is left alone because that's readline's "kill to end of line".
+  /// tab shortcuts, the command generator, and copy/paste. Copy/paste use
+  /// ⌘C/⌘V on macOS and Ctrl+Shift+C/V elsewhere (leaving Ctrl+C as the shell
+  /// interrupt). Plain Ctrl+K is left alone because that's readline's "kill
+  /// to end of line".
   ///
   /// Note: on macOS the native Edit menu claims ⌘C/⌘V/⌘A at the OS level, so
   /// those never reach here — the right-click menu is the reliable path there.
@@ -1137,6 +1056,10 @@ class _SessionViewState extends State<_SessionView> {
         ).accepts(event, keys)) {
       return KeyEventResult.skipRemainingHandlers;
     }
+    // Held repeats included: xterm would send a tab shortcut on to the
+    // shell as the keys underneath.
+    final tabShortcut = handleTabShortcut(context, widget.state, event);
+    if (tabShortcut != KeyEventResult.ignored) return tabShortcut;
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
     if (event.logicalKey == LogicalKeyboardKey.keyK &&
@@ -1207,7 +1130,8 @@ class _SessionViewState extends State<_SessionView> {
     return KeyEventResult.ignored;
   }
 
-  /// Right-click menu: Copy (when there's a selection), Paste, Select all.
+  /// Right-click menu: Copy (when there's a selection), Paste, Select all,
+  /// and the keyboard shortcut list.
   Future<void> _showContextMenu(
     BuildContext context,
     Offset globalPosition,
@@ -1231,6 +1155,11 @@ class _SessionViewState extends State<_SessionView> {
         const PopupMenuItem(value: 'paste', child: Text('Paste')),
         const PopupMenuDivider(),
         const PopupMenuItem(value: 'selectAll', child: Text('Select all')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'shortcuts',
+          child: Text('Keyboard shortcuts'),
+        ),
       ],
     );
     switch (choice) {
@@ -1240,6 +1169,8 @@ class _SessionViewState extends State<_SessionView> {
         await terminalPaste(widget.tab);
       case 'selectAll':
         terminalSelectAll(widget.tab);
+      case 'shortcuts':
+        if (context.mounted) await showKeyboardShortcuts(context);
     }
   }
 }
