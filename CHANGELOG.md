@@ -66,6 +66,13 @@
   the first" again; the long-press sheet shows the row's second line
   under its name; and the filter chord no longer latches the field open
   on an empty list.
+- Sync server: registration, prelogin and login read at most 16 KiB of
+  request body, so a client that has not signed in can no longer make the
+  server buffer megabytes per request, and every body is buffered more
+  compactly. New usernames must be 1 to 256 bytes with no control
+  characters (accounts created before still sign in), a username that is
+  not a string is a 400 instead of a server error, and registration checks
+  the verifier and salt lengths every client sends.
 - Android: the system back button on the narrow terminal screen returns to
   the server list instead of closing the app, which had ended every live
   SSH session. In Files, back climbs one folder at a time before leaving

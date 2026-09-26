@@ -17,8 +17,9 @@ class ServerSettings {
   final int loginMaxAttempts;
   final Duration loginWindow;
 
-  /// Hard cap on a single request body, to blunt unauthenticated
-  /// memory-exhaustion. Default 8 MiB.
+  /// Hard cap on a single request body, which in practice sizes pushes: the
+  /// unauthenticated routes read at most 16 KiB, or this if it is lower.
+  /// Default 8 MiB.
   final int maxBodyBytes;
 
   /// Cap on records accepted in one push, and on a single record's encrypted
