@@ -91,6 +91,27 @@ be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
 
+## Accessible pane resizing (2026-09-26)
+
+The wide layout's server-list and utility dividers can now be reached with
+Tab and moved with Left/Right arrows. Focus thickens and accents the divider.
+Assistive-technology increase/decrease actions announce the owned pane's
+width and resulting adjustment, using the same clamping and persistence
+boundary as a drag. Pointer and arrow directions follow the physical divider
+in both left-to-right and right-to-left layouts. This follows Poltergeist's
+existing keyboard/semantics interaction contract without introducing a new
+layout or changing the terminal's minimum width.
+
+Six accessibility regression cases failed before implementation; the final
+resize and narrow-navigation suites pass 34 tests. Coverage includes both
+handles, RTL, Tab traversal and focus appearance, repeated steps and rapid
+direction reversals before a frame, bounds, window shrink, truthful adjustment
+announcements and the existing persistence/drag behavior. Modified arrows with
+Alt, Control or Meta leave the dividers alone, preserving app shortcuts.
+Full Flutter analysis is clean. Local validation used Flutter 3.47.3 on
+macOS; CI retains 3.47.2. VoiceOver/NVDA walkthroughs remain a native
+verification item.
+
 ## ssh-agent authentication and ProxyJump (2026-09-26)
 
 `AuthMethod.agent` now uses the native agent without exporting private-key

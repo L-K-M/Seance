@@ -1,8 +1,302 @@
+import 'dart:ui' show SemanticsAction, SemanticsActionEvent;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seance_app/ui/adaptive_shell.dart';
 
 void main() {
+  Future<void> pumpResizable(
+    WidgetTester tester, {
+    TextDirection direction = TextDirection.ltr,
+    double width = 1800,
+    double list = AdaptiveShell.defaultListWidth,
+    double utility = AdaptiveShell.defaultUtilityWidth,
+    void Function(double, double)? onChanged,
+  }) async {
+    tester.view.physicalSize = Size(width, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Directionality(
+          textDirection: direction,
+          child: AdaptivePaneLayout(
+            initialListWidth: list,
+            initialUtilityWidth: utility,
+            onPaneWidthsChanged: onChanged,
+            listPane: const SizedBox.expand(),
+            terminalPane: const SizedBox.expand(),
+            utilityPane: const SizedBox.expand(),
+            narrowPane: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  double paneWidth(WidgetTester tester, Key key) =>
+      tester.getSize(find.byKey(key)).width;
+
+  Future<void> focusHandle(WidgetTester tester, Key key) async {
+    final handle = find.byKey(key);
+    expect(
+      find.descendant(of: handle, matching: find.byType(Focus)),
+      findsOneWidget,
+    );
+    Focus.of(
+      tester.element(
+        find.descendant(of: handle, matching: find.byType(GestureDetector)),
+      ),
+    ).requestFocus();
+    await tester.pump();
+  }
+
+  for (final direction in TextDirection.values) {
+    testWidgets('keyboard resize follows physical arrows in $direction', (
+      tester,
+    ) async {
+      final reports = <(double, double)>[];
+      await pumpResizable(
+        tester,
+        direction: direction,
+        onChanged: (list, utility) => reports.add((list, utility)),
+      );
+      final sign = direction == TextDirection.ltr ? 1 : -1;
+      await focusHandle(tester, AdaptivePaneLayout.listResizeHandleKey);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(
+        paneWidth(tester, AdaptivePaneLayout.listPaneKey),
+        300 + sign * 16,
+      );
+      expect(reports, [(300.0 + sign * 16, 340.0)]);
+      await focusHandle(tester, AdaptivePaneLayout.utilityResizeHandleKey);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(
+        paneWidth(tester, AdaptivePaneLayout.utilityPaneKey),
+        340 - sign * 16,
+      );
+      expect(reports.length, 2);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('modified arrows leave pane widths unchanged', (tester) async {
+    final reports = <(double, double)>[];
+    await pumpResizable(
+      tester,
+      onChanged: (list, utility) => reports.add((list, utility)),
+    );
+    for (final handle in [
+      AdaptivePaneLayout.listResizeHandleKey,
+      AdaptivePaneLayout.utilityResizeHandleKey,
+    ]) {
+      await focusHandle(tester, handle);
+      for (final modifier in [
+        LogicalKeyboardKey.altLeft,
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.metaLeft,
+      ]) {
+        await tester.sendKeyDownEvent(modifier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.sendKeyUpEvent(modifier);
+        await tester.pump();
+        expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 300);
+        expect(paneWidth(tester, AdaptivePaneLayout.utilityPaneKey), 340);
+        expect(reports, isEmpty);
+      }
+    }
+  });
+
+  testWidgets('successive keyboard steps accumulate before a new frame', (
+    tester,
+  ) async {
+    final reports = <(double, double)>[];
+    await pumpResizable(
+      tester,
+      onChanged: (list, utility) => reports.add((list, utility)),
+    );
+    await focusHandle(tester, AdaptivePaneLayout.listResizeHandleKey);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 332);
+    expect(reports, [(316.0, 340.0), (332.0, 340.0)]);
+  });
+
+  testWidgets('a rapid direction reversal uses the current bound', (
+    tester,
+  ) async {
+    await pumpResizable(tester, list: 480);
+    await focusHandle(tester, AdaptivePaneLayout.listResizeHandleKey);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 480);
+  });
+
+  testWidgets('screen reader adjustments name and resize the owned pane', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    try {
+      await pumpResizable(tester);
+      var node = tester.getSemantics(
+        find.bySemanticsLabel('Resize server list'),
+      );
+      expect(node.getSemanticsData().flagsCollection.isSlider, isTrue);
+      expect(node.getSemanticsData().value, '300 pixels');
+      expect(node.getSemanticsData().increasedValue, '316 pixels');
+      tester.binding.performSemanticsAction(
+        SemanticsActionEvent(
+          type: SemanticsAction.increase,
+          nodeId: node.id,
+          viewId: tester.view.viewId,
+        ),
+      );
+      await tester.pump();
+      expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 316);
+      node = tester.getSemantics(find.bySemanticsLabel('Resize utility panel'));
+      expect(node.getSemanticsData().value, '340 pixels');
+      tester.binding.performSemanticsAction(
+        SemanticsActionEvent(
+          type: SemanticsAction.increase,
+          nodeId: node.id,
+          viewId: tester.view.viewId,
+        ),
+      );
+      await tester.pump();
+      expect(paneWidth(tester, AdaptivePaneLayout.utilityPaneKey), 356);
+    } finally {
+      semantics.dispose();
+    }
+  });
+
+  testWidgets('adjustment actions respect both pane bounds', (tester) async {
+    final semantics = tester.ensureSemantics();
+    try {
+      await pumpResizable(tester, list: 480, utility: 260);
+      var node = tester.getSemantics(
+        find.bySemanticsLabel('Resize server list'),
+      );
+      expect(
+        node.getSemanticsData().hasAction(SemanticsAction.increase),
+        isFalse,
+      );
+      expect(
+        node.getSemanticsData().hasAction(SemanticsAction.decrease),
+        isTrue,
+      );
+      node = tester.getSemantics(find.bySemanticsLabel('Resize utility panel'));
+      expect(
+        node.getSemanticsData().hasAction(SemanticsAction.decrease),
+        isFalse,
+      );
+      expect(
+        node.getSemanticsData().hasAction(SemanticsAction.increase),
+        isTrue,
+      );
+      await focusHandle(tester, AdaptivePaneLayout.listResizeHandleKey);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 480);
+      await focusHandle(tester, AdaptivePaneLayout.utilityResizeHandleKey);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(paneWidth(tester, AdaptivePaneLayout.utilityPaneKey), 260);
+    } finally {
+      semantics.dispose();
+    }
+  });
+
+  testWidgets('keyboard resizing starts at visible width after a shrink', (
+    tester,
+  ) async {
+    await pumpResizable(tester, list: 480, utility: 680);
+    tester.view.physicalSize = const Size(1180, 800);
+    await tester.pump();
+    final before = paneWidth(tester, AdaptivePaneLayout.listPaneKey);
+    await focusHandle(tester, AdaptivePaneLayout.listResizeHandleKey);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pump();
+    expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), lessThan(before));
+    expect(
+      paneWidth(tester, AdaptivePaneLayout.terminalPaneKey),
+      greaterThanOrEqualTo(AdaptiveShell.minimumTerminalWidth),
+    );
+    tester.view.physicalSize = const Size(1800, 800);
+    await tester.pump();
+    expect(paneWidth(tester, AdaptivePaneLayout.utilityPaneKey), 680);
+  });
+
+  testWidgets('Tab reaches both dividers and paints their focus cue', (
+    tester,
+  ) async {
+    await pumpResizable(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    for (final key in [
+      AdaptivePaneLayout.listResizeHandleKey,
+      AdaptivePaneLayout.utilityResizeHandleKey,
+    ]) {
+      final handle = find.byKey(key);
+      final line = tester.widget<Container>(
+        find.descendant(of: handle, matching: find.byType(Container)),
+      );
+      expect(line.constraints!.maxWidth, 3);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+    }
+  });
+
+  testWidgets('announced adjustment matches reallocation after shrink', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    try {
+      await pumpResizable(tester, width: 1180, list: 480, utility: 680);
+      final node = tester.getSemantics(
+        find.bySemanticsLabel('Resize server list'),
+      );
+      final announced = node.getSemanticsData().decreasedValue;
+      tester.binding.performSemanticsAction(
+        SemanticsActionEvent(
+          type: SemanticsAction.decrease,
+          nodeId: node.id,
+          viewId: tester.view.viewId,
+        ),
+      );
+      await tester.pump();
+      expect(
+        tester
+            .getSemantics(find.bySemanticsLabel('Resize server list'))
+            .getSemanticsData()
+            .value,
+        announced,
+      );
+    } finally {
+      semantics.dispose();
+    }
+  });
+
+  testWidgets('RTL pointer drag follows the visible divider', (tester) async {
+    await pumpResizable(tester, direction: TextDirection.rtl);
+    await tester.drag(
+      find.byKey(AdaptivePaneLayout.listResizeHandleKey),
+      const Offset(60, 0),
+    );
+    await tester.pump();
+    expect(paneWidth(tester, AdaptivePaneLayout.listPaneKey), 240);
+    await tester.drag(
+      find.byKey(AdaptivePaneLayout.utilityResizeHandleKey),
+      const Offset(60, 0),
+    );
+    await tester.pump();
+    expect(paneWidth(tester, AdaptivePaneLayout.utilityPaneKey), 400);
+  });
+
   test('breakpoint and allocation minimums stay aligned', () {
     expect(
       AdaptiveShell.breakpoint,
