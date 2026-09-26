@@ -103,10 +103,15 @@ class SqliteStorage implements Storage {
 
   @override
   Future<void> deleteAccount(String username) async {
-    _db.execute('DELETE FROM accounts WHERE username = ?', [username]);
-    _db.execute('DELETE FROM tokens WHERE username = ?', [username]);
-    _db.execute('DELETE FROM records WHERE username = ?', [username]);
-    _db.execute('DELETE FROM seqs WHERE username = ?', [username]);
+    // A failed cleanup must not remove the account while leaving usable
+    // tokens or encrypted records behind. Reuse the record-write rollback and
+    // contention policy so deletion either commits in full or can be retried.
+    _transaction(_TransactionMode.write, () {
+      _db.execute('DELETE FROM accounts WHERE username = ?', [username]);
+      _db.execute('DELETE FROM tokens WHERE username = ?', [username]);
+      _db.execute('DELETE FROM records WHERE username = ?', [username]);
+      _db.execute('DELETE FROM seqs WHERE username = ?', [username]);
+    });
   }
 
   @override

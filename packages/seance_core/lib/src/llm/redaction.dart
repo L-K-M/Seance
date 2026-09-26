@@ -6,7 +6,7 @@
 class SecretRedactor {
   static const String _mask = '«redacted»';
 
-  final List<RegExp> _patterns;
+  final List<RegExp> _extraPatterns;
 
   /// When false, [redact] is a pass-through. This lets the app honor the
   /// user's "Redact secrets before sending" toggle (the safe default is on);
@@ -14,7 +14,7 @@ class SecretRedactor {
   final bool enabled;
 
   SecretRedactor({List<RegExp> extraPatterns = const [], this.enabled = true})
-    : _patterns = [..._builtin, ...extraPatterns];
+    : _extraPatterns = List.unmodifiable(extraPatterns);
 
   static final List<RegExp> _builtin = [
     // Whole private-key blocks (PEM / OpenSSH).
@@ -33,21 +33,127 @@ class SecretRedactor {
     RegExp(r'\bAIza[0-9A-Za-z_\-]{35}\b'), // Google API key
     // JWTs.
     RegExp(r'\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}'),
-    // Bearer tokens and inline password/secret assignments. The lookbehind
-    // (rather than \b) lets `DB_PASSWORD=...` match, since `_` is a word char.
+    // Bearer tokens. Assignments need a separate value scanner below.
     RegExp(r'\bbearer\s+[A-Za-z0-9._\-]{16,}', caseSensitive: false),
-    RegExp(
-      r'''(?<![A-Za-z0-9])(password|passwd|secret|api[_-]?key|token)\s*[=:]\s*['"]?[^\s'"]{6,}''',
-      caseSensitive: false,
-    ),
   ];
+
+  // A closing quote permits JSON/YAML keys; the opening quote stays in the
+  // copied prefix. This also recognizes DB_PASSWORD without notpassword.
+  static final RegExp _assignment = RegExp(
+    r'''(?<![A-Za-z0-9])(password|passwd|secret[_-]?(?:access[_-]?)?key|secret|api[_-]?key|token)["']?\s*([=:])\s*''',
+    caseSensitive: false,
+  );
+  // Punctuation may be part of a shell credential; only whitespace/quotes
+  // ended an unquoted value in the original filter, so keep that boundary.
+  static final RegExp _unquotedEnd = RegExp(r'''[\s'"]''');
+
+  // Static shell words can join quoted/unquoted pieces and escaped spaces.
+  // This does not evaluate substitutions or parse shell commands.
+  static int _shellWordEnd(String text, int start) {
+    var end = start;
+    var quote = 0;
+    var ansiSingleQuote = false;
+    while (end < text.length) {
+      final unit = text.codeUnitAt(end);
+      if (unit == 0x5c && (quote != 0x27 || ansiSingleQuote)) {
+        end += end + 1 < text.length ? 2 : 1;
+        continue;
+      }
+      if (quote != 0) {
+        if (unit == quote) quote = 0;
+      } else if (unit == 0x24 &&
+          end + 1 < text.length &&
+          text.codeUnitAt(end + 1) == 0x27) {
+        quote = 0x27;
+        ansiSingleQuote = true;
+        end += 2;
+        continue;
+      } else if (unit == 0x22 || unit == 0x27) {
+        quote = unit;
+        ansiSingleQuote = false;
+      } else if (_unquotedEnd.matchAsPrefix(text, end) != null) {
+        break;
+      }
+      end++;
+    }
+    return end;
+  }
+
+  static String _redactAssignments(String text) {
+    final out = StringBuffer();
+    var copiedThrough = 0;
+    for (final match in _assignment.allMatches(text)) {
+      // A prior unquoted value can consume another label without its value.
+      // Keep equality: the uncovered value may start at this opening quote.
+      if (match.end < copiedThrough || match.end == text.length) continue;
+      final first = text.codeUnitAt(match.end);
+      var quoted = first == 0x22 || first == 0x27;
+      var valueStart = match.end + (quoted ? 1 : 0);
+      var valueEnd = valueStart;
+      while (valueEnd < text.length) {
+        final unit = text.codeUnitAt(valueEnd);
+        if (!quoted) {
+          if (_unquotedEnd.matchAsPrefix(text, valueEnd) != null) break;
+        } else if (unit == 0x5c) {
+          // An escaped quote is part of the value, not its end. If truncated,
+          // consume the available tail instead of leaking it after the mask.
+          valueEnd += valueEnd + 1 < text.length ? 2 : 1;
+          continue;
+        } else if (unit == first) {
+          // YAML single-quoted strings escape a quote by doubling it.
+          if (first == 0x27 &&
+              valueEnd + 1 < text.length &&
+              text.codeUnitAt(valueEnd + 1) == first) {
+            valueEnd += 2;
+            continue;
+          }
+          break;
+        }
+        valueEnd++;
+      }
+      if (match[2] == '=') {
+        final wordEnd = _shellWordEnd(text, match.end);
+        if (!quoted) {
+          valueEnd = wordEnd;
+        } else if (valueEnd < text.length && wordEnd > valueEnd + 1) {
+          // A joined suffix belongs to the same shell value. Mask the whole
+          // word when one pair of quotes no longer encloses the whole secret.
+          quoted = false;
+          valueStart = match.end;
+          valueEnd = wordEnd;
+        }
+        // Otherwise retain the first scan's conservative extent, including
+        // ambiguous single-quote escapes in non-shell text and truncation.
+      }
+      if (valueEnd == valueStart) continue;
+      out
+        ..write(text.substring(copiedThrough, valueStart))
+        ..write(_mask);
+      copiedThrough = valueEnd;
+      // Retain a closing quote without scanning assignment-like text inside
+      // the value again. Unterminated values conservatively consume the tail.
+      if (quoted && valueEnd < text.length) {
+        out.writeCharCode(first);
+        copiedThrough++;
+      }
+    }
+    out.write(text.substring(copiedThrough));
+    return out.toString();
+  }
 
   /// Returns [text] with any matched secret spans replaced by a mask. When
   /// [enabled] is false this is a pass-through and returns [text] unchanged.
   String redact(String text) {
     if (!enabled) return text;
     var out = text;
-    for (final p in _patterns) {
+    for (final p in _builtin) {
+      out = out.replaceAll(p, _mask);
+    }
+    // Mask PEM blocks before scanning values so an unquoted assignment cannot
+    // lose its PEM header and expose the remaining key. Mask assignments
+    // before custom patterns, which might themselves obscure a secret's label.
+    out = _redactAssignments(out);
+    for (final p in _extraPatterns) {
       out = out.replaceAllMapped(p, (m) {
         // Keep an assignment's key visible, mask only the value.
         final match = m[0]!;

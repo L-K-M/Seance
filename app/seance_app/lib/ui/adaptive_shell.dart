@@ -1,6 +1,7 @@
 import 'dart:async' show unawaited;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:seance_core/seance_core.dart';
 
 import '../app_state.dart';
@@ -246,12 +247,13 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final widths = allocateAdaptivePaneWidths(
+        AdaptivePaneWidths? currentWidths() => allocateAdaptivePaneWidths(
           availableWidth: constraints.maxWidth,
           requestedListWidth: _temporaryListWidth ?? _requestedListWidth,
           requestedUtilityWidth:
               _temporaryUtilityWidth ?? _requestedUtilityWidth,
         );
+        final widths = currentWidths();
         if (widths == null) {
           return KeyedSubtree(
             key: AdaptivePaneLayout.narrowPaneKey,
@@ -269,7 +271,20 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
               ),
               _ResizeHandle(
                 key: AdaptivePaneLayout.listResizeHandleKey,
-                onStart: () => _startListResize(widths),
+                label: 'Resize server list',
+                width: widths.list,
+                minimumWidth: AdaptiveShell.minimumListWidth,
+                maximumWidth: _maximumListWidth(widths),
+                edge: _PaneEdge.leading,
+                widthAfterStep: (delta) => _widthAfterStep(
+                  _PaneEdge.leading,
+                  currentWidths()!,
+                  constraints.maxWidth,
+                  delta,
+                ),
+                onStep: (delta) =>
+                    _stepPane(_PaneEdge.leading, currentWidths()!, delta),
+                onStart: () => _startListResize(currentWidths()!),
                 onDelta: _resizeList,
                 onEnd: _endListResize,
               ),
@@ -281,7 +296,20 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
               ),
               _ResizeHandle(
                 key: AdaptivePaneLayout.utilityResizeHandleKey,
-                onStart: () => _startUtilityResize(widths),
+                label: 'Resize utility panel',
+                width: widths.utility,
+                minimumWidth: AdaptiveShell.minimumUtilityWidth,
+                maximumWidth: _maximumUtilityWidth(widths),
+                edge: _PaneEdge.trailing,
+                widthAfterStep: (delta) => _widthAfterStep(
+                  _PaneEdge.trailing,
+                  currentWidths()!,
+                  constraints.maxWidth,
+                  delta,
+                ),
+                onStep: (delta) =>
+                    _stepPane(_PaneEdge.trailing, currentWidths()!, delta),
+                onStart: () => _startUtilityResize(currentWidths()!),
                 onDelta: _resizeUtility,
                 onEnd: _endUtilityResize,
               ),
@@ -305,19 +333,79 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   double _utilityDragDelta = 0;
   double _utilityDragMaximum = AdaptiveShell.maximumUtilityWidth;
 
+  /// Read bounds with each event, not from the handle's last frame: an
+  /// immediate reversal after leaving a bound must not see the old width.
+  void _stepPane(_PaneEdge edge, AdaptivePaneWidths widths, double delta) {
+    final leading = edge == _PaneEdge.leading;
+    final growing = (leading ? delta : -delta) > 0;
+    final width = leading ? widths.list : widths.utility;
+    final minimum = leading
+        ? AdaptiveShell.minimumListWidth
+        : AdaptiveShell.minimumUtilityWidth;
+    final maximum = leading
+        ? _maximumListWidth(widths)
+        : _maximumUtilityWidth(widths);
+    if ((growing && width >= maximum) || (!growing && width <= minimum)) {
+      return;
+    }
+    if (leading) {
+      _startListResize(widths);
+      _resizeList(delta);
+      _endListResize();
+    } else {
+      _startUtilityResize(widths);
+      _resizeUtility(delta);
+      _endUtilityResize();
+    }
+  }
+
+  /// A completed step releases the temporary sibling constraint just like
+  /// a finished drag. Announce the resulting allocation, which may differ
+  /// from the raw delta while the window clamps both requested widths.
+  double _widthAfterStep(
+    _PaneEdge edge,
+    AdaptivePaneWidths widths,
+    double availableWidth,
+    double delta,
+  ) {
+    final leading = edge == _PaneEdge.leading;
+    final requested = leading
+        ? (widths.list + delta).clamp(
+            AdaptiveShell.minimumListWidth,
+            _maximumListWidth(widths),
+          )
+        : (widths.utility + delta).clamp(
+            AdaptiveShell.minimumUtilityWidth,
+            _maximumUtilityWidth(widths),
+          );
+    final next = allocateAdaptivePaneWidths(
+      availableWidth: availableWidth,
+      requestedListWidth: leading ? requested : _requestedListWidth,
+      requestedUtilityWidth: leading ? _requestedUtilityWidth : requested,
+    )!;
+    return leading ? next.list : next.utility;
+  }
+
+  double _maximumListWidth(AdaptivePaneWidths widths) =>
+      (widths.list + widths.terminal - AdaptiveShell.minimumTerminalWidth)
+          .clamp(AdaptiveShell.minimumListWidth, AdaptiveShell.maximumListWidth)
+          .toDouble();
+
+  double _maximumUtilityWidth(AdaptivePaneWidths widths) =>
+      (widths.utility + widths.terminal - AdaptiveShell.minimumTerminalWidth)
+          .clamp(
+            AdaptiveShell.minimumUtilityWidth,
+            AdaptiveShell.maximumUtilityWidth,
+          )
+          .toDouble();
+
   void _startListResize(AdaptivePaneWidths widths) {
     // A window shrink clamps rendered widths without replacing the user's
     // requests. Starting a drag intentionally adopts the rendered widths so
     // the handle does not jump back toward those stale requests.
     _listDragStart = widths.list;
     _listDragDelta = 0;
-    _listDragMaximum =
-        (widths.list + widths.terminal - AdaptiveShell.minimumTerminalWidth)
-            .clamp(
-              AdaptiveShell.minimumListWidth,
-              AdaptiveShell.maximumListWidth,
-            )
-            .toDouble();
+    _listDragMaximum = _maximumListWidth(widths);
     setState(() {
       _requestedListWidth = widths.list;
       _temporaryUtilityWidth = widths.utility;
@@ -339,13 +427,7 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
     // See _startListResize: interaction starts from what the user can see.
     _utilityDragStart = widths.utility;
     _utilityDragDelta = 0;
-    _utilityDragMaximum =
-        (widths.utility + widths.terminal - AdaptiveShell.minimumTerminalWidth)
-            .clamp(
-              AdaptiveShell.minimumUtilityWidth,
-              AdaptiveShell.maximumUtilityWidth,
-            )
-            .toDouble();
+    _utilityDragMaximum = _maximumUtilityWidth(widths);
     setState(() {
       _temporaryListWidth = widths.list;
       _requestedUtilityWidth = widths.utility;
@@ -386,33 +468,112 @@ class _AdaptivePaneLayoutState extends State<AdaptivePaneLayout> {
   }
 }
 
-/// A thin, draggable vertical divider that reports horizontal drag deltas so a
-/// neighbouring pane can be resized. Shows a resize cursor on desktop.
-class _ResizeHandle extends StatelessWidget {
+/// The owned pane's position in the direction-aware row.
+enum _PaneEdge { leading, trailing }
+
+const double _resizeKeyStep = 16;
+
+/// A labelled, keyboard-adjustable divider with the same clamping and
+/// persistence boundary as a pointer drag. Physical arrow direction follows
+/// the divider; assistive increase/decrease follows the owned pane's width.
+class _ResizeHandle extends StatefulWidget {
+  final String label;
+  final double width;
+  final double minimumWidth;
+  final double maximumWidth;
+  final _PaneEdge edge;
+  final double Function(double delta) widthAfterStep;
+  final ValueChanged<double> onStep;
   final VoidCallback onStart;
   final ValueChanged<double> onDelta;
   final VoidCallback onEnd;
+
   const _ResizeHandle({
     super.key,
+    required this.label,
+    required this.width,
+    required this.minimumWidth,
+    required this.maximumWidth,
+    required this.edge,
+    required this.widthAfterStep,
+    required this.onStep,
     required this.onStart,
     required this.onDelta,
     required this.onEnd,
   });
 
   @override
+  State<_ResizeHandle> createState() => _ResizeHandleState();
+}
+
+class _ResizeHandleState extends State<_ResizeHandle> {
+  bool _focused = false;
+
+  double get _direction =>
+      Directionality.of(context) == TextDirection.rtl ? -1 : 1;
+
+  double get _grow => widget.edge == _PaneEdge.leading ? 1 : -1;
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isAltPressed ||
+        keyboard.isControlPressed ||
+        keyboard.isMetaPressed) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      widget.onStep(_resizeKeyStep * _direction);
+    } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      widget.onStep(-_resizeKeyStep * _direction);
+    } else {
+      return KeyEventResult.ignored;
+    }
+    return KeyEventResult.handled;
+  }
+
+  String _value(double width) => '${width.round()} pixels';
+
+  @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.resizeColumn,
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onHorizontalDragStart: (_) => onStart(),
-        onHorizontalDragUpdate: (d) => onDelta(d.delta.dx),
-        onHorizontalDragEnd: (_) => onEnd(),
-        onHorizontalDragCancel: onEnd,
-        child: SizedBox(
-          width: AdaptiveShell.resizeHandleWidth,
-          child: Center(
-            child: Container(width: 1, color: Theme.of(context).dividerColor),
+    final theme = Theme.of(context);
+    return Semantics(
+      label: widget.label,
+      slider: true,
+      value: _value(widget.width),
+      increasedValue: _value(widget.widthAfterStep(_resizeKeyStep)),
+      decreasedValue: _value(widget.widthAfterStep(-_resizeKeyStep)),
+      onIncrease: widget.width < widget.maximumWidth
+          ? () => widget.onStep(_resizeKeyStep * _grow)
+          : null,
+      onDecrease: widget.width > widget.minimumWidth
+          ? () => widget.onStep(-_resizeKeyStep * _grow)
+          : null,
+      child: Focus(
+        onFocusChange: (focused) => setState(() => _focused = focused),
+        onKeyEvent: _onKey,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.resizeColumn,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragStart: (_) => widget.onStart(),
+            onHorizontalDragUpdate: (d) =>
+                widget.onDelta(d.delta.dx * _direction),
+            onHorizontalDragEnd: (_) => widget.onEnd(),
+            onHorizontalDragCancel: widget.onEnd,
+            child: SizedBox(
+              width: AdaptiveShell.resizeHandleWidth,
+              child: Center(
+                child: Container(
+                  width: _focused ? 3 : 1,
+                  color: _focused
+                      ? theme.colorScheme.primary
+                      : theme.dividerColor,
+                ),
+              ),
+            ),
           ),
         ),
       ),
