@@ -30,4 +30,30 @@ void main() {
       expect(back.placeholders, ['a']);
     });
   });
+
+  group('SnippetSource', () {
+    const source = SnippetSource(
+      id: 'team',
+      name: 'Team',
+      url: 'https://example.com/snippets.json',
+      tokenRef: 'ref-1',
+      createdAt: 1,
+      updatedAt: 2,
+    );
+
+    test('json round-trips, token reference included', () {
+      expect(SnippetSource.fromJson(source.toJson()).toJson(), source.toJson());
+    });
+
+    test('a source without a token omits the reference', () {
+      final open = source.copyWith(clearTokenRef: true);
+      expect(open.tokenRef, isNull);
+      expect(open.toJson(), isNot(contains('tokenRef')));
+      expect(SnippetSource.fromJson(open.toJson()).tokenRef, isNull);
+    });
+
+    test('copyWith keeps the reference unless told to clear it', () {
+      expect(source.copyWith(name: 'Renamed').tokenRef, 'ref-1');
+    });
+  });
 }

@@ -130,6 +130,66 @@ class FileSnippetStore implements SnippetStore {
   }
 }
 
+/// JSON-file [SnippetSourceStore]. Non-secret: a source names its access
+/// token by vault reference only. Synced like snippets.
+class FileSnippetSourceStore implements SnippetSourceStore {
+  final File file;
+  final Map<String, SnippetSource> _cache = {};
+  bool _loaded = false;
+
+  FileSnippetSourceStore(this.file);
+
+  Future<void> _load() async {
+    if (_loaded) return;
+    if (await file.exists()) {
+      try {
+        final list = jsonDecode(await file.readAsString()) as List;
+        for (final j in list) {
+          final s = SnippetSource.fromJson((j as Map).cast<String, dynamic>());
+          _cache[s.id] = s;
+        }
+      } catch (_) {
+        _cache.clear();
+        await quarantineCorruptFile(file);
+      }
+    }
+    _loaded = true;
+  }
+
+  Future<void> _flush() async {
+    await writeStringAtomically(
+        file, jsonEncode(_cache.values.map((s) => s.toJson()).toList()));
+  }
+
+  @override
+  Future<List<SnippetSource>> listSources() async {
+    await _load();
+    final list = _cache.values.toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return list;
+  }
+
+  @override
+  Future<SnippetSource?> getSource(String id) async {
+    await _load();
+    return _cache[id];
+  }
+
+  @override
+  Future<void> putSource(SnippetSource source) async {
+    await _load();
+    _cache[source.id] = source;
+    await _flush();
+  }
+
+  @override
+  Future<void> deleteSource(String id) async {
+    await _load();
+    _cache.remove(id);
+    await _flush();
+  }
+}
+
 /// JSON-file [TombstoneStore]: the deletions this device still owes the sync
 /// server. Each entry is an [EncryptedRecord] tombstone (empty blob, no vault
 /// key needed to mint), persisted so a delete survives an app restart before

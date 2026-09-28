@@ -12,6 +12,7 @@ const int _warningLogLevel = 900;
 const String _recordKindDelimiter = ':';
 const String _secretIdPrefix = 'secret$_recordKindDelimiter';
 const String _snippetIdPrefix = 'snippet$_recordKindDelimiter';
+const String _snippetSourceIdPrefix = 'snippetsource$_recordKindDelimiter';
 const String _syncLoggerName = 'seance.sync';
 
 /// Bridges the app's domain objects (server configs, pinned host keys, and —
@@ -32,6 +33,11 @@ class SyncCoordinator {
 
   /// Optional snippet store. When present, snippets sync like server configs.
   final SnippetStore? snippetStore;
+
+  /// Optional snippet-source store. When present, sources sync like snippets,
+  /// and — with [syncSecrets] on — so do the access tokens they name, as
+  /// ordinary `secret:` records.
+  final SnippetSourceStore? snippetSourceStore;
 
   /// Opt-in assistant-configuration syncing. Null — the default — means the
   /// record is neither pushed nor applied, so a device that has not opted in
@@ -81,6 +87,7 @@ class SyncCoordinator {
     required this.local,
     required this.deviceId,
     this.snippetStore,
+    this.snippetSourceStore,
     this.assistantStore,
     this.syncSecrets = false,
     this.secretVault,
@@ -95,14 +102,34 @@ class SyncCoordinator {
   /// `collectLocal`'s loop, leaning on the `continue` above it for the
   /// excluded half — a shape the second caller could only copy, not share, so
   /// adding a condition would have reached one and missed the other.
-  Set<String> _publishableSecretRefs(List<ServerConfig> servers) => {
-        if (syncSecrets)
-          for (final server in servers)
-            if (!server.excludeFromSync &&
-                server.syncSecret &&
-                server.secretRef != null)
-              server.secretRef!,
-      };
+  ///
+  /// A snippet source's token rides on the same global switch, without a
+  /// per-source one: a source has no exclusion or per-item opt-out to honour,
+  /// and the token is what makes the synced source usable on the other
+  /// devices at all. Never a ref any server names, though: a source record is
+  /// only as trustworthy as the peer that wrote it, and one naming a server's
+  /// credential must not become a way around that server's own opt-out or
+  /// exclusion.
+  Set<String> _publishableSecretRefs(
+    List<ServerConfig> servers,
+    List<SnippetSource> sources,
+  ) {
+    if (!syncSecrets) return const {};
+    final serverRefs = {
+      for (final server in servers)
+        if (server.secretRef != null) server.secretRef!,
+    };
+    return {
+      for (final server in servers)
+        if (!server.excludeFromSync &&
+            server.syncSecret &&
+            server.secretRef != null)
+          server.secretRef!,
+      for (final source in sources)
+        if (source.tokenRef != null && !serverRefs.contains(source.tokenRef))
+          source.tokenRef!,
+    };
+  }
 
   /// Encode current local state into the record store (as local edits).
   ///
@@ -136,12 +163,15 @@ class SyncCoordinator {
     // a live copy of a just-deleted record that must not suppress its
     // tombstone. Fetched once and reused for the snippet publishing loop.
     final snippetList = await snippetStore?.listSnippets() ?? const <Snippet>[];
+    final sourceList =
+        await snippetSourceStore?.listSources() ?? const <SnippetSource>[];
     final presentIds = <String>{
       for (final s in servers) s.id,
       for (final s in snippetList) '$_snippetIdPrefix${s.id}',
+      for (final s in sourceList) '$_snippetSourceIdPrefix${s.id}',
     };
 
-    final publishedSecretRefs = _publishableSecretRefs(servers);
+    final publishedSecretRefs = _publishableSecretRefs(servers, sourceList);
     for (final server in servers) {
       if (server.excludeFromSync) {
         await _retract(server, syncedSecretRefs);
@@ -277,6 +307,15 @@ class SyncCoordinator {
         data: s.toJson(),
       )));
     }
+    for (final s in sourceList) {
+      await local.putLocal(await codec.encrypt(DecryptedRecord(
+        id: '$_snippetSourceIdPrefix${s.id}',
+        kind: RecordKind.snippetSource,
+        updatedAt: s.updatedAt,
+        deviceId: deviceId,
+        data: s.toJson(),
+      )));
+    }
   }
 
   /// Retract a server the user has excluded from sync: tombstone its record,
@@ -394,7 +433,10 @@ class SyncCoordinator {
   ) async {
     final vault = secretVault;
     if (refs.isEmpty || !syncSecrets || vault == null) return 0;
-    final published = _publishableSecretRefs(servers);
+    final published = _publishableSecretRefs(
+      servers,
+      await snippetSourceStore?.listSources() ?? const <SnippetSource>[],
+    );
     var bumpedCount = 0;
     for (final (ref, retractedAt) in refs) {
       // Still retracted as far as this device is concerned: the switch is off
@@ -602,6 +644,17 @@ class SyncCoordinator {
             await snippets
                 .deleteSnippet(dec.id.substring(_snippetIdPrefix.length));
           }
+          // Honoured for the snippet's reason: a source is non-secret
+          // settings, and a forged delete costs at most a subscription the
+          // user re-adds. Its token's vault entry stays, as every credential
+          // does when its `secret:` record is tombstoned.
+          final sources = snippetSourceStore;
+          if (sources != null &&
+              dec.id.length > _snippetSourceIdPrefix.length &&
+              dec.id.startsWith(_snippetSourceIdPrefix)) {
+            await sources
+                .deleteSource(dec.id.substring(_snippetSourceIdPrefix.length));
+          }
           continue;
         }
 
@@ -669,6 +722,23 @@ class SyncCoordinator {
               continue;
             }
             await store.putSnippet(snippet);
+          case RecordKind.snippetSource:
+            final store = snippetSourceStore;
+            if (store == null) continue;
+
+            final source = SnippetSource.fromJson(dec.data);
+            if (dec.id != '$_snippetSourceIdPrefix${source.id}') {
+              skip(
+                dec.id,
+                StateError(
+                  'snippet source id ${source.id} does not match record id '
+                  '${dec.id}',
+                ),
+                StackTrace.current,
+              );
+              continue;
+            }
+            await store.putSource(source);
           case RecordKind.assistantSettings:
             final store = assistantStore;
             if (store == null) continue;
@@ -1084,6 +1154,7 @@ class SyncCoordinator {
       final dec = await codec.decrypt(sealed);
       final name = switch (dec.kind) {
         RecordKind.snippet => Snippet.fromJson(dec.data).title,
+        RecordKind.snippetSource => SnippetSource.fromJson(dec.data).name,
         RecordKind.serverConfig => ServerConfig.fromJson(dec.data).label,
         _ => null,
       };

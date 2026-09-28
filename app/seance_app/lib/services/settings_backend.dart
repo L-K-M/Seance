@@ -11,7 +11,7 @@ import 'external_file_opener.dart';
 /// The Settings screen's tabs, in the order the screen shows them. Here
 /// rather than beside the screen because the settings window's opener names
 /// one across the isolate boundary.
-enum SettingsTab { general, appearance, assistant, files, sync }
+enum SettingsTab { general, appearance, assistant, files, snippets, sync }
 
 /// Everything the Settings screen reads and does, apart from where it runs.
 ///
@@ -28,7 +28,8 @@ enum SettingsTab { general, appearance, assistant, files, sync }
 /// keep (the assistant's adoption guards, the sync switches' rollbacks) need
 /// the app's live state to be kept against.
 ///
-/// Notifies whenever [settings], [llmConfigVersion] or [syncStatus] change.
+/// Notifies whenever [settings], [llmConfigVersion], [syncStatus] or
+/// [snippetSources] change.
 abstract class SettingsBackend implements Listenable {
   /// The settings as of the last change. Read-only: the screen loads its
   /// fields from here and writes through the methods below.
@@ -87,6 +88,16 @@ abstract class SettingsBackend implements Listenable {
   Future<void> enrollSync(SyncEnrollment enrollment);
 
   Future<SyncCounts> syncNow();
+
+  /// The snippet sources, as the Settings list shows them. Never their
+  /// tokens, only whether one is set.
+  List<SnippetSourceSummary> get snippetSources;
+
+  /// Adds or edits a source and starts fetching it. Throws with a message
+  /// for the user when the vault refuses the token.
+  Future<void> saveSnippetSource(SnippetSourceDraft draft);
+
+  Future<void> deleteSnippetSource(String id);
 }
 
 /// Thrown by a backend whose work failed in the app's isolate, carrying the
@@ -463,4 +474,83 @@ class SyncCounts {
       SyncCounts(pulled: json['pulled'] as int, pushed: json['pushed'] as int);
 
   Map<String, dynamic> toJson() => {'pulled': pulled, 'pushed': pushed};
+}
+
+/// A snippet source as the Settings list shows it.
+@immutable
+class SnippetSourceSummary {
+  const SnippetSourceSummary({
+    required this.id,
+    required this.name,
+    required this.url,
+    required this.hasToken,
+  });
+
+  factory SnippetSourceSummary.of(SnippetSource source) => SnippetSourceSummary(
+    id: source.id,
+    name: source.name,
+    url: source.url,
+    hasToken: source.tokenRef != null,
+  );
+
+  final String id;
+  final String name;
+  final String url;
+
+  /// Whether the source names a token, not whether this device holds it: a
+  /// source synced without credential sync names one it cannot read, which
+  /// its refresh error then says.
+  final bool hasToken;
+
+  factory SnippetSourceSummary.fromJson(Map<String, dynamic> json) =>
+      SnippetSourceSummary(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        url: json['url'] as String,
+        hasToken: json['hasToken'] as bool,
+      );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'url': url,
+    'hasToken': hasToken,
+  };
+}
+
+/// What the source editor's Save sends. [token] crosses to the app's isolate
+/// in memory only, like the assistant's keys; blank keeps the stored token.
+@immutable
+class SnippetSourceDraft {
+  const SnippetSourceDraft({
+    this.id,
+    required this.name,
+    required this.url,
+    this.token = '',
+    this.removeToken = false,
+  });
+
+  /// Null for a new source.
+  final String? id;
+  final String name;
+  final String url;
+  final String token;
+  final bool removeToken;
+
+  factory SnippetSourceDraft.fromJson(Map<String, dynamic> json) =>
+      SnippetSourceDraft(
+        id: json['id'] as String?,
+        name: json['name'] as String,
+        url: json['url'] as String,
+        token: json['token'] as String,
+        removeToken: json['removeToken'] as bool,
+      );
+
+  Map<String, dynamic> toJson() => {
+    if (id != null) 'id': id,
+    'name': name,
+    'url': url,
+    'token': token,
+    'removeToken': removeToken,
+  };
 }

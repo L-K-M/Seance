@@ -44,6 +44,7 @@ class RefusedRecord {
       RecordKind.snippet => 'snippet',
       RecordKind.bookmark => 'bookmark',
       RecordKind.assistantSettings => 'assistant settings',
+      RecordKind.snippetSource => 'snippet source',
       RecordKind.unknown => 'record',
     };
     final named = name?.trim() ?? '';

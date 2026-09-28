@@ -16,6 +16,7 @@ import 'services/managed_remote_file.dart';
 import 'services/remote_files_controller.dart';
 import 'services/remote_git_controller.dart';
 import 'services/server_duplication.dart';
+import 'services/snippet_source_refresher.dart';
 import 'services/xterm_engine.dart';
 import 'theme/app_appearance.dart';
 import 'ui/built_in_text_editor.dart';
@@ -421,6 +422,33 @@ class AppState extends ChangeNotifier {
 
   List<ServerConfig> servers = [];
   List<Snippet> snippets = [];
+
+  /// Remote snippet files the user subscribes to, synced like snippets. What
+  /// each one serves is in [snippetSourceRefresher], which is device-local.
+  List<SnippetSource> snippetSources = [];
+  late final SnippetSourceRefresher snippetSourceRefresher =
+      SnippetSourceRefresher(
+        cache: services.snippetSourceCache,
+        fetcher: () => services.snippetSourceFetcher,
+        readToken: (ref) async {
+          // A synced source is only as trustworthy as the peer that wrote
+          // it, and one naming a server's credential would otherwise send
+          // that password to whatever URL it names.
+          if (_namesServerCredential(ref)) {
+            throw const SnippetSourceException(
+              'This source names a server credential as its token. Edit the '
+              'source and enter its own access token.',
+            );
+          }
+          return (await services.vault.getSecret(ref))?.value;
+        },
+        // A refresh can finish after the app state is gone (a test tearing
+        // down, a window closing), and notifying then is an error.
+        onChanged: () {
+          if (!_disposed) notifyListeners();
+        },
+      );
+  bool _disposed = false;
   Map<String, ProbeStatus> statuses = {};
 
   /// All open tabs — terminal tabs and file editors — in a stable global
@@ -660,6 +688,7 @@ class AppState extends ChangeNotifier {
     }
     await _seedDefaultSnippets();
     snippets = await services.snippetStore.listSnippets();
+    await _loadSnippetSources();
     await refreshLlmConfigured();
     // Invariant insurance: if any restore path ever leaves a session
     // connecting or connected, the anchor must reflect it before the app can
@@ -678,6 +707,8 @@ class AppState extends ChangeNotifier {
     });
     services.probe.start(servers);
     notifyListeners();
+    // Every source refreshes at startup, cached copies showing meanwhile.
+    unawaited(snippetSourceRefresher.refreshAll());
     // Sync at startup (pull others' changes) and keep a periodic timer going.
     ensureAutoSyncTimer();
     if (services.settings.autoSync && services.isSyncConfigured) {
@@ -1523,6 +1554,169 @@ class AppState extends ChangeNotifier {
     _scheduleAutoSync();
   }
 
+  /// The `snippetsource:` record-id prefix, as [SyncCoordinator] writes it.
+  static const String _snippetSourceRecordPrefix = 'snippetsource:';
+
+  /// Startup half of the snippet sources: the list, then the cached copies,
+  /// without fetching — `load` refreshes every source once the UI is up.
+  /// Fail-soft: a feature on the side must not keep the app from starting.
+  Future<void> _loadSnippetSources() async {
+    try {
+      snippetSources = await services.snippetSourceStore.listSources();
+    } catch (error, stackTrace) {
+      developer.log(
+        'Could not read the snippet sources',
+        name: 'seance.app',
+        level: 1000,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+    await snippetSourceRefresher.load();
+    snippetSourceRefresher.updateSources(snippetSources, fetchNew: false);
+  }
+
+  /// Re-read the sources after something other than this device's own edit
+  /// may have changed them (a sync round), fetching any that arrived new.
+  Future<void> _reloadSnippetSources() async {
+    snippetSources = await services.snippetSourceStore.listSources();
+    snippetSourceRefresher.updateSources(snippetSources);
+  }
+
+  /// Add ([id] null) or edit a snippet source, then fetch it.
+  ///
+  /// [token] is the access token as typed: blank keeps the stored one, and
+  /// [removeToken] drops it. The token is written to the vault before the
+  /// source that names it, so a vault that refuses the write (locked keyring)
+  /// fails the whole save and leaves nothing half-configured; it never lands
+  /// in the source itself, which is plaintext on disk. Throws a
+  /// [SnippetSourceException] for a name or URL the settings form should not
+  /// have let through.
+  Future<void> saveSnippetSource({
+    String? id,
+    required String name,
+    required String url,
+    String token = '',
+    bool removeToken = false,
+  }) async {
+    final trimmedName = name.trim();
+    final trimmedUrl = url.trim();
+    if (trimmedName.isEmpty) {
+      throw const SnippetSourceException('Give the source a name.');
+    }
+    final invalidUrl = validateSnippetSourceUrl(trimmedUrl);
+    if (invalidUrl != null) throw SnippetSourceException(invalidUrl);
+
+    final saved = await _mutate(() async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final existing = id == null
+          ? null
+          : await services.snippetSourceStore.getSource(id);
+      var tokenRef = existing?.tokenRef;
+      // Never write through, or delete, a vault entry a server uses (see
+      // [_namesServerCredential]): the source gets an entry of its own.
+      if (tokenRef != null && _namesServerCredential(tokenRef)) {
+        tokenRef = null;
+      }
+      final typedToken = token.trim();
+      if (typedToken.isNotEmpty) {
+        tokenRef ??= uuidV4();
+        await services.vault.putLocalSecret(
+          Secret(id: tokenRef, kind: SecretKind.password, value: typedToken),
+          updatedAt: now,
+        );
+      } else if (removeToken && tokenRef != null) {
+        await _dropSnippetSourceToken(tokenRef);
+        tokenRef = null;
+      }
+      final source = existing == null
+          ? SnippetSource(
+              id: uuidV4(),
+              name: trimmedName,
+              url: trimmedUrl,
+              tokenRef: tokenRef,
+              createdAt: now,
+              updatedAt: now,
+            )
+          : existing.copyWith(
+              name: trimmedName,
+              url: trimmedUrl,
+              tokenRef: tokenRef,
+              clearTokenRef: tokenRef == null,
+              updatedAt: now,
+            );
+      await services.snippetSourceStore.putSource(source);
+      snippetSources = await services.snippetSourceStore.listSources();
+      return source;
+    });
+    snippetSourceRefresher.updateSources(snippetSources, fetchNew: false);
+    notifyListeners();
+    _scheduleAutoSync();
+    // Always, not only for a new URL: a new token is what the user saved to
+    // try, and the refresher re-runs one that was already under way.
+    unawaited(snippetSourceRefresher.refresh(saved.id));
+  }
+
+  /// Remove a snippet source everywhere: its row, its cached snippets, and
+  /// its token in this device's vault. The deletion reaches the other devices
+  /// as a `snippetsource:` tombstone, which they honour like a snippet's. A
+  /// token already synced stays in their vaults, as every synced credential
+  /// does when its owner is deleted (a `secret:` tombstone is never honoured),
+  /// so revoking it where it was issued is the way to be sure it is dead.
+  Future<void> deleteSnippetSource(String id) async {
+    await _mutate(() async {
+      final existing = await services.snippetSourceStore.getSource(id);
+      try {
+        await services.tombstoneStore.add(
+          EncryptedRecord.tombstone(
+            id: '$_snippetSourceRecordPrefix$id',
+            updatedAt: _deletionStamp(existing?.updatedAt),
+            deviceId: services.settings.deviceId,
+          ),
+        );
+      } catch (error, stackTrace) {
+        developer.log(
+          'Could not record the deletion tombstone for snippet source $id',
+          name: 'seance.app',
+          level: 900,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      await services.snippetSourceStore.deleteSource(id);
+      final tokenRef = existing?.tokenRef;
+      if (tokenRef != null && !_namesServerCredential(tokenRef)) {
+        await _dropSnippetSourceToken(tokenRef);
+      }
+      snippetSources = await services.snippetSourceStore.listSources();
+    });
+    snippetSourceRefresher.updateSources(snippetSources, fetchNew: false);
+    notifyListeners();
+    _scheduleAutoSync();
+  }
+
+  /// Whether [ref] is a server's credential. A source's own token never is —
+  /// this device mints a fresh id for it — so a source naming one came from
+  /// a peer, and must not read, overwrite or delete it.
+  bool _namesServerCredential(String ref) =>
+      servers.any((s) => s.secretRef == ref);
+
+  /// Fail-soft like the server delete's vault cleanup: the source change has
+  /// landed or is about to, and a vault that throws must not undo that.
+  Future<void> _dropSnippetSourceToken(String tokenRef) async {
+    try {
+      await services.vault.deleteSecret(tokenRef);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Could not remove a snippet source token from the vault',
+        name: 'seance.app',
+        level: 900,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
   /// Run one sync round manually (the "Sync now" button). Surfaces errors to
   /// the caller and updates the shared sync status.
   Future<SyncOutcome> syncNow() async {
@@ -1579,6 +1773,7 @@ class AppState extends ChangeNotifier {
           final result = await services.runSync();
           servers = await services.configStore.listServers();
           snippets = await services.snippetStore.listSnippets();
+          await _reloadSnippetSources();
           return result;
         } on SyncRecordsRefused {
           // The round applied everything else before reporting the records
@@ -1587,6 +1782,7 @@ class AppState extends ChangeNotifier {
           // device's edits would reach the stores and never the screen.
           servers = await services.configStore.listServers();
           snippets = await services.snippetStore.listSnippets();
+          await _reloadSnippetSources();
           services.probe.updateServers(servers);
           _recomputeSuggestions();
           rethrow;
@@ -2268,6 +2464,7 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _probeSub?.cancel();
     _autoSyncTimer?.cancel();
     _syncDebounce?.cancel();

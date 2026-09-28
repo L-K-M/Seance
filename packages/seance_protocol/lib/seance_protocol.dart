@@ -17,6 +17,7 @@ export 'src/models/server_mark.dart';
 export 'src/models/secret.dart';
 export 'src/models/host_key.dart';
 export 'src/models/snippet.dart';
+export 'src/models/snippet_source.dart';
 export 'src/models/assistant_settings.dart';
 export 'src/models/bookmark.dart';
 

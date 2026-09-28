@@ -73,6 +73,8 @@ abstract final class _Link {
   static const setSyncPrefs = 'setSyncPrefs';
   static const enrollSync = 'enrollSync';
   static const syncNow = 'syncNow';
+  static const saveSnippetSource = 'saveSnippetSource';
+  static const deleteSnippetSource = 'deleteSnippetSource';
   static const requestAppExit = 'requestAppExit';
 
   // App → window.
@@ -88,6 +90,7 @@ Map<String, dynamic> _snapshotOf(SettingsBackend backend) => {
   'settings': backend.settings.toJson(),
   'llmConfigVersion': backend.llmConfigVersion,
   'syncStatus': backend.syncStatus.toJson(),
+  'snippetSources': [for (final s in backend.snippetSources) s.toJson()],
 };
 
 /// The app's side of the settings window: opens it, answers what it asks
@@ -296,6 +299,10 @@ class SettingsWindowHost {
         await _backend.enrollSync(SyncEnrollment.fromJson(map()));
       case _Link.syncNow:
         return (await _backend.syncNow()).toJson();
+      case _Link.saveSnippetSource:
+        await _backend.saveSnippetSource(SnippetSourceDraft.fromJson(map()));
+      case _Link.deleteSnippetSource:
+        await _backend.deleteSnippetSource(argument! as String);
       case _Link.requestAppExit:
         return (await _requestAppExit()).name;
       default:
@@ -333,6 +340,7 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   late AppSettings _settings;
   late int _llmConfigVersion;
   late SyncStatus _syncStatus;
+  late List<SnippetSourceSummary> _snippetSources;
   int _generation = 1;
 
   /// What the window shows; see [SettingsWindowPage].
@@ -386,6 +394,9 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   @override
   SyncStatus get syncStatus => _syncStatus;
 
+  @override
+  List<SnippetSourceSummary> get snippetSources => _snippetSources;
+
   void _apply(Map<String, dynamic> snapshot) {
     _settings = AppSettings.fromJson(
       (snapshot['settings'] as Map).cast<String, dynamic>(),
@@ -398,6 +409,10 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
     _syncStatus = SyncStatus.fromJson(
       (snapshot['syncStatus'] as Map).cast<String, dynamic>(),
     );
+    _snippetSources = [
+      for (final s in snapshot['snippetSources'] as List? ?? const [])
+        SnippetSourceSummary.fromJson((s as Map).cast<String, dynamic>()),
+    ];
   }
 
   Future<Object?> _handle(MethodCall call) async {
@@ -520,6 +535,14 @@ class RemoteSettingsBackend extends ChangeNotifier implements SettingsBackend {
   @override
   Future<SyncCounts> syncNow() async =>
       SyncCounts.fromJson(_map(await _call(_Link.syncNow)));
+
+  @override
+  Future<void> saveSnippetSource(SnippetSourceDraft draft) =>
+      _call(_Link.saveSnippetSource, draft.toJson());
+
+  @override
+  Future<void> deleteSnippetSource(String id) =>
+      _call(_Link.deleteSnippetSource, id);
 
   /// Whether the application may quit, as the app's isolate decides it.
   ///

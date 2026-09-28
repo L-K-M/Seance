@@ -12,6 +12,7 @@ import 'appearance_settings.dart';
 import 'font_picker.dart';
 import 'selected_tab_view.dart';
 import 'settings_layout.dart';
+import 'snippet_source_settings.dart';
 import 'sync_enrollment_validation.dart';
 import 'terminal_appearance.dart';
 import 'top_toast.dart';
@@ -211,7 +212,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   Widget build(BuildContext context) {
     final palette = FamilyPalette.of(context);
     // Each section in its family hue (Poltergeist's D34): the assistant
-    // purple, files blue, sync indigo; General and Appearance stay in the
+    // purple, files blue, snippets teal (as in the Snippets tab), sync indigo; General and Appearance stay in the
     // tab bar's ink.
     final tabBar = TabBar(
       controller: _tabs,
@@ -227,6 +228,10 @@ class _SettingsScreenState extends State<SettingsScreen>
         Tab(
           icon: Icon(Icons.folder_open, color: palette.glyph(FamilyHue.blue)),
           text: 'Files',
+        ),
+        Tab(
+          icon: Icon(Icons.bookmarks, color: palette.glyph(FamilyHue.teal)),
+          text: 'Snippets',
         ),
         Tab(
           icon: Icon(Icons.cloud_sync, color: palette.glyph(FamilyHue.indigo)),
@@ -253,6 +258,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           AppearanceSettings(backend: _backend, systemFonts: _systemFonts),
           _assistantTab(),
           _filesTab(),
+          SnippetSourceSettings(backend: _backend),
           _syncTab(),
         ],
       ),
@@ -772,7 +778,8 @@ class _SettingsScreenState extends State<SettingsScreen>
         contentPadding: EdgeInsets.zero,
         title: const Text('Sync saved passwords & keys'),
         subtitle: const Text(
-          'Only includes servers where credential sync is also enabled.',
+          'Only includes servers where credential sync is also enabled, '
+          'and snippet source tokens.',
         ),
         value: _syncSecrets,
         onChanged: _saving

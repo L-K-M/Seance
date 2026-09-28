@@ -24,6 +24,15 @@ abstract class SnippetStore {
   Future<void> deleteSnippet(String id);
 }
 
+/// Persists the user's snippet sources (non-secret; the access tokens they
+/// name live in the vault). Synced across devices like snippets.
+abstract class SnippetSourceStore {
+  Future<List<SnippetSource>> listSources();
+  Future<SnippetSource?> getSource(String id);
+  Future<void> putSource(SnippetSource source);
+  Future<void> deleteSource(String id);
+}
+
 /// Durable list of deletion tombstones awaiting propagation to the sync server.
 ///
 /// [SyncCoordinator] rebuilds its record mirror from a full pull each round, so
@@ -313,6 +322,27 @@ class InMemorySnippetStore implements SnippetStore {
 
   @override
   Future<void> deleteSnippet(String id) async => _snippets.remove(id);
+}
+
+class InMemorySnippetSourceStore implements SnippetSourceStore {
+  final Map<String, SnippetSource> _sources = {};
+
+  @override
+  Future<List<SnippetSource>> listSources() async {
+    final list = _sources.values.toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return list;
+  }
+
+  @override
+  Future<SnippetSource?> getSource(String id) async => _sources[id];
+
+  @override
+  Future<void> putSource(SnippetSource source) async =>
+      _sources[source.id] = source;
+
+  @override
+  Future<void> deleteSource(String id) async => _sources.remove(id);
 }
 
 class InMemoryVaultStore implements VaultStore {

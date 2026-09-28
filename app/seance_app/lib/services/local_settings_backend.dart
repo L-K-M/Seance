@@ -432,4 +432,24 @@ class LocalSettingsBackend implements SettingsBackend {
     final outcome = await _state.syncNow();
     return SyncCounts(pulled: outcome.pulled, pushed: outcome.pushed);
   }
+
+  @override
+  List<SnippetSourceSummary> get snippetSources => [
+    for (final source in _state.snippetSources)
+      SnippetSourceSummary.of(source),
+  ];
+
+  @override
+  Future<void> saveSnippetSource(SnippetSourceDraft draft) =>
+      _state.saveSnippetSource(
+        id: draft.id,
+        name: draft.name,
+        url: draft.url,
+        token: draft.token,
+        removeToken: draft.removeToken,
+      );
+
+  @override
+  Future<void> deleteSnippetSource(String id) =>
+      _state.deleteSnippetSource(id);
 }

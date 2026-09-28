@@ -115,6 +115,63 @@ be excluded from sync and kept on
 one device, on top of the additive SSH keepalive controls and SFTP activity
 tracking that support Poltergeist's pooled transport policy._
 
+## Snippet sources (2026-09-28)
+
+A snippet source is a remote JSON file of snippets the user subscribes to,
+typically the raw URL of a file in a private git repository that an agent
+writes to. Settings has a Snippets tab to add, edit and remove sources (name,
+URL, optional access token); the Snippets tab lists each source's snippets
+read-only under its name, with its last update, its last error and a refresh
+button, plus a refresh-all button. Every source refreshes at startup, and a
+source that arrives by sync or is re-pointed is fetched when it appears.
+
+The file format is `{"version": 1, "snippets": [{"id", "title", "body"}]}`.
+Unknown fields are ignored; a wrong version or malformed JSON fails the file
+with a message; an unusable entry (missing or blank field, duplicate id) is
+skipped and counted. A Forgejo raw URL fetched without a token redirects to
+the sign-in page, which answers 200 with HTML, so an HTML response gets its
+own message rather than "not valid JSON".
+
+What is where:
+
+- `SnippetSource` (`seance_protocol`) is the synced configuration, record
+  kind `snippetSource`, id `snippetsource:<id>`. It collects, applies and
+  tombstones exactly like a snippet: a forged delete costs a subscription,
+  never a credential. A build without the kind skips the record.
+- The token is a vault `Secret` named by `SnippetSource.tokenRef`, never part
+  of the source. It syncs as an ordinary `secret:` record, on the existing
+  "Sync saved passwords & keys" switch (there is no per-source opt-in, since
+  a source has no exclusion to honour); with the switch off the source still
+  syncs and the other device reports that it holds no token. Removing a
+  token or a source deletes the vault entry here; a copy already synced
+  stays in the other devices' vaults, as every credential does, since
+  `secret:` tombstones are never honoured. This device always mints a fresh
+  id for a token, so a source whose `tokenRef` names a server's credential
+  can only come from a peer; such a ref is never published through the
+  source, read as a token, overwritten or deleted.
+- `SnippetSourceFetcher` (`seance_core`) enforces HTTPS (plain HTTP only on
+  loopback), refuses credentials in the URL, has a 20 s budget for the
+  whole fetch and a 1 MiB body cap (the download is cancelled past it), and
+  follows redirects itself so the Bearer header only goes to the origin the
+  user entered and a redirect cannot downgrade to HTTP. Its errors never
+  carry the token, the URL or the response body.
+- What a source serves is device-local: `SnippetSourceRefresher` (app)
+  keeps the last good copy per source in `snippet_source_cache.json`
+  (owner-only), keyed by source and tagged with the URL it came from, so a
+  re-pointed source does not show the old file's snippets.
+- Inserting a remote snippet runs the same `_insert` as a local one:
+  placeholder dialog, `PasteSanitizer` (a line break is refused), injected
+  into the prompt, never run.
+
+Not built: running a snippet on several servers, editing remote snippets in
+the app, copying them into local snippets, and periodic refresh beyond
+startup and the refresh buttons.
+
+**Not verified here:** the UI has not been driven in a running app (no
+display in this container); widget tests cover the Snippets tab and the
+settings dialog. The fetcher was checked against a real private Forgejo raw
+URL with and without a token.
+
 ## The macOS titlebar is part of the window (2026-09-26)
 
 The main window on macOS now looks like Poltergeist's: no separate title
@@ -1305,6 +1362,23 @@ revocation and concurrent login/deletion lifecycle work remain separate.
 - `packages/seance_core/test/llm_test.dart` — Anthropic/OpenAI request build + response
   parse, command JSON extraction, SSE parse, chat tool loop (paste + search),
   redaction of outbound context.
+- `packages/seance_core/test/snippet_source_test.dart` — the source file
+  parser (version, malformed files, skipped entries), URL validation, and the
+  fetcher: Bearer header only with a token and only to the entered origin,
+  HTTP errors without token/URL/body, timeouts (headers and a stalled body),
+  the size cap with and without a declared length, a sign-in page, redirects.
+- `packages/seance_core/test/snippet_source_sync_test.dart` — a source and
+  its token reach a second device; the token stays behind with credential
+  sync off; the sealed source record never holds the token; edits and
+  deletions converge; a mismatched record id is skipped; a source naming a
+  server credential cannot publish it.
+- `app/seance_app/test/snippet_sources_test.dart` — the refresher (offline
+  cache across restarts, last good copy kept on failure, missing token and
+  locked vault, URL change, mid-fetch removal and re-requests), AppState
+  (token in the vault and not in `snippet_sources.json`, keep/remove token,
+  delete tombstone, a source naming a server credential never sends,
+  overwrites or deletes it), and the Snippets tab (read-only group, error
+  line).
 - `packages/seance_core/test/sync_test.dart` — engine: push, two-device convergence,
   concurrent-edit LWW, tombstones.
 - `packages/seance_core/test/sync_coordinator_test.dart` — domain⇄record

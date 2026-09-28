@@ -108,6 +108,21 @@ class _FakeBackend extends ChangeNotifier implements SettingsBackend {
 
   @override
   Future<SyncCounts> syncNow() async => const SyncCounts(pulled: 0, pushed: 0);
+
+  @override
+  List<SnippetSourceSummary> snippetSources = const [];
+
+  final List<SnippetSourceDraft> sourceDrafts = [];
+
+  @override
+  Future<void> saveSnippetSource(SnippetSourceDraft draft) async {
+    sourceDrafts.add(draft);
+    await _write('saveSnippetSource');
+  }
+
+  @override
+  Future<void> deleteSnippetSource(String id) =>
+      _write('deleteSnippetSource($id)');
 }
 
 AssistantFields _fields(String model) => AssistantFields(
@@ -408,6 +423,7 @@ void main() {
         'Appearance',
         'Assistant',
         'Files',
+        'Snippets',
         'Sync',
       ]);
       expect(SettingsTab.values.map((tab) => tab.name), [
@@ -415,6 +431,7 @@ void main() {
         'appearance',
         'assistant',
         'files',
+        'snippets',
         'sync',
       ]);
     });
@@ -710,6 +727,92 @@ void main() {
       expect(backend.appearances, hasLength(2));
       expect(find.text('Appearance not saved: disk full'), findsOneWidget);
       await tester.pump(const Duration(seconds: 5));
+    });
+  });
+
+  group('Snippet sources', () {
+    const source = SnippetSourceSummary(
+      id: 'team',
+      name: 'Team snippets',
+      url: 'https://example.com/team/snippets.json',
+      hasToken: true,
+    );
+
+    testWidgets('lists sources without their tokens', (tester) async {
+      backend.snippetSources = const [source];
+      await pumpScreen(tester, tab: SettingsTab.snippets);
+
+      expect(find.text('Team snippets'), findsOneWidget);
+      expect(find.textContaining('Access token set'), findsOneWidget);
+    });
+
+    testWidgets('adding one validates the URL, then sends name, URL and '
+        'token', (tester) async {
+      await pumpScreen(tester, tab: SettingsTab.snippets);
+      await tester.tap(find.text('Add source'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(field('Name'), 'Team snippets');
+      await tester.enterText(
+        field('URL of the JSON file'),
+        'http://example.com/s.json',
+      );
+      await tester.enterText(field('Access token (optional)'), 'tok-1');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Use an https:// URL'), findsOneWidget);
+      expect(backend.sourceDrafts, isEmpty);
+
+      await tester.enterText(
+        field('URL of the JSON file'),
+        'https://example.com/s.json',
+      );
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final draft = backend.sourceDrafts.single;
+      expect(draft.id, isNull);
+      expect(draft.name, 'Team snippets');
+      expect(draft.url, 'https://example.com/s.json');
+      expect(draft.token, 'tok-1');
+      expect(find.text('Add snippet source'), findsNothing);
+    });
+
+    testWidgets('editing keeps the token unless one is typed or it is '
+        'removed', (tester) async {
+      backend.snippetSources = const [source];
+      await pumpScreen(tester, tab: SettingsTab.snippets);
+      await tester.tap(find.text('Team snippets'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Leave blank to keep the stored token.'), findsOneWidget);
+      await tester.tap(find.text('Remove the stored token'));
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final draft = backend.sourceDrafts.single;
+      expect(draft.id, 'team');
+      expect(draft.token, isEmpty);
+      expect(draft.removeToken, isTrue);
+    });
+
+    testWidgets('a failed save keeps the dialog open with the reason', (
+      tester,
+    ) async {
+      backend.failWrites = const SettingsBackendException('vault locked');
+      await pumpScreen(tester, tab: SettingsTab.snippets);
+      await tester.tap(find.text('Add source'));
+      await tester.pumpAndSettle();
+      await tester.enterText(field('Name'), 'Team');
+      await tester.enterText(
+        field('URL of the JSON file'),
+        'https://example.com/s.json',
+      );
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('vault locked'), findsOneWidget);
+      expect(find.text('Add snippet source'), findsOneWidget);
     });
   });
 }

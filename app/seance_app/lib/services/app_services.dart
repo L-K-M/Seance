@@ -15,6 +15,7 @@ import 'identity_audit_log.dart';
 import 'identity_bookmarks.dart';
 import 'managed_remote_file_store.dart';
 import 'secure_master_key.dart';
+import 'snippet_source_cache.dart';
 
 /// A "reference, don't store" identity file couldn't be read at connect time.
 /// [toString] is the user-facing connection-failure message, so it names the
@@ -79,6 +80,13 @@ class LockedSecretVault extends SecretVault {
 class AppServices {
   final ConfigStore configStore;
   final SnippetStore snippetStore;
+  final SnippetSourceStore snippetSourceStore;
+
+  /// This device's last good copy of each source's snippets. Not synced.
+  final SnippetSourceCache snippetSourceCache;
+
+  /// Fetches snippet sources. Replaceable so tests never reach the network.
+  SnippetSourceFetcher snippetSourceFetcher = SnippetSourceFetcher();
   /// Durable record of deletions awaiting sync (see [TombstoneStore]). Without
   /// it a deleted server returns on the next full pull, since the sync mirror
   /// is rebuilt each round.
@@ -131,6 +139,8 @@ class AppServices {
   AppServices._({
     required this.configStore,
     required this.snippetStore,
+    required this.snippetSourceStore,
+    required this.snippetSourceCache,
     required this.tombstoneStore,
     required this.vault,
     required this.hostKeyStore,
@@ -167,6 +177,9 @@ class AppServices {
 
     final configStore = FileConfigStore(File(p('servers.json')));
     final snippetStore = FileSnippetStore(File(p('snippets.json')));
+    final snippetSourceStore = FileSnippetSourceStore(
+      File(p('snippet_sources.json')),
+    );
     final tombstoneStore = FileTombstoneStore(File(p('deleted_records.json')));
     final vaultStore = FileVaultStore(File(p('vault.json')));
     final hostKeyStore = FileHostKeyStore(File(p('known_hosts.json')));
@@ -216,6 +229,10 @@ class AppServices {
     return AppServices._(
       configStore: configStore,
       snippetStore: snippetStore,
+      snippetSourceStore: snippetSourceStore,
+      snippetSourceCache: SnippetSourceCache(
+        File(p('snippet_source_cache.json')),
+      ),
       tombstoneStore: tombstoneStore,
       vault: vaultKey == null
           ? LockedSecretVault(vaultStore)
@@ -555,6 +572,7 @@ class AppServices {
       configStore: configStore,
       hostKeyStore: hostKeyStore,
       snippetStore: snippetStore,
+      snippetSourceStore: snippetSourceStore,
       assistantStore: assistant,
       codec: RecordCodec(key),
       local: InMemoryLocalRecordStore(),

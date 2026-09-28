@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Snippet sources: subscribe to a JSON file of snippets, such as a raw
+  file in a private git repository, under Settings > Snippets (name, an
+  HTTPS URL, and an optional access token sent as a Bearer token). Its
+  snippets appear read-only in the Snippets tab under the source's name,
+  refresh when Séance starts or when you press refresh, and stay usable
+  offline. Each source shows when it last updated and why a refresh
+  failed. Inserting one works exactly like a local snippet: placeholders
+  are asked first, and nothing runs. Sources sync to your other devices;
+  the token is kept in the encrypted vault and travels only with "Sync
+  saved passwords & keys" on.
 - On macOS the window no longer has a separate title bar. The traffic
   lights sit over the server list, and a header across the terminal and
   side panel shows the server you are on (name and `user@host`) with

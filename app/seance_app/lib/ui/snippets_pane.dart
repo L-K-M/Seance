@@ -4,6 +4,7 @@ import 'package:seance_core/seance_core.dart';
 import '../app_state.dart';
 import '../family_hues.dart';
 import '../main.dart';
+import '../services/snippet_source_cache.dart';
 import 'top_toast.dart';
 
 /// The Snippets tab: reusable command templates, synced across devices. Tapping
@@ -33,16 +34,33 @@ class _SnippetsPaneState extends State<SnippetsPane> {
       listenable: state,
       builder: (context, _) {
         final all = state.snippets;
+        final sources = state.snippetSources;
+        final refresher = state.snippetSourceRefresher;
         final q = _query.trim().toLowerCase();
-        final filtered = q.isEmpty
-            ? all
-            : all
-                  .where(
-                    (s) =>
-                        s.title.toLowerCase().contains(q) ||
-                        s.body.toLowerCase().contains(q),
-                  )
-                  .toList();
+        bool matches(Snippet s) =>
+            q.isEmpty ||
+            s.title.toLowerCase().contains(q) ||
+            s.body.toLowerCase().contains(q);
+        final filtered = all.where(matches).toList();
+        final remote = [
+          for (final source in sources)
+            (
+              source: source,
+              state: refresher.stateOf(source),
+              snippets: (refresher.stateOf(source)?.snippets ?? const [])
+                  .where(matches)
+                  .toList(),
+            ),
+        ];
+        final remoteCount = remote.fold<int>(
+          0,
+          (n, r) => n + (r.state?.snippets.length ?? 0),
+        );
+        // While filtering, a source with nothing matching is noise; without
+        // a filter its header stays, since it carries the fetch status.
+        final shownSources = q.isEmpty
+            ? remote
+            : remote.where((r) => r.snippets.isNotEmpty).toList();
         return Column(
           children: [
             Padding(
@@ -60,6 +78,14 @@ class _SnippetsPaneState extends State<SnippetsPane> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const Spacer(),
+                  if (sources.isNotEmpty)
+                    IconButton(
+                      tooltip: 'Refresh all snippet sources',
+                      icon: const Icon(Icons.refresh),
+                      onPressed: refresher.anyRefreshing
+                          ? null
+                          : () => refresher.refreshAll(),
+                    ),
                   IconButton(
                     tooltip: 'New snippet',
                     icon: const Icon(Icons.add),
@@ -72,7 +98,7 @@ class _SnippetsPaneState extends State<SnippetsPane> {
             // A filter box, once there are enough snippets to warrant
             // scrolling — but keep it while a query is active, or filtering
             // the list below the threshold would strand an uneditable filter.
-            if (all.length > 4 || _query.isNotEmpty)
+            if (all.length + remoteCount > 4 || _query.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
                 child: TextField(
@@ -97,50 +123,77 @@ class _SnippetsPaneState extends State<SnippetsPane> {
               ),
             if (state.commandSuggestions.isNotEmpty) _Suggestions(state: state),
             Expanded(
-              child: all.isEmpty
+              child: all.isEmpty && sources.isEmpty
                   ? const _SnippetsEmpty()
-                  : filtered.isEmpty
+                  : filtered.isEmpty && shownSources.isEmpty
                   ? const _NoMatches()
-                  : ListView.separated(
-                      itemCount: filtered.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (context, i) {
-                        final s = filtered[i];
-                        final count = s.placeholders.length;
-                        return ListTile(
-                          title: Text(
-                            s.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                  : ListView(
+                      children: [
+                        for (final (i, s) in filtered.indexed) ...[
+                          if (i > 0) const Divider(height: 1),
+                          _tile(context, state, s),
+                        ],
+                        for (final r in shownSources) ...[
+                          if (filtered.isNotEmpty || r != shownSources.first)
+                            const Divider(height: 1),
+                          _SourceHeader(
+                            source: r.source,
+                            state: r.state,
+                            refreshing: refresher.isRefreshing(r.source.id),
+                            onRefresh: () => refresher.refresh(r.source.id),
                           ),
-                          subtitle: Text(
-                            count > 0
-                                ? '$count placeholder${count == 1 ? '' : 's'} · ${_preview(s.body)}'
-                                : _preview(s.body),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontFamily: 'monospace'),
-                          ),
-                          onTap: () => _insert(context, state, s),
-                          trailing: PopupMenuButton<String>(
-                            onSelected: (v) => v == 'edit'
-                                ? _edit(context, state, s)
-                                : _delete(context, state, s),
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(value: 'edit', child: Text('Edit')),
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: Text('Delete'),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
+                          for (final s in r.snippets) ...[
+                            const Divider(height: 1, indent: 16),
+                            _tile(context, state, s, source: r.source),
+                          ],
+                        ],
+                      ],
                     ),
             ),
           ],
         );
       },
+    );
+  }
+
+  /// One snippet. A [source]'s snippets insert exactly like local ones but
+  /// are read-only here: no edit or delete, and a mark naming the source.
+  Widget _tile(
+    BuildContext context,
+    AppState state,
+    Snippet s, {
+    SnippetSource? source,
+  }) {
+    final count = s.placeholders.length;
+    return ListTile(
+      title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        count > 0
+            ? '$count placeholder${count == 1 ? '' : 's'} · ${_preview(s.body)}'
+            : _preview(s.body),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontFamily: 'monospace'),
+      ),
+      onTap: () => _insert(context, state, s),
+      trailing: source != null
+          ? Tooltip(
+              message: 'From ${source.name} (read-only)',
+              child: Icon(
+                Icons.cloud_download_outlined,
+                size: 18,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            )
+          : PopupMenuButton<String>(
+              onSelected: (v) => v == 'edit'
+                  ? _edit(context, state, s)
+                  : _delete(context, state, s),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'edit', child: Text('Edit')),
+                PopupMenuItem(value: 'delete', child: Text('Delete')),
+              ],
+            ),
     );
   }
 
@@ -275,6 +328,98 @@ class _Suggestions extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// A snippet source's group header: its name, when it last fetched, why the
+/// last attempt failed if it did, and a refresh button.
+class _SourceHeader extends StatelessWidget {
+  const _SourceHeader({
+    required this.source,
+    required this.state,
+    required this.refreshing,
+    required this.onRefresh,
+  });
+
+  final SnippetSource source;
+  final SnippetSourceState? state;
+  final bool refreshing;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final small = theme.textTheme.bodySmall;
+    final state = this.state;
+    final fetchedAt = state?.fetchedAt;
+    final count = state?.snippets.length ?? 0;
+    final skipped = state?.skipped ?? 0;
+    final status = fetchedAt == null
+        ? (refreshing ? 'Fetching…' : 'Not fetched yet.')
+        : [
+            'Updated ${_ago(fetchedAt)}',
+            '$count snippet${count == 1 ? '' : 's'}',
+            if (skipped > 0) '$skipped invalid skipped',
+          ].join(' · ');
+    return Container(
+      color: theme.colorScheme.surfaceContainerLow,
+      padding: const EdgeInsets.fromLTRB(16, 6, 4, 6),
+      child: Row(
+        children: [
+          Icon(
+            Icons.cloud_download_outlined,
+            size: 18,
+            color: FamilyPalette.of(context).glyph(FamilyHue.teal),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  source.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelLarge,
+                ),
+                Text(status, style: small),
+                if (state?.error != null)
+                  Text(
+                    fetchedAt == null
+                        ? state!.error!
+                        : 'Refresh failed: ${state!.error!} Showing the '
+                              'copy from ${_ago(fetchedAt)}.',
+                    style: small?.copyWith(color: theme.colorScheme.error),
+                  ),
+              ],
+            ),
+          ),
+          if (refreshing)
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            IconButton(
+              tooltip: 'Refresh ${source.name}',
+              icon: const Icon(Icons.refresh, size: 20),
+              onPressed: onRefresh,
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String _ago(DateTime t) {
+    final d = DateTime.now().difference(t);
+    if (d.inSeconds < 60) return 'just now';
+    if (d.inMinutes < 60) return '${d.inMinutes} min ago';
+    if (d.inHours < 24) return '${d.inHours} h ago';
+    return '${d.inDays} d ago';
   }
 }
 

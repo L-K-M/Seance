@@ -26,6 +26,7 @@ enum RecordKind {
   snippet,
   bookmark,
   assistantSettings,
+  snippetSource,
   unknown,
 }
 
