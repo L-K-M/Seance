@@ -1,5 +1,11 @@
 # Séance
 
+> [!IMPORTANT]
+> Séance moved to https://github.com/L-K-M/Hauntware. This repository is
+> archived and gets no updates. Download from
+> https://github.com/L-K-M/Hauntware/releases (`seance-*` and `seance_*.deb` assets);
+> file issues there.
+
 A cross-platform SSH client for Mac and Android with an optional self-hostable sync server, a file browser, and a built-in LLM assistant.
 
 > [!IMPORTANT]
